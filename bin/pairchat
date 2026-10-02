@@ -1,71 +1,276 @@
 #!/usr/bin/env python3
-"""Живой просмотр диалога между двумя агентами. Тексты сообщений лежат в .pair/mailbox,
-события (отказы, смена авторитета, заметки) — в .pair/transcript.jsonl и .pair/notes."""
-import json, os, time
+"""Живой просмотр диалога между двумя агентами.
+
+Тексты сообщений лежат в .pair/mailbox, события (отказы, смена авторитета,
+заметки) — в .pair/transcript.jsonl и .pair/notes.
+
+  bin/pairchat               следить за текущим проектом, Ctrl-C выход
+  bin/pairchat --once        напечатать переписку и выйти
+  bin/pairchat --all --once  одна таблица и вся переписка по всем проектам
+  PAIR_STATE=путь bin/pairchat --once    конкретный проект
+
+Почему --once существует: «покажи, что там было» — это вопрос, на который нужен
+ответ и выход, а не окно, которое надо закрывать руками.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+import time
 from pathlib import Path
 
-ROOT = Path(os.environ.get("PAIR_STATE") or ".pair")
-seen_msgs, seen_events, note_pos = set(), set(), {}
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "mcp" / "pair_mailbox"))
 
-def clock(ts): return ts[11:19] if len(ts) > 19 else ts
+from server import discover_projects, project_row  # noqa: E402
 
-def messages():
-    mb = ROOT / "mailbox"
-    if not mb.is_dir(): return
-    for box in sorted(mb.iterdir()):
-        if not box.is_dir(): continue
-        for f in sorted(box.glob("*.json")):
-            if f.name in seen_msgs: continue
-            seen_msgs.add(f.name)
-            try: m = json.loads(f.read_text())
-            except Exception: continue
-            print(f"\n\033[1m[{clock(m['ts'])}] {m['from']} → {m['to']}\033[0m")
-            if m.get("subject"): print(f"  \033[2m({m['subject']})\033[0m")
-            for line in str(m.get("text", "")).splitlines() or [""]:
-                print(f"  {line}")
+BOLD, DIM, RED, YELLOW, CYAN, MAGENTA, OFF = (
+    "\033[1m", "\033[2m", "\033[31m", "\033[33m", "\033[36m", "\033[35m", "\033[0m",
+)
 
-def events():
-    tr = ROOT / "transcript.jsonl"
-    if tr.exists():
-        for raw in tr.read_text(errors="replace").splitlines():
-            if not raw.strip(): continue
+KIND_COLOR = {
+    "msg": BOLD,
+    "refusal": RED,
+    "control": YELLOW,
+    "note_head": CYAN,
+    "note_body": MAGENTA,
+}
+
+
+def clock(ts) -> str:
+    text = str(ts or "")
+    return text[11:19] if len(text) > 19 else text
+
+
+class Feed:
+    """Один проект: .pair, который читается вперёд с места, где мы остановились.
+
+    Курсоры свои у каждого объекта: сообщения — по имени файла, события — по строке
+    транскрипта, заметки — по числу прочитанных байт. Благодаря этому один и тот же
+    объект можно опустошать в цикле, и ничего не печатается дважды.
+
+    Блок возвращается как (ключ сортировки, вид, метка проекта, текст): метка лежит
+    внутри блока, а не подкладывается снаружи, иначе два одинаковых сообщения из
+    разных проектов склеились бы в одно.
+    """
+
+    def __init__(self, root: Path, label: str) -> None:
+        self.root = root
+        self.label = label
+        self.seen_msgs: set[str] = set()
+        self.seen_events: set[str] = set()
+        self.note_pos: dict[str, int] = {}
+
+    def _add(self, out: list, order, kind: str, text: str) -> None:
+        out.append((order, kind, self.label, text))
+
+    def messages(self, out: list) -> None:
+        mailbox = self.root / "mailbox"
+        if not mailbox.is_dir():
+            return
+        for box in sorted(mailbox.iterdir()):
+            if not box.is_dir():
+                continue
+            for path in sorted(box.glob("*.json")):
+                if path.name in self.seen_msgs:
+                    continue
+                self.seen_msgs.add(path.name)
+                try:
+                    msg = json.loads(path.read_text(encoding="utf-8"))
+                except Exception:
+                    continue
+                ts = str(msg.get("ts") or "")
+                head = f"[{clock(ts)}] {msg.get('from')} → {msg.get('to')}"
+                if msg.get("subject"):
+                    head += f"  {DIM}({msg['subject']}){OFF}"
+                body = str(msg.get("text", ""))
+                if body:
+                    head += "\n" + "\n".join("  " + line for line in body.splitlines())
+                self._add(out, (0, ts), "msg", head)
+
+    def events(self, out: list) -> None:
+        transcript = self.root / "transcript.jsonl"
+        if not transcript.exists():
+            return
+        for raw in transcript.read_text(errors="replace").splitlines():
+            if not raw.strip():
+                continue
             key = f"{raw[:60]}|{len(raw)}"
-            if key in seen_events: continue
-            seen_events.add(key)
-            try: e = json.loads(raw)
-            except Exception: continue
-            k = e.get("kind")
-            if k == "send": continue
-            if k == "refusal":
-                print(f"\n\033[31m[{clock(e['ts'])}] ОТКАЗ  {e.get('role')} → {e.get('tool')}\033[0m")
-                print(f"  {e.get('reason','')[:220]}")
-            elif k in ("claim", "assign", "release", "advance"):
-                who = e.get("writer") or e.get("phase") or ""
-                print(f"\n\033[33m[{clock(e['ts'])}] {k.upper()}: {who}   ({e.get('role')})\033[0m")
-            elif k == "note":
-                print(f"\n\033[36m[{clock(e['ts'])}] заметка/{e.get('note_kind')} — {e.get('chars')} симв. от {e.get('role')}\033[0m")
+            if key in self.seen_events:
+                continue
+            self.seen_events.add(key)
+            try:
+                event = json.loads(raw)
+            except Exception:
+                continue
+            self._event(out, event)
 
-def notes():
-    nd = ROOT / "notes"
-    if not nd.is_dir(): return
-    for f in sorted(nd.glob("*.md")):
-        try: text = f.read_text(errors="replace")
-        except Exception: continue
-        pos = note_pos.get(f.name, 0)
-        if len(text) <= pos: continue
-        chunk = text[pos:]
-        note_pos[f.name] = len(text)
-        print(f"\n\033[35m── {f.stem} ──\033[0m")
-        for line in chunk.splitlines():
-            if line.strip() and not line.startswith("#") and "—" not in line[:4]:
-                print(f"  {line}")
+    def _event(self, out: list, event: dict) -> None:
+        ts = str(event.get("ts") or "")
+        kind = event.get("kind")
+        if kind == "send":
+            # текст сообщения уже показан из mailbox, повторять не нужно; но молчание
+            # по нему считается, потому что тишину меряет transcript
+            return
+        if kind == "refusal":
+            head = f"[{clock(ts)}] ОТКАЗ  {event.get('role')} → {event.get('tool')}"
+            self._add(out, (0, ts), "refusal", head + "\n  " + str(event.get("reason", ""))[:220])
+            return
+        if kind in ("claim", "assign", "release", "advance"):
+            who = event.get("writer") or event.get("phase") or ""
+            self._add(out, (0, ts), "control",
+                      f"[{clock(ts)}] {str(kind).upper()}: {who}   ({event.get('role')})")
+            return
+        if kind == "note":
+            self._add(out, (0, ts), "note_head",
+                      f"[{clock(ts)}] заметка/{event.get('note_kind')} — "
+                      f"{event.get('chars')} симв. от {event.get('role')}")
+            return
 
-if not ROOT.exists():
-    raise SystemExit(f"нет {ROOT} — запустите: bin/pairctl task \"...\"")
-print(f"смотрю {ROOT}, Ctrl-C чтобы выйти\n")
-while True:
+    def notes(self, out: list) -> None:
+        notes_dir = self.root / "notes"
+        if not notes_dir.is_dir():
+            return
+        for path in sorted(notes_dir.glob("*.md")):
+            try:
+                text = path.read_text(errors="replace")
+            except Exception:
+                continue
+            pos = self.note_pos.get(path.name, 0)
+            if len(text) <= pos:
+                continue
+            self.note_pos[path.name] = len(text)
+            lines = [
+                line for line in text[pos:].splitlines()
+                if line.strip() and not line.startswith("#") and "—" not in line[:4]
+            ]
+            if not lines:
+                continue
+            # заметки в конце: своей метки времени у них нет, и вставлять их в
+            # хронологию значило бы выдумать её
+            self._add(out, (1, path.name), "note_head", f"── {path.stem} ──")
+            self._add(out, (1, path.name), "note_body",
+                      "\n".join("  " + line for line in lines))
+
+    def drain(self) -> list:
+        out: list = []
+        self.messages(out)
+        self.events(out)
+        self.notes(out)
+        return out
+
+
+def labels_for(roots: list[Path]) -> list[str]:
+    """Короткие имена проектов. Повторяющиеся уточняем родителем — иначе в таблице
+    две строки `app` и ни одна не говорит, какая."""
+    counts: dict[str, int] = {}
+    for root in roots:
+        counts[root.parent.name] = counts.get(root.parent.name, 0) + 1
+    labels = []
+    for root in roots:
+        name = root.parent.name or str(root)
+        if counts.get(name, 0) > 1 and root.parent.parent.name:
+            name = f"{root.parent.parent.name}/{name}"
+        labels.append(name)
+    return labels
+
+
+def show(blocks: list, width: int) -> None:
+    """Печатает блоки по порядку. Метка проекта — на первой строке, остальное сдвинуто
+    под неё, чтобы строки одного блока читались как один блок."""
+    for _, kind, label, text in sorted(blocks, key=lambda block: block[0]):
+        prefix = label.ljust(width) if width else ""
+        colour = KIND_COLOR.get(kind, "")
+        lines = text.splitlines()
+        if colour:
+            print(colour + prefix + lines[0] + OFF)
+        else:
+            print(prefix + lines[0])
+        for line in lines[1:]:
+            print(" " * len(prefix) + line)
+
+
+def overview(roots: list[Path], labels: list[str], stuck_min: int) -> None:
+    """Шапка перед перепиской. Ширины считаем по данным: имена проектов разной
+    длины, и жёсткий отступ разъезжал бы колонки на первой же строке."""
+    header = ("проект", "фаза", "писатель", "тишина")
+    table = [
+        (
+            label,
+            row["phase"],
+            row["writer"] or "—",
+            "не начат" if row["silence_seconds"] is None
+            else row["silence"] + ("  ЗАВИС" if row["stuck"] else ""),
+        )
+        for root, label in zip(roots, labels)
+        for row in [project_row(root, stuck_min)]
+    ]
+    widths = [max([len(header[i])] + [len(r[i]) for r in table]) for i in range(len(header))]
+    print("  ".join(header[i].ljust(widths[i]) for i in range(len(header))).rstrip())
+    for record in table:
+        print("  ".join(record[i].ljust(widths[i]) for i in range(len(record))).rstrip())
+
+
+def pick_roots(args) -> list[Path]:
+    if args.everywhere:
+        roots = discover_projects(args.paths)
+        if not roots:
+            print("ни одного проекта с состоянием пары не найдено")
+            print("укажите путь:  bin/pairchat --all ~/work/foo")
+        return roots
+    here = Path(os.environ.get("PAIR_STATE") or ".pair").expanduser()
+    if not (here / "state.json").is_file():
+        print(f"нет {here} — запустите в проекте: bin/pairctl task \"...\"")
+        return []
+    return [here.resolve()]
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        prog="pairchat",
+        description="Переписка между агентами: одного проекта или всех сразу.",
+    )
+    parser.add_argument("--once", action="store_true",
+                        help="напечатать и выйти вместо окна до Ctrl-C")
+    parser.add_argument("--all", dest="everywhere", action="store_true",
+                        help="все проекты с состоянием пары, а не только текущий")
+    parser.add_argument("--stuck-min", type=int, default=30,
+                        help="с какой тишины считать проект зависшим (по умолчанию 30)")
+    parser.add_argument("paths", nargs="*", help="проекты или .pair, если не --all")
+    args = parser.parse_args()
+
+    roots = pick_roots(args)
+    if not roots:
+        return 1
+
+    labels = labels_for(roots)
+    feeds = [Feed(root, label) for root, label in zip(roots, labels)]
+    width = max((len(label) for label in labels), default=0) + 2 if len(feeds) > 1 else 0
+
+    if len(feeds) > 1:
+        overview(roots, labels, args.stuck_min)
+        print()
+
+    where = "проектов: " + ", ".join(labels) if width else str(roots[0])
+    tail = "печатаю и выхожу" if args.once else "Ctrl-C чтобы выйти"
+    print(f"смотрю {where}, {tail}\n")
+
+    if args.once:
+        for feed in feeds:
+            show(feed.drain(), width)
+        return 0
+
     try:
-        messages(); events(); notes()
-        time.sleep(0.4)
+        while True:
+            for feed in feeds:
+                show(feed.drain(), width)
+            time.sleep(0.4)
     except KeyboardInterrupt:
         print("\nвыход")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
