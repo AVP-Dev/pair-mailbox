@@ -352,7 +352,7 @@ class PairSession:
                     )
                 state["writer"] = self.role
                 state["round"] = int(state.get("round", 0)) + 1
-                return {"
+                return {
                     "already_writer": False,
                     "writer": self.role,
                     "round": state["round"],
