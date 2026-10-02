@@ -98,7 +98,7 @@ def chunks(text: str, size: int = CHUNK_BYTES) -> list:
 
 def type_text(tmux: str, pane: str, text: str) -> None:
     for chunk in chunks(text):
-        subprocess.run([tmux, "send-keys", "-t", pane, "-l", chunk],
+        subprocess.run([tmux, "send-keys", "-u", "-t", pane, "-l", chunk],
                        capture_output=True, text=True, timeout=5)
         time.sleep(0.04)
 
