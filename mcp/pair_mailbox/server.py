@@ -438,7 +438,7 @@ class PairSession:
         self.store.append_transcript("doorbell", self.role, to=target, bell_kind=kind, pane=pane)
         return {"rung": True, "pane": pane, "prompt": prompt}
 
-    def tool_pair_deliver(self, to: str, text: str, wait_for_empty: float = 0.0) -> dict[str, Any]:
+    def tool_pair_deliver(self, to: str, text: str, wait_for_empty: float = 0.0, submit: bool = True) -> dict[str, Any]:
         """Type a message straight into the peer's composer, as if the user typed it.
 
         The mailbox is passive: a message sits there until the peer thinks to look.
@@ -455,7 +455,7 @@ class PairSession:
         if not pane:
             return {"delivered": False, "why": f"у {to} нет панели tmux, он вне tmux"}
         try:
-            result = deliver(pane, text, wait_for_empty=wait_for_empty)
+            result = deliver(pane, text, wait_for_empty=wait_for_empty, submit=submit)
         except ComposerBusy as exc:
             self.store.append_transcript("deliver_busy", self.role, to=to, reason=str(exc))
             return {"delivered": False, "why": str(exc)}
@@ -860,6 +860,11 @@ def tool_definitions() -> list[dict[str, Any]]:
                         "type": "number",
                         "description": "Seconds to wait for a busy composer to clear. 0 refuses immediately.",
                         "default": 0,
+                    },
+                    "submit": {
+                        "type": "boolean",
+                        "description": "Press Enter after typing. false leaves the text in the composer unsent.",
+                        "default": True,
                     },
                 },
                 "required": ["to", "text"],

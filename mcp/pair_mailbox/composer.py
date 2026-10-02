@@ -111,11 +111,17 @@ def erase(tmux: str, pane: str, count: int) -> None:
 
 
 def tail_present(lines: list, needle: str) -> bool:
-    tail = needle[-60:]
-    return any(tail in line for line in lines[-6:])
+    """Was the typed text actually on screen?
 
+    Not line by line: a narrow pane wraps the text, so the tail of the message can
+    straddle a row boundary and never appear whole in any single line. Compare
+    against the joined, whitespace-flattened tail instead.
+    """
+    joined = " ".join(" ".join(lines[-10:]).split())
+    tail = " ".join(needle[-60:].split())
+    return tail in joined
 
-def deliver(pane: str, text: str, wait_for_empty: float = 0.0) -> dict:
+def deliver(pane: str, text: str, wait_for_empty: float = 0.0, submit: bool = True) -> dict:
     """Доставить текст в композер соседа. Возвращает отчёт, что реально вышло.
 
     Бросает ComposerBusy, если композер занят — вбивать поверх чужого текста
@@ -145,7 +151,9 @@ def deliver(pane: str, text: str, wait_for_empty: float = 0.0) -> dict:
         return {"delivered": False, "why": "вставка не появилась в панели, откатил",
                 "erased": written}
 
-    subprocess.run([tmux, "send-keys", "-t", pane, "Enter"],
-                   capture_output=True, text=True, timeout=5)
-    return {"delivered": True, "chars": len(body), "chunks": len(chunks(body)),
-            "pane": pane}
+    result = {"delivered": True, "chars": len(body), "chunks": len(chunks(body)),
+              "pane": pane, "submitted": submit}
+    if submit:
+        subprocess.run([tmux, "send-keys", "-t", pane, "Enter"],
+                       capture_output=True, text=True, timeout=5)
+    return result

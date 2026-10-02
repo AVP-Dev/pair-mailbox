@@ -233,11 +233,24 @@ class TestMessaging(PairTestCase):
         self.assertLess(elapsed, 4.0, "but the wait stays bounded")
 
     def test_wait_is_capped(self) -> None:
+        """The cap must be asserted without actually sitting through it.
+
+        Asking for more than the cap does not help: the clamp happens before the wait,
+        so the suite would still spend the full minute. Lower the cap instead, then ask
+        for more than it. The constant is read at call time, so patching the module
+        attribute is enough.
+        """
+        import server
+
         self.writer.tool_pair_state()
-        # Asserting the cap by requesting 10_000 makes the suite sit through the full
-        # minute, so assert the clamp on a value that does not actually cost that.
-        result = self.writer.tool_pair_read(wait_seconds=MAX_READ_WAIT_SECONDS + 10_000)
-        self.assertLessEqual(result["waited_seconds"], MAX_READ_WAIT_SECONDS)
+        original = server.MAX_READ_WAIT_SECONDS
+        server.MAX_READ_WAIT_SECONDS = 1
+        try:
+            result = self.writer.tool_pair_read(wait_seconds=9999)
+            self.assertLessEqual(result["waited_seconds"], 1)
+        finally:
+            server.MAX_READ_WAIT_SECONDS = original
+
     def test_peer_wait_is_bounded(self) -> None:
         self.peer.tool_pair_state()
         started = time.monotonic()
