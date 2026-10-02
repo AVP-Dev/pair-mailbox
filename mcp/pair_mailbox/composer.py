@@ -98,7 +98,7 @@ def chunks(text: str, size: int = CHUNK_BYTES) -> list:
 
 def type_text(tmux: str, pane: str, text: str) -> None:
     for chunk in chunks(text):
-        subprocess.run([tmux, "send-keys", "-u", "-t", pane, "-l", chunk],
+        subprocess.run([tmux, "send-keys", "-t", pane, "-l", chunk],
                        capture_output=True, text=True, timeout=5)
         time.sleep(0.04)
 
@@ -113,11 +113,16 @@ def erase(tmux: str, pane: str, count: int) -> None:
 def tail_present(lines: list, needle: str) -> bool:
     """Was the typed text actually on screen?
 
-    Not line by line: a narrow pane wraps the text, so the tail of the message can
-    straddle a row boundary and never appear whole in any single line. Compare
-    against the joined, whitespace-flattened tail instead.
+    Two things bite here, and both bit in practice:
+
+    - A pane is taller than its content. The cursor sits at the bottom while the
+      prompt, and the text just typed into it, stay near the top. So the last ten
+      *physical* lines are usually blank. Look at the last non-empty lines instead.
+    - A narrow pane wraps the text, so the tail of the message straddles a row
+      boundary and never appears whole in one line. Join before comparing.
     """
-    joined = " ".join(" ".join(lines[-10:]).split())
+    meaningful = [line for line in lines if line.strip()]
+    joined = " ".join(" ".join(meaningful[-6:]).split())
     tail = " ".join(needle[-60:].split())
     return tail in joined
 
