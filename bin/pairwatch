@@ -1,0 +1,69 @@
+#!/usr/bin/env python3
+"""Следит за парой и замечает зависшего агента. Сам не убивает, если не --kill."""
+import json, os, sys, time
+from datetime import datetime, timezone
+from pathlib import Path
+
+state_dir = Path(os.environ.get("PAIR_STATE") or ".pair").resolve()
+limit = 300
+if "--limit" in sys.argv:
+    limit = int(sys.argv[sys.argv.index("--limit") + 1])
+kill = "--kill" in sys.argv
+
+def load():
+    try:
+        return json.loads((state_dir / "state.json").read_text())
+    except Exception:
+        return {}
+
+def last_event():
+    tr = state_dir / "transcript.jsonl"
+    if not tr.exists():
+        return None, None
+    last = None
+    for raw in tr.read_text(errors="replace").splitlines():
+        if raw.strip():
+            try:
+                last = json.loads(raw)
+            except Exception:
+                pass
+    if not last:
+        return None, None
+    try:
+        return datetime.fromisoformat(last.get("ts")), last
+    except Exception:
+        return None, last
+
+def alive(pid):
+    try:
+        os.kill(int(pid), 0)
+        return True
+    except Exception:
+        return False
+
+print(f"смотрю {state_dir}, порог {limit // 60} мин, Ctrl-C выход")
+try:
+    while True:
+        st = load()
+        roles = st.get("roles", {})
+        t_last, ev = last_event()
+        age = (datetime.now(timezone.utc) - t_last).total_seconds() if t_last else None
+        if age is not None and age > limit:
+            print(f"\n\033[31mЗАВИСАНИЕ: тишина {int(age // 60)} мин\033[0m")
+            print(f"  последнее: {ev.get('kind')} от {ev.get('role')}")
+            for name, info in roles.items():
+                pid = info.get("pid")
+                who = "ПИСАТЕЛЬ" if st.get("writer") == name else "критик"
+                mark = "жив" if pid and alive(pid) else "мёртв"
+                print(f"  {name:10} {who:9} pid={pid} {mark}")
+            if kill:
+                for name, info in roles.items():
+                    pid = info.get("pid")
+                    if pid and alive(pid):
+                        os.kill(int(pid), 15)
+                        print(f"  убит {name} pid={pid}")
+            else:
+                print("  убить: bin/pairwatch --kill")
+        time.sleep(20)
+except KeyboardInterrupt:
+    print("\nвыход")

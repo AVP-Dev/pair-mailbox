@@ -1,0 +1,177 @@
+#!/usr/bin/env python3
+"""Диагностика парной работы. Ничего не меняет, только проверяет и объясняет.
+
+  bin/pairdoctor            всё
+  bin/pairdoctor --project  сверять ещё и состояние рабочего проекта
+"""
+import json, os, shutil, subprocess, sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+PROFILES = json.loads((ROOT / "cli-profiles.json").read_text(encoding="utf-8"))
+
+ok_n, bad_n, warn_n = 0, 0, 0
+
+
+def ok(m):
+    global ok_n
+    ok_n += 1
+    print("  \033[32mок\033[0m      " + m)
+
+
+def bad(m):
+    global bad_n
+    bad_n += 1
+    print("  \033[31mошибка\033[0m " + m)
+
+
+def warn(m):
+    global warn_n
+    warn_n += 1
+    print("  \033[33mвнимание\033[0m " + m)
+
+
+def argv_from_toml(text):
+    """Минимум, который нужен из блока [mcp_servers.pair]: command и args."""
+    cmd, args, inside = None, [], False
+    for line in text.splitlines():
+        s = line.strip()
+        if s.startswith("["):
+            inside = s == "[mcp_servers.pair]"
+            continue
+        if not inside or "=" not in s:
+            continue
+        key, _, val = s.partition("=")
+        key, val = key.strip(), val.strip().strip('"')
+        if key == "command":
+            cmd = val
+        elif key == "args":
+            args = [a.strip().strip('"') for a in val.strip("[]").split(",") if a.strip()]
+    if not cmd:
+        raise KeyError("command")
+    return [cmd] + args
+
+
+print("pairdoctor, корень " + str(ROOT))
+
+print("\n[1] сервер")
+srv = ROOT / "mcp/pair_mailbox/server.py"
+tests = ROOT / "mcp/pair_mailbox/test_protocol.py"
+if not srv.exists():
+    bad("нет mcp/pair_mailbox/server.py")
+else:
+    r = subprocess.run([sys.executable, str(tests)], cwd=str(ROOT),
+                       capture_output=True, text=True)
+    tail = [l for l in r.stdout.splitlines() if l.startswith("Ran ") or l.strip() in ("OK", "FAILED")]
+    if r.returncode == 0:
+        ok("тесты сервера: " + (tail[0] if tail else "OK"))
+    else:
+        bad("тесты сервева не прошли: " + " ".join(tail) + r.stderr[-200:])
+
+print("\n[2] CLI")
+live = []
+for name, prof in PROFILES.items():
+    if name.startswith("_"):
+        continue
+    if not shutil.which(name):
+        warn(name + ": не установлен, пропускаю")
+        continue
+
+    spec = prof["mcp"]
+    path = Path(spec["path"]).expanduser()
+    if not path.exists():
+        bad(name + ": бинарь есть, а конфиг (" + path.name + ") отсутствует — запусти ./install.sh")
+        continue
+
+    try:
+        text = path.read_text(encoding="utf-8")
+        if spec["format"] == "toml":
+            argv = argv_from_toml(text)
+        else:
+            entry = json.loads(text)[spec["root_key"]]["pair"]
+            argv = (entry["command"] if isinstance(entry.get("command"), list)
+                    else [entry.get("command")] + entry.get("args", []))
+    except Exception as exc:
+        bad(name + ": не читаю " + path.name + " — " + str(exc)[:120])
+        continue
+
+    req = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                      "params": {"protocolVersion": "2024-11-05",
+                                 "clientInfo": {"name": "pairdoctor"}}}) + "\n"
+    try:
+        p = subprocess.run(argv, input=req, capture_output=True, text=True, timeout=15)
+        if any('"pair-mailbox"' in l for l in p.stdout.splitlines()):
+            ok(name + ": MCP отвечает как pair-mailbox")
+            live.append(name)
+        else:
+            bad(name + ": сервер на месте, но не отвечает — " + (p.stderr[:120] or p.stdout[:120]))
+    except Exception as exc:
+        bad(name + ": запуск не удался — " + str(exc)[:120])
+
+print("\n[3] навыки")
+for name, prof in PROFILES.items():
+    if name.startswith("_"):
+        continue
+    d = Path(prof["skills_dir"]).expanduser()
+    if not d.exists():
+        continue
+    have = {p.parent.name for p in d.glob("*/SKILL.md")}
+    want = {p.name for p in (ROOT / "skills").glob("*/")}
+    missing = want - have
+    if missing:
+        warn(name + ": не установлены " + ", ".join(sorted(missing)))
+    else:
+        ok(name + ": навыки на месте")
+
+print("\n[4] состояние")
+targets = [Path(os.environ["PAIR_STATE"]).resolve()] if "PAIR_STATE" in os.environ else []
+if "--project" in sys.argv:
+    targets.append(Path.cwd() / ".pair")
+if not targets:
+    targets = [ROOT / ".pair"]
+
+for sd in targets:
+    print("  " + str(sd))
+    if not sd.exists():
+        warn("нет состояния — эта пара ещё не работала")
+        continue
+    try:
+        st = json.loads((sd / "state.json").read_text(encoding="utf-8"))
+    except Exception as exc:
+        bad("state.json не читается: " + str(exc)[:100])
+        continue
+    roles = sorted(st.get("roles", {}))
+    ok("роли: " + (", ".join(roles) or "никто не подключался"))
+    ok("писатель: " + str(st.get("writer") or "никто") + ", фаза: " + str(st.get("phase")))
+    if not st.get("writer"):
+        warn("писатель не назначен — никто не может править файлы")
+    if st.get("phase") == "done":
+        warn("фаза done: раунд закрыт, сосед не прочитает новых сообщений")
+    tr = sd / "transcript.jsonl"
+    if tr.exists():
+        kinds = {}
+        for line in tr.read_text(errors="replace").splitlines():
+            if line.strip():
+                try:
+                    k = json.loads(line).get("kind")
+                    kinds[k] = kinds.get(k, 0) + 1
+                except Exception:
+                    pass
+        ok("событий: " + str(sum(kinds.values())) +
+           ", сообщений: " + str(kinds.get("send", 0)) +
+           ", отказов: " + str(kinds.get("refusal", 0)))
+
+print("\n[5] git")
+if (ROOT / ".git").exists():
+    r2 = subprocess.run(["git", "log", "--oneline", "-1"], cwd=str(ROOT),
+                        capture_output=True, text=True)
+    ok("репозиторий: " + (r2.stdout.strip() or "без коммитов"))
+    r3 = subprocess.run(["git", "status", "--porcelain"], cwd=str(ROOT),
+                        capture_output=True, text=True)
+    if r3.stdout.strip():
+        warn("незакоммиченных файлов: " + str(len(r3.stdout.strip().splitlines())))
+else:
+    warn("не git-репозиторий — git init, чтобы развернуть на другой машине")
+
+print("\nитог: " + str(ok_n) + " ок, " + str(bad_n) + " ошибок, " + str(warn_n) + " предупреждений")
+sys.exit(1 if bad_n else 0)

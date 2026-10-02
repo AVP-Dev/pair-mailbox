@@ -1,0 +1,50 @@
+{
+  "_readme": "Форматы MCP и навыков по CLI. Роль сервера = имя CLI. Добавить свой CLI = добавить сюда объект и запустить ./install.sh <имя>.",
+
+  "opencode": {
+    "label": "OpenCode",
+    "mcp": {
+      "path": "~/.config/opencode/opencode.jsonc",
+      "format": "json",
+      "root_key": "mcp",
+      "entry": { "type": "local", "command": [], "enabled": true, "timeout": 20000 }
+    },
+    "skills_dir": "~/.config/opencode/skills",
+    "instructions": "~/.config/opencode/AGENTS.md"
+  },
+
+  "agy": {
+    "label": "Antigravity CLI",
+    "mcp": {
+      "path": "~/.gemini/config/mcp_config.json",
+      "format": "json",
+      "root_key": "mcpServers",
+      "entry": { "command": "", "args": [] }
+    },
+    "skills_dir": "~/.gemini/config/skills",
+    "instructions": "~/.gemini/AGENTS.md"
+  },
+
+  "codex": {
+    "label": "Codex CLI",
+    "mcp": {
+      "path": "~/.codex/config.toml",
+      "format": "toml",
+      "entry": { "command": "", "args": [] }
+    },
+    "skills_dir": "~/.codex/skills",
+    "instructions": "~/.codex/AGENTS.md"
+  },
+
+  "claude": {
+    "label": "Claude Code",
+    "mcp": {
+      "path": "~/.claude.json",
+      "format": "json",
+      "root_key": "mcpServers",
+      "entry": { "command": "", "args": [] }
+    },
+    "skills_dir": "~/.claude/skills",
+    "instructions": "~/.claude/CLAUDE.md"
+  }
+}

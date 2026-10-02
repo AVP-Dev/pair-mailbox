@@ -1,0 +1,16 @@
+{
+  "_comment": [
+    "Antigravity MCP configuration. See docs/SETUP.md for the permission note:",
+    "MCP tools default to Ask mode in Antigravity, so `mcp(pair/*)` must be allowed in your",
+    "permissions policy or every pair_* call will stop for approval.",
+    "The role is baked in here on purpose. An agent must not be able to choose its own role,",
+    "because the whole write-authority boundary depends on the server knowing which process is which."
+  ],
+
+  "mcpServers": {
+    "pair": {
+      "command": "sh",
+      "args": ["mcp/pair_mailbox/serve.sh", "agy"]
+    }
+  }
+}

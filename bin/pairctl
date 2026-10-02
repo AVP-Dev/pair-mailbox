@@ -1,0 +1,33 @@
+#!/bin/sh
+# Human-side control surface for the two-agent collaboration.
+#
+# Everything here is the *human's* authority, not an agent's. An agent has no way
+# to reach these commands: write authority only moves through this script, which
+# is the whole point of the protocol. Keep it out of any agent's tool allowlist
+# if you want a hard boundary rather than a strong convention.
+#
+# Usage:
+#   bin/pairctl status
+#   bin/pairctl task "fix the retry storm in the client"
+#   bin/pairctl assign opencode          # opencode becomes the writer
+#   bin/pairctl release                  # nobody holds authority
+#   bin/pairctl inbox agy                # read what is waiting for a role
+#   bin/pairctl notes                    # shared plan/decision/finding notes
+#   bin/pairctl log [--limit N]          # the audit trail
+#   bin/pairctl reset --yes
+set -eu
+
+here="$(cd -- "$(dirname -- "$0")" && pwd)"
+root="$(cd -- "$here/.." && pwd)"
+
+python="$(command -v python3 || true)"
+if [ -z "$python" ]; then
+  echo "pairctl: python3 not found on PATH" >&2
+  exit 127
+fi
+
+# Default the state directory to the project root so the human does not have to
+# remember it, while still letting it be overridden for a one-off look.
+state="${PAIR_STATE:-.pair}"
+
+exec "$python" "$root/mcp/pair_mailbox/server.py" --state "$state" "$@"

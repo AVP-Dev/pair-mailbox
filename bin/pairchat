@@ -1,0 +1,71 @@
+#!/usr/bin/env python3
+"""Живой просмотр диалога между двумя агентами. Тексты сообщений лежат в .pair/mailbox,
+события (отказы, смена авторитета, заметки) — в .pair/transcript.jsonl и .pair/notes."""
+import json, os, time
+from pathlib import Path
+
+ROOT = Path(os.environ.get("PAIR_STATE") or ".pair")
+seen_msgs, seen_events, note_pos = set(), set(), {}
+
+def clock(ts): return ts[11:19] if len(ts) > 19 else ts
+
+def messages():
+    mb = ROOT / "mailbox"
+    if not mb.is_dir(): return
+    for box in sorted(mb.iterdir()):
+        if not box.is_dir(): continue
+        for f in sorted(box.glob("*.json")):
+            if f.name in seen_msgs: continue
+            seen_msgs.add(f.name)
+            try: m = json.loads(f.read_text())
+            except Exception: continue
+            print(f"\n\033[1m[{clock(m['ts'])}] {m['from']} → {m['to']}\033[0m")
+            if m.get("subject"): print(f"  \033[2m({m['subject']})\033[0m")
+            for line in str(m.get("text", "")).splitlines() or [""]:
+                print(f"  {line}")
+
+def events():
+    tr = ROOT / "transcript.jsonl"
+    if tr.exists():
+        for raw in tr.read_text(errors="replace").splitlines():
+            if not raw.strip(): continue
+            key = f"{raw[:60]}|{len(raw)}"
+            if key in seen_events: continue
+            seen_events.add(key)
+            try: e = json.loads(raw)
+            except Exception: continue
+            k = e.get("kind")
+            if k == "send": continue
+            if k == "refusal":
+                print(f"\n\033[31m[{clock(e['ts'])}] ОТКАЗ  {e.get('role')} → {e.get('tool')}\033[0m")
+                print(f"  {e.get('reason','')[:220]}")
+            elif k in ("claim", "assign", "release", "advance"):
+                who = e.get("writer") or e.get("phase") or ""
+                print(f"\n\033[33m[{clock(e['ts'])}] {k.upper()}: {who}   ({e.get('role')})\033[0m")
+            elif k == "note":
+                print(f"\n\033[36m[{clock(e['ts'])}] заметка/{e.get('note_kind')} — {e.get('chars')} симв. от {e.get('role')}\033[0m")
+
+def notes():
+    nd = ROOT / "notes"
+    if not nd.is_dir(): return
+    for f in sorted(nd.glob("*.md")):
+        try: text = f.read_text(errors="replace")
+        except Exception: continue
+        pos = note_pos.get(f.name, 0)
+        if len(text) <= pos: continue
+        chunk = text[pos:]
+        note_pos[f.name] = len(text)
+        print(f"\n\033[35m── {f.stem} ──\033[0m")
+        for line in chunk.splitlines():
+            if line.strip() and not line.startswith("#") and "—" not in line[:4]:
+                print(f"  {line}")
+
+if not ROOT.exists():
+    raise SystemExit(f"нет {ROOT} — запустите: bin/pairctl task \"...\"")
+print(f"смотрю {ROOT}, Ctrl-C чтобы выйти\n")
+while True:
+    try:
+        messages(); events(); notes()
+        time.sleep(0.4)
+    except KeyboardInterrupt:
+        print("\nвыход")

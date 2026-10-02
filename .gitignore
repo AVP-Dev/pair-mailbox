@@ -1,0 +1,7 @@
+# Runtime state for the two-agent pairing: mailbox, notes, in-flight patches,
+# the audit trail. Disposable — `bin/pairctl reset --yes` rebuilds it.
+.pair/
+
+__pycache__/
+*.pyc
+.DS_Store
