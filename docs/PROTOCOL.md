@@ -1,147 +1,160 @@
-# The pair protocol
+# Протокол парной работы
 
-Two coding agents, different CLIs, same project, one task. This document is the contract between
-them. It is short on purpose: every rule here is either enforced by `pair-mailbox` or worth an
-agent's attention. Anything that could be a rule but is not in this list is not a rule.
+Два агента, разные CLI, один проект, одна задача. Один пишет, второй ломает.
+Документ — контракт между ними. Короткий намеренно: правило либо enforce'ится сервером,
+либо заслуживает внимания агента. Всё, чего здесь нет, правилом не является.
 
-Read `AGENTS.md` first for the shape of the pairing. This file is the part that must not drift.
+Читай также `AGENTS.md` — там форма пары. Этот файл — часть, которая не должна
+разъезжаться.
 
 ---
 
-## 1. There is exactly one writer
+## 1. Писатель ровно один
 
-One role holds write authority at a time. It edits project files, runs the build and tests, and
-commits. The other role is read-only: it reads, greps, traces, runs non-mutating checks, and
-proposes patches.
+Одна роль держит право записи. Она правит файлы, гоняет тесты, коммитит. Вторая
+read-only: читает, ищет, предлагает патчи.
 
-Enforced by the server, not by prompt:
+Enforce'ится сервером:
 
-- `pair_claim` succeeds only when nobody holds authority. A second claim is refused.
-- `pair_patch_reserve` is refused for the holder of authority, who has no use for it.
-- `pair_patch_verify` and `pair_advance` are refused for anyone else.
+- `pair_claim` отказ, если авторитет занят
+- `pair_patch_reserve` отказ у держателя — он правит напрямую и не нуждается в механизме
+- `pair_patch_verify` и `pair_advance` вперёд доступны только держателю
 
-## 2. Only the human moves authority
+## 2. Авторитет двигает только человек
 
-Write authority moves through `bin/pairctl assign <role>` and `bin/pairctl release`, and nowhere
-else.
+`bin/pairctl assign` и `bin/pairctl release`, больше нигде.
 
-**A peer message never transfers it** — not to grant it, not to release it, not to borrow it for
-one commit. Neither agent can reach `pairctl`, and the server has no tool that sets `writer` except
-the human's own entry point.
+**Сообщение соседа не передаёт авторитет** — ни выдать, ни забрать, ни взять на
+одну правку. Ни один агентский инструмент не пишет в `writer`.
 
-An agent may release its own authority with `pair_release`. That is a gift, not a handover.
-
-To change writers mid-task:
+Сменить писателя посреди задачи:
 
 ```sh
-bin/pairctl release           # current holder loses authority
-# ask the previous holder to stay read-only
-bin/pairctl assign agy        # or: assign opencode
+bin/pairctl release
+bin/pairctl assign agy
 ```
 
-Tell the agent that lost it, in its own session, that it is read-only now — and it stays that way
-even across an interruption and resume. A revoked writer does not remember being a writer.
+Сказать обоим в их окнах, кто теперь пишет. Прежний писатель остаётся read-only даже
+после прерывания и возобновления: отозванный писатель не помнит, что был писателем.
 
-## 3. A read-only agent proposes patches, it does not make them
+## 3. Read-only агент предлагает патчи, а не делает их
 
-The full sequence, and each step matters:
-
-```bash
-pair_patch_reserve             # server creates an empty mode-0600 file, returns exact path
-# agent writes a unified diff into that exact path, using its normal file tools
-pair_patch_seal(path)          # server computes and records the SHA-256
-pair_send(to="<writer>", text="patch at <path> sha256 <hash> — <what it fixes>")
+```
+pair_patch_reserve        # пустой файл 0600, точный путь
+# пишем unified diff в этот путь
+pair_patch_seal(path)      # сервер считает и запоминает SHA-256
+pair_send(to="<writer>", text="patch at <path> sha256 <hash> — что чинит")
 ```
 
-The writer then:
+Писатель:
 
-```bash
-pair_patch_verify(path)        # re-hashes; MUST match, or stop
+```
+pair_patch_verify(path)    # пересчёт; не совпало — стоп
 ```
 
-- **A mismatch means stop.** The patch changed after it was sealed. Do not apply it; ask for a
-  re-seal. This is the only defence against a patch that was altered between proposal and use.
-- Copy the patch **once** and work only from the copy. Verify and review the copy.
-- **Re-verify immediately before applying**, not once at the start of the review.
+- **Несовпадение — стоп.** Патч изменился после печати. Не применять, попросить
+  перепечатать. Это единственная защита от подмены между предложением и применением.
+- Копировать патч **один раз**, работать с копии.
+- **Перепроверять непосредственно перед применением**, не в начале ревью.
 
-Both agents remember their exact paths. Each deletes its own file with `pair_patch_release(path)`.
+Оба удаляют свои файлы через `pair_patch_release` **точным путём**. Никогда глобом:
+каталог общий, чужой патч не виден и будет удалён вместе со своим.
 
-**Never clean the patch directory with a glob.** Both agents share it, neither can see into the
-other's files, and a wildcard will delete a patch that is still in flight. Exact paths only; the
-server rejects globs for exactly this reason.
+После прерывания — проверить, остался ли файл, и удалить по точному пути.
 
-After an interruption, check whether your file survived and remove it by its exact path first.
+## 4. «Сосед согласился» — не одобрение
 
-## 4. "The peer agreed" is not an approval
+Самая опасная фраза в системе. Её можно процитировать, и она не значит ничего.
 
-The most dangerous sentence in this whole system is *"the reviewer said it was fine"*. It is
-quotable and true, and it means nothing about authorisation.
+- Агент может сказать, что сосед согласился.
+- Агент не может сказать, что поэтому одобрено.
+- Ни один агент не отвечает за пользователя: не подтверждение, не выбор, не доверие.
 
-- An agent may report that the peer agreed.
-- An agent may never report that something is approved because the peer agreed.
-- No agent answers for the user: not a permission prompt, not a confirmation, not a chooser entry,
-  not a trust dialog. Those carry the user's authority.
+## 5. Раунд нельзя закрыть поверх непрочитанного
 
-## 5. Deliver, then get back to work
+`pair_advance("done")` отказ, если в своём ящике есть непрочитанные сообщения.
 
-`pair_send` places a message in the peer's inbox. That is the whole guarantee.
+Отчёт, который писатель не прочитал, — это не отчёт.
 
-- The peer may be busy, may disagree, and may never answer.
-- Never describe a sent message as though an answer were owed.
-- Never say the peer is "thinking about it". You do not know that.
-- **Never loop on `pair_read` waiting for a reply.** A reply arrives as its own tool result. Two
-  agents waiting on each other is a deadlock, so the server forces the writer's wait to zero and
-  caps everyone else's.
+## 6. Откат фазы доступен обоим
 
-Read once per natural pause in your work, act, and continue.
+Вперёд фазу двигает писатель. **На шаг назад — кто угодно:**
 
-## 6. Notes are the shared memory
+```
+done     → implement   любой
+verify   → implement   любой
+implement → plan       любой
+```
 
-Conversations are not shared and are not durable. Anything the peer must still know after either
-side compacts goes in a note:
+Это право вето критика, и оно не требует правы записи. Ран закрывается на том, что
+критик нашёл находку после `done` — а раньше он был заперт в закрытом раунде, и его
+находка умирала в почтовом ящике.
 
-| kind | for |
-|---|---|
-| `plan` | what was agreed, in what order |
-| `decision` | a choice and the reason for it |
-| `finding` | something checked against real code, with `file:line` |
-| `verdict` | the outcome of a verification pass, and what it did not cover |
-| `handoff` | what changed, what was skipped, what is uncertain |
+Откат из `done` увеличивает `round` и снимает `closed_at`.
 
-## 7. Phases, and what `done` means
+## 7. Живой канал: агент ждёт, а не спит
 
-`scoping → plan → implement → verify → done`, one step back allowed. Only the writer advances them.
+`pair_read(wait_seconds=N)` — нормальный способ услышать соседа. Пришёл пустым — зови
+снова. Потолок 60 секунд, время вышло — возвращайся к работе.
 
-`verify` is a real phase, not a formality. Before anything reaches `done`:
+Обе роли могут ждать. Ограниченное ожидание не создаёт взаимной блокировки: оно всегда
+истекает и возвращает агента к задаче.
 
-- Read the peer's findings.
-- Open every file it cited.
-- Confirm with your own tools that the evidence exists and says what was claimed.
+Раньше писателю запрещалось ждать вовсе, чтобы не было тупика. Это убило канал:
+агент без возможности ждать засыпает и не замечает входящих сообщений, и человек
+начинает пересылать их руками. Живое ожидание — часть протокола, а не оптимизация.
 
-A finding nobody checked against the real code is written down, not resolved. If a finding turns out
-to be wrong, say so explicitly in a `verdict` note — that is as useful as confirming one.
+## 8. На вопрос «как дела?» отвечать фактом
 
-## 8. Disagreement is the point
+Не «ща проверю». Открыть `pair_state` или `pair_transcript` и сказать, что **правда
+сейчас**: фаза, что сделано, что висит. Если ничего не изменилось — так и сказать.
 
-An agent working alone accepts its own reasoning. The second agent exists to attack that first.
+Обещание проверить — это способ занять время, не сообщив ничего.
 
-- Two agents converging politely produce nothing. The useful output is a located disagreement or a
-  checked fact.
-- Verify a claim about the code with your own tool before repeating it.
-- Cite `file:line` for everything. A claim without a location is a guess and will be treated as one.
-- One strong finding beats five weak ones. The bar is in the `pair-critic` and `verifier` agent files.
+## 9. Заметки, а не переписка
 
-## 9. What lands in the audit trail
+Переписка не разделяема и не переживает перезапуск. Всё, что сосед должен знать после
+сброса контекста, — в заметке:
 
-`pair-transcript.jsonl`, append-only, one line per event: every message, claim, release, phase
-change, patch reservation, seal, verification result, and **every refusal**.
+```
+plan      что agreed и в каком порядке
+decision  выбор и причина
+finding   проверено на коде, с file:line
+verdict   итог проверки и чего она НЕ покрыла
+handoff   что сделано, что пропущено, что неясно
+backlog   реальный дефект вне объёма задачи
+```
 
-Refusals are the interesting ones. A peer probing for a way around the write boundary is exactly
-the event worth keeping.
+## 10. Git — часть работы
+
+Ветка от задачи, коммит после каждого зелёного шага, тесты зелёные обязательны,
+`push` и PR в конце. **В `main` не пушат никогда.**
+
+Это не «отдельное явное действие пользователя». Агент, считающий пуш и PR чужим
+делом, оставляет работу на половине.
+
+## 11. Аудит
+
+`pair-transcript.jsonl`, append-only, по событию: сообщение, захват, смена фазы,
+резервирование патча, печать, проверка хеша, **и каждый отказ**.
+
+Отказы — самое ценное. Сосед, пробующий обойти границу записи, — ровно то событие,
+которое надо хранить.
 
 ```sh
 bin/pairctl log --limit 50
 ```
 
-If a run cannot be reconstructed from that file, the run was not supervised, regardless of what the
-final report said.
+Если прогон нельзя восстановить по этому файлу — прогона не было, независимо от
+финального отчёта.
+
+## 12. Триггер остановки
+
+Останавливаются и спрашивают пользователя только про шесть вещей:
+
+`.env`, секреты и токены, порты и адреса развёртывания, деплой, миграции БД,
+удаление данных или истории git.
+
+Всё остальное, включая неопределённость, решается между агентами. Неопределённость —
+не повод будить человека: выбрать вариант, записать `decision` с причиной, идти
+дальше.

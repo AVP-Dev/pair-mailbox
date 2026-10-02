@@ -459,11 +459,11 @@ class PairSession:
             raise ProtocolError("`wait_seconds` must not be negative.")
         wait = min(wait, MAX_READ_WAIT_SECONDS)
 
-        state = self.store.read()
-        if state.get("writer") == self.role:
-            if wait > 0:
-                log(f"writer {self.role} asked to wait {wait}s; forced to 0 to avoid a mutual wait")
-            wait = 0.0
+        # Both roles may wait. This used to be forced to zero for the writer, to stop
+        # two agents blocking each other, but that killed the channel instead: an agent
+        # that cannot wait goes idle and never notices an incoming message, so the human
+        # ends up relaying by hand. A bounded wait cannot deadlock, because the wait
+        # always expires and the caller must then get back to work.
 
         deadline = time.monotonic() + wait
         while True:
@@ -477,8 +477,9 @@ class PairSession:
             "count": len(messages),
             "waited_seconds": round(wait, 2),
             "note": (
-                "Read once, act, then get back to work. Do not sit in a read loop: you cannot make "
-                "progress by waiting."
+                "Waiting is the normal way to hear from your peer. If it came back empty, "
+                "call again. You must not answer a status question with a promise to go and "
+                "check — read pair_state or pair_transcript and answer with what is true now."
             ),
         }
 
