@@ -97,8 +97,16 @@ def chunks(text: str, size: int = CHUNK_BYTES) -> list:
 
 
 def type_text(tmux: str, pane: str, text: str) -> None:
-    for chunk in chunks(text):
-        subprocess.run([tmux, "send-keys", "-t", pane, "-l", chunk],
+    """Type in chunks, restoring the separator that chunking consumed.
+
+    chunks() joins words with a space and drops it at every boundary, so sending the
+    pieces back to back loses one space per chunk: "должна найтись" arrived as
+    "должнанайтись". Harmless in prose, corrupting in a patch, so put it back.
+    """
+    parts = chunks(text)
+    for index, chunk in enumerate(parts):
+        piece = chunk + " " if index < len(parts) - 1 else chunk
+        subprocess.run([tmux, "send-keys", "-t", pane, "-l", piece],
                        capture_output=True, text=True, timeout=5)
         time.sleep(0.04)
 
