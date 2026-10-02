@@ -38,12 +38,19 @@ import hashlib
 import json
 import os
 import re
+import shutil
+import subprocess
 import sys
 import tempfile
 import time
+
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+# composer.py лежит рядом и импортируется лениво, внутри pair_deliver.
+# Путь добавляем здесь, после того как Path уже есть.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 # MCP protocol revisions this server understands. We echo the client's requested
 # revision back when we know it, because clients reject a downgrade they did not
@@ -234,6 +241,12 @@ class PairSession:
         entry = roles.setdefault(self.role, {"first_seen": utcnow(), "reads": 0, "sends": 0})
         entry["last_seen"] = utcnow()
         entry["pid"] = os.getpid()
+        # A child inherits the parent environment, so this server sees the tmux pane
+        # its agent lives in. That is the whole address book needed to knock on the
+        # peer's door without the agent doing anything about it.
+        pane = os.environ.get("TMUX_PANE")
+        if pane:
+            entry["pane"] = pane
 
     def _require_not_writer(self, action: str) -> None:
         state = self.store.read()
@@ -395,9 +408,63 @@ class PairSession:
             ),
         }
 
+    def _ring(self, target: str, kind: str, detail: str) -> dict[str, Any]:
+        """Knock on the peer's tmux pane so a sleeping agent wakes itself.
+
+        An idle process cannot be woken any other way: it has to be handed the keys.
+        That is the whole reason this exists. The body is already in the mailbox or in
+        a note, so what gets typed is a short trigger, which is safe to push into a
+        composer where a whole paragraph would be mangled.
+        """
+        state = self.store.read()
+        pane = (state.get("roles", {}).get(target) or {}).get("pane")
+        if not pane:
+            return {"rung": False, "why": "ne�� панель, сосед вне tmux"}
+        if not shutil.which("tmux"):
+            return {"rung": False, "why": "tmux не найден в PATH"}
+        probe = subprocess.run(
+            ["tmux", "display-message", "-p", "-t", pane, "#{pane_dead}"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if probe.returncode != 0 or probe.stdout.strip() == "1":
+            return {"rung": False, "why": "панель соседа мертва"}
+        prompt = f"pair: {kind} от {self.role} — {detail}. Прочитай pair_read."
+        if len(prompt) > 150:
+            prompt = prompt[:147] + "..."
+        subprocess.run(["tmux", "send-keys", "-t", pane, "-l", prompt],
+                       capture_output=True, text=True, timeout=5)
+        subprocess.run(["tmux", "send-keys", "-t", pane, "Enter"],
+                       capture_output=True, text=True, timeout=5)
+        self.store.append_transcript("doorbell", self.role, to=target, bell_kind=kind, pane=pane)
+        return {"rung": True, "pane": pane, "prompt": prompt}
+
+    def tool_pair_deliver(self, to: str, text: str, wait_for_empty: float = 0.0) -> dict[str, Any]:
+        """Type a message straight into the peer's composer, as if the user typed it.
+
+        The mailbox is passive: a message sits there until the peer thinks to look.
+        This is the active path — the text appears in its prompt, so it wakes on its own
+        and the exchange reads like two people talking.
+
+        Refuses when the composer is busy rather than overtyping what is being written.
+        Chunks the text, verifies the tail landed, and backspaces it out if not.
+        """
+        from composer import ComposerBusy, deliver
+
+        state = self.store.read()
+        pane = (state.get("roles", {}).get(to) or {}).get("pane")
+        if not pane:
+            return {"delivered": False, "why": f"у {to} нет панели tmux, он вне tmux"}
+        try:
+            result = deliver(pane, text, wait_for_empty=wait_for_empty)
+        except ComposerBusy as exc:
+            self.store.append_transcript("deliver_busy", self.role, to=to, reason=str(exc))
+            return {"delivered": False, "why": str(exc)}
+        self.store.append_transcript("deliver", self.role, to=to, **result)
+        result["delivered_to_pane"] = pane
+        return result
+
     def tool_pair_send(self, to: str, text: str, subject: str = "") -> dict[str, Any]:
-        """Send one message to the peer. The label identifying you is added here,
-        not by you, so a peer cannot forge authorship."""
+        """Send one message to the peer. The label identifying you is added here,        not by you, so a peer cannot forge authorship."""
         if not isinstance(to, str) or not to.strip():
             raise ProtocolError("`to` is required.")
         to = to.strip()
@@ -433,8 +500,11 @@ class PairSession:
 
         result = self.store.mutate(apply)
         self.store.append_transcript("send", self.role, to=to, seq=result["seq"], subject=subject)
+        ring = self._ring(to, "сообщение", subject or text.strip()[:50])
         return {
             "delivered": True,
+            "woke_peer": ring["rung"],
+            "wake": ring.get("prompt") or ring.get("why"),
             "seq": result["seq"],
             "target_is_registered": result["known_target"],
             "label_applied": f"Chat from {self.role}: ",
@@ -728,8 +798,14 @@ class PairSession:
             with target.open("a", encoding="utf-8") as stream:
                 stream.write(f"\n## {utcnow()} — {self.role}\n\n{text.strip()}\n")
         self.store.append_transcript("note", self.role, note_kind=kind, chars=len(text))
-        return {"kind": kind, "path": str(target)}
-
+        woke = {}
+        for other in self.store.read().get("roles", {}):
+            if other == self.role:
+                continue
+            r = self._ring(other, f"заметка/{kind}", text.strip()[:50])
+            if r["rung"]:
+                woke[other] = r["pane"]
+        return {"kind": kind, "path": str(target), "woke_peers": woke}
     def invoke(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         """Run one tool by name, recording refusals on the audit trail.
 
@@ -766,6 +842,29 @@ def sha256_of(path: Path) -> str:
 def tool_definitions() -> list[dict[str, Any]]:
     role_note = "Your own role is fixed by configuration and cannot be overridden per call."
     return [
+        {
+            "name": "pair_deliver",
+            "description": (
+                "Type a message directly into the peer's prompt in its own tmux pane, as if the "
+                "user had typed it. The peer wakes by itself and reads it as its next instruction. "
+                "Chunks the text, verifies it landed, and erases it if not. Refuses when the peer's "
+                "composer is busy rather than overtyping. Use this when you need the peer to act "
+                "now rather than when it next thinks to call pair_read."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "to": {"type": "string", "description": "The peer's role."},
+                    "text": {"type": "string", "description": "What to type. Plain text, one paragraph."},
+                    "wait_for_empty": {
+                        "type": "number",
+                        "description": "Seconds to wait for a busy composer to clear. 0 refuses immediately.",
+                        "default": 0,
+                    },
+                },
+                "required": ["to", "text"],
+            },
+        },
         {
             "name": "pair_state",
             "description": (
@@ -920,6 +1019,7 @@ def tool_definitions() -> list[dict[str, Any]]:
 
 HANDLERS = {
     "pair_state": lambda session, args: session.tool_pair_state(),
+    "pair_deliver": lambda session, args: session.tool_pair_deliver(**args),
     "pair_claim": lambda session, args: session.tool_pair_claim(),
     "pair_release": lambda session, args: session.tool_pair_release(),
     "pair_send": lambda session, args: session.tool_pair_send(**args),

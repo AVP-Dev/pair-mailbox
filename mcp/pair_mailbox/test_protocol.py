@@ -213,18 +213,31 @@ class TestMessaging(PairTestCase):
         self.assertRefused(self.writer.tool_pair_send, to="", text="me", contains="required")
         self.assertRefused(self.writer.tool_pair_send, to="peer", text="  ", contains="required")
 
-    def test_writer_wait_is_forced_to_zero(self) -> None:
+    def test_writer_may_wait_too(self) -> None:
+        """Both roles may wait. This used to be forced to zero for the writer, to
+
+        stop two agents blocking each other, but that killed the channel: an agent that
+        cannot wait falls asleep and never notices an incoming message, so the human
+        starts relaying by hand. A bounded wait cannot deadlock, because it expires and
+        hands the caller back to work.
+        """
         self.writer.tool_pair_state()
         self.peer.tool_pair_state()
         self.writer.tool_pair_claim()
 
         started = time.monotonic()
-        result = self.writer.tool_pair_read(wait_seconds=MAX_READ_WAIT_SECONDS)
+        result = self.writer.tool_pair_read(wait_seconds=1)
         elapsed = time.monotonic() - started
 
-        self.assertEqual(result["waited_seconds"], 0.0)
-        self.assertLess(elapsed, 1.0, "the writer must never block waiting for its peer")
+        self.assertGreater(result["waited_seconds"], 0.0, "the writer must be able to wait")
+        self.assertLess(elapsed, 4.0, "but the wait stays bounded")
 
+    def test_wait_is_capped(self) -> None:
+        self.writer.tool_pair_state()
+        # Asserting the cap by requesting 10_000 makes the suite sit through the full
+        # minute, so assert the clamp on a value that does not actually cost that.
+        result = self.writer.tool_pair_read(wait_seconds=MAX_READ_WAIT_SECONDS + 10_000)
+        self.assertLessEqual(result["waited_seconds"], MAX_READ_WAIT_SECONDS)
     def test_peer_wait_is_bounded(self) -> None:
         self.peer.tool_pair_state()
         started = time.monotonic()
@@ -391,7 +404,11 @@ class TestMCPStdio(PairTestCase):
             self._notify(process, {"jsonrpc": "2.0", "method": "notifications/initialized"})
             listed = self._rpc(process, {"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
             names = {tool["name"] for tool in listed["result"]["tools"]}
-            self.assertEqual(len(names), 12)
+            # Derived from the server rather than hardcoded, so adding a tool does
+            # not break a test that has nothing to do with tool count.
+            from server import tool_definitions
+
+            self.assertEqual(names, {t["name"] for t in tool_definitions()})
             self.assertIn("pair_claim", names)
             self.assertIn("pair_patch_verify", names)
 
