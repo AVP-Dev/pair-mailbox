@@ -1140,5 +1140,146 @@ class TestRingAndUnblock(PairTestCase):
         self.assertEqual(res["prompt"], "")
 
 
+class TestMailboxInvariants(PairTestCase):
+    def test_claim_clears_closed_at_and_phase(self) -> None:
+        self.writer.tool_pair_claim(reason="I will write")
+        self.writer.tool_pair_advance(phase="plan")
+        self.writer.tool_pair_advance(phase="implement")
+        self.writer.tool_pair_advance(phase="verify")
+        self.writer.tool_pair_advance(phase="done")
+
+        # Now round is closed
+        st = self.store.read()
+        self.assertEqual(st.get("phase"), "done")
+        self.assertIsNotNone(st.get("closed_at"))
+
+        # Peer claims after close -> reopens round
+        res = self.peer.tool_pair_claim(reason="Starting next round")
+        self.assertTrue(res.get("took_over"))
+        self.assertEqual(res.get("writer"), "reviewer-agent")
+
+        st_after = self.store.read()
+        self.assertIsNone(st_after.get("closed_at"))
+        self.assertEqual(st_after.get("phase"), "implement")
+        self.assertEqual(st_after.get("round"), 2)
+
+    def test_negative_unread_clamped_and_does_not_block_done(self) -> None:
+        self.writer.tool_pair_claim(reason="writer")
+        self.writer.tool_pair_send(to="reviewer-agent", text="msg 1")
+        self.peer.tool_pair_read()
+
+        # Delete inbox files manually to simulate external file removal
+        inbox = self.store.mailbox_root / "reviewer-agent"
+        for p in inbox.glob("*.json"):
+            p.unlink()
+
+        # unread count must not be negative
+        unread = self.writer._unread_count(self.store.read())
+        self.assertEqual(unread, 0)
+        self.assertEqual(self.writer.tool_pair_state()["unread"], 0)
+
+        # Writer advances and closes round - must not be blocked by negative unread
+        self.writer.tool_pair_advance(phase="plan")
+        self.writer.tool_pair_advance(phase="implement")
+        self.writer.tool_pair_advance(phase="verify")
+        res = self.writer.tool_pair_advance(phase="done")
+        self.assertEqual(res["phase"], "done")
+
+    def test_unread_checked_under_lock_in_advance(self) -> None:
+        self.writer.tool_pair_claim(reason="writer")
+        self.writer.tool_pair_advance(phase="plan")
+        self.writer.tool_pair_advance(phase="implement")
+        self.writer.tool_pair_advance(phase="verify")
+
+        # Peer sends message to writer
+        self.peer.tool_pair_send(to="writer-agent", text="review finding")
+
+        # Writer tries to close round without reading
+        self.assertRefused(
+            lambda: self.writer.tool_pair_advance(phase="done"),
+            contains="unread message",
+        )
+        self.assertEqual(self.store.read().get("phase"), "verify")
+
+    def test_corrupt_state_does_not_clobber_message_files(self) -> None:
+        self.writer.tool_pair_claim(reason="writer")
+        self.writer.tool_pair_send(to="reviewer-agent", text="first message")
+
+        # Corrupt state.json
+        self.store.state_path.write_text("{corrupt json", encoding="utf-8")
+
+        # Sending message #2 must not overwrite message #1
+        self.writer.tool_pair_send(to="reviewer-agent", text="second message")
+
+        files = list((self.store.mailbox_root / "reviewer-agent").glob("*.json"))
+        self.assertEqual(len(files), 2)
+
+        # Check transcript recorded state_corrupt
+        transcript_events = [e.get("kind") for e in self.store.read_transcript(10)]
+        self.assertIn("state_corrupt", transcript_events)
+
+        # Reading inbox returns both messages
+        read = self.peer.tool_pair_read(limit=10)
+        self.assertEqual(read["count"], 2)
+        self.assertEqual(read["messages"][0]["text"], "first message")
+        self.assertEqual(read["messages"][1]["text"], "second message")
+
+    def test_unreadable_message_does_not_increment_seen_silently(self) -> None:
+        self.writer.tool_pair_claim(reason="writer")
+        self.writer.tool_pair_send(to="reviewer-agent", text="msg 1")
+        self.writer.tool_pair_send(to="reviewer-agent", text="msg 2")
+
+        # Corrupt the second message file
+        files = sorted((self.store.mailbox_root / "reviewer-agent").glob("*.json"))
+        files[1].write_text("not json", encoding="utf-8")
+
+        # Drain should only return message 1 and not skip message 2 silently
+        read = self.peer.tool_pair_read(limit=5)
+        self.assertEqual(read["count"], 1)
+        self.assertEqual(read["messages"][0]["text"], "msg 1")
+
+        # seen must be 1, not 2
+        st = self.store.read()
+        self.assertEqual(st.get("seen", {}).get("reviewer-agent"), 1)
+
+        # message_unreadable must be in transcript
+        transcript_events = [e.get("kind") for e in self.store.read_transcript(10)]
+        self.assertIn("message_unreadable", transcript_events)
+
+    def test_pair_deliver_rejects_self_and_empty(self) -> None:
+        self.assertRefused(
+            lambda: self.writer.tool_pair_deliver(to="writer-agent", text="hi"),
+            contains="cannot deliver a message to your own role",
+        )
+        self.assertRefused(
+            lambda: self.writer.tool_pair_deliver(to="reviewer-agent", text="   "),
+            contains="text` is required",
+        )
+
+    def test_legal_next_phases_tailored_to_role(self) -> None:
+        self.writer.tool_pair_claim(reason="writer")
+        self.writer.tool_pair_advance("plan")
+
+        writer_state = self.writer.tool_pair_state()
+        self.assertIn("implement", writer_state["legal_next_phases"])
+        self.assertIn("scoping", writer_state["legal_next_phases"])
+
+        peer_state = self.peer.tool_pair_state()
+        self.assertEqual(peer_state["legal_next_phases"], ["scoping"])
+        self.assertNotIn("implement", peer_state["legal_next_phases"])
+
+    def test_allowed_transitions_not_duplicated(self) -> None:
+        self.writer.tool_pair_claim(reason="writer")
+        self.writer.tool_pair_advance("plan")
+        self.writer.tool_pair_advance("implement")
+        self.writer.tool_pair_advance("verify")
+        self.writer.tool_pair_advance("done")
+
+        self.assertRefused(
+            lambda: self.writer.tool_pair_advance("scoping"),
+            contains="allowed: implement.",
+        )
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
