@@ -68,6 +68,7 @@ type AgentId = (typeof AGENTS)[number]
 
 interface PairState {
   task?: string
+  mode?: string
   writer?: string | null
   phase?: string
   round?: number
@@ -120,13 +121,28 @@ function brief(stateDir: string, state: PairState | null, who: AgentId): string 
   }
 
   const writer = state.writer ?? null
+  const mode = state.mode ?? "fix"
   const roles = Object.keys(state.roles ?? {})
   const peers = roles.filter((r) => r !== "opencode")
   const phase = state.phase ?? "scoping"
   const verifier = who === VERIFIER
+  const audit = mode === "audit"
 
   out.push("Live two-agent state, refreshed automatically:", "")
   out.push(`- Task: ${state.task || "(not recorded — ask the user, or bin/pairctl task)"}.`)
+
+  // An audit round changes nothing on purpose. Say so before the role, not after it:
+  // "you are the writer, edit project files directly" is true of a fix round and the
+  // single most expensive thing to leave in place when it is false.
+  if (audit) {
+    out.push(
+      `- Round mode: AUDIT. Nothing in this project gets changed on purpose, whoever holds`,
+      "  authority. Do not edit project files, do not open a branch, do not propose a patch —",
+      "  the server refuses patch reservations in this mode. Findings go to pair_note, each one",
+      "  is checked by the peer, and confirmed findings become docs/backlog entries written by",
+      "  the writer. The deliverable is evidence, not a diff. `bin/pairctl mode fix` changes this.",
+    )
+  }
 
   // The verifier sits inside the writer's process, so the writer's authority is its
   // constraint too. Stating that plainly stops it reaching for pair_patch_* to "help".
@@ -145,12 +161,23 @@ function brief(stateDir: string, state: PairState | null, who: AgentId): string 
       "  `bin/pairctl assign <role>`. Do not edit anything in this state.",
     )
   } else if (writer === "opencode") {
-    out.push("- Write authority: HELD BY YOU (`opencode`). You are the writer. Edit project files directly.")
+    out.push(
+      audit
+        ? "- Write authority: HELD BY YOU (`opencode`), and this is an audit round, so you do NOT edit"
+            + " project files. Your share of the work is running the audit with the peer, keeping"
+            + " findings in notes, refusing to record one the peer has not checked, writing the"
+            + " confirmed ones to docs/backlog/, and advancing the phase."
+        : "- Write authority: HELD BY YOU (`opencode`). You are the writer. Edit project files directly.",
+    )
   } else {
     out.push(
       `- Write authority: HELD BY \`${writer}\`. You are NOT the writer. Do not edit project files.`,
-      "  Propose changes instead: pair_patch_reserve → write the diff → pair_patch_seal → pair_send,",
-      "  and let the writer verify and apply.",
+      audit
+        ? "  This is an audit round, so there is nothing to patch: your job is to find defects and then"
+            + " try to refute your own and the writer's findings before they are recorded as fact."
+            + " Report with pair_send and pair_note."
+        : "  Propose changes instead: pair_patch_reserve → write the diff → pair_patch_seal → pair_send," +
+            " and let the writer verify and apply.",
     )
   }
 

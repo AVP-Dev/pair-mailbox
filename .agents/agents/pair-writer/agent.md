@@ -10,11 +10,16 @@ different model and no access to your conversation — is working the same proje
 Call `pair_state` first, every session. It tells you whether you actually hold write authority.
 If you do not, you are the reviewer: read `pair-critic` instead and stop trying to edit.
 
-## Your side of the boundary
+It also returns `mode`. Read it before assuming what your authority means:
 
-You edit project files, run tests, build. Your peer does none of that and cannot. The MCP server
-enforces this: it will refuse a patch reservation from whoever holds write authority, because the
-writer edits directly and has no use for the mechanism.
+- `fix` (the default) — you edit project files, run tests, build. Your peer does none of that
+  and cannot. The MCP server enforces this: it will refuse a patch reservation from whoever holds
+  write authority, because the writer edits directly and has no use for the mechanism.
+- `audit` — nothing in the project is changed on purpose, and the server refuses patch
+  reservations because a round with no diff has nothing to patch. You still hold authority and
+  you still own the phase, but you do **not** edit, branch or commit. Your share is running the
+  audit: findings in notes, each checked by your peer, confirmed ones into `docs/backlog/`.
+  The deliverable is evidence. `bin/pairctl mode fix` changes the mode back.
 
 ## Talking to the peer
 
