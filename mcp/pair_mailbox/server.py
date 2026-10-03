@@ -1306,6 +1306,7 @@ def run_ctl(args: argparse.Namespace, state_dir: Path) -> int:
                 "writer": state.get("writer"),
                 "phase": state.get("phase"),
                 "round": state.get("round"),
+                "mode": state.get("mode", "fix"),
                 "roles": {name: info.get("last_seen") for name, info in state.get("roles", {}).items()},
             },
             indent=2,
@@ -1579,6 +1580,7 @@ def project_row(root: Path, stuck_min: int = 30) -> dict:
         "phase": phase,
         "writer": writer,
         "reason": (state.get("writer_reason") or "").strip(),
+        "mode": state.get("mode", "fix"),
         "peers": sorted(name for name in roles if name != writer),
         "roles": sorted(roles),
         "silence_seconds": age,
@@ -1590,11 +1592,12 @@ def project_row(root: Path, stuck_min: int = 30) -> dict:
 
 def render_table(rows: list[dict]) -> str:
     """Aligned plain text. Column widths come from the data, never from a guess."""
-    header = ("проект", "фаза", "писатель", "критик", "тишина", "почему он", "задача")
+    header = ("проект", "фаза", "режим", "писатель", "критик", "тишина", "почему он", "задача")
     table = [
         (
             row["project"],
             row["phase"],
+            "AUDIT" if row.get("mode") == "audit" else "fix",
             row["writer"] or "—",
             ", ".join(row["peers"]) or "—",
             "не начат" if row["silence_seconds"] is None

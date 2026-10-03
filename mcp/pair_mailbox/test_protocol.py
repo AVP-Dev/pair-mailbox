@@ -589,6 +589,18 @@ class TestRoundMode(PairTestCase):
         self.assertNotIn("edit project files directly", note.lower())
         self.assertIn("audit", note.lower())
 
+    def test_mode_is_visible_in_the_overview_tables(self) -> None:
+        # `pairctl all` is where a human looks when they have forgotten which kind of
+        # round a project is in. A mode nobody can see is a mode somebody forgets and
+        # then wonders why the server refused a patch.
+        store = Store(self.root)
+        store.mutate(lambda state: state.update({"phase": "implement", "writer": "opencode"}))
+        self.assertEqual(project_row(self.root)["mode"], "fix")
+
+        self._ctl("mode", "audit")
+        self.assertEqual(project_row(self.root)["mode"], "audit")
+        self.assertIn("AUDIT", render_table([project_row(self.root)]))
+
     def test_control_surface_reports_the_mode(self) -> None:
         # redirect stderr too: argparse writes its usage message there, and a test that
         # leaks it into the test output is noise that hides a real failure
