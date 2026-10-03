@@ -19,9 +19,12 @@ python3 mcp/pair_mailbox/test_protocol.py     # 35 tests, ~3s
 
 ```sh
 bin/pairctl task "fix the retry storm: clients re-send on 502 instead of on 503"
-bin/pairctl assign opencode      # opencode is the writer; agy is read-only
+bin/pairctl assign <роль>        # роль = имя CLI: opencode, agy, codex, claude
 bin/pairctl status
 ```
+
+Substitute your own two CLI names throughout. The role is whatever `install.sh` wrote into
+each CLI's config, so `--list` on the installer shows what you actually have.
 
 `assign` is the only way authority ever moves. Skipping it leaves the state `UNASSIGNED`, in which
 case neither agent may edit — which is a safe default, not a bug.
@@ -31,11 +34,16 @@ case neither agent may edit — which is a safe default, not a bug.
 In **agterm**, one pane per agent, same working directory:
 
 ```
-opencode                                    # pane 1 — the writer
-agy                                         # pane 2 — the read-only critic
+opencode                                    # pane 1
+agy                                         # pane 2
 ```
 
-Neither needs to be told about the other. They find each other through the shared state directory.
+Any two different CLIs, in any order. Whoever reads the task first ends up as writer, so
+pane order does not decide the roles. Neither agent needs to be told about the other: they
+find each other through the shared state directory.
+
+`pair_deliver` needs both agents inside tmux panes. Outside tmux, `pair_send`, `pair_read`
+and `pair_note` still work — only the live wake-up is lost.
 
 ### Antigravity: allow the MCP tools
 
@@ -98,7 +106,7 @@ Normal collaboration from here. The things worth doing deliberately:
 - **Say something early.** Two agents that never talk produce one agent's opinion with extra steps.
 - **Let the critic attack the plan**, not just the diff. The cheapest disagreement is before anyone
   writes code.
-- **Hand over, do not stall.** `bin/pairctl release` then `bin/pairctl assign agy`, then tell the
+- **Hand over, do not stall.** `bin/pairctl release` then `bin/pairctl assign <роль соседа>`, then tell the
   new writer it is the writer and the old one is read-only. Doing this in both sessions is not
   optional bookkeeping; it is how each agent learns the change.
 

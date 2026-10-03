@@ -27,13 +27,24 @@ role on the other CLI, and your value is entirely in finding things and proving 
 
 ## Roles
 
+A role **is the CLI's name**. It is baked into that CLI's MCP config by `install.sh` and cannot be
+chosen per call. That is deliberate: the server must know which process is which, and a role a
+process can set for itself is not an identity.
+
+`cli-profiles.json` lists every CLI that can take part:
+
 | role name | runs in | agent files |
 |---|---|---|
 | `opencode` | OpenCode | `.opencode/agents/writer.md` |
 | `agy` | Antigravity CLI | `.agents/agents/pair-writer/agent.md`, `pair-critic`, `pair-explorer` |
+| `codex` | Codex CLI | — |
+| `claude` | Claude Code | — |
 
-Roles are fixed in each CLI's MCP config and cannot be chosen per call. That is deliberate: the
-server must know which process is which, and a role a process can set for itself is not an identity.
+Any two **different** names can pair up. So `codex` + `claude` works exactly like
+`opencode` + `agy`: the same server, the same protocol, only the names differ. You will see your
+own role name in `pair_state` under `you`, and your peer's in `writer` or `peers`.
+
+To add a CLI: append an object to `cli-profiles.json` and run `./install.sh <name>`.
 
 ### `verifier` is not a role
 
