@@ -32,12 +32,12 @@ An AI agent working alone is susceptible to its own assumptions: it gladly accep
 
 **pair-mailbox** solves this by pairing **two independent CLI agents** (running different models, different prompts, and completely isolated context windows) on the same codebase under strict, server-enforced engineering invariants:
 
-1. **Strict Single Writer Invariant**: Exactly one agent holds write authority to edit files, execute builds, and commit. The server rejects and logs any file modification attempts from the reviewer.
-2. **Cryptographically Sealed Patches**: The reviewer cannot edit files directly. It proposes changes through isolated patch files (`0600`), sealed with SHA-256 hashes that the writer verifies immediately before applying.
-3. **Active Terminal Injection (`pair_deliver`) — No "Human Pigeon"**: Agents wake each other by typing directly into their peer's tmux composer pane and pressing Enter. The human user never acts as an RFC 1149 messenger copying text between windows.
-4. **Autonomous CLI Permission Unblocking (`pair_unblock`)**: Interactive prompts like `[y/N]` or `Allow command execution?` are automatically detected and approved by the peer or background watchdog (`pairwatch --unblock`), eliminating unattended stalls.
-5. **Atomic, Crash-Resilient State**: Monotonic message sequencing with per-process re-entrant locking. Full append-only audit trail logging every message, claim, phase change, and rejection.
-6. **Zero Dependencies**: Pure Python 3 standard library. Runs anywhere with `tmux` and `python3` (10+) with zero pip packages to install.
+1. **Strict Single Writer Protocol Invariant**: Exactly one agent holds write authority (`pair_claim`). The MCP server strictly enforces the protocol boundaries: it refuses patch reservations from the writer (who edits directly), forbids the critic from verifying patches or advancing phases, and logs all refused attempts to the audit transcript. Agents' instructions and dynamic runtime guards (`pair-guard`) ensure the reviewer remains read-only and submits changes exclusively via sealed patches.
+2. **Cryptographically Sealed Patches**: The reviewer proposes changes through isolated patch files (`0600`), sealed with SHA-256 hashes that the writer verifies immediately before applying.
+3. **Active Terminal Injection (`pair_deliver`) — No "Human Pigeon"**: When agents run in `tmux` panes, they actively wake each other by typing directly into their peer's composer and pressing Enter. The human user never acts as an RFC 1149 messenger copying text between windows.
+4. **Autonomous CLI Permission Unblocking (`pair_unblock`)**: Interactive prompts like `[y/N]` or `Allow command execution?` inside tmux are automatically detected and approved by the peer or background watchdog (`pairwatch --unblock`), eliminating unattended stalls.
+5. **Atomic, Crash-Resilient State & File Locking**: Monotonic message sequencing (`seq-000001-...` with random tokens), atomic file writes (`replace`), and advisory `fcntl.flock` locks preventing race conditions between concurrent CLI processes. Full append-only audit trail logging every message, claim, phase change, and rejection.
+6. **Zero Dependencies**: Pure Python 3 standard library. Runs on Linux and POSIX systems with `tmux` and `python3` (10+) with zero pip packages to install.
 
 ---
 
@@ -214,6 +214,19 @@ Specialized agent skills included out of the box:
 
 ---
 
+## 🛡️ Security, Trust Boundaries & Limitations
+
+To maintain absolute technical honesty, the pair-mailbox architecture explicitly defines what is enforced by code versus what is governed by agent protocol:
+
+| Domain | What the Engine Enforces | What Depends on Agent Discipline / Protocol |
+|---|---|---|
+| **Write Authority** | Server strictly refuses `pair_patch_reserve` from the writer, refuses `pair_patch_verify` and `pair_advance` from the critic, and refuses duplicate claims. | The MCP server cannot intercept the host CLI's internal file-writing tools. Non-writers remain read-only via system prompt instructions and dynamic prompt injection (`pair-guard`). |
+| **Patch Integrity** | Patches are stored with mode `0600`. SHA-256 digests are computed at sealing and re-verified at application; any mismatch causes immediate abort. | The writer agent must call `pair_patch_verify` immediately before applying and must not modify the diff manually. |
+| **Terminal Delivery** | `pair_deliver` checks if the target composer is idle, types in chunks, verifies echo tail, and backspaces cleanly on error. | Requires both agents to run inside `tmux` panes. Outside tmux, agents fall back to mailbox tools (`pair_send` / `pair_read`). |
+| **Audit Log** | Append-only transcript (`pair-transcript.jsonl`) logs every message, claim, phase transition, and refused call. | Analysis of the transcript is done post-factum or via `bin/pairctl log`. |
+
+---
+
 ## 🧪 Testing & Verification
 
 The test suite validates security boundaries, race conditions, and invariant enforcement:
@@ -226,8 +239,8 @@ Highlights covered by the test suite (92/92 tests green):
 - Strict single writer enforcement and refusal of illegitimate claim attempts.
 - Cryptographic patch tampering detection (`HASH MISMATCH` triggers immediate abort).
 - Path traversal and glob expansion rejection.
-- Re-entrant file locks preventing process deadlocks and race conditions.
-- Strict monotonic message sequencing (`seq-000001-...`).
+- Advisory file locking (`fcntl.flock`) preventing race conditions between concurrent CLI processes.
+- Strict monotonic message sequencing (`seq-000001-...` with tokenized filenames).
 - CLI prompt detection and non-intrusive auto-unblocking.
 
 ---
