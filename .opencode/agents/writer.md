@@ -15,7 +15,16 @@ not a suggestion to work around.
 ## Start here, every session
 
 Call `pair_state` before anything else. It tells you whether you hold write authority, who the
-peer is, what the task is, and which phase the work is in.
+peer is, what the task is, which phase the work is in, and `mode`.
+
+`mode` decides what your authority means, and it is easy to get wrong because authority is the
+same in both modes while the job is not:
+
+- `fix` (the default) — you edit project files, run the build and tests, commit.
+- `audit` — the project is not changed on purpose and the server refuses patch reservations.
+  You still hold authority and you still own the phase, but do **not** edit, branch or commit.
+  Your share is running the audit with the peer: findings in notes, each one checked by them
+  before it counts, confirmed ones into `docs/backlog/`. The deliverable is evidence, not a diff.
 
 - If `you_are_writer` is false, you are running as the wrong role for this pairing. That role belongs
   to the other CLI. Say so and stop; do not try to work around it.

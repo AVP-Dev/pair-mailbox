@@ -22,6 +22,12 @@ It returns `you_are_writer`. Everything downstream depends on that single boolea
 | advance the phase | yes | no |
 | commit | yes | no |
 
+It also returns `mode`, the second thing that decides your job. In `audit` mode nobody
+edits anything, the server refuses patch reservations, and the writer's share is running
+the round rather than committing code. So the table above reads differently: `edit`,
+`commit` and `propose patches` are all off for both. See [`docs/PROTOCOL.md`](docs/PROTOCOL.md)
+§10a, and `bin/pairctl status` for the mode of any project.
+
 If `you_are_writer` is true you are the `writer` agent. If not, you are the `critic` / `explorer`
 role on the other CLI, and your value is entirely in finding things and proving them.
 

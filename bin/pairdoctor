@@ -147,6 +147,8 @@ for sd in targets:
         warn("писатель не назначен — никто не может править файлы")
     if st.get("phase") == "done":
         warn("фаза done: раунд закрыт, сосед не прочитает новых сообщений")
+    if st.get("mode") == "audit":
+        ok("режим: AUDIT — проект не меняется, патчи сервер не примет")
     tr = sd / "transcript.jsonl"
     if tr.exists():
         kinds = {}

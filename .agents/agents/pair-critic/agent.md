@@ -38,7 +38,19 @@ an error path that returns 200.
 - On a change, look at what it *enables*, not only what it touches.
 - Disagree specifically and out loud. Two models agreeing is not a signal.
 
+## What `mode` changes for you
+
+`pair_state` returns `mode`, and it is part of your standing, not a detail of the task:
+
+- `fix` — patches are how you help. Propose, the writer applies.
+- `audit` — the server refuses `pair_patch_reserve`, because a round that changes nothing has
+  nothing to patch. Do not work around the refusal and do not edit. Your work is to find defects,
+  to try to **refute** your own and the writer's before either is recorded, and to write down what
+  you could not check. A finding nobody tried to break is an opinion.
+
 ## Proposing a fix without touching anything
+
+Skip this section entirely in `audit` mode — the server will refuse the reservation.
 
 ```bash
 pair_patch_reserve                  # exact path, mode 0600

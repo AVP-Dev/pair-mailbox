@@ -86,6 +86,16 @@ PHASE_BACKWARD: dict[str, str] = {
     "done": "implement",
 }
 
+# Round modes. `fix` is the default and everything that existed before: the writer
+# edits project files, the critic proposes sealed patches, git ends in a PR.
+#
+# `audit` is a round where nothing is changed on purpose. The pair still does real
+# work — find defects, try to refute each other's findings, park what will not be
+# fixed — but the deliverable is evidence, not a diff. The distinction lives in
+# shared state rather than in the task text, because every agent gets its standing
+# instructions from state and prompt, and those two must not contradict the task.
+MODES = ("fix", "audit")
+
 # Auto-release is off unless the human turns it on. A writer that has finished
 # and gone quiet holds authority in no useful sense.
 STALL_SECONDS = int(os.environ.get("PAIR_STALL_SECONDS", "0") or 0)
@@ -130,6 +140,7 @@ class Store:
     def default_state(self) -> dict[str, Any]:
         return {
             "task": "",
+            "mode": "fix",
             "writer": None,
             "phase": "scoping",
             "round": 0,
@@ -256,6 +267,22 @@ class PairSession:
                 "The writer edits project files directly. Only a non-writer proposes patches.",
             )
 
+    def _require_fix_mode(self, action: str) -> None:
+        """Refuse an action that only makes sense in a round that changes code.
+
+        An audit round has no diff by definition, so a sealed patch in one is either
+        the wrong round or an agent working from stale instructions. Either way the
+        cheap answer is a refusal that names the mode, and an audit record of it.
+        """
+        state = self.store.read()
+        if state.get("mode", "fix") == "audit":
+            raise ProtocolError(
+                f"this is an audit round (mode=audit), so there is nothing to {action}.",
+                "Findings go to pair_note with kind 'finding', confirmed findings become "
+                "docs/backlog entries via the writer. Use `bin/pairctl mode fix` to change "
+                "the mode back.",
+            )
+
     def _known_roles(self, state: dict[str, Any]) -> list[str]:
         return sorted(state.get("roles", {}))
 
@@ -269,10 +296,34 @@ class PairSession:
             self.store._save(state)
 
         writer = state.get("writer")
+        # `_load` merges whatever was on disk over the defaults, so a hand-edited or
+        # newer-server state can carry a mode this build does not know. Reading it as a
+        # fix round is the safe direction: an unrecognised value must never be a licence
+        # to edit, and must never be able to crash an agent's first pair_state call.
+        mode = state.get("mode", "fix")
+        if mode not in MODES:
+            mode = "fix"
         return {
             "you": self.role,
             "you_are_writer": writer == self.role,
             "task": state.get("task", ""),
+            "mode": mode,
+            # What the mode means for this role, stated here because it decides what an
+            # agent is supposed to do and the standing instructions are written for the
+            # default. An audit round changes no project file, so a writer's job in one
+            # is evidence, not a diff.
+            "mode_meaning": {
+                "fix": (
+                    "Code gets changed: the writer edits project files, the critic proposes "
+                    "sealed patches, git ends in a branch and a PR."
+                ),
+                "audit": (
+                    "Nothing in the project gets changed on purpose. Do not edit project "
+                    "files. Findings go to pair_note; each one is checked by the peer, "
+                    "confirmed ones become docs/backlog entries, and the deliverable is "
+                    "evidence rather than a diff."
+                ),
+            }[mode],
             "writer": writer,
             # Почему именно он пишет. Без этого сосед видит только факт и не может
             # понять, спорить ему с выбором или принять его.
@@ -397,11 +448,21 @@ class PairSession:
         result = self.store.mutate(apply)
         self.store.append_transcript("claim", self.role, writer=self.role,
                                      reason=reason.strip() or None, result=result)
+        # This note is read by the agent the instant it becomes the writer, which makes it
+        # the worst possible place to state a rule that is false in an audit round. pair-guard
+        # cannot correct it: it rewrites the standing brief, not a tool result.
+        if self.store.read().get("mode", "fix") == "audit":
+            note = ("You are the writer, and this is an audit round (mode=audit), so you do NOT "
+                    "edit project files, do not branch and do not commit. Run the audit with your "
+                    "peer: keep findings in notes, refuse to record one the peer has not checked, "
+                    "put confirmed ones in docs/backlog/, and advance the phase.")
+        else:
+            note = "You are the writer. Edit project files directly. Your peer stays read-only."
         return {
             "writer": result["writer"],
             "already_held": result["already_writer"],
             "round": result.get("round"),
-            "note": "You are the writer. Edit project files directly. Your peer stays read-only.",
+            "note": note,
         }
 
     def tool_pair_release(self, why: str = "") -> dict[str, Any]:
@@ -662,6 +723,7 @@ class PairSession:
 
     def tool_pair_patch_reserve(self) -> dict[str, Any]:
         """Reserve an empty patch file. Refused for the writer, which edits directly."""
+        self._require_fix_mode("propose a patch")
         self._require_not_writer("propose patches")
         handle, name = tempfile.mkstemp(
             dir=str(self.store.patches_root), prefix=f"pair-{self.role}-", suffix=".patch"
@@ -1240,9 +1302,11 @@ def run_ctl(args: argparse.Namespace, state_dir: Path) -> int:
             {
                 "state_dir": str(store.root),
                 "task": state.get("task", ""),
+                "mode": state.get("mode", "fix"),
                 "writer": state.get("writer"),
                 "phase": state.get("phase"),
                 "round": state.get("round"),
+                "mode": state.get("mode", "fix"),
                 "roles": {name: info.get("last_seen") for name, info in state.get("roles", {}).items()},
             },
             indent=2,
@@ -1275,6 +1339,17 @@ def run_ctl(args: argparse.Namespace, state_dir: Path) -> int:
         store.mutate(apply)
         store.append_transcript("release", "human")
         print("write authority cleared; nobody holds it")
+        return 0
+
+    if command == "mode":
+        mode = args.mode
+        if mode not in MODES:
+            print(f"error: unknown mode {mode!r}; expected one of {', '.join(MODES)}", file=sys.stderr)
+            return 2
+        previous = store.read().get("mode", "fix")
+        store.mutate(lambda state: state.__setitem__("mode", mode))
+        store.append_transcript("mode", "human", mode=mode, previous=previous)
+        print(f"round mode is now {mode!r}")
         return 0
 
     if command == "why":
@@ -1505,6 +1580,7 @@ def project_row(root: Path, stuck_min: int = 30) -> dict:
         "phase": phase,
         "writer": writer,
         "reason": (state.get("writer_reason") or "").strip(),
+        "mode": state.get("mode", "fix"),
         "peers": sorted(name for name in roles if name != writer),
         "roles": sorted(roles),
         "silence_seconds": age,
@@ -1516,11 +1592,12 @@ def project_row(root: Path, stuck_min: int = 30) -> dict:
 
 def render_table(rows: list[dict]) -> str:
     """Aligned plain text. Column widths come from the data, never from a guess."""
-    header = ("проект", "фаза", "писатель", "критик", "тишина", "почему он", "задача")
+    header = ("проект", "фаза", "режим", "писатель", "критик", "тишина", "почему он", "задача")
     table = [
         (
             row["project"],
             row["phase"],
+            "AUDIT" if row.get("mode") == "audit" else "fix",
             row["writer"] or "—",
             ", ".join(row["peers"]) or "—",
             "не начат" if row["silence_seconds"] is None
@@ -1556,6 +1633,12 @@ def build_parser() -> argparse.ArgumentParser:
     assign.add_argument("role")
 
     sub.add_parser("release", help="human: clear write authority")
+
+    round_mode = sub.add_parser(
+        "mode",
+        help="human: choose what a round is for — 'fix' changes code, 'audit' does not",
+    )
+    round_mode.add_argument("mode", choices=list(MODES))
 
     task = sub.add_parser("task", help="human: record the task in shared state")
     task.add_argument("text")
