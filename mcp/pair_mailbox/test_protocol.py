@@ -713,7 +713,7 @@ class TestMultiProject(PairTestCase):
         except subprocess.TimeoutExpired:
             self.fail("--once не завершился сам: скрипт висит, как и до флага")
         self.assertEqual(done.returncode, 0, done.stderr)
-        self.assertIn("CLAIM", done.stdout)
+        self.assertIn("ПИСАТЕЛЬ: writer-agent", done.stdout)
         self.assertIn("план на две строки", done.stdout)
 
     def test_naming_a_project_replaces_the_built_in_search(self) -> None:
@@ -740,7 +740,86 @@ class TestMultiProject(PairTestCase):
                 self.assertRegex(head, r"^(proj-one|proj-two)\s+\[\d\d:\d\d:\d\d\]$",
                                  "у блока нет метки проекта: " + line)
 
-    def test_pairchat_refuses_when_there_is_no_state(self) -> None:
+    def test_pairchat_shows_only_the_project_you_are_in(self) -> None:
+        # Пользователь попросил именно этого: в папке проекта — диалог этого
+        # проекта, без чужих. Смешанная выдача здесь вредна.
+        mine = self._project("mine", events=1)
+        self._project("theirs", events=1)
+        os.environ["PAIR_SCAN"] = str(Path(self._tmp.name) / "*" / ".pair")
+        cwd = os.getcwd()
+        os.chdir(mine.parent)
+        try:
+            done = subprocess.run([sys.executable, str(PAIRCHAT), "--once"],
+                                  capture_output=True, text=True, timeout=30)
+        finally:
+            del os.environ["PAIR_SCAN"]
+            os.chdir(cwd)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        plain = re.sub(r"\x1b\[[0-9;]*m", "", done.stdout)
+        self.assertIn("mine", plain)
+        self.assertNotIn("theirs", plain, "показан чужой проект без --all")
+
+    def test_pairchat_outside_a_project_points_back_at_the_project(self) -> None:
+        self._project("somewhere-else", events=1)
+        cwd = os.getcwd()
+        os.chdir(self._tmp.name)  # тут .pair нет
+        try:
+            done = subprocess.run([sys.executable, str(PAIRCHAT), "--once"],
+                                  capture_output=True, text=True, timeout=30)
+        finally:
+            os.chdir(cwd)
+        self.assertEqual(done.returncode, 1)
+        text = done.stdout + done.stderr
+        self.assertIn("--all", text, "не сказано, что делать, чтобы увидеть всё")
+        self.assertIn("cd", text, "не сказано, что надо зайти в папку проекта")
+
+    def test_agent_notes_are_shown_by_default_and_work_notes_are_not(self) -> None:
+        # Заметки агентов (plan, finding...) — часть работы, их видно.
+        # Мои рабочие заметки о самом pair-mailbox — нет, их сотни строк кода.
+        for kind in ("plan", "finding", "verdict", "z-scratch"):
+            path = self.root / "notes" / f"{kind}.md"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(f"содержимое заметки {kind}\n", encoding="utf-8")
+        self.store.mutate(lambda state: state.update({"phase": "plan"}))
+        self.store.append_transcript("note", "writer-agent", note_kind="plan", chars=10)
+        env = dict(os.environ, PAIR_STATE=str(self.root))
+        cwd = os.getcwd()
+        os.chdir(self.root.parent)
+        try:
+            done = subprocess.run([sys.executable, str(PAIRCHAT), "--once"],
+                                  capture_output=True, text=True, timeout=30, env=env)
+            loud = subprocess.run([sys.executable, str(PAIRCHAT), "--all-notes", "--once"],
+                                  capture_output=True, text=True, timeout=30, env=env)
+        finally:
+            os.chdir(cwd)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertIn("содержимое заметки plan", done.stdout)
+        self.assertIn("содержимое заметки verdict", done.stdout)
+        self.assertNotIn("z-scratch", done.stdout, "рабочая заметка попала в выдачу")
+        self.assertIn("содержимое заметки z-scratch", loud.stdout,
+                      "--all-notes должен показывать и рабочие заметки")
+
+    def test_long_lines_are_wrapped_to_a_readable_width(self) -> None:
+        # Агенты пишут абзацами по 300+ символов; без переноса терминал рвёт
+        # их посреди слова.
+        self.store.mutate(lambda state: state.update({"phase": "plan"}))
+        (self.root / "mailbox" / "peer").mkdir(parents=True, exist_ok=True)
+        payload = " ".join(["слово%02d" % i for i in range(60)])
+        (self.root / "mailbox" / "peer" / "000001-t.json").write_text(
+            json.dumps({"seq": 1, "ts": "2026-10-02T20:00:00+00:00",
+                        "from": "peer", "to": "writer-agent", "subject": "длинная тема " + payload,
+                        "text": payload, "label": "Chat from peer: "}),
+            encoding="utf-8")
+        env = dict(os.environ, PAIR_STATE=str(self.root))
+        done = subprocess.run([sys.executable, str(PAIRCHAT), "--once"],
+                              capture_output=True, text=True, timeout=30, env=env)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        plain = re.sub(r"\x1b\[[0-9;]*m", "", done.stdout)
+        for line in plain.splitlines():
+            self.assertLessEqual(len(line), 105,
+                                 "строка не перенесена: " + repr(line[:120]))
+
+    def test_refuses_when_there_is_no_state(self) -> None:
         empty = Path(self._tmp.name) / "no-project"
         empty.mkdir()
         done = subprocess.run(

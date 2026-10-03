@@ -19,6 +19,7 @@ import json
 import os
 import sys
 import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -29,6 +30,10 @@ from server import discover_projects, project_row  # noqa: E402
 BOLD, DIM, RED, YELLOW, CYAN, MAGENTA, OFF = (
     "\033[1m", "\033[2m", "\033[31m", "\033[33m", "\033[36m", "\033[35m", "\033[0m",
 )
+
+WIDTH = 100
+# Заметки, которые пишут агенты по протоколу. Показываются всегда.
+AGENT_NOTE_KINDS = frozenset({"plan", "finding", "decision", "review", "verdict", "handoff"})
 
 KIND_COLOR = {
     "msg": BOLD,
@@ -56,15 +61,33 @@ class Feed:
     разных проектов склеились бы в одно.
     """
 
-    def __init__(self, root: Path, label: str) -> None:
+    def __init__(self, root: Path, label: str, *, notes: bool = True) -> None:
         self.root = root
         self.label = label
+        self.want_notes = notes
+        self.keep_noise = False
+        self.messages_only = False
+        self.label_width = 0
         self.seen_msgs: set[str] = set()
         self.seen_events: set[str] = set()
         self.note_pos: dict[str, int] = {}
+        self.seen_note_stem = False
+        # заголовок заметки печатается один раз на файл: при перезаписи заметки мы
+        # показываем только новое содержимое, а не второй заголовок того же имени
+        self.heads: dict[str, str] = {}
 
     def _add(self, out: list, order, kind: str, text: str) -> None:
         out.append((order, kind, self.label, text))
+
+    def body_prefix(self) -> str:
+        """Отступ для продолжений строк: метка проекта плюс два пробела.
+
+        Считается здесь, а не в show(), потому что перенос по словам обязан знать
+        свою реальную ширину. Раньше он считал два пробела, печатал строку длиной
+        93 символа, а show() сверху добавлял ещё 14 — выходило 107 колонок и текст
+        всё равно рвался в терминале.
+        """
+        return " " * (self.label_width + 2) if self.label_width else "  "
 
     def messages(self, out: list) -> None:
         mailbox = self.root / "mailbox"
@@ -83,12 +106,23 @@ class Feed:
                     continue
                 ts = str(msg.get("ts") or "")
                 head = f"[{clock(ts)}] {msg.get('from')} → {msg.get('to')}"
-                if msg.get("subject"):
-                    head += f"  {DIM}({msg['subject']}){OFF}"
                 body = str(msg.get("text", ""))
+                parts = [head]
+                prefix = self.body_prefix()
                 if body:
-                    head += "\n" + "\n".join("  " + line for line in body.splitlines())
-                self._add(out, (0, ts), "msg", head)
+                    parts.append(reflow(body, prefix))
+                # Тему переносим только если она не влезла в одну строку вместе с
+                # заголовком. Порядок частей: заголовок, тема, тело — читается как
+                # «кто кому, о чём, а вот подробности».
+                if msg.get("subject"):
+                    subject = str(msg["subject"])
+                    # метка проекта ещё не напечатана, её ширину тоже считаем
+                    overhead = self.label_width
+                    if len(head) + len(subject) + overhead + 4 > WIDTH:
+                        parts.insert(1, reflow(subject, prefix))
+                    else:
+                        parts[0] = head + f"  {DIM}({subject}){OFF}"
+                self._add(out, (0, ts), "msg", "\n".join(parts))
 
     def events(self, out: list) -> None:
         transcript = self.root / "transcript.jsonl"
@@ -114,22 +148,42 @@ class Feed:
             # текст сообщения уже показан из mailbox, повторять не нужно; но молчание
             # по нему считается, потому что тишину меряет transcript
             return
+        if self.messages_only and kind != "refusal":
+            # отказ оставляем всегда: это самое важное, что бывает в молчании
+            return
         if kind == "refusal":
+            # «assign», «release» и прочие служебные слова прячем: человеку нужен
+            # факт отказа и что делать, а не имя внутреннего вида события
             head = f"[{clock(ts)}] ОТКАЗ  {event.get('role')} → {event.get('tool')}"
-            self._add(out, (0, ts), "refusal", head + "\n  " + str(event.get("reason", ""))[:220])
+            self._add(out, (0, ts), "refusal",
+                      head + "\n" + reflow(str(event.get("reason", "")), self.body_prefix()))
             return
         if kind in ("claim", "assign", "release", "advance"):
-            who = event.get("writer") or event.get("phase") or ""
+            if kind == "assign":
+                self._add(out, (0, ts), "control",
+                          f"[{clock(ts)}] АВТОРИТЕТ ПЕРЕДАН: {event.get('writer')}"
+                          f"   (вы, {event.get('role')})")
+                return
+            if kind == "release":
+                self._add(out, (0, ts), "control",
+                          f"[{clock(ts)}] АВТОРИТЕТ СВОБОДЁН   ({event.get('role')})")
+                return
+            if kind == "advance":
+                self._add(out, (0, ts), "control",
+                          f"[{clock(ts)}] ФАЗА: {event.get('phase')}   ({event.get('role')})")
+                return
             self._add(out, (0, ts), "control",
-                      f"[{clock(ts)}] {str(kind).upper()}: {who}   ({event.get('role')})")
+                      f"[{clock(ts)}] ПИСАТЕЛЬ: {event.get('writer')}   ({event.get('role')})")
             return
         if kind == "note":
             self._add(out, (0, ts), "note_head",
-                      f"[{clock(ts)}] заметка/{event.get('note_kind')} — "
-                      f"{event.get('chars')} симв. от {event.get('role')}")
+                      f"[{clock(ts)}] ЗАМЕТКА {event.get('note_kind')} "
+                      f"({event.get('chars')} симв., {event.get('role')})")
             return
 
     def notes(self, out: list) -> None:
+        if not self.want_notes:
+            return
         notes_dir = self.root / "notes"
         if not notes_dir.is_dir():
             return
@@ -138,10 +192,29 @@ class Feed:
                 text = path.read_text(errors="replace")
             except Exception:
                 continue
-            pos = self.note_pos.get(path.name, 0)
-            if len(text) <= pos:
+            stem = path.stem
+            # Показываем заметки агентов по протоколу. Всё остальное — рабочие
+            # заметки человека о самом pair-mailbox: их много, они состоят из
+            # кусков кода, и в переписке агентов им не место. Скрыты, а не
+            # потеряны: `--all-notes` их показывает.
+            if not self.keep_noise and stem not in AGENT_NOTE_KINDS:
+                self.note_pos[path.name] = len(text)
                 continue
+            pos = self.note_pos.get(path.name, 0)
+            # файл мог быть перезаписан целиком — тогда прежнее содержимое больше
+            # не действительно и показывать надо новое с начала, а не хвост
+            rewritten = len(text) < pos
+            if len(text) == pos and not rewritten:
+                continue
+            # «новая версия» — файл уже показывали, и теперь он короче прежнего,
+            # то есть был перезаписан: печатаем пометку и содержимое с начала
+            fresh = rewritten and path.name in self.heads
+            if rewritten:
+                pos = 0
             self.note_pos[path.name] = len(text)
+            # Заметку на заметку перезаписывают, и второй файл с тем же именем — это
+            # обычно новая версия того же документа, а не другой документ. Печатаем
+            # пометку, чтобы два разговора не выглядели одним сплошным.
             lines = [
                 line for line in text[pos:].splitlines()
                 if line.strip() and not line.startswith("#") and "—" not in line[:4]
@@ -150,9 +223,16 @@ class Feed:
                 continue
             # заметки в конце: своей метки времени у них нет, и вставлять их в
             # хронологию значило бы выдумать её
-            self._add(out, (1, path.name), "note_head", f"── {path.stem} ──")
+            prefix = self.body_prefix()
+            if path.name not in self.heads:
+                # первый раз: заголовок один, без пометки
+                head = f"── {stem} ──"
+                self.heads[path.name] = head
+                self._add(out, (1, path.name), "note_head", head)
+            elif fresh:
+                self._add(out, (1, path.name), "note_head", f"── {stem} (новая версия) ──")
             self._add(out, (1, path.name), "note_body",
-                      "\n".join("  " + line for line in lines))
+                      reflow("\n".join(lines), prefix))
 
     def drain(self) -> list:
         out: list = []
@@ -160,6 +240,35 @@ class Feed:
         self.events(out)
         self.notes(out)
         return out
+
+
+def reflow(text: str, indent: str, width: int = WIDTH) -> str:
+    """Переносит длинные строки по словам.
+
+    Агенты пишут абзацами по 300-400 символов. Без переноса терминал рвёт их
+    где-то в середине слова, и читать невозможно. Ширину считаем в символах, а не
+    в байтах: кириллица в UTF-8 — два байта, и счёт по байтам обрезал бы слова.
+    """
+    out = []
+    for line in text.splitlines():
+        if len(line) <= width - len(indent):
+            out.append(indent + line if line else "")
+            continue
+        # Отступ метки проекта уже включён в prefix, поэтому room считаем от
+        # оставшегося места. Длинное слово посреди строки не режем: это URL или
+        # путь, разрыв сделает его некопируемым. Такие строки выходят за край
+        # терминала, и это осознанный размен.
+        room = max(20, width - len(indent))
+        current = ""
+        for word in line.split():
+            if current and len(current) + 1 + len(word) > room:
+                out.append(indent + current)
+                current = word
+            else:
+                current = f"{current} {word}" if current else word
+        if current:
+            out.append(indent + current)
+    return "\n".join(out)
 
 
 def labels_for(roots: list[Path]) -> list[str]:
@@ -188,8 +297,10 @@ def show(blocks: list, width: int) -> None:
             print(colour + prefix + lines[0] + OFF)
         else:
             print(prefix + lines[0])
+        # продолжения уже отступлены на всю ширину метки в reflow; пустые строки
+        # не добиваем пробелами — это мусор, которого в тексте не было
         for line in lines[1:]:
-            print(" " * len(prefix) + line)
+            print(line)
 
 
 def overview(roots: list[Path], labels: list[str], stuck_min: int) -> None:
@@ -214,17 +325,27 @@ def overview(roots: list[Path], labels: list[str], stuck_min: int) -> None:
 
 
 def pick_roots(args) -> list[Path]:
-    if args.everywhere:
-        roots = discover_projects(args.paths)
-        if not roots:
+    """Корень по умолчанию — тот, где вы стоите, и никакого --all.
+
+    Догадка «а покажу-ка сразу всё» здесь вредна: в пяти проектах пять переписок
+    вперемешку, и про тот, в котором вы работаете, вы не узнаете ничего.
+    Обзор по всем — отдельное действие, когда человек его выбрал сам.
+    """
+    here = Path(os.environ.get("PAIR_STATE") or ".pair").expanduser()
+    local = here.resolve() if (here / "state.json").is_file() else None
+
+    if args.everywhere or args.paths:
+        named = discover_projects(args.paths) if args.paths else discover_projects([])
+        if not named:
             print("ни одного проекта с состоянием пары не найдено")
             print("укажите путь:  bin/pairchat --all ~/work/foo")
-        return roots
-    here = Path(os.environ.get("PAIR_STATE") or ".pair").expanduser()
-    if not (here / "state.json").is_file():
-        print(f"нет {here} — запустите в проекте: bin/pairctl task \"...\"")
+        return named
+    if local is None:
+        print(f"нет {here} — вы не в папке проекта, где идёт работа")
+        print("  посмотреть один:   cd <проект> && bin/pairchat --once")
+        print("  посмотреть все:    bin/pairchat --all --once")
         return []
-    return [here.resolve()]
+    return [local]
 
 
 def main() -> int:
@@ -235,19 +356,34 @@ def main() -> int:
     parser.add_argument("--once", action="store_true",
                         help="напечатать и выйти вместо окна до Ctrl-C")
     parser.add_argument("--all", dest="everywhere", action="store_true",
-                        help="все проекты с состоянием пары, а не только текущий")
+                        help="все проекты сразу, вперемешку. По умолчанию — только тот, "
+                             "где вы стоите: смешанные переписки не читаются")
     parser.add_argument("--stuck-min", type=int, default=30,
                         help="с какой тишины считать проект зависшим (по умолчанию 30)")
+    parser.add_argument("--messages-only", action="store_true",
+                        help="только переписка, без служебных событий и заметок")
+    parser.add_argument("--no-notes", action="store_true", help="без заметок")
+    parser.add_argument("--all-notes", action="store_true",
+                        help="заметки тоже, включая мои отладочные (их много)")
+    parser.add_argument("--since", default="",
+                        help="только события не старше N минут назад, например --since 60")
     parser.add_argument("paths", nargs="*", help="проекты или .pair, если не --all")
     args = parser.parse_args()
+
+    if args.all_notes:
+        args.no_notes = False
 
     roots = pick_roots(args)
     if not roots:
         return 1
 
     labels = labels_for(roots)
-    feeds = [Feed(root, label) for root, label in zip(roots, labels)]
+    feeds = [Feed(root, label, notes=not args.no_notes) for root, label in zip(roots, labels)]
+    for feed in feeds:
+        feed.keep_noise = args.all_notes
     width = max((len(label) for label in labels), default=0) + 2 if len(feeds) > 1 else 0
+    for feed in feeds:
+        feed.label_width = width
 
     if len(feeds) > 1:
         overview(roots, labels, args.stuck_min)
@@ -257,15 +393,37 @@ def main() -> int:
     tail = "печатаю и выхожу" if args.once else "Ctrl-C чтобы выйти"
     print(f"смотрю {where}, {tail}\n")
 
+    if args.messages_only:
+        # события нужны, чтобы понять, кто что делает, но когда человек читает саму
+        # переписку, служебные строки только мешают
+        for feed in feeds:
+            feed.want_notes = False
+            feed.messages_only = True
+
+    floor = ""
+    if args.since:
+        try:
+            minutes = float(args.since)
+        except ValueError:
+            print(f"--since: нужно число минут, не {args.since!r}")
+            return 1
+        floor = (datetime.now(timezone.utc) - timedelta(minutes=minutes)).strftime("%Y-%m-%dT%H:%M:%S")
+
+    def emit(feed) -> None:
+        blocks = feed.drain()
+        if floor:
+            blocks = [b for b in blocks if str(b[0][1]) >= floor or b[0][0] == 1]
+        show(blocks, width)
+
     if args.once:
         for feed in feeds:
-            show(feed.drain(), width)
+            emit(feed)
         return 0
 
     try:
         while True:
             for feed in feeds:
-                show(feed.drain(), width)
+                emit(feed)
             time.sleep(0.4)
     except KeyboardInterrupt:
         print("\nвыход")
