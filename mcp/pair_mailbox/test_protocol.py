@@ -108,6 +108,82 @@ class TestWriteAuthority(PairTestCase):
         result = self.peer.tool_pair_claim()
         self.assertEqual(result["writer"], "reviewer-agent")
 
+    def test_a_claim_says_why(self) -> None:
+        """Пользователь спросил, не лучше ли выбирать роль осмысленно.
+
+        Ответ: гонка остаётся (иначе нужен человек и автономия кончается), но
+        захват теперь объясняется. Сосед видит аргумент и может с ним не согласиться.
+        """
+        self.writer.tool_pair_state()
+        self.peer.tool_pair_state()
+        self.writer.tool_pair_claim(reason="я уже нашёл, где чинить: retry в клиенте")
+
+        self.assertEqual(self.store.read()["writer_reason"], "я уже нашёл, где чинить: retry в клиенте")
+        # сосед видит причину, а не только факт
+        self.assertEqual(
+            self.peer.tool_pair_state()["writer_reason"],
+            "я уже нашёл, где чинить: retry в клиенте",
+        )
+
+    def test_the_loser_sees_the_winners_reason_in_the_refusal(self) -> None:
+        self.writer.tool_pair_state()
+        self.peer.tool_pair_state()
+        self.writer.tool_pair_claim(reason="я уже нашёл, где чинить: retry в клиенте")
+
+        error = self.assertRefused(self.peer.tool_pair_claim, contains="retry в клиенте")
+        # отказ должен подсказывать, что делать дальше, а не только констатировать факт
+        self.assertIn("pair_release", str(error.hint))
+
+    def test_a_claim_without_a_reason_is_allowed_but_records_nothing(self) -> None:
+        # инструмент не должен ломаться от пустой строки, но «почему» остаётся пустым
+        self.writer.tool_pair_state()
+        self.writer.tool_pair_claim()
+        self.assertEqual(self.store.read().get("writer_reason", ""), "")
+
+    def test_release_can_say_why_and_the_peer_then_claims(self) -> None:
+        # честная передача: держатель сам решил, что второй лучше подходит
+        self.writer.tool_pair_state()
+        self.peer.tool_pair_state()
+        self.writer.tool_pair_claim(reason="попробую сначала")
+        self.writer.tool_pair_release(why="у меня нет доступа к тестовой базе, у agy есть")
+
+        self.assertEqual(self.store.read()["writer_reason"], "")
+        self.assertEqual(self.peer.tool_pair_claim(reason="у меня есть доступ")["writer"],
+                         "reviewer-agent")
+
+    def test_release_with_a_reason_leaves_it_in_the_audit_trail(self) -> None:
+        self.writer.tool_pair_state()
+        self.writer.tool_pair_claim(reason="первый")
+        self.writer.tool_pair_release(why="передать соседу")
+
+        events = [e for e in self.store.read_transcript(0) if e["kind"] == "release"]
+        self.assertEqual(events[-1].get("reason"), "передать соседу")
+
+    def test_human_assignment_is_marked_as_the_humans_choice(self) -> None:
+        # иначе в переписке не отличить гонку от решения человека
+        self.writer.tool_pair_state()
+        self.peer.tool_pair_state()
+        main(["--state", str(self.root), "assign", "reviewer-agent"])
+
+        self.assertEqual(self.store.read()["writer_reason"], "назначено человеком")
+
+    def test_why_command_reports_the_reason(self) -> None:
+        self.writer.tool_pair_state()
+        self.writer.tool_pair_claim(reason="я разобрался в потоке ретраев")
+        # PAIR_SCAN ждёт пути к .pair, а setUp создаёт state прямо в self.root
+        os.environ["PAIR_SCAN"] = str(self.root)
+        cwd = os.getcwd()
+        os.chdir(self.root)
+        out = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(out):
+                code = main(["why"])
+        finally:
+            del os.environ["PAIR_SCAN"]
+            os.chdir(cwd)
+        self.assertEqual(code, 0)
+        self.assertIn("разобрался в потоке ретраев", out.getvalue())
+
 
 class TestPatchFlow(PairTestCase):
     def setUp(self) -> None:

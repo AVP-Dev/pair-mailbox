@@ -274,6 +274,9 @@ class PairSession:
             "you_are_writer": writer == self.role,
             "task": state.get("task", ""),
             "writer": writer,
+            # Почему именно он пишет. Без этого сосед видит только факт и не может
+            # понять, спорить ему с выбором или принять его.
+            "writer_reason": state.get("writer_reason", ""),
             "phase": state.get("phase", "scoping"),
             "round": state.get("round", 0),
             "phases": list(PHASES),
@@ -352,16 +355,26 @@ class PairSession:
             return False
         return silent >= STALL_SECONDS
 
-    def tool_pair_claim(self) -> dict[str, Any]:
-        """Take write authority. Refused only while someone else actively holds it."""
+    def tool_pair_claim(self, reason: str = "") -> dict[str, Any]:
+        """Take write authority. Refused only while someone else actively holds it.
+
+        `reason` is optional but meant to be used. Whoever reads the task first knows
+        more than whoever merely got there first, so saying why is what turns a race
+        into a choice. It goes into the transcript and into the refusal message, so
+        the loser can see the argument and decide whether to contest it.
+        """
         def apply(state: dict[str, Any]) -> dict[str, Any]:
             self._register(state)
             current = state.get("writer")
             if current and current != self.role:
                 if not self._writer_is_abandoned(state, current):
+                    held = str(state.get("writer_reason") or "").strip()
                     raise ProtocolError(
-                        f"write authority is held by {current!r}.",
-                        "Ask the human: `pairctl release` or `pairctl assign <role>`.",
+                        f"write authority is held by {current!r}"
+                        + (f", which claimed it because: {held}" if held else "."),
+                        "Ask the human: `pairctl release` or `pairctl assign <role>`. "
+                        "If you would rather write, say so in pair_send and let the "
+                        "current writer release it with pair_release.",
                     )
                 state["writer"] = self.role
                 state["round"] = int(state.get("round", 0)) + 1
@@ -372,13 +385,18 @@ class PairSession:
                     "took_over": True,
                 }
             if current == self.role:
+                if reason.strip():
+                    state["writer_reason"] = reason.strip()
                 return {"already_writer": True, "writer": self.role, "round": int(state.get("round", 0))}
             state["writer"] = self.role
             state["round"] = int(state.get("round", 0)) + 1
+            if reason.strip():
+                state["writer_reason"] = reason.strip()
             return {"already_writer": False, "writer": self.role, "round": state["round"]}
 
         result = self.store.mutate(apply)
-        self.store.append_transcript("claim", self.role, writer=self.role, result=result)
+        self.store.append_transcript("claim", self.role, writer=self.role,
+                                     reason=reason.strip() or None, result=result)
         return {
             "writer": result["writer"],
             "already_held": result["already_writer"],
@@ -386,8 +404,13 @@ class PairSession:
             "note": "You are the writer. Edit project files directly. Your peer stays read-only.",
         }
 
-    def tool_pair_release(self) -> dict[str, Any]:
-        """Give up write authority voluntarily. Only the holder may do this."""
+    def tool_pair_release(self, why: str = "") -> dict[str, Any]:
+        """Give up write authority voluntarily. Only the holder may do this.
+
+        This is the honest way to hand over: the holder decides the other one is
+        better placed. A peer cannot take authority away, and cannot revoke it, but
+        the holder can give it — that is a decision, not a transfer by message.
+        """
         def apply(state: dict[str, Any]) -> dict[str, Any]:
             current = state.get("writer")
             if current != self.role:
@@ -396,15 +419,17 @@ class PairSession:
                     "A peer cannot revoke authority. Ask the human if this needs to change.",
                 )
             state["writer"] = None
+            state["writer_reason"] = ""
             return {"released": True}
 
         self.store.mutate(apply)
-        self.store.append_transcript("release", self.role)
+        self.store.append_transcript("release", self.role, reason=why.strip() or None)
         return {
             "released": True,
             "note": (
-                "Authority is now unassigned. Nobody holds write authority. The human can assign it "
-                "to either role with `pairctl assign <role>`."
+                "Authority is now unassigned. Nobody holds write authority. If you meant your peer "
+                "to take over, say so in pair_send and let them call pair_claim; the human can also "
+                "assign it with `pairctl assign <role>`."
             ),
         }
 
@@ -881,19 +906,45 @@ def tool_definitions() -> list[dict[str, Any]]:
         {
             "name": "pair_claim",
             "description": (
-                "Claim write authority for your role. Succeeds only when nobody holds it. "
-                "Refused when a peer already holds it: only the human can transfer authority, via "
-                "`pairctl assign <role>`. Claiming makes you the writer and keeps your peer read-only."
+                "Claim write authority for your role, optionally saying why you should be the one "
+                "writing. Succeeds only when nobody holds it. Refused when a peer already holds it: "
+                "only the human can transfer authority, via `pairctl assign <role>`. Claiming makes "
+                "you the writer and keeps your peer read-only. Read the task before claiming — a "
+                "reason is worth more than arriving first."
             ),
-            "inputSchema": {"type": "object", "properties": {}, "required": []},
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "reason": {
+                        "type": "string",
+                        "description": (
+                            "One sentence on why you should write: what in the task or the codebase "
+                            "made you the right one for it. Recorded in the transcript and shown to "
+                            "a peer who is refused."
+                        ),
+                    }
+                },
+                "required": [],
+            },
         },
         {
             "name": "pair_release",
             "description": (
-                "Give up write authority voluntarily. Only the current holder may call this; a peer "
-                "cannot revoke it. Afterwards nobody holds authority until the human assigns it."
+                "Give up write authority voluntarily, optionally saying why. Only the current holder "
+                "may call this; a peer cannot revoke it, and cannot take it — but the holder can give "
+                "it, which is a decision rather than a transfer by message. Afterwards nobody holds "
+                "authority until the peer claims it or the human assigns it."
             ),
-            "inputSchema": {"type": "object", "properties": {}, "required": []},
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "why": {
+                        "type": "string",
+                        "description": "One sentence on why you are handing over.",
+                    }
+                },
+                "required": [],
+            },
         },
         {
             "name": "pair_send",
@@ -1025,8 +1076,8 @@ def tool_definitions() -> list[dict[str, Any]]:
 HANDLERS = {
     "pair_state": lambda session, args: session.tool_pair_state(),
     "pair_deliver": lambda session, args: session.tool_pair_deliver(**args),
-    "pair_claim": lambda session, args: session.tool_pair_claim(),
-    "pair_release": lambda session, args: session.tool_pair_release(),
+    "pair_claim": lambda session, args: session.tool_pair_claim(**args),
+    "pair_release": lambda session, args: session.tool_pair_release(**args),
     "pair_send": lambda session, args: session.tool_pair_send(**args),
     "pair_read": lambda session, args: session.tool_pair_read(**args),
     "pair_advance": lambda session, args: session.tool_pair_advance(**args),
@@ -1206,19 +1257,40 @@ def run_ctl(args: argparse.Namespace, state_dir: Path) -> int:
             print(f"warning: {role!r} has never connected; registered roles: {', '.join(sorted(known))}")
         def apply(state):
             state["writer"] = role
+            # решение человека — повод поставить метку «выбрано человеком», чтобы
+            # в переписке было видно, что это не гонка
+            state["writer_reason"] = "назначено человеком"
             if state.get("phase") == "scoping" and not state.get("task"):
                 state["round"] = int(state.get("round", 0)) + 1
         store.mutate(apply)
-        store.append_transcript("assign", "human", writer=role)
+        store.append_transcript("assign", "human", writer=role,
+                                reason="назначено человеком")
         print(f"write authority assigned to {role}")
         return 0
 
     if command == "release":
         def apply(state):
             state["writer"] = None
+            state["writer_reason"] = ""
         store.mutate(apply)
         store.append_transcript("release", "human")
         print("write authority cleared; nobody holds it")
+        return 0
+
+    if command == "why":
+        # Почему сейчас пишет тот, кто пишет. Короткий вопрос, на который агент
+        # обязан уметь ответить фактом, а не «ща посмотрю».
+        rows = [project_row(root) for root in discover_projects(args.paths)]
+        if args.json:
+            print(json.dumps([{"project": row["project"], "writer": row["writer"],
+                               "reason": row.get("reason", "")} for row in rows],
+                             ensure_ascii=False, indent=2))
+            return 0
+        if not rows:
+            print("ни одного проекта с состоянием пары не найдено")
+            return 1
+        for row in rows:
+            print(f"{row['project']}: {row['writer'] or '—'} — {row.get('reason') or 'причина не сказана'}")
         return 0
 
     if command == "task":
@@ -1432,6 +1504,7 @@ def project_row(root: Path, stuck_min: int = 30) -> dict:
         "task": (state.get("task") or "").strip(),
         "phase": phase,
         "writer": writer,
+        "reason": (state.get("writer_reason") or "").strip(),
         "peers": sorted(name for name in roles if name != writer),
         "roles": sorted(roles),
         "silence_seconds": age,
@@ -1443,7 +1516,7 @@ def project_row(root: Path, stuck_min: int = 30) -> dict:
 
 def render_table(rows: list[dict]) -> str:
     """Aligned plain text. Column widths come from the data, never from a guess."""
-    header = ("проект", "фаза", "писатель", "критик", "тишина", "задача")
+    header = ("проект", "фаза", "писатель", "критик", "тишина", "почему он", "задача")
     table = [
         (
             row["project"],
@@ -1452,7 +1525,8 @@ def render_table(rows: list[dict]) -> str:
             ", ".join(row["peers"]) or "—",
             "не начат" if row["silence_seconds"] is None
             else row["silence"] + ("  ЗАВИС" if row["stuck"] else ""),
-            (row["task"] or "—")[:44],
+            (row["reason"] or "—")[:40],
+            (row["task"] or "—")[:36],
         )
         for row in rows
     ]
@@ -1500,6 +1574,10 @@ def build_parser() -> argparse.ArgumentParser:
     everywhere.add_argument("paths", nargs="*", help="extra project or .pair directories")
     everywhere.add_argument("--stuck-min", type=int, default=30)
     everywhere.add_argument("--json", action="store_true")
+
+    why = sub.add_parser("why", help="who writes, and the reason they gave")
+    why.add_argument("paths", nargs="*", help="extra project or .pair directories")
+    why.add_argument("--json", action="store_true")
 
     reset = sub.add_parser("reset", help="wipe shared state")
     reset.add_argument("--yes", action="store_true")
