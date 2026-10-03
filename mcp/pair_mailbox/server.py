@@ -553,26 +553,27 @@ class PairSession:
             if len(candidates) == 1:
                 target = candidates[0]
             elif not candidates:
-                return {"unblocked": False, "why": "нет зарегистрированных соседей"}
+                return {"unblocked": False, "why": "нет зарегистрированных соседей", "prompt": ""}
             else:
                 raise ProtocolError("`peer` is required when multiple peers are registered.")
         if target == self.role:
             raise ProtocolError("cannot unblock own role.")
         pane = (roles.get(target) or {}).get("pane")
         if not pane:
-            return {"unblocked": False, "why": f"у {target} нет панели tmux"}
+            return {"unblocked": False, "why": f"у {target} нет панели tmux", "prompt": ""}
         try:
             tmux = _tmux()
         except Exception as exc:
-            return {"unblocked": False, "why": str(exc)}
-        unblocked = resolve_permission_prompt(tmux, pane)
-        if unblocked:
-            self.store.append_transcript("unblock", self.role, target=target, pane=pane)
+            return {"unblocked": False, "why": str(exc), "prompt": ""}
+        matched = resolve_permission_prompt(tmux, pane)
+        if matched:
+            self.store.append_transcript("unblock", self.role, target=target, pane=pane, prompt=matched)
         return {
-            "unblocked": unblocked,
+            "unblocked": bool(matched),
             "peer": target,
             "pane": pane,
-            "status": "Подтверждение [y] отправлено" if unblocked else "Запрос разрешения не обнаружен в панели",
+            "prompt": matched or "",
+            "status": f"Подтверждение [y] отправлено: {matched}" if matched else "Запрос разрешения не обнаружен в панели",
         }
 
     def tool_pair_deliver(self, to: str, text: str, wait_for_empty: float = 0.0, submit: bool = True) -> dict[str, Any]:

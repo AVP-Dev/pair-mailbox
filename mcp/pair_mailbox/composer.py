@@ -72,7 +72,7 @@ def is_composer_empty(line: str) -> bool:
     if not s.strip():
         return True
     for marker in PROMPT_MARKERS:
-        idx = s.find(marker)
+        idx = s.rfind(marker)
         if idx != -1:
             tail = s[idx + len(marker):].strip()
             # рамка TUI, рамки-разделители, курсор
@@ -145,41 +145,49 @@ def tail_present(lines: list, needle: str) -> bool:
 
 
 PERMISSION_PATTERNS = (
-    r"\[y/N\]",
-    r"\[Y/n\]",
-    r"\[y/n\]",
-    r"\(y/n\)",
-    r"\[y/n/always\]",
-    r"Allow\b.*?\?",
-    r"Approve\b.*?\?",
-    r"permission\b.*?\?",
-    r"Do you want to proceed\?",
-    r"Press Enter to continue",
+    r"\[[yY]/[nN]\]",
+    r"\([yY]/[nN]\)",
+    r"\[[yY]/[nN]/[a-zA-Z]+\]",
+    r"\[yes/no\]",
+    r"\b(?:Allow|Approve)\s+(?:execution\b|tool\b|bash\b|command\b|this\b)",
+    r"\bDo you want to proceed\?",
+    r"\bDo you allow this tool call\?",
 )
 
 
-def detect_permission_prompt(lines: list) -> bool:
-    """True when the terminal pane is showing an interactive confirmation/permission prompt."""
+def detect_permission_prompt(lines: list) -> str | None:
+    """Return the matched prompt text if the terminal pane is showing an interactive confirmation prompt, else None."""
     meaningful = [line.strip() for line in lines if line.strip()]
     if not meaningful:
-        return False
-    tail = " \n ".join(meaningful[-5:])
-    for pat in PERMISSION_PATTERNS:
-        if re.search(pat, tail, re.IGNORECASE):
-            return True
-    return False
+        return None
+    for line in meaningful[-2:]:
+        for pat in PERMISSION_PATTERNS:
+            if re.search(pat, line, re.IGNORECASE):
+                return line
+    return None
 
 
-def resolve_permission_prompt(tmux: str, pane: str) -> bool:
-    """Check if the pane is stalled waiting for a permission confirmation and confirm it."""
+def resolve_permission_prompt(tmux: str, pane: str) -> str | None:
+    """Check if the pane is stalled waiting for a permission confirmation and confirm it.
+
+    Returns the prompt text that was approved, or None.
+    """
     if not pane_alive(tmux, pane):
-        return False
+        return None
     lines = capture(tmux, pane)
-    if detect_permission_prompt(lines):
-        subprocess.run([tmux, "send-keys", "-t", pane, "y", "Enter"],
-                       capture_output=True, text=True, timeout=5)
-        return True
-    return False
+    prompt = detect_permission_prompt(lines)
+    if not prompt:
+        return None
+
+    line = composer_line(lines)
+    if line and not detect_permission_prompt([line]) and not is_composer_empty(line):
+        return None
+
+    subprocess.run([tmux, "send-keys", "-t", pane, "y"],
+                   capture_output=True, text=True, timeout=5)
+    subprocess.run([tmux, "send-keys", "-t", pane, "Enter"],
+                   capture_output=True, text=True, timeout=5)
+    return prompt
 
 
 def deliver(pane: str, text: str, wait_for_empty: float = 0.0, submit: bool = True) -> dict:

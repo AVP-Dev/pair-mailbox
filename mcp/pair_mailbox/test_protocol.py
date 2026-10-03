@@ -1078,22 +1078,37 @@ class TestRingAndUnblock(PairTestCase):
 
         prompts = [
             ["Some output", "Allow execution of 'pytest'? [y/N]"],
-            ["Running build", "Do you want to proceed? (y/n)"],
+            ["Running build", "Do you want to proceed? [y/n]"],
             ["Do you allow this tool call? [Y/n]"],
             ["Tool approval required", "Approve execution? [y/n/always]"],
-            ["Press Enter to continue"],
         ]
         for lines in prompts:
-            self.assertTrue(detect_permission_prompt(lines), f"Failed to detect in {lines}")
+            matched = detect_permission_prompt(lines)
+            self.assertTrue(bool(matched), f"Failed to detect in {lines}")
+            self.assertIn(matched, lines)
 
         not_prompts = [
+            ["Press Enter to continue"],
+            ["Allow me to read it?"],
+            ["Do you have permission?"],
             ["def foo():", "    return x"],
             ["cost = prices[y] / n"],
             ["echo done"],
             [],
         ]
         for lines in not_prompts:
-            self.assertFalse(detect_permission_prompt(lines), f"False positive in {lines}")
+            self.assertIsNone(detect_permission_prompt(lines), f"False positive in {lines}")
+
+    def test_composer_empty_uses_last_marker(self) -> None:
+        from composer import is_composer_empty
+
+        # Single prompt with no input
+        self.assertTrue(is_composer_empty("> "))
+        # Output before prompt that contains marker characters
+        self.assertTrue(is_composer_empty("Cost: $0\n> "))
+        # User input after prompt
+        self.assertFalse(is_composer_empty("> echo $foo"))
+        self.assertFalse(is_composer_empty("Cost: $0\n> pytest -v"))
 
     def test_ring_disabled_by_env(self) -> None:
         os.environ["PAIR_DISABLE_RING"] = "1"
@@ -1122,6 +1137,7 @@ class TestRingAndUnblock(PairTestCase):
         res = self.writer.tool_pair_unblock(peer="reviewer-agent")
         self.assertFalse(res["unblocked"])
         self.assertIn("нет панели tmux", res["why"])
+        self.assertEqual(res["prompt"], "")
 
 
 if __name__ == "__main__":
