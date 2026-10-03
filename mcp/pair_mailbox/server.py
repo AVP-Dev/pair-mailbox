@@ -43,6 +43,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import uuid
 
 from datetime import datetime, timezone
 from pathlib import Path
@@ -158,6 +159,10 @@ class Store:
             data = json.loads(self.state_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as error:
             log(f"state.json unreadable ({error}); starting from defaults")
+            try:
+                self.append_transcript("state_corrupt", "server", error=str(error))
+            except Exception:
+                pass
             return self.default_state()
         state = self.default_state()
         state.update(data)
@@ -168,20 +173,32 @@ class Store:
         atomic_write_json(self.state_path, state)
 
     class _Lock:
+        _holders: dict[Path, tuple[int, Any]] = {}
+
         def __init__(self, path: Path) -> None:
-            self.path = path
-            self.handle = None
+            self.path = path.resolve()
 
         def __enter__(self):
-            self.handle = self.path.open("a+")
-            fcntl.flock(self.handle.fileno(), fcntl.LOCK_EX)
+            entry = Store._Lock._holders.get(self.path)
+            if entry is None or entry[0] == 0:
+                handle = self.path.open("a+")
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+                Store._Lock._holders[self.path] = (1, handle)
+            else:
+                depth, handle = entry
+                Store._Lock._holders[self.path] = (depth + 1, handle)
             return self
 
         def __exit__(self, *exc):
-            assert self.handle is not None
-            fcntl.flock(self.handle.fileno(), fcntl.LOCK_UN)
-            self.handle.close()
-            self.handle = None
+            entry = Store._Lock._holders.get(self.path)
+            assert entry is not None and entry[0] > 0
+            depth, handle = entry
+            if depth == 1:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+                handle.close()
+                del Store._Lock._holders[self.path]
+            else:
+                Store._Lock._holders[self.path] = (depth - 1, handle)
             return False
 
     def lock(self) -> "Store._Lock":
@@ -303,9 +320,21 @@ class PairSession:
         mode = state.get("mode", "fix")
         if mode not in MODES:
             mode = "fix"
+        current_phase = state.get("phase", "scoping")
+        you_are_writer = writer == self.role
+        if you_are_writer:
+            backward = PHASE_BACKWARD.get(current_phase)
+            forward = PHASE_TRANSITIONS.get(current_phase, ())
+            legal_next = list(forward)
+            if backward and backward not in legal_next:
+                legal_next.append(backward)
+        else:
+            backward = PHASE_BACKWARD.get(current_phase)
+            legal_next = [backward] if backward else []
+
         return {
             "you": self.role,
-            "you_are_writer": writer == self.role,
+            "you_are_writer": you_are_writer,
             "task": state.get("task", ""),
             "mode": mode,
             # What the mode means for this role, stated here because it decides what an
@@ -328,10 +357,10 @@ class PairSession:
             # Почему именно он пишет. Без этого сосед видит только факт и не может
             # понять, спорить ему с выбором или принять его.
             "writer_reason": state.get("writer_reason", ""),
-            "phase": state.get("phase", "scoping"),
+            "phase": current_phase,
             "round": state.get("round", 0),
             "phases": list(PHASES),
-            "legal_next_phases": list(PHASE_TRANSITIONS.get(state.get("phase", "scoping"), ())),
+            "legal_next_phases": legal_next,
             "roles": self._known_roles(state),
             "unread": self._unread_count(state),
             "peers": self._peer_status(state, writer),
@@ -377,7 +406,7 @@ class PairSession:
 
     def _unread_count(self, state: dict[str, Any]) -> int:
         seen = int(state.get("seen", {}).get(self.role, 0))
-        return len(self._inbox_files()) - seen
+        return max(0, len(self._inbox_files()) - seen)
 
     def _inbox_files(self) -> list[Path]:
         inbox = self.store.mailbox_root / self.role
@@ -417,8 +446,9 @@ class PairSession:
         def apply(state: dict[str, Any]) -> dict[str, Any]:
             self._register(state)
             current = state.get("writer")
+            was_closed = bool(state.get("closed_at") or state.get("phase") == "done")
             if current and current != self.role:
-                if not self._writer_is_abandoned(state, current):
+                if not self._writer_is_abandoned(state, current) and not was_closed:
                     held = str(state.get("writer_reason") or "").strip()
                     raise ProtocolError(
                         f"write authority is held by {current!r}"
@@ -429,6 +459,11 @@ class PairSession:
                     )
                 state["writer"] = self.role
                 state["round"] = int(state.get("round", 0)) + 1
+                if reason.strip():
+                    state["writer_reason"] = reason.strip()
+                if was_closed:
+                    state.pop("closed_at", None)
+                    state["phase"] = "implement"
                 return {
                     "already_writer": False,
                     "writer": self.role,
@@ -438,12 +473,20 @@ class PairSession:
             if current == self.role:
                 if reason.strip():
                     state["writer_reason"] = reason.strip()
-                return {"already_writer": True, "writer": self.role, "round": int(state.get("round", 0))}
+                if was_closed:
+                    state.pop("closed_at", None)
+                    state["phase"] = "implement"
+                    state["round"] = int(state.get("round", 0)) + 1
+                    return {"already_writer": False, "writer": self.role, "round": state["round"], "took_over": False}
+                return {"already_writer": True, "writer": self.role, "round": int(state.get("round", 0)), "took_over": False}
             state["writer"] = self.role
             state["round"] = int(state.get("round", 0)) + 1
             if reason.strip():
                 state["writer_reason"] = reason.strip()
-            return {"already_writer": False, "writer": self.role, "round": state["round"]}
+            if was_closed:
+                state.pop("closed_at", None)
+                state["phase"] = "implement"
+            return {"already_writer": False, "writer": self.role, "round": state["round"], "took_over": False}
 
         result = self.store.mutate(apply)
         self.store.append_transcript("claim", self.role, writer=self.role,
@@ -462,6 +505,7 @@ class PairSession:
             "writer": result["writer"],
             "already_held": result["already_writer"],
             "round": result.get("round"),
+            "took_over": result.get("took_over", False),
             "note": note,
         }
 
@@ -502,27 +546,79 @@ class PairSession:
         a note, so what gets typed is a short trigger, which is safe to push into a
         composer where a whole paragraph would be mangled.
         """
+        if os.environ.get("PAIR_DISABLE_RING") == "1":
+            return {"rung": False, "why": "ring disabled by PAIR_DISABLE_RING"}
         state = self.store.read()
         pane = (state.get("roles", {}).get(target) or {}).get("pane")
         if not pane:
-            return {"rung": False, "why": "ne�� панель, сосед вне tmux"}
-        if not shutil.which("tmux"):
+            return {"rung": False, "why": "нет панели, сосед вне tmux"}
+        if pane == os.environ.get("TMUX_PANE"):
+            return {"rung": False, "why": "не звоним в собственную панель"}
+        tmux = shutil.which("tmux")
+        if not tmux:
             return {"rung": False, "why": "tmux не найден в PATH"}
         probe = subprocess.run(
-            ["tmux", "display-message", "-p", "-t", pane, "#{pane_dead}"],
+            [tmux, "display-message", "-p", "-t", pane, "#{pane_dead}"],
             capture_output=True, text=True, timeout=5,
         )
         if probe.returncode != 0 or probe.stdout.strip() == "1":
             return {"rung": False, "why": "панель соседа мертва"}
+        from composer import capture, composer_line, is_composer_empty
+        deadline = time.monotonic() + 1.5
+        while True:
+            line = composer_line(capture(tmux, pane))
+            if is_composer_empty(line):
+                break
+            if time.monotonic() >= deadline:
+                return {"rung": False, "why": "композер соседа занят, не перебиваем"}
+            time.sleep(0.3)
         prompt = f"pair: {kind} от {self.role} — {detail}. Прочитай pair_read."
         if len(prompt) > 150:
             prompt = prompt[:147] + "..."
-        subprocess.run(["tmux", "send-keys", "-t", pane, "-l", prompt],
+        subprocess.run([tmux, "send-keys", "-t", pane, "-l", prompt],
                        capture_output=True, text=True, timeout=5)
         subprocess.run(["tmux", "send-keys", "-t", pane, "Enter"],
                        capture_output=True, text=True, timeout=5)
         self.store.append_transcript("doorbell", self.role, to=target, bell_kind=kind, pane=pane)
         return {"rung": True, "pane": pane, "prompt": prompt}
+
+    def tool_pair_unblock(self, peer: str = "") -> dict[str, Any]:
+        """Check if a peer's tmux pane is waiting on an interactive permission prompt (e.g. [y/n]) and approve it.
+
+        Use when the peer agent has stalled or silent_seconds is growing, to prevent sessions from blocking on CLI prompts.
+        """
+        from composer import _tmux, pane_alive, resolve_permission_prompt
+
+        target = peer.strip()
+        state = self.store.read()
+        roles = state.get("roles", {})
+        if not target:
+            candidates = [r for r in roles if r != self.role]
+            if len(candidates) == 1:
+                target = candidates[0]
+            elif not candidates:
+                return {"unblocked": False, "why": "нет зарегистрированных соседей", "prompt": ""}
+            else:
+                raise ProtocolError("`peer` is required when multiple peers are registered.")
+        if target == self.role:
+            raise ProtocolError("cannot unblock own role.")
+        pane = (roles.get(target) or {}).get("pane")
+        if not pane:
+            return {"unblocked": False, "why": f"у {target} нет панели tmux", "prompt": ""}
+        try:
+            tmux = _tmux()
+        except Exception as exc:
+            return {"unblocked": False, "why": str(exc), "prompt": ""}
+        matched = resolve_permission_prompt(tmux, pane)
+        if matched:
+            self.store.append_transcript("unblock", self.role, target=target, pane=pane, prompt=matched)
+        return {
+            "unblocked": bool(matched),
+            "peer": target,
+            "pane": pane,
+            "prompt": matched or "",
+            "status": f"Подтверждение [y] отправлено: {matched}" if matched else "Запрос разрешения не обнаружен в панели",
+        }
 
     def tool_pair_deliver(self, to: str, text: str, wait_for_empty: float = 0.0, submit: bool = True) -> dict[str, Any]:
         """Type a message straight into the peer's composer, as if the user typed it.
@@ -535,6 +631,14 @@ class PairSession:
         Chunks the text, verifies the tail landed, and backspaces it out if not.
         """
         from composer import ComposerBusy, deliver
+
+        if not isinstance(to, str) or not to.strip():
+            raise ProtocolError("`to` is required.")
+        to = to.strip()
+        if to == self.role:
+            raise ProtocolError("cannot deliver a message to your own role.")
+        if not isinstance(text, str) or not text.strip():
+            raise ProtocolError("`text` is required.")
 
         state = self.store.read()
         pane = (state.get("roles", {}).get(to) or {}).get("pane")
@@ -568,10 +672,19 @@ class PairSession:
                 pass
             inbox = self.store.mailbox_root / to
             inbox.mkdir(parents=True, exist_ok=True)
-            seq = state.get("seq", 0) + 1
+            existing_seqs = [0]
+            if self.store.mailbox_root.is_dir():
+                for f in self.store.mailbox_root.glob("*/*.json"):
+                    try:
+                        existing_seqs.append(int(f.name.split("-")[0]))
+                    except Exception:
+                        pass
+            current_max_seq = max(existing_seqs)
+            seq = max(state.get("seq", 0), current_max_seq) + 1
             state["seq"] = seq
             stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-            filename = f"{seq:06d}-{stamp}-{self.role}.json"
+            token = uuid.uuid4().hex[:6]
+            filename = f"{seq:06d}-{stamp}-{self.role}-{token}.json"
             body = {
                 "seq": seq,
                 "from": self.role,
@@ -644,15 +757,23 @@ class PairSession:
             self._register(state)
             files = self._inbox_files()
             seen = int(state.get("seen", {}).get(self.role, 0))
+            if seen > len(files):
+                seen = len(files)
             fresh = files[seen : seen + max(0, int(limit))]
             out: list[dict[str, Any]] = []
+            successful_count = 0
             for path in fresh:
                 try:
                     out.append(json.loads(path.read_text(encoding="utf-8")))
-                except (OSError, json.JSONDecodeError):
-                    continue
-            if fresh:
-                state.setdefault("seen", {})[self.role] = seen + len(fresh)
+                    successful_count += 1
+                except (OSError, json.JSONDecodeError) as exc:
+                    self.store.append_transcript("message_unreadable", self.role,
+                                                 path=str(path), error=str(exc))
+                    break
+            if successful_count:
+                state.setdefault("seen", {})[self.role] = seen + successful_count
+            elif seen != int(state.get("seen", {}).get(self.role, 0)):
+                state.setdefault("seen", {})[self.role] = seen
             return out
 
         return self.store.mutate(apply)
@@ -684,22 +805,24 @@ class PairSession:
 
         forward = PHASE_TRANSITIONS.get(from_phase, ())
         if phase not in forward and phase != backward:
-            allowed = list(forward) + ([backward] if backward else [])
+            allowed = list(forward)
+            if backward and backward not in allowed:
+                allowed.append(backward)
             raise ProtocolError(
                 f"cannot move from {from_phase!r} to {phase!r}; allowed: {', '.join(allowed) or 'none'}.",
                 "Phases move scoping → plan → implement → verify → done. Any role may take one step back.",
             )
 
-        unread = self._unread_count(current)
-        if phase == "done" and unread:
-            raise ProtocolError(
-                f"{unread} unread message(s) in your inbox; a round cannot be closed over unread mail.",
-                "Run pair_read first. If the peer still needs something, it has not been said yet.",
-            )
-
         reopening = from_phase == "done" and phase != "done"
 
         def apply(state: dict[str, Any]) -> None:
+            if phase == "done":
+                unread = self._unread_count(state)
+                if unread > 0:
+                    raise ProtocolError(
+                        f"{unread} unread message(s) in your inbox; a round cannot be closed over unread mail.",
+                        "Run pair_read first. If the peer still needs something, it has not been said yet.",
+                    )
             state["phase"] = phase
             if reopening:
                 state.pop("closed_at", None)
@@ -1132,6 +1255,24 @@ def tool_definitions() -> list[dict[str, Any]]:
                 "required": [],
             },
         },
+        {
+            "name": "pair_unblock",
+            "description": (
+                "Check if a peer agent's terminal pane is blocked waiting on an interactive permission prompt "
+                "(e.g. [y/n] or Allow) and send 'y' to unblock them."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "peer": {
+                        "type": "string",
+                        "description": "Role name of the peer to check and unblock (optional if only one peer is registered).",
+                        "default": "",
+                    },
+                },
+                "required": [],
+            },
+        },
     ]
 
 
@@ -1149,6 +1290,7 @@ HANDLERS = {
     "pair_patch_release": lambda session, args: session.tool_pair_patch_release(**args),
     "pair_note": lambda session, args: session.tool_pair_note(**args),
     "pair_transcript": lambda session, args: session.tool_pair_transcript(**args),
+    "pair_unblock": lambda session, args: session.tool_pair_unblock(**args),
 }
 
 
@@ -1306,7 +1448,6 @@ def run_ctl(args: argparse.Namespace, state_dir: Path) -> int:
                 "writer": state.get("writer"),
                 "phase": state.get("phase"),
                 "round": state.get("round"),
-                "mode": state.get("mode", "fix"),
                 "roles": {name: info.get("last_seen") for name, info in state.get("roles", {}).items()},
             },
             indent=2,
@@ -1324,7 +1465,11 @@ def run_ctl(args: argparse.Namespace, state_dir: Path) -> int:
             # решение человека — повод поставить метку «выбрано человеком», чтобы
             # в переписке было видно, что это не гонка
             state["writer_reason"] = "назначено человеком"
-            if state.get("phase") == "scoping" and not state.get("task"):
+            if state.get("closed_at") or state.get("phase") == "done":
+                state.pop("closed_at", None)
+                state["phase"] = "implement"
+                state["round"] = int(state.get("round", 0)) + 1
+            elif state.get("phase") == "scoping" and not state.get("task"):
                 state["round"] = int(state.get("round", 0)) + 1
         store.mutate(apply)
         store.append_transcript("assign", "human", writer=role,

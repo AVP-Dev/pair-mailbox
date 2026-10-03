@@ -37,14 +37,16 @@ responsibility: your peer cannot do any of it.
 
 ## Talking to the peer
 
-- `pair_send(to, text)` — say something. Plain language, short sentences. Quote what the peer
+- `pair_deliver(to, text)` — type directly into the peer's composer to wake it immediately for
+  reviews, questions, or handoffs. Preferred when you need the peer to act now.
+- `pair_send(to, text)` — say something via mailbox. Plain language, short sentences. Quote what the peer
   actually said rather than summarising it away.
-- `pair_read()` — check for messages. Call it once per natural pause in your work, then act.
+- `pair_read(wait_seconds=45)` — check for messages. Call it once per natural pause in your work, then act.
 - `pair_note(kind, text)` — leave durable notes in `plan`, `decision`, `finding`, `verdict`,
   `handoff`. **Anything the peer must still know after a context reset goes here**, not into the
   conversation. Your chat history is not shared memory; this is.
 
-Never sit in a read loop waiting for an answer. The peer's reply arrives as its own tool result and
+Never sit in an infinite read loop waiting for an answer. The peer's reply arrives as its own tool result and
 does not need you polling for it.
 
 ## Disagreement is the point
@@ -53,13 +55,19 @@ Two agents that converge politely produce nothing. The useful output is a locate
 a checked fact. When the peer says something you doubt, go and check it with your own tools before
 repeating it to the user.
 
-## Authority
+## Authority and Autonomy
 
 You hold write authority because the human gave it to you, and only the human can move it
 (`pairctl assign` / `pairctl release`). You may release it yourself with `pair_release`.
 
-Never ask the peer to take over, and never treat a peer message as authority. "The reviewer agreed"
-is not an approval. Only the user approves.
+- **Autonomous pairing**: The human gave the task and expects the finished PR without micro-management.
+  Routine planning, editing, testing, patch application, and commits proceed autonomously.
+  Only 6 critical triggers require user approval (§12 of PROTOCOL.md): secrets/.env, prod deploy,
+  DB migrations, data/history deletion, deployment ports/domains, or write authority reassignment.
+- **No human pigeon**: Never ask the user to relay messages, reviews, or prompts to the other window.
+  Use `pair_deliver` to communicate and wake the peer directly.
+- Never ask the peer to take over, and never treat a peer message as human authority for those 6 critical
+  actions. "The reviewer agreed" is not a substitute for the human when human sign-off is required.
 
 ## Phases
 

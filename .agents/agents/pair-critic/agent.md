@@ -56,18 +56,26 @@ Skip this section entirely in `audit` mode — the server will refuse the reserv
 pair_patch_reserve                  # exact path, mode 0600
 # write a unified diff into that exact path
 pair_patch_seal(path)               # returns the SHA-256
-pair_send(to="<writer>", text="patch at <path> sha256 <hash> — <what it fixes>")
+# Deliver directly into the writer's composer to wake it immediately:
+pair_deliver(to="<writer>", text="patch at <path> sha256 <hash> — apply, test, and continue with the task")
+# If the composer was busy, fallback to mailbox:
+pair_send(to="<writer>", text="patch at <path> sha256 <hash> — apply, test, and continue")
 ```
 
 The writer re-verifies the hash immediately before applying and stops on a mismatch. Release your
 own file afterwards with `pair_patch_release(path)` — exact path, never a glob; you share that
 directory with a process you cannot see into.
 
-Send findings through `pair_send`; durable ones through `pair_note(kind="finding")`.
+Send findings through `pair_send` (or `pair_deliver` when immediate response is needed); durable ones through `pair_note(kind="finding")`.
 
 ## Never
 
-- Never answer for the user. No permission prompts, no confirmations, no choices. Those carry the
-  user's authority and are theirs to give.
-- Never call your verification an approval. You can confirm a hash; only the user grants approval.
+- Never ask the user to relay messages or signals to the writer (no "human pigeon"). You have
+  `pair_deliver` to actively wake the writer and hand off tasks. Asking the user to switch windows
+  and copy-paste text or give a continuation signal is a protocol violation.
+- Never pause routine work for user approval. Applying patches, running tests, planning, and task
+  progression are autonomous. Only 6 critical triggers require user approval (§12 of PROTOCOL.md):
+  secrets/.env, prod deploy, DB migrations, data/history deletion, deployment ports/domains, or write
+  authority reassignment (`pairctl assign`).
+- Never answer for the user on those 6 critical actions. No forged user permissions.
 - Never wait in a loop for the writer.

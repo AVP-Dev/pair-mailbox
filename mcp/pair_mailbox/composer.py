@@ -27,7 +27,7 @@ CHUNK_BYTES = 170
 
 # Что считаем приглашением ввести текст. Универсально: последняя строка, где
 # после маркера пусто или почти пусто.
-PROMPT_MARKERS = (">", ">", "\u203a", "$", "#", "::", "ask>", "│")
+PROMPT_MARKERS = (">", "\u203a", "$", "#", "::", "ask>", "│")
 
 
 class ComposerBusy(Exception):
@@ -72,7 +72,7 @@ def is_composer_empty(line: str) -> bool:
     if not s.strip():
         return True
     for marker in PROMPT_MARKERS:
-        idx = s.find(marker)
+        idx = s.rfind(marker)
         if idx != -1:
             tail = s[idx + len(marker):].strip()
             # рамка TUI, рамки-разделители, курсор
@@ -112,10 +112,19 @@ def type_text(tmux: str, pane: str, text: str) -> None:
 
 
 def erase(tmux: str, pane: str, count: int) -> None:
-    for _ in range(count):
-        subprocess.run([tmux, "send-keys", "-t", pane, "BSpace"],
+    if count <= 0:
+        return
+    r = subprocess.run([tmux, "send-keys", "-t", pane, "-N", str(count), "BSpace"],
                        capture_output=True, text=True, timeout=5)
-        time.sleep(0.01)
+    if r.returncode != 0:
+        batch = 50
+        remaining = count
+        while remaining > 0:
+            cur = min(remaining, batch)
+            subprocess.run([tmux, "send-keys", "-t", pane] + ["BSpace"] * cur,
+                           capture_output=True, text=True, timeout=5)
+            remaining -= cur
+            time.sleep(0.01)
 
 
 def tail_present(lines: list, needle: str) -> bool:
@@ -133,6 +142,53 @@ def tail_present(lines: list, needle: str) -> bool:
     joined = " ".join(" ".join(meaningful[-6:]).split())
     tail = " ".join(needle[-60:].split())
     return tail in joined
+
+
+PERMISSION_PATTERNS = (
+    r"\[[yY]/[nN]\]",
+    r"\([yY]/[nN]\)",
+    r"\[[yY]/[nN]/[a-zA-Z]+\]",
+    r"\[yes/no\]",
+    r"\b(?:Allow|Approve)\s+(?:execution\b|tool\b|bash\b|command\b|this\b)",
+    r"\bDo you want to proceed\?",
+    r"\bDo you allow this tool call\?",
+)
+
+
+def detect_permission_prompt(lines: list) -> str | None:
+    """Return the matched prompt text if the terminal pane is showing an interactive confirmation prompt, else None."""
+    meaningful = [line.strip() for line in lines if line.strip()]
+    if not meaningful:
+        return None
+    for line in meaningful[-2:]:
+        for pat in PERMISSION_PATTERNS:
+            if re.search(pat, line, re.IGNORECASE):
+                return line
+    return None
+
+
+def resolve_permission_prompt(tmux: str, pane: str) -> str | None:
+    """Check if the pane is stalled waiting for a permission confirmation and confirm it.
+
+    Returns the prompt text that was approved, or None.
+    """
+    if not pane_alive(tmux, pane):
+        return None
+    lines = capture(tmux, pane)
+    prompt = detect_permission_prompt(lines)
+    if not prompt:
+        return None
+
+    line = composer_line(lines)
+    if line and not detect_permission_prompt([line]) and not is_composer_empty(line):
+        return None
+
+    subprocess.run([tmux, "send-keys", "-t", pane, "y"],
+                   capture_output=True, text=True, timeout=5)
+    subprocess.run([tmux, "send-keys", "-t", pane, "Enter"],
+                   capture_output=True, text=True, timeout=5)
+    return prompt
+
 
 def deliver(pane: str, text: str, wait_for_empty: float = 0.0, submit: bool = True) -> dict:
     """Доставить текст в композер соседа. Возвращает отчёт, что реально вышло.
@@ -159,7 +215,7 @@ def deliver(pane: str, text: str, wait_for_empty: float = 0.0, submit: bool = Tr
     time.sleep(0.35)
     after = capture(tmux, pane)
     if not tail_present(after, body):
-        written = len(body.encode())
+        written = len(body)
         erase(tmux, pane, written)
         return {"delivered": False, "why": "вставка не появилась в панели, откатил",
                 "erased": written}

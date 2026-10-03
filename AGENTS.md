@@ -65,7 +65,8 @@ Keep that distinction. An agent that believes it has a peer will start negotiati
 All of it goes through the `pair_*` MCP tools — there is no other channel. `pair-chat` (a skill,
 present for both CLIs) covers usage. The short version:
 
-- `pair_send` to talk, `pair_read` to listen, `pair_note` to leave something behind.
+- `pair_deliver` to actively wake the peer in its composer and hand work over immediately.
+- `pair_send` to talk passively via mailbox, `pair_read` to listen, `pair_note` to leave something behind.
 - The `Chat from <role>:` label is added by the server. Do not write it yourself.
 - Delivery is not a reply. Do not wait, and do not claim the peer is working on it.
 
@@ -83,3 +84,6 @@ arrangement safe rather than merely clever.
 - **Finish the loop.** Read the peer's findings and open the files it cited before reporting done.
 - **One test file per source file.** `foo.go` → `foo_test.go`, never a third.
 - **Leave the tree clean.** No stray patch files, no scratch notes outside `.pair/`.
+- **No human pigeon.** Never ask the user to relay messages, reviews, handoffs, or prompts to the
+  other window. The two agents are an autonomous pair. Use `pair_deliver` to actively wake the peer.
+  The user defines the task and receives the finished PR; the user is not a message bus.

@@ -54,6 +54,27 @@ def present(profile):
     return cfg.parent.exists()
 
 
+def argv_from_toml(text):
+    """Минимум, который нужен из блока [mcp_servers.pair]: command и args."""
+    cmd, args, inside = None, [], False
+    for line in text.splitlines():
+        s = line.strip()
+        if s.startswith("["):
+            inside = s == "[mcp_servers.pair]"
+            continue
+        if not inside or "=" not in s:
+            continue
+        key, _, val = s.partition("=")
+        key, val = key.strip(), val.strip().strip('"')
+        if key == "command":
+            cmd = val
+        elif key == "args":
+            args = [a.strip().strip('"') for a in val.strip("[]").split(",") if a.strip()]
+    if not cmd:
+        raise KeyError("command")
+    return [cmd] + args
+
+
 def write_mcp(profile, role):
     spec = profile["mcp"]
     path = expand(spec["path"])
@@ -168,9 +189,13 @@ def main():
         if check_only:
             spec = profile["mcp"]
             try:
-                cfg = json.loads(expand(spec["path"]).read_text(encoding="utf-8"))
-                entry = cfg[spec["root_key"]]["pair"]
-                argv = entry["command"] if isinstance(entry["command"], list) else [entry["command"]] + entry.get("args", [])
+                text = expand(spec["path"]).read_text(encoding="utf-8")
+                if spec.get("format") == "toml":
+                    argv = argv_from_toml(text)
+                else:
+                    cfg = json.loads(text)
+                    entry = cfg[spec["root_key"]]["pair"]
+                    argv = entry["command"] if isinstance(entry["command"], list) else [entry["command"]] + entry.get("args", [])
             except Exception:
                 print("    конфиг не найден или нечитаем")
                 failed.append(name)
@@ -190,7 +215,11 @@ def main():
             failed.append(name)
 
     print("\nтесты сервера")
-    subprocess.run([sys.executable, str(ROOT / "mcp/pair_mailbox/test_protocol.py")], cwd=str(ROOT))
+    env = dict(os.environ, PAIR_DISABLE_RING="1")
+    t_res = subprocess.run([sys.executable, str(ROOT / "mcp/pair_mailbox/test_protocol.py")], cwd=str(ROOT), env=env)
+    if t_res.returncode != 0:
+        print("\nТЕСТЫ НЕ ПРОШЛИ")
+        return 1
 
     if failed:
         print("\nНЕ СДЕЛАНО для: " + ", ".join(failed))
