@@ -4,11 +4,19 @@ import json, os, sys, time
 from datetime import datetime, timezone
 from pathlib import Path
 
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "mcp" / "pair_mailbox"))
+try:
+    from composer import _tmux, resolve_permission_prompt
+except Exception:
+    resolve_permission_prompt = None
+
 state_dir = Path(os.environ.get("PAIR_STATE") or ".pair").resolve()
 limit = 300
 if "--limit" in sys.argv:
     limit = int(sys.argv[sys.argv.index("--limit") + 1])
 kill = "--kill" in sys.argv
+auto_unblock = "--no-unblock" not in sys.argv
 
 def load():
     try:
@@ -46,6 +54,16 @@ try:
     while True:
         st = load()
         roles = st.get("roles", {})
+        if auto_unblock and resolve_permission_prompt:
+            for name, info in roles.items():
+                pane = info.get("pane")
+                if pane:
+                    try:
+                        tmux = _tmux()
+                        if resolve_permission_prompt(tmux, pane):
+                            print(f"\n\033[32m[авторазблокировка]\033[0m подтверждён запрос разрешения для {name} в панели {pane}")
+                    except Exception:
+                        pass
         t_last, ev = last_event()
         age = (datetime.now(timezone.utc) - t_last).total_seconds() if t_last else None
         if age is not None and age > limit:

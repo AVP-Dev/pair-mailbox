@@ -48,9 +48,20 @@ class PairTestCase(unittest.TestCase):
         self.store = Store(self.root)
         self.writer = PairSession("writer-agent", self.store)
         self.peer = PairSession("reviewer-agent", self.store)
+        self._orig_tmux_pane = os.environ.pop("TMUX_PANE", None)
+        self._orig_disable_ring = os.environ.get("PAIR_DISABLE_RING")
+        os.environ["PAIR_DISABLE_RING"] = "1"
 
     def tearDown(self) -> None:
         self._tmp.cleanup()
+        if self._orig_tmux_pane is not None:
+            os.environ["TMUX_PANE"] = self._orig_tmux_pane
+        else:
+            os.environ.pop("TMUX_PANE", None)
+        if self._orig_disable_ring is not None:
+            os.environ["PAIR_DISABLE_RING"] = self._orig_disable_ring
+        else:
+            os.environ.pop("PAIR_DISABLE_RING", None)
 
     def assertRefused(self, callable_, *args, contains: str = "", **kwargs):
         with self.assertRaises(ProtocolError) as caught:
@@ -1059,6 +1070,58 @@ class TestMultiProject(PairTestCase):
         )
         self.assertEqual(done.returncode, 1)
         self.assertIn("нет", done.stdout + done.stderr)
+
+
+class TestRingAndUnblock(PairTestCase):
+    def test_permission_prompt_detection(self) -> None:
+        from composer import detect_permission_prompt
+
+        prompts = [
+            ["Some output", "Allow execution of 'pytest'? [y/N]"],
+            ["Running build", "Do you want to proceed? (y/n)"],
+            ["Do you allow this tool call? [Y/n]"],
+            ["Tool approval required", "Approve execution? [y/n/always]"],
+            ["Press Enter to continue"],
+        ]
+        for lines in prompts:
+            self.assertTrue(detect_permission_prompt(lines), f"Failed to detect in {lines}")
+
+        not_prompts = [
+            ["def foo():", "    return x"],
+            ["cost = prices[y] / n"],
+            ["echo done"],
+            [],
+        ]
+        for lines in not_prompts:
+            self.assertFalse(detect_permission_prompt(lines), f"False positive in {lines}")
+
+    def test_ring_disabled_by_env(self) -> None:
+        os.environ["PAIR_DISABLE_RING"] = "1"
+        res = self.writer._ring("reviewer-agent", "тест", "детали")
+        self.assertFalse(res["rung"])
+        self.assertIn("PAIR_DISABLE_RING", res["why"])
+
+    def test_ring_avoids_self_pane(self) -> None:
+        os.environ.pop("PAIR_DISABLE_RING", None)
+        os.environ["TMUX_PANE"] = "%99"
+        self.store.mutate(lambda s: s.setdefault("roles", {})
+                          .setdefault("reviewer-agent", {})
+                          .update({"pane": "%99"}))
+        res = self.writer._ring("reviewer-agent", "тест", "детали")
+        self.assertFalse(res["rung"])
+        self.assertIn("собственную панель", res["why"])
+
+    def test_pair_unblock_validation(self) -> None:
+        self.writer.tool_pair_state()
+        self.peer.tool_pair_state()
+
+        # Cannot unblock self
+        self.assertRefused(lambda: self.writer.tool_pair_unblock(peer="writer-agent"))
+
+        # Peer without tmux pane returns graceful status
+        res = self.writer.tool_pair_unblock(peer="reviewer-agent")
+        self.assertFalse(res["unblocked"])
+        self.assertIn("нет панели tmux", res["why"])
 
 
 if __name__ == "__main__":

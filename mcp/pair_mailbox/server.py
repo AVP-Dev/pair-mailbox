@@ -502,27 +502,78 @@ class PairSession:
         a note, so what gets typed is a short trigger, which is safe to push into a
         composer where a whole paragraph would be mangled.
         """
+        if os.environ.get("PAIR_DISABLE_RING") == "1":
+            return {"rung": False, "why": "ring disabled by PAIR_DISABLE_RING"}
         state = self.store.read()
         pane = (state.get("roles", {}).get(target) or {}).get("pane")
         if not pane:
-            return {"rung": False, "why": "ne�� панель, сосед вне tmux"}
-        if not shutil.which("tmux"):
+            return {"rung": False, "why": "нет панели, сосед вне tmux"}
+        if pane == os.environ.get("TMUX_PANE"):
+            return {"rung": False, "why": "не звоним в собственную панель"}
+        tmux = shutil.which("tmux")
+        if not tmux:
             return {"rung": False, "why": "tmux не найден в PATH"}
         probe = subprocess.run(
-            ["tmux", "display-message", "-p", "-t", pane, "#{pane_dead}"],
+            [tmux, "display-message", "-p", "-t", pane, "#{pane_dead}"],
             capture_output=True, text=True, timeout=5,
         )
         if probe.returncode != 0 or probe.stdout.strip() == "1":
             return {"rung": False, "why": "панель соседа мертва"}
+        from composer import capture, composer_line, is_composer_empty
+        deadline = time.monotonic() + 1.5
+        while True:
+            line = composer_line(capture(tmux, pane))
+            if is_composer_empty(line):
+                break
+            if time.monotonic() >= deadline:
+                return {"rung": False, "why": "композер соседа занят, не перебиваем"}
+            time.sleep(0.3)
         prompt = f"pair: {kind} от {self.role} — {detail}. Прочитай pair_read."
         if len(prompt) > 150:
             prompt = prompt[:147] + "..."
-        subprocess.run(["tmux", "send-keys", "-t", pane, "-l", prompt],
+        subprocess.run([tmux, "send-keys", "-t", pane, "-l", prompt],
                        capture_output=True, text=True, timeout=5)
         subprocess.run(["tmux", "send-keys", "-t", pane, "Enter"],
                        capture_output=True, text=True, timeout=5)
         self.store.append_transcript("doorbell", self.role, to=target, bell_kind=kind, pane=pane)
         return {"rung": True, "pane": pane, "prompt": prompt}
+
+    def tool_pair_unblock(self, peer: str = "") -> dict[str, Any]:
+        """Check if a peer's tmux pane is waiting on an interactive permission prompt (e.g. [y/n]) and approve it.
+
+        Use when the peer agent has stalled or silent_seconds is growing, to prevent sessions from blocking on CLI prompts.
+        """
+        from composer import _tmux, pane_alive, resolve_permission_prompt
+
+        target = peer.strip()
+        state = self.store.read()
+        roles = state.get("roles", {})
+        if not target:
+            candidates = [r for r in roles if r != self.role]
+            if len(candidates) == 1:
+                target = candidates[0]
+            elif not candidates:
+                return {"unblocked": False, "why": "нет зарегистрированных соседей"}
+            else:
+                raise ProtocolError("`peer` is required when multiple peers are registered.")
+        if target == self.role:
+            raise ProtocolError("cannot unblock own role.")
+        pane = (roles.get(target) or {}).get("pane")
+        if not pane:
+            return {"unblocked": False, "why": f"у {target} нет панели tmux"}
+        try:
+            tmux = _tmux()
+        except Exception as exc:
+            return {"unblocked": False, "why": str(exc)}
+        unblocked = resolve_permission_prompt(tmux, pane)
+        if unblocked:
+            self.store.append_transcript("unblock", self.role, target=target, pane=pane)
+        return {
+            "unblocked": unblocked,
+            "peer": target,
+            "pane": pane,
+            "status": "Подтверждение [y] отправлено" if unblocked else "Запрос разрешения не обнаружен в панели",
+        }
 
     def tool_pair_deliver(self, to: str, text: str, wait_for_empty: float = 0.0, submit: bool = True) -> dict[str, Any]:
         """Type a message straight into the peer's composer, as if the user typed it.
@@ -1132,6 +1183,24 @@ def tool_definitions() -> list[dict[str, Any]]:
                 "required": [],
             },
         },
+        {
+            "name": "pair_unblock",
+            "description": (
+                "Check if a peer agent's terminal pane is blocked waiting on an interactive permission prompt "
+                "(e.g. [y/n] or Allow) and send 'y' to unblock them."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "peer": {
+                        "type": "string",
+                        "description": "Role name of the peer to check and unblock (optional if only one peer is registered).",
+                        "default": "",
+                    },
+                },
+                "required": [],
+            },
+        },
     ]
 
 
@@ -1149,6 +1218,7 @@ HANDLERS = {
     "pair_patch_release": lambda session, args: session.tool_pair_patch_release(**args),
     "pair_note": lambda session, args: session.tool_pair_note(**args),
     "pair_transcript": lambda session, args: session.tool_pair_transcript(**args),
+    "pair_unblock": lambda session, args: session.tool_pair_unblock(**args),
 }
 
 

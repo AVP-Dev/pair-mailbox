@@ -27,7 +27,7 @@ CHUNK_BYTES = 170
 
 # Что считаем приглашением ввести текст. Универсально: последняя строка, где
 # после маркера пусто или почти пусто.
-PROMPT_MARKERS = (">", ">", "\u203a", "$", "#", "::", "ask>", "│")
+PROMPT_MARKERS = (">", "\u203a", "$", "#", "::", "ask>", "│")
 
 
 class ComposerBusy(Exception):
@@ -112,10 +112,19 @@ def type_text(tmux: str, pane: str, text: str) -> None:
 
 
 def erase(tmux: str, pane: str, count: int) -> None:
-    for _ in range(count):
-        subprocess.run([tmux, "send-keys", "-t", pane, "BSpace"],
+    if count <= 0:
+        return
+    r = subprocess.run([tmux, "send-keys", "-t", pane, "-N", str(count), "BSpace"],
                        capture_output=True, text=True, timeout=5)
-        time.sleep(0.01)
+    if r.returncode != 0:
+        batch = 50
+        remaining = count
+        while remaining > 0:
+            cur = min(remaining, batch)
+            subprocess.run([tmux, "send-keys", "-t", pane] + ["BSpace"] * cur,
+                           capture_output=True, text=True, timeout=5)
+            remaining -= cur
+            time.sleep(0.01)
 
 
 def tail_present(lines: list, needle: str) -> bool:
@@ -133,6 +142,45 @@ def tail_present(lines: list, needle: str) -> bool:
     joined = " ".join(" ".join(meaningful[-6:]).split())
     tail = " ".join(needle[-60:].split())
     return tail in joined
+
+
+PERMISSION_PATTERNS = (
+    r"\[y/N\]",
+    r"\[Y/n\]",
+    r"\[y/n\]",
+    r"\(y/n\)",
+    r"\[y/n/always\]",
+    r"Allow\b.*?\?",
+    r"Approve\b.*?\?",
+    r"permission\b.*?\?",
+    r"Do you want to proceed\?",
+    r"Press Enter to continue",
+)
+
+
+def detect_permission_prompt(lines: list) -> bool:
+    """True when the terminal pane is showing an interactive confirmation/permission prompt."""
+    meaningful = [line.strip() for line in lines if line.strip()]
+    if not meaningful:
+        return False
+    tail = " \n ".join(meaningful[-5:])
+    for pat in PERMISSION_PATTERNS:
+        if re.search(pat, tail, re.IGNORECASE):
+            return True
+    return False
+
+
+def resolve_permission_prompt(tmux: str, pane: str) -> bool:
+    """Check if the pane is stalled waiting for a permission confirmation and confirm it."""
+    if not pane_alive(tmux, pane):
+        return False
+    lines = capture(tmux, pane)
+    if detect_permission_prompt(lines):
+        subprocess.run([tmux, "send-keys", "-t", pane, "y", "Enter"],
+                       capture_output=True, text=True, timeout=5)
+        return True
+    return False
+
 
 def deliver(pane: str, text: str, wait_for_empty: float = 0.0, submit: bool = True) -> dict:
     """Доставить текст в композер соседа. Возвращает отчёт, что реально вышло.
@@ -159,7 +207,7 @@ def deliver(pane: str, text: str, wait_for_empty: float = 0.0, submit: bool = Tr
     time.sleep(0.35)
     after = capture(tmux, pane)
     if not tail_present(after, body):
-        written = len(body.encode())
+        written = len(body)
         erase(tmux, pane, written)
         return {"delivered": False, "why": "вставка не появилась в панели, откатил",
                 "erased": written}
