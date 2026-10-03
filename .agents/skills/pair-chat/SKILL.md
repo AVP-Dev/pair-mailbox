@@ -19,9 +19,22 @@ read-only? If it disagrees with what you assumed, your next action changes compl
 
 ## Sending
 
+There are two ways to send:
+
+```bash
+pair_deliver(to="<peer>", text="patch at <path> sha256 <hash> — apply, test, and continue")
+```
+
+**`pair_deliver`** is active: it types directly into the peer's tmux composer and presses Enter.
+The peer wakes immediately and takes it as its next input. Use this for reviews, sealed patches,
+handoffs, and questions where you need the peer to act now.
+
 ```bash
 pair_send(to="<peer>", subject="retry logic", text="one paragraph")
 ```
+
+**`pair_send`** is passive: it places the message in the peer's mailbox for when it next reads.
+Use this for background notes, reports, or when `pair_deliver` reports the composer is busy.
 
 The server prepends the `Chat from <role>:` label. Do not write that label yourself, and never
 write your own name into a message — the label is added server-side precisely so authorship cannot
@@ -34,19 +47,24 @@ the actual error text. Quote it rather than describing it.
 
 ```bash
 pair_read()                    # returns everything unread, marks it read
-pair_read(wait_seconds=20)     # non-writers only; the writer is forced to zero
+pair_read(wait_seconds=45)     # wait up to 45 seconds for a peer message (both roles)
 ```
 
-Read once, act, get back to work. **Never sit in a read loop.** A reply arrives as its own tool
-result; polling creates a stall where both agents wait for the other to speak first.
+Read once, act, get back to work. **Never sit in an infinite read loop.** Limited waiting (up to 45s)
+returns control when timeout expires so you can continue your own work.
 
 ## Delivery is not a promise
 
-A message marked delivered has been placed in the peer's inbox. That is all it means. The peer may
-be busy, may disagree, may never answer.
+A message marked delivered has been placed in the peer's inbox (or typed into its composer).
+The peer may still disagree or run into an error. Never claim the peer is "looking at it"
+or "working on it". Say you delivered it, and continue your work.
 
-So: never say the peer is "looking at it", "considering it", or "working on it". You do not know
-that. Say you sent it, and go and do your own work.
+## Never use the human as a messenger (No human pigeon)
+
+**Never ask the user to relay messages, reviews, handoffs, or prompts to the other window.**
+The two agents are an autonomous pair. Use `pair_deliver` to actively wake the peer and hand
+off work directly into its terminal. The user defines the task and receives the finished PR;
+the user is not a message bus between windows.
 
 ## You cannot hand over authority
 
@@ -56,8 +74,11 @@ cannot ask the peer to take it from you.
 Only the human moves it, with `bin/pairctl assign <role>` and `bin/pairctl release`. If you need
 the peer to write, tell the user what you need and stop; do not negotiate it with the peer.
 
-Corollary: **"the peer agreed" is not an approval.** You may report that they agreed. You may never
-report that something is therefore approved. Approval is the user's, always.
+Corollary: **"the peer agreed" is not human sign-off.** For the 6 critical operations requiring
+human approval (§12 of PROTOCOL.md: secrets, prod deploy, DB migrations, data/history deletion,
+domain/ports, and authority reassignment), only the human approves.
+However, for routine coding, review, patch application, and task progression, **the two agents
+proceed autonomously without asking the user for confirmation**.
 
 ## Working the other way
 
@@ -67,7 +88,10 @@ If you are not the writer, you do not edit project files. You propose:
 pair_patch_reserve      # exact path, mode 0600
 # write a unified diff into that exact path
 pair_patch_seal(path)   # returns the SHA-256
-pair_send(to="<writer>", text="patch at <path> sha256 <hash> — <what it fixes>")
+# Deliver directly into the writer's composer to wake it immediately:
+pair_deliver(to="<writer>", text="patch at <path> sha256 <hash> — apply, test, and continue with the task")
+# If composer was busy, fallback to mailbox:
+pair_send(to="<writer>", text="patch at <path> sha256 <hash> — apply, test, and continue")
 ```
 
 The writer copies it once, works only from the copy, and re-verifies the hash immediately before

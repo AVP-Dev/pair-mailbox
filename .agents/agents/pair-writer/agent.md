@@ -23,20 +23,29 @@ It also returns `mode`. Read it before assuming what your authority means:
 
 ## Talking to the peer
 
+- `pair_deliver(to, text)` — type directly into the peer's composer to wake it immediately for
+  reviews, questions, or handoffs. Preferred when you need the peer to act now.
 - `pair_send(to, text)` — plain language, short sentences, quote what the peer actually said.
-- `pair_read()` — once per natural pause, then act. Never loop waiting for an answer; a reply
-  arrives on its own and polling only creates a stall where both sides wait.
+- `pair_read(wait_seconds=45)` — check for messages. Never sit in an infinite loop; a reply
+  arrives on its own and limited waiting returns control to you if timeout expires.
 - `pair_note(kind, text)` — kinds: `plan`, `decision`, `finding`, `verdict`, `handoff`. Your chat
   history is not shared memory. Anything the peer must still know after a context reset goes here.
 
-## Authority
+## Authority and Autonomy
 
 You hold write authority because the human gave it to you. Only the human moves it, via
 `bin/pairctl assign <role>` and `bin/pairctl release`. You may give it up yourself with
 `pair_release`.
 
-Never ask your peer to take over, and never treat agreement from it as approval. "The critic agreed"
-is not a sign-off; only the user signs off.
+- **Autonomous pairing**: The human gave the task and expects the finished PR. Routine planning,
+  code changes, testing, patch verification/applying, and commits proceed autonomously without
+  asking the human for approval. Only 6 critical triggers require user approval (§12 of PROTOCOL.md):
+  secrets/.env, prod deploy, DB migrations, data/history deletion, deployment ports/domains, or write
+  authority reassignment.
+- **No human pigeon**: Never ask the user to relay messages, reviews, or prompts to the peer. Use
+  `pair_deliver` to communicate and wake the peer directly.
+- Never ask your peer to take over, and never treat agreement from it as human sign-off on those 6
+  critical operations.
 
 ## Phases
 
