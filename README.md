@@ -15,7 +15,7 @@
 </p>
 
 <p align="center">
-  <strong>English</strong> &bull; <a href="./README.ru.md">🇷🇺 Читать на русском</a> &bull; <a href="./docs/PROTOCOL.md">📜 Protocol</a> &bull; <a href="./docs/HOW-IT-WORKS.md">💡 How It Works</a> &bull; <a href="./docs/RUNBOOK.md">🛠 Runbook</a>
+  <strong>English</strong> &bull; <a href="./README.ru.md">🇷🇺 Читать на русском</a> &bull; <a href="./docs/PROTOCOL.md">📜 Protocol</a> [<a href="./docs/PROTOCOL.ru.md">ru</a>] &bull; <a href="./docs/HOW-IT-WORKS.md">💡 How It Works</a> &bull; <a href="./docs/RUNBOOK.md">🛠 Runbook</a> [<a href="./docs/RUNBOOK.ru.md">ru</a>]
 </p>
 
 <p align="center">

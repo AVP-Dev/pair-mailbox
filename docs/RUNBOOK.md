@@ -1,136 +1,229 @@
-# RUNBOOK: как поднять рабочую парную сессию
+# RUNBOOK: bringing up a working pair session
 
-Короткий путь от чистой машины до пары, где оба агента молчат не из-за поломки.
+> Language: this is the English original. The Russian mirror is
+> [`RUNBOOK.ru.md`](./RUNBOOK.ru.md).
 
-## Одна команда
+The short path from a clean machine to a pair where both agents are silent because
+there is nothing left to say, not because something broke.
+
+## One command
 
 ```bash
 ./finish.sh
 ```
 
-`finish.sh` делает всё: ставит, чинит конфиги, проверяет тесты, запускает пару и
-сверхвизора. Разбор шагов ниже — чтобы понимать, что он делает и что чинить самому.
+`finish.sh` does everything: installs, fixes the configs, runs the tests, prunes dead
+roster entries, starts the supervisor, and starts the pair. The steps below are here
+so you know what it does and what to fix by hand.
 
----
+Useful flags:
 
-## Ручной путь, если нужно по шагам
+| flag | effect |
+|---|---|
+| `--task "..."` | record the task in the shared list before starting |
+| `--autonomy observe\|semi\|auto` | how far the pair may go alone |
+| `--duo` | two copies of one CLI instead of the standing pair (see below) |
+| `--no-pair` | install and verify only, start no agents |
+| `--no-prune` | leave the roster alone |
 
-### 1. Поставить и проверить
+## The standing pair, and what `--duo` is for
 
-```bash
-./install.sh              # все найденные CLI
-./install.sh opencode     # только один
-./install.sh --check      # ничего не менять, только проверить
-```
-
-Установщик тронет ваши конфиги. Перед ним:
-
-```bash
-cp ~/.config/opencode/opencode.jsonc{,.bak}     # подстраховка, хотя он сам пишет .bak
-```
-
-Что он делает и чего не делает:
-
-- **пишет** блок `mcp.pair` в конфиг каждого CLI, роль зашита в конфиг;
-- **копирует** навыки в `~/.config/<cli>/skills/`;
-- **дописывает** блок парной работы в `AGENTS.md` после маркера `<!-- pair-mailbox -->`,
-  всё после маркера сохраняет, перед перезаписью кладёт `.bak`;
-- **не трогает** чужие ключи конфигов, чужие MCP-серверы и ваши `deny`-правила.
-
-Проверить, что не сломалось:
+By default `finish.sh` reads the standing arrangement and starts **the writer and
+the critic on their own CLIs**:
 
 ```bash
-python3 install_test.py                        # 13 тестов: установка не вредит
-python3 mcp/pair_mailbox/test_protocol.py      # инварианты протокола
-python3 bin/pairpilot_test.py                  # поведение сверхвизора
+bin/pairctl roles --writer opencode --critic agy --global   # set it once
+./finish.sh "задача"                                         # honours it
 ```
 
-### 2. Поднять пару
+`--duo` is for running two instances of the *same* CLI, which is occasionally useful
+and is not the default, because `bin/pair-duo` hands write authority to
+`<cli>-writer`:
 
 ```bash
-bin/pair-duo opencode "задача"          # один CLI, два окна в tmux
-bin/pair-duo --worktree claude "задача" # критик в отдельном worktree
+./finish.sh --duo "задача"        # writer becomes opencode-writer, and it says so
+bin/pair-duo claude "задача"      # the same thing, directly
 ```
 
-Роли закрепляются заранее, чтобы не начинался спор о праве записи:
+Authority moves only through the human, so `--duo` states out loud that it is
+overriding the standing arrangement. Nothing else in the system may do it.
+
+## The step-by-step path, when you need it
+
+### 1. Install and verify
+
+```bash
+./install.sh              # every CLI it finds
+./install.sh opencode     # just one
+./install.sh --check      # change nothing, only verify
+```
+
+The installer writes your configs. Before it:
+
+```bash
+cp ~/.config/opencode/opencode.jsonc{,.bak}     # a backstop, though it makes its own
+```
+
+What it does and does not do:
+
+- **writes** an `mcp.pair` block into each CLI's config, with the role baked in;
+- **copies** the skills into `~/.config/<cli>/skills/`;
+- **appends** the pair block to `AGENTS.md` after the `<!-- pair-mailbox -->` marker,
+  keeping whatever you wrote after the marker, and lays down a `.bak` before
+  rewriting;
+- **leaves alone** your own config keys, your other MCP servers, and your `deny`
+  rules.
+
+Check that nothing broke:
+
+```bash
+python3 install_test.py                        # 13 tests: installing causes no harm
+python3 mcp/pair_mailbox/test_protocol.py      # the protocol's invariants
+python3 bin/pairpilot_test.py                  # the supervisor's behaviour
+```
+
+### 2. Fix the standing arrangement
 
 ```bash
 bin/pairctl roles --writer opencode --critic agy --global
+bin/pairctl roles                                 # show it
+bin/pairctl roster                                # who is registered
+bin/pairctl roster --prune                        # drop the dead ones
 ```
 
-### 3. Запустить сверхвизора
+`--prune` removes a role only when two independent facts agree: its process is dead
+**and** its pane is either gone or belongs to another live role. One fact is not
+enough — after a crash a live pane may be a shell you opened. It refuses to remove
+whoever holds write authority.
+
+### 3. Start the pair
 
 ```bash
-bin/pairpilot &                  # в фоне, следит
-bin/pairpilot --once             # один проход, посмотреть что он сделает
-bin/pairpilot --launch agy=agy   # как поднимать роль, если её процесс умер
+./finish.sh                 # respects the standing arrangement
 ```
 
-Автономность — насколько далеко пара идёт без вас:
+Or by hand, in two panes:
 
 ```bash
-bin/pairctl autonomy observe   # только сообщает, человек за рулём
-bin/pairctl autonomy semi      # по умолчанию: работает сама, закрывает раунд по вашему слову
-bin/pairctl autonomy auto      # закрывает раунд сама, если есть доказательство
+# writer pane
+PAIR_ROLE=opencode PAIR_STATE=.pair opencode --standalone --auto
+# critic pane
+PAIR_ROLE=agy PAIR_STATE=.pair agy
 ```
 
-### 4. Работать
+### 4. Start the supervisor
 
 ```bash
-bin/pairchat          # переписка вживую
-bin/pairctl status    # состояние, включая что мешает закрыть раунд
+bin/pairpilot &                  # in the background, it watches
+bin/pairpilot --once             # one pass, to see what it would do
+bin/pairpilot --launch agy=agy   # how to raise a role whose process died
 ```
+
+How far the pair goes without you:
+
+```bash
+bin/pairctl autonomy observe   # only reports; the human is at the wheel
+bin/pairctl autonomy semi      # default: works alone, closes on your word
+bin/pairctl autonomy auto      # closes the round itself, given proof
+```
+
+Note that `observe` is not "gates off": proof is still required to close a round in
+every mode. `observe` only means it will not restart agents and does not need your
+word. See PROTOCOL §10b.
+
+### 5. Work
+
+```bash
+bin/pairchat          # the conversation, live
+bin/pairctl status    # state, including what blocks closing the round
+bin/pairctl tasks     # the task list, and it regenerates .pair/tasks.md
+bin/pairctl task --done 3              # close a task
+bin/pairctl task --drop 3 --reason "covered by PR #5 instead"
+bin/pairctl ok                       # say yes at the verify checkpoint
+bin/pairctl ok --revoke              # take it back
+```
+
+A round cannot close while a task is open, so anything added mid-round cannot be
+forgotten: either it gets done, or it gets dropped with a reason on the record.
 
 ---
 
-## Правило, которое экономит больше всего времени
+## The rule that saves the most time
 
-**После правки кода в репозитории — перезапустите агентов.**
+**After editing code in this repository, restart the agents.**
 
-MCP-сервер держит модули в памяти. Правка файла на диске не действует, пока
-процесс жив. Это не теория: сервер, стартовавший в 09:43, держал в памяти версию
-`composer.py` за 09:43, а правка вышла в 12:04 — и одиннадцать отказов доставки
-подряд объяснялись этой разницей.
+The MCP server holds modules in memory. A file change on disk does nothing while the
+process lives. This is not theory: a server started at 09:43 held the 09:43 version of
+`composer.py`, the fix landed at 12:04, and eleven consecutive delivery refusals were
+explained by that difference.
 
-Как проверить, что код свежий:
+Check whether the code is fresh:
+
+```bash
+ps -o pid,lstart,cmd -p $(pgrep -f 'server.py --role' | head -1)   # when the server started
+git log -1 --format=%cd                                            # when the last commit landed
+```
+
+If the start time is older than the last change, the code is stale.
+
+The workaround that gets suggested — `importlib.reload(composer)` on every call — do
+not do this. It leaves two versions of the module in one process, because the earlier
+imports still point at the first. Restarting is honest and predictable.
+
+---
+
+## Why you were being asked to confirm things
+
+Two separate causes, both fixed, both worth knowing.
+
+**The agent ran with a stale config that had no `--auto`.** Now
+`~/.config/opencode/opencode.jsonc` carries a `permission` block, and the opencode
+profile in `cli-profiles.json` has `launch: opencode --standalone --auto`. So
+everything the protocol already requires without a human confirms itself, and §12,
+system destruction, git history and the network are always refused.
+
+**The supervisor's allowlist file never existed.** `.pair/permissions.json` was
+absent, and `load_allow_patterns` turned the path to the missing file into a single
+allow pattern. It matched no prompt, so the supervisor refused **every** permission —
+which from the outside is indistinguishable from a peer that stopped helping. Missing
+file now means the default list, and it is written to the transcript
+(`pilot_default_allowlist`, `unblock_default_allowlist`) so you can see which rule
+approved a command.
+
+Check the deny rules:
 
 ```bash
 python3 -c "
-import sys; sys.path.insert(0,'mcp/pair_mailbox')
-from composer import PROMPT_MARKERS; print('│ в маркерах:', '│' in PROMPT_MARKERS)"
-ps -o pid,lstart,cmd -p $(pgrep -f 'server.py --role' | head -1)   # когда стартовал сервер
+import re,pathlib
+t=(pathlib.Path.home()/'.config/opencode/opencode.jsonc').read_text()
+print('deny rules:', len(re.findall(r'\"deny\"', t)))"
 ```
 
-Если время старта раньше последней правки — код старый.
-
-Обходной путь, который предлагали, — `importlib.reload(composer)` на каждый вызов:
-не делайте этого. Он оставит в одном процессе две версии модуля, потому что ссылки
-уже импортированы. Перезапуск честнее и предсказуемее.
+If that prints 0, the install did not get that far and the agent will ask about
+everything.
 
 ---
 
-## Почему вы уставали подтверждать
+## When something looks wrong
 
-Агент поднимался со старым конфигом, где не было `--auto`. Теперь в
-`~/.config/opencode/opencode.jsonc` есть блок `permission` с 21 правилом `deny`,
-а в `cli-profiles.json` у профиля opencode стоит `launch: opencode --standalone --auto`.
+| symptom | likely cause |
+|---|---|
+| prompts reach you for things the protocol allows | the allowlist file is missing or the CLI's `--auto` did not apply — check both above |
+| the supervisor never confirms anything | `bin/pairpilot --once` and read `closing_blocked_by` in `pairctl status` |
+| a dead role still sits in the roster | `bin/pairctl roster --prune` |
+| the critic stopped being nudged | two dead roles shared its pane; fixed, and `--prune` prevents it |
+| edits have no effect | stale MCP server — restart, see the rule above |
+| `pair_read` returns empty after a wait | the client cut the wait; the answer says `wait_capped_by_client_timeout` |
 
-То есть: всё, что протокол и так требует без человека, подтверждается само; а §12,
-разрушение системы, история git и сеть — отклоняются всегда. Проверить:
-
-```bash
-python3 -c "
-import json,os
-d=json.load(open(os.path.expanduser('~/.config/opencode/opencode.jsonc')))
-print('правил deny:', len(d.get('permission',{}).get('bash',{})))"
-```
-
-Если число не 21 — установка не прошла, агент будет спрашивать.
+`closing_blocked_by` in `pairctl status` names the reason a round cannot close right
+now. Read it before spending a turn on a foregone refusal.
 
 ---
 
-## Разборы
+## Further reading
 
-- [PROTOCOL.md](PROTOCOL.md) — правила парной работы, §13 про сверхвизора
-- [HOW-IT-WORKS.md](HOW-IT-WORKS.md) — как устроен MCP и состояние
-- `docs/backlog/` — подтверждённые дефекты с воспроизведением
+- [PROTOCOL.md](PROTOCOL.md) — the rules of pair work, §13 about the supervisor
+- [HOW-IT-WORKS.md](HOW-IT-WORKS.md) — how the MCP server and the state work
+- [SETUP.md](SETUP.md) — installation in detail
+- `docs/backlog/` — confirmed defects with reproductions
+- `.pair/tasks.md` — the session journal: what was asked, what was done, what is left
