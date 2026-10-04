@@ -2,7 +2,7 @@
   "_readme": "Форматы MCP и навыков по CLI. Роль сервера = имя CLI. Добавить свой CLI = добавить сюда объект и запустить ./install.sh <имя>. Поле launch — команда, которой bin/pairpilot поднимает роль, если её процесс умер (см. PROTOCOL.md §13).",
 
   "opencode": {
-    "launch": "opencode --standalone",
+    "launch": "opencode --standalone --auto",
     "label": "OpenCode",
     "mcp": {
       "path": "~/.config/opencode/opencode.jsonc",
