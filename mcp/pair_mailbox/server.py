@@ -1055,6 +1055,16 @@ class PairSession:
             }
         self.store.append_transcript("deliver", self.role, to=to, **result)
         result["delivered_to_pane"] = pane
+        if result.get("unverified"):
+            # Панель не подтвердила вставку, и композер при этом мог остаться с
+            # текстом. Убирать его откатом нельзя — это чужой ввод, — поэтому
+            # сообщение уходит в ящик тем же путём, что и при занятом композере.
+            # Дубликат дешевле потери: сосед прочитает лишнее, а не пропустит.
+            send_res = self.tool_pair_send(
+                to=to, text=text, subject="[mailbox fallback: вставка не подтвердилась]")
+            result["fallback_sent"] = True
+            result["fallback_seq"] = send_res.get("seq")
+            result["why"] = result["why"] + "; сообщение продублировано в ящик"
         return result
 
     def _obligations_where(self, side: str, role: str | None) -> list[dict[str, Any]]:

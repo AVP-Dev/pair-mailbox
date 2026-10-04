@@ -1785,6 +1785,89 @@ class TestStalePaneSurvives(PairTestCase):
                          f"{pane} после смерти сессии — фантом, а не панель")
 
 
+class TestDeliveryRollback(PairTestCase):
+    """Откат доставки не должен быть разрушительным на непроверенном выводе.
+
+    Найдено вживую: pair_deliver вернул delivered=false с «откатил», а сообщение
+    лежало в композере соседа. Причина — один неподтверждённый кадр.
+    """
+
+    def lagging_tui(self, body: str, lag_after: int = 1):
+        """TUI, который перерисовывается не сразу:lag_after кадров после ввода
+       .capture отдаёт устаревший экран, и только потом — настоящий."""
+        import composer
+
+        state = {"typed": False, "frames": 0, "erased": 0}
+
+        def fake_capture(tmux, pane):
+            state["frames"] += 1
+            if not state["typed"]:
+                return ["$ ", ">"]
+            if state["frames"] <= lag_after:
+                return ["$ ", ">"]           # экран ещё не перерисован
+            return ["$ ", "> " + body]
+
+        def fake_type(tmux, pane, text):
+            state["typed"] = True
+
+        def fake_erase(tmux, pane, count):
+            state["erased"] += count
+
+        return composer, state, fake_capture, fake_type, fake_erase
+
+    def deliver_to_lagging_pane(self, body: str, lag_after: int) -> tuple[dict, dict]:
+        import composer
+
+        composer_mod, state, fake_capture, fake_type, fake_erase = self.lagging_tui(body, lag_after)
+        saved = (composer.capture, composer.type_text, composer.erase,
+                 composer.pane_alive, composer.composer_line, composer.is_composer_empty,
+                 composer._tmux)
+        composer.capture = fake_capture
+        composer.type_text = fake_type
+        composer.erase = fake_erase
+        composer.pane_alive = lambda tmux, pane: True
+        composer.composer_line = lambda lines: lines[-1] if lines else None
+        composer.is_composer_empty = lambda line: line.strip() in ("$ ", ">")
+        composer._tmux = lambda: "/usr/bin/tmux"
+        try:
+            return composer.deliver("%7", body, submit=False), state
+        finally:
+            (composer.capture, composer.type_text, composer.erase,
+             composer.pane_alive, composer.composer_line, composer.is_composer_empty,
+             composer._tmux) = saved
+
+    def test_a_stale_frame_is_retried_before_believed(self) -> None:
+        """Один устаревший кадр — не доказательство, что вставки нет.
+
+        Замерено вживую на панели 30x70: одиночный BSpace отражается в capture
+        через ~2с. Проверка через 0.35с после ввода ~1900 символов therefore
+        читает пустой экран как «текст не дошёл» — и откатывает то, что дошло.
+        """
+        body = "проверка повторной попытки"
+        result, state = self.deliver_to_lagging_pane(body, lag_after=2)
+        self.assertTrue(
+            result.get("delivered"),
+            f"после перерисовки доставка обязана быть засчитана, а не откачена: {result}",
+        )
+        self.assertEqual(0, state["erased"], "успешную доставку откатывать нечего")
+
+    def test_an_unverifiable_pane_is_not_rolled_back_blindly(self) -> None:
+        """Откат на непрочитанном экране стирает композер вслепую.
+
+        `erase(len(body))` не знает, чей это ввод. Сосед или человек печатали в
+        этой же панели — и BSpace съедают их текст, пока протокол рапортует
+        «откатил». Непроверяемую доставку надо назвать непроверяемой, а не
+        уничтожить содержимое чужой панели.
+        """
+        body = "сообщение соседу, которое не поместится на один экран"
+        result, state = self.deliver_to_lagging_pane(body, lag_after=99)
+        self.assertLess(
+            state["erased"], len(body),
+            f"откат по непрочитанному кадру стёр {state['erased']} символов "
+            f"в панели, где может лежать чужой ввод: {result}",
+        )
+
+
 class TestRingAndUnblock(PairTestCase):
     def test_permission_prompt_detection(self) -> None:
         from composer import detect_permission_prompt
@@ -2082,6 +2165,41 @@ class TestMailboxInvariants(PairTestCase):
         self.assertFalse(ghost["alive"])
         self.assertFalse(ghost["will_read_new_messages"])
         self.assertIn("dead", ghost["hint"].lower())
+
+    def test_unverified_delivery_still_reaches_the_mailbox(self) -> None:
+        """Неподтверждённая вставка не должна оборачиваться тишиной.
+
+        Откат по непрочитанному экрану убран, а значит сообщение может остаться
+        лежать в композере соседа, который его не прочитает. Значит сервер обязан
+        продублировать его в ящик — тем же путём, что и при занятом композере.
+        """
+        def seed(state):
+            state.setdefault("roles", {})["reviewer-agent"] = {
+                "first_seen": "2026-01-01T00:00:00+00:00",
+                "last_seen": "2026-01-01T00:00:00+00:00",
+                "pid": os.getpid(),
+                "pane": "%55",
+            }
+        self.store.mutate(seed)
+
+        import composer
+        orig_deliver = composer.deliver
+
+        def mock_deliver(pane, text, wait_for_empty=0.0, submit=True):
+            return {"delivered": False, "unverified": True, "chars": len(text),
+                    "why": "вставка не подтвердилась на экране"}
+
+        composer.deliver = mock_deliver
+        try:
+            res = self.writer.tool_pair_deliver(to="reviewer-agent", text="payload worth keeping")
+            self.assertFalse(res["delivered"])
+            self.assertTrue(res.get("unverified"))
+            self.assertTrue(res.get("fallback_sent"), "сообщение не должно потеряться")
+            read = self.peer.tool_pair_read(wait_seconds=0)
+            self.assertEqual(read["count"], 1)
+            self.assertIn("payload worth keeping", read["messages"][0]["text"])
+        finally:
+            composer.deliver = orig_deliver
 
     def test_deliver_composer_busy_fallback_to_mailbox(self) -> None:
         # Prepopulate reviewer pane

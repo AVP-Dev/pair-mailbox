@@ -27,6 +27,14 @@ CAPTURE_LINES = 40
 # по 1022 на 1663-м. Чуть меньше — надёжнее.
 CHUNK_BYTES = 170
 
+# Сколько раз перечитывать панель, прежде чем признать вставку неподтверждённой.
+# Замерено вживую на панели 30x70: одиночный BSpace отражается в capture через
+# ~2с, а сообщение на 1900 символов переносится на ~64 строки и в окно целиком
+# не помещается. Одно чтение через 0.35с после ввода — это чаще устаревший кадр,
+# чем отсутствие вставки.
+VERIFY_ATTEMPTS = 8
+VERIFY_PAUSE = 0.4
+
 # Что считаем приглашением ввести текст. Универсально: последняя строка, где
 # после маркера пусто или почти пусто.
 PROMPT_MARKERS = (">", "\u203a", "$", "#", "::", "ask>")
@@ -460,13 +468,28 @@ def deliver(pane: str, text: str, wait_for_empty: float = 0.0, submit: bool = Tr
     body = " ".join(text.split())
     type_text(tmux, pane, body)
 
-    time.sleep(0.35)
-    after = capture(tmux, pane)
-    if not tail_present(after, body):
-        written = len(body)
-        erase(tmux, pane, written)
-        return {"delivered": False, "why": "вставка не появилась в панели, откатил",
-                "erased": written}
+    # Проверка вставки несколькими чтениями, а не одним.
+    landed = False
+    for attempt in range(VERIFY_ATTEMPTS):
+        if tail_present(capture(tmux, pane), body):
+            landed = True
+            break
+        if attempt + 1 < VERIFY_ATTEMPTS:
+            time.sleep(VERIFY_PAUSE)
+    if not landed:
+        # Не подтверждено — значит НЕИЗВЕСТНО, дошёл ли текст, а не «не дошёл».
+        # Стирать вслепую нельзя: erase(len(body)) не знает, чей это ввод, и
+        # съедает текст соседа или человека, печатавшего в этой же панели. Прежний
+        # откат на одном устаревшем кадре именно это и делал — и рапортовал
+        # «откатил» при тексте, который лежал на экране.
+        #
+        # Цена ошибки несимметрична: лишнее сообщение в ящике стоит одного взгляда,
+        # стёртый ввод соседа — его работы. Поэтому сомнение передаётся дальше, и
+        # вызывающий уходит в ящик, где сообщение точно будет прочитано.
+        return {"delivered": False, "unverified": True, "chars": len(body),
+                "pane": pane, "submitted": submit,
+                "why": "вставка не подтвердилась на экране; композер мог остаться с текстом, "
+                       "откат вслепую не делаю — забери сообщение из ящика"}
 
     result = {"delivered": True, "chars": len(body), "chunks": len(chunks(body)),
               "pane": pane, "submitted": submit}
