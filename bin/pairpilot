@@ -1,0 +1,379 @@
+#!/usr/bin/env python3
+"""Сверхвизор пары: держит работу, когда на неё никто не смотрит.
+
+Зачем он. Агенты пассивны по устройству: отработав шаг, они возвращаются в
+состояние ожидания ввода. Пока оба не пишут друг другу — пара стоит, и разбудить
+её может только человек. Именно это стоило нам ночи: поломался канал доставки,
+оба агента остались свободны, а единственным работающим путём остался терминал
+оператора.
+
+Поэтому у пары обязан быть кто-то, кто смотрит на неё извне. Этот скрипт.
+Он умеет ровно четыре вещи и не умеет ни одной пятой:
+
+  1. доставить отложенное сообщение, когда композер соседа освободился
+     (переживающая доставка: сообщение живёт в outbox, пока не долетело);
+  2. подтолкнуть молчащего агента — молчание дольше порога это дефект, а не норма;
+  3. подтвердить зависший запрос разрешения, чтобы агент не стоял до утра;
+  4. написать отчёт, когда раунд закрылся.
+
+И принципиально НЕ умеет: двигать фазу, выдавать или забирать право записи,
+коммитить, трогать файлы проекта. Право записи перемещает только человек, и если
+сверхвизор сможет его выдать, то он перестаёт быть ограничением (PROTOCOL.md §2).
+Поэтому спор о том, кто пишет, он разрешает только сообщением: «ты молчишь вот
+столько, вот твоя обязанность по последнему событию».
+
+Запуск:
+
+    bin/pairpilot                 # следить
+    bin/pairpilot --once          # один проход, для проверки вручную
+    bin/pairpilot --silence 300   # порог молчания, секунд
+"""
+import argparse
+import json
+import os
+import sys
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "mcp" / "pair_mailbox"))
+
+try:
+    from composer import ComposerBusy, deliver, _tmux, pane_alive, resolve_permission_prompt
+except Exception as error:  # noqa: BLE001 - причина должна быть видна сразу
+    print(f"pairpilot: не удалось подключить composer: {error}", file=sys.stderr)
+    raise SystemExit(1)
+
+from server import Store  # noqa: E402  - после sys.path
+
+DEFAULT_INTERVAL = 15.0
+DEFAULT_SILENCE = 600.0
+PROMPT_MARKERS = (">", "›", "❯")
+
+
+def now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def parse_iso(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def log(message: str) -> None:
+    print(f"[{datetime.now().strftime('%H:%M:%S')}] {message}", flush=True)
+
+
+class Pilot:
+    def __init__(self, state_dir: Path, silence: float, interval: float) -> None:
+        self.state_dir = state_dir
+        self.silence = silence
+        self.interval = interval
+        # Store умеет root — это сам каталог состояния: server.py делает ровно
+        # то же. Со state_dir.parent мы бы читали несуществующий state.json.
+        self.store = Store(state_dir)
+        self.outbox = state_dir / "pilot"
+        self.outbox.mkdir(parents=True, exist_ok=True)
+        self.reported: set[str] = set()
+        self.tmux: str | None = None
+        self.skip: set[str] = set()
+
+    # ------------------------------------------------------------------ state
+
+    def state(self) -> dict:
+        return self.store._load()
+
+    def remember(self, key: str) -> bool:
+        """True, если этого раунда мы ещё не делали. Не даёт повторять запись."""
+        stamp = self.state_dir / "pilot" / f".{key}"
+        if stamp.exists():
+            return False
+        stamp.write_text(now_iso(), encoding="utf-8")
+        return True
+
+    def forget(self, prefix: str) -> None:
+        for stamp in (self.outbox / "." + prefix).glob("*"):
+            stamp.unlink(missing_ok=True)
+
+    def panes(self, state: dict) -> dict[str, list[str]]:
+        """Кто на какой панели. Роли, делящие панель, неразличимы."""
+        table: dict[str, list[str]] = {}
+        for role, info in (state.get("roles") or {}).items():
+            pane = info.get("pane")
+            if pane:
+                table.setdefault(pane, []).append(role)
+        return table
+
+    def shared_panes(self, state: dict) -> dict[str, list[str]]:
+        return {pane: names for pane, names in self.panes(state).items() if len(names) > 1}
+
+    def ambiguous(self, state: dict) -> bool:
+        """Две роли на одной панели — значит ростер врёт, и бить в неё нельзя.
+
+        Так бывает: диагностика или чужой скрипт регистрирует роль, отметку не
+        стирая, и в неё попадает текущая панель. Тогда «будим claude» ушло бы в
+        окно agy. Лучше не будить вовсе, чем будить не того.
+        """
+        shared = self.shared_panes(state)
+        if not shared:
+            return False
+        key = "shared-" + "-".join(f"{pane}:{','.join(sorted(names))}" for pane, names in sorted(shared.items()))
+        if self.remember(key):
+            for pane, names in sorted(shared.items()):
+                log(f"панель {pane} указана сразу за {', '.join(sorted(names))} — не трогаю её")
+                self.store.append_transcript("pilot_pane_shared", "pairpilot", pane=pane, roles=sorted(names))
+        return True
+
+    # --------------------------------------------------------------- outbox
+
+    def enqueue(self, role: str, text: str) -> None:
+        path = self.outbox / f"{role}.txt"
+        path.write_text(text, encoding="utf-8")
+
+    def pending(self, role: str) -> str:
+        path = self.outbox / f"{role}.txt"
+        return path.read_text(encoding="utf-8").strip() if path.exists() else ""
+
+    def flush_outbox(self, state: dict) -> None:
+        """Доставить отложенное. Пока композер занят, текст остаётся на месте —
+        следующий проход попробует снова. Это и есть переживающая доставка."""
+        if self.tmux is None:
+            return
+        for role, info in state.get("roles", {}).items():
+            text = self.pending(role)
+            if not text or role in self.skip:
+                continue
+            pane = info.get("pane")
+            if not pane or not pane_alive(self.tmux, pane):
+                continue
+            try:
+                result = deliver(pane, text, wait_for_empty=0)
+            except ComposerBusy:
+                continue
+            if result.get("delivered"):
+                (self.outbox / f"{role}.txt").unlink(missing_ok=True)
+                self.store.append_transcript("pilot_deliver", "pairpilot", to=role, text=text[:120])
+                log(f"доставил отложенное для {role}")
+
+    # ---------------------------------------------------------------- nudges
+
+    def role_seen_age(self, info: dict) -> float:
+        stamp = parse_iso(info.get("last_seen"))
+        return (datetime.now(timezone.utc) - stamp).total_seconds() if stamp else float("inf")
+
+    def unread(self, state: dict, role: str) -> int:
+        return self.count_messages(role) - int(state.get("seen", {}).get(role, 0))
+
+    def count_messages(self, role: str) -> int:
+        inbox = self.state_dir / "mailbox" / role
+        return len(list(inbox.glob("*.json"))) if inbox.exists() else 0
+
+    def unread_peers(self, state: dict) -> list[str]:
+        """Кого разбудить из-за непрочитанного. Молчание в этом случае НЕ дефект:
+        агент не читает потому, что не знает, что есть письмо. Сообщаем один раз."""
+        out = []
+        for role in state.get("roles", {}):
+            if role in self.skip:
+                continue
+            missing = self.unread(state, role)
+            if missing <= 0:
+                continue
+            out.append(role)
+            key = f"unread-{role}"
+            if self.remember(key):
+                text = (f"[pairpilot] У тебя {missing} непрочитанных сообщений. "
+                        f"Вызови pair_read и ответь соседу. Если всё сделано — "
+                        f"предложи следующий кусок работы через pair_note.")
+                self.enqueue(role, text)
+                log(f"{role}: {missing} непрочитанных, поставил напоминание")
+        return out
+
+    def stale_writer(self, state: dict) -> None:
+        """Писатель молчит дольше порога, а фаза не закрыта. Хуже всего это
+        заканчивается ночью: двигать фазу может только он, поэтому её никто не
+        сдвинет, и работа встанет до утра."""
+        writer = state.get("writer")
+        if not writer or state.get("phase") == "done":
+            return
+        if writer in self.skip:
+            return
+        info = (state.get("roles") or {}).get(writer)
+        if not info:
+            return
+        age = self.role_seen_age(info)
+        if age < self.silence:
+            return
+        key = f"stale-writer-{state.get('round')}"
+        if not self.remember(key):
+            return
+        text = (f"[pairpilot] Ты молчишь {int(age // 60)} минут, а держишь право "
+                f"записи в фазе {state.get('phase')!r}. Двигать фазу больше некому, "
+                f"и работа встанет до утра. Продолжай свою часть, закрой фазу, "
+                f"либо пиши в заметку, что заблокировано и чем. Помечать «делаю» "
+                f"не считается: нужен реальный шаг или явная блокировка.")
+        self.enqueue(writer, text)
+        log(f"{writer} молчит {int(age // 60)} мин и держит фазу {state.get('phase')!r}")
+
+    def dead_pane(self, state: dict) -> None:
+        """Окно агента исчезло. Подтолкнуть нечем — это тот случай, где человек
+        нужен по-настоящему. Но сказать об этом надо громко и один раз, а не
+        оставлять догадываться."""
+        if self.tmux is None:
+            return
+        for role, info in (state.get("roles") or {}).items():
+            pane = info.get("pane")
+            if role in self.skip:
+                continue
+            if not pane:
+                if self.remember(f"nopane-{role}"):
+                    self.store.append_transcript("pilot_pane_missing", "pairpilot", target=role)
+                    log(f"{role}: панели нет, он вне tmux — подтолкнуть нечем")
+                continue
+            if pane_alive(self.tmux, pane):
+                continue
+            key = f"deadpane-{role}-{pane}"
+            if not self.remember(key):
+                continue
+            self.store.append_transcript("pilot_pane_dead", "pairpilot", target=role, pane=pane)
+            log(f"{role}: панель {pane} мертва — нужен человек, чтобы открыть окно")
+
+    def unblock(self, state: dict) -> None:
+        """Агент стоит на [y/N]. До утра это выглядит как зависание, хотя всего
+        один Enter всё решил бы."""
+        if self.tmux is None:
+            return
+        for role, info in (state.get("roles") or {}).items():
+            pane = info.get("pane")
+            if not pane or role in self.skip or not pane_alive(self.tmux, pane):
+                continue
+            try:
+                prompt = resolve_permission_prompt(self.tmux, pane)
+            except Exception:  # noqa: BLE001 - сверхвизор не должен падать из-за панели
+                continue
+            if prompt and self.remember(f"unblock-{role}-{hash(prompt) & 0xffffff:06x}"):
+                self.store.append_transcript("pilot_unblock", "pairpilot", target=role, prompt=prompt[:120])
+                log(f"{role}: подтвердил запрос разрешения — {prompt[:60]}")
+
+    # ---------------------------------------------------------------- report
+
+    def report_once(self, state: dict) -> None:
+        """Человек должен получить результат, а не молчание. Пишем отчёт в файл,
+        когда раунд закрыт; в консоль выводим путь."""
+        if state.get("phase") != "done" or not state.get("closed_at"):
+            return
+        key = f"report-{state.get('round')}"
+        if not self.remember(key):
+            return
+        path = write_report(self.state_dir, state)
+        self.store.append_transcript("pilot_report", "pairpilot", path=str(path))
+        log(f"раунд {state.get('round')} закрыт, отчёт: {path}")
+
+    # ------------------------------------------------------------------ tick
+
+    def tick(self) -> dict:
+        state = self.state()
+        if self.tmux is None:
+            self.tmux = _tmux() if _tmux() else None
+        # Роли, сидящие на общей панели, неразличимы: в них не тыкаем.
+        self.skip = {role for names in self.shared_panes(state).values() for role in names}
+        self.ambiguous(state)
+        self.unblock(state)
+        self.dead_pane(state)
+        self.unread_peers(state)
+        self.flush_outbox(state)
+        self.stale_writer(state)
+        self.report_once(state)
+        return state
+
+
+def write_report(state_dir: Path, state: dict) -> Path:
+    """Один экран для человека: что сделано, чем это доказано и что НЕ покрыто."""
+    transcript = state_dir / "transcript.jsonl"
+    events: list[dict] = []
+    if transcript.exists():
+        for raw in transcript.read_text(encoding="utf-8", errors="replace").splitlines():
+            if raw.strip():
+                try:
+                    events.append(json.loads(raw))
+                except json.JSONDecodeError:
+                    pass
+    kinds: dict[str, int] = {}
+    for event in events:
+        kinds[event.get("kind", "?")] = kinds.get(event.get("kind", "?"), 0) + 1
+    refused = sum(v for k, v in kinds.items() if k in ("refuse", "refused", "deliver_busy"))
+
+    notes = []
+    notes_dir = state_dir / "notes"
+    if notes_dir.exists():
+        for path in sorted(notes_dir.glob("*.md"), key=lambda p: p.stat().st_mtime)[-12:]:
+            head = next((ln.strip("# ").strip() for ln in
+                         path.read_text(encoding="utf-8", errors="replace").splitlines()
+                         if ln.startswith("#")), path.stem)
+            notes.append(f"- {path.stem}: {head}")
+
+    lines = [
+        f"# Отчёт по раунду {state.get('round')}",
+        "",
+        f"- задача: {state.get('task') or 'НЕ ЗАДАЧЕНА'}",
+        f"- фаза: {state.get('phase')}   режим: {state.get('mode')}",
+        f"- писатель: {state.get('writer') or 'НЕ НАЗНАЧЕН'}",
+        "",
+        "## Что в транскрипте",
+        "",
+    ]
+    for kind, count in sorted(kinds.items(), key=lambda kv: -kv[1]):
+        lines.append(f"- {kind}: {count}")
+    lines += [
+        "",
+        f"Отказов и потерянных доставок: {refused}.",
+        "",
+        "## Последние заметки",
+        "",
+    ]
+    lines += notes or ["- нет"]
+    lines += [
+        "",
+        "## Чего этот отчёт НЕ доказывает",
+        "",
+        "- что код правильный: доказывают тесты, а не заметки;",
+        "- что всё в задаче сделано: сверхвизор видит события, а не смысл работы.",
+        "",
+    ]
+    out = state_dir / "REPORT.md"
+    out.write_text("\n".join(lines), encoding="utf-8")
+    return out
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Сверхвизор парной работы")
+    parser.add_argument("--state", default=os.environ.get("PAIR_STATE", ".pair"))
+    parser.add_argument("--interval", type=float, default=DEFAULT_INTERVAL)
+    parser.add_argument("--silence", type=float, default=DEFAULT_SILENCE)
+    parser.add_argument("--once", action="store_true", help="один проход и выход")
+    args = parser.parse_args()
+
+    state_dir = Path(args.state).resolve()
+    pilot = Pilot(state_dir, silence=args.silence, interval=args.interval)
+
+    if args.once:
+        state = pilot.tick()
+        log(f"проход сделан: фаза={state.get('phase')} писатель={state.get('writer')}")
+        return 0
+
+    log(f"сверхвизор на {state_dir}, порог молчания {int(args.silence)} с, Ctrl-C выход")
+    try:
+        while True:
+            pilot.tick()
+            time.sleep(args.interval)
+    except KeyboardInterrupt:
+        log("выход")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

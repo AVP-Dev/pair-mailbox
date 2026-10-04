@@ -340,6 +340,19 @@ class PairSession:
     def _known_roles(self, state: dict[str, Any]) -> list[str]:
         return sorted(state.get("roles", {}))
 
+    def _policy(self, state: dict[str, Any]) -> dict[str, Any]:
+        """Постоянная расстановка ролей, заданная человеком.
+
+        Без неё каждый раунд начинается гонкой, а гонка — это время впустую и
+        повод остановиться посреди работы. С ней всё известно заранее: один
+        всегда пишет, второй всегда ревьюит, и ни один не тратит ход на спор.
+
+        Это решение человека, поэтому оно и хранится как решение человека, а не
+        как побочный эффект pair_claim.
+        """
+        policy = state.get("policy")
+        return policy if isinstance(policy, dict) else {}
+
     # ------------------------------------------------------------------ tools
 
     def tool_pair_state(self) -> dict[str, Any]:
@@ -350,6 +363,7 @@ class PairSession:
             self.store._save(state)
 
         writer = state.get("writer")
+        policy_writer = self._policy(state).get("writer")
         # `_load` merges whatever was on disk over the defaults, so a hand-edited or
         # newer-server state can carry a mode this build does not know. Reading it as a
         # fix round is the safe direction: an unrecognised value must never be a licence
@@ -391,6 +405,14 @@ class PairSession:
                 ),
             }[mode],
             "writer": writer,
+            # Постоянная расстановка, если человек её задал. Тогда роль известна
+            # заранее и спор о праве записи не возникает вовсе.
+            "policy": self._policy(state) or None,
+            "my_standing": (
+                "writer по постоянной расстановке" if policy_writer == self.role
+                else "критик по постоянной расстановке" if policy_writer
+                else "не задано, определяется гонкой"
+            ),
             # Почему именно он пишет. Без этого сосед видит только факт и не может
             # понять, спорить ему с выбором или принять его.
             "writer_reason": state.get("writer_reason", ""),
@@ -489,6 +511,23 @@ class PairSession:
         """
         def apply(state: dict[str, Any]) -> dict[str, Any]:
             self._register(state)
+            policy = self._policy(state)
+            designated = policy.get("writer")
+            if designated and designated != self.role:
+                raise ProtocolError(
+                    f"по постоянной расстановке ролей писатель {designated!r}, а ты критик.",
+                    "Это решение человека, а не гонка: работай критиком и не трать ход на спор. "
+                    "Сменить расстановку может только человек: `pairctl roles --swap`.",
+                )
+            if designated and designated == self.role and not state.get("writer"):
+                state["writer"] = self.role
+                state["writer_reason"] = "назначено политикой ролей"
+                return {
+                    "already_writer": False,
+                    "writer": self.role,
+                    "round": state.get("round", 0),
+                    "by_policy": True,
+                }
             current = state.get("writer")
             was_closed = bool(state.get("closed_at") or state.get("phase") == "done")
             if current and current != self.role:
@@ -550,6 +589,9 @@ class PairSession:
             "already_held": result["already_writer"],
             "round": result.get("round"),
             "took_over": result.get("took_over", False),
+            # Не выиграл гонку, а получил роль по решению человека: разница важна,
+            # потому что спор о роли тут неуместен.
+            "by_policy": result.get("by_policy", False),
             "note": note,
         }
 
@@ -1496,6 +1538,7 @@ def run_ctl(args: argparse.Namespace, state_dir: Path) -> int:
                 "task": state.get("task", ""),
                 "mode": state.get("mode", "fix"),
                 "writer": state.get("writer"),
+                "policy": state.get("policy"),
                 "phase": state.get("phase"),
                 "round": state.get("round"),
                 "roles": {name: info.get("last_seen") for name, info in state.get("roles", {}).items()},
@@ -1525,6 +1568,58 @@ def run_ctl(args: argparse.Namespace, state_dir: Path) -> int:
         store.append_transcript("assign", "human", writer=role,
                                 reason="назначено человеком")
         print(f"write authority assigned to {role}")
+        return 0
+
+    if command == "roles":
+        # Постоянная расстановка: кто всегда пишет, кто всегда ревьюит.
+        # Гонка остаётся как запасной вариант, но по умолчанию роли известны
+        # заранее, и раунд начинается с работы, а не с торговли правами.
+        policy_path = Path(os.environ.get("PAIR_ROLES", Path.home() / ".config" / "pair-mailbox" / "roles.json"))
+        state = store.read()
+        current = state.get("policy") if isinstance(state.get("policy"), dict) else {}
+        wanted = dict(current)
+
+        if args.clear:
+            wanted = {}
+        else:
+            if args.writer:
+                wanted["writer"] = args.writer
+            if args.critic:
+                wanted["critic"] = args.critic
+            if args.swap:
+                was_writer, was_critic = wanted.get("writer"), wanted.get("critic")
+                if was_writer or was_critic:
+                    wanted["writer"] = was_critic
+                    wanted["critic"] = was_writer
+
+        if not wanted:
+            store.mutate(lambda st: st.pop("policy", None))
+            store.append_transcript("roles", "human", policy=None)
+            print("постоянная расстановка снята, роли снова определяются гонкой")
+            return 0
+
+        if wanted.get("writer") == wanted.get("critic"):
+            print("error: писатель и критик не могут быть одной ролью", file=sys.stderr)
+            return 2
+
+        store.mutate(lambda st: st.__setitem__("policy", wanted))
+        store.append_transcript("roles", "human", policy=wanted, source=str(policy_path))
+
+        # Расстановка сразу применяется к текущему раунду: назначенный писатель
+        # получает право, иначе право остаётся у прошлого держателя и работа
+        # стоит до вмешательства человека.
+        holder = state.get("writer")
+        if wanted.get("writer") and holder != wanted["writer"]:
+            def apply(st):
+                st["writer"] = wanted["writer"]
+                st["writer_reason"] = "назначено человеком постоянной расстановкой"
+            store.mutate(apply)
+
+        if args.global_:
+            policy_path.parent.mkdir(parents=True, exist_ok=True)
+            policy_path.write_text(json.dumps(wanted, ensure_ascii=False, indent=2), encoding="utf-8")
+            print(f"сохранено для любых проектов: {policy_path}")
+        print(f"расстановка: писатель {wanted.get('writer') or '—'}, критик {wanted.get('critic') or '—'}")
         return 0
 
     if command == "release":
@@ -1828,6 +1923,17 @@ def build_parser() -> argparse.ArgumentParser:
     assign.add_argument("role")
 
     sub.add_parser("release", help="human: clear write authority")
+
+    roles = sub.add_parser(
+        "roles",
+        help="human: pin who always writes and who always reviews, instead of racing each round",
+    )
+    roles.add_argument("--writer", help="role that always holds write authority")
+    roles.add_argument("--critic", help="role that always reviews")
+    roles.add_argument("--swap", action="store_true", help="exchange writer and critic")
+    roles.add_argument("--clear", action="store_true", help="drop the pinning, go back to the race")
+    roles.add_argument("--global", dest="global_", action="store_true",
+                       help="also remember it for every project (PAIR_ROLES, default ~/.config/pair-mailbox/roles.json)")
 
     round_mode = sub.add_parser(
         "mode",

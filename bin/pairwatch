@@ -8,13 +8,17 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "mcp" / "pair_mailbox"))
 try:
     from composer import _tmux, resolve_permission_prompt
-    from storage import Store
-except Exception:
+    # Store живёт в server.py, а не в storage.py: модуля storage не существует,
+    # импорт падал молча, и --unblock не писал в транскрипт.
+    from server import Store
+except Exception as error:  # noqa: BLE001 - причина должна быть видна
+    print(f"pairwatch: {error}", file=sys.stderr)
     resolve_permission_prompt = None
     Store = None
 
 state_dir = Path(os.environ.get("PAIR_STATE") or ".pair").resolve()
-store = Store(state_dir.parent) if Store else None
+# root у Store — это сам каталог состояния (.pair), а не его родитель.
+store = Store(state_dir) if Store else None
 limit = 300
 if "--limit" in sys.argv:
     limit = int(sys.argv[sys.argv.index("--limit") + 1])

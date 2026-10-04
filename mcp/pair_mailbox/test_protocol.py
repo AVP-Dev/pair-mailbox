@@ -197,6 +197,88 @@ class TestWriteAuthority(PairTestCase):
         self.assertIn("разобрался в потоке ретраев", out.getvalue())
 
 
+class TestPersistentRoles(PairTestCase):
+    """Постоянная расстановка: человек один раз говорит, кто всегда пишет, и
+    гонка за право записи исчезает. Без неё каждый раунд тратит ход на спор,
+    а спор — это повод остановиться посреди работы."""
+
+    def pin(self, writer: str, critic: str) -> None:
+        self.store.mutate(lambda st: st.__setitem__("policy", {"writer": writer, "critic": critic}))
+
+    def test_designated_writer_takes_authority_without_a_race(self) -> None:
+        self.pin("writer-agent", "reviewer-agent")
+        result = self.writer.tool_pair_claim(reason="я писатель по расстановке")
+        self.assertEqual(result["writer"], "writer-agent")
+        self.assertTrue(result.get("by_policy"))
+        self.assertEqual(self.store.read()["writer"], "writer-agent")
+
+    def test_designated_critic_is_refused_and_told_why(self) -> None:
+        self.pin("writer-agent", "reviewer-agent")
+        error = self.assertRefused(self.peer.tool_pair_claim, contains="критик")
+        self.assertIn("writer-agent", str(error))
+        self.assertIn("pairctl roles --swap", error.hint)
+
+    def test_policy_does_not_steal_authority_from_a_live_writer(self) -> None:
+        self.writer.tool_pair_state()
+        self.writer.tool_pair_claim(reason="уже пишу")
+        self.pin("reviewer-agent", "writer-agent")
+        # Писатель по расстановке — не тот, кто уже держит право: гонка за это
+        # не нужна, но и отбирать право у живого писателя молча тоже нельзя.
+        state = self.store.read()
+        self.assertEqual(state["writer"], "writer-agent")
+
+    def test_no_policy_keeps_the_race(self) -> None:
+        self.writer.tool_pair_state()
+        result = self.writer.tool_pair_claim(reason="первый прочитал задачу")
+        self.assertFalse(result.get("by_policy", False))
+        self.assertEqual(result["writer"], "writer-agent")
+
+    def test_state_says_what_you_are(self) -> None:
+        self.pin("writer-agent", "reviewer-agent")
+        self.assertEqual(self.writer.tool_pair_state()["my_standing"],
+                         "writer по постоянной расстановке")
+        self.assertEqual(self.peer.tool_pair_state()["my_standing"],
+                         "критик по постоянной расстановке")
+
+    def test_state_says_race_when_unpinned(self) -> None:
+        self.assertIn("гонк", self.writer.tool_pair_state()["my_standing"])
+
+    def test_claim_after_release_still_follows_the_policy(self) -> None:
+        self.pin("writer-agent", "reviewer-agent")
+        self.writer.tool_pair_claim()
+        self.store.mutate(lambda st: st.__setitem__("writer", None))
+        result = self.writer.tool_pair_claim()
+        self.assertEqual(result["writer"], "writer-agent")
+
+    def test_cli_roles_rejects_one_role_for_both_jobs(self) -> None:
+        proc = subprocess.run(
+            [sys.executable, str(SERVER), "--state", str(self.root), "roles",
+             "--writer", "only-one", "--critic", "only-one"],
+            capture_output=True, text=True, timeout=30,
+        )
+        self.assertEqual(proc.returncode, 2)
+        self.assertNotIn("policy", self.store.read())
+
+    def test_cli_swap_exchanges_the_roles(self) -> None:
+        self.pin("writer-agent", "reviewer-agent")
+        proc = subprocess.run(
+            [sys.executable, str(SERVER), "--state", str(self.root), "roles", "--swap"],
+            capture_output=True, text=True, timeout=30,
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(self.store.read()["policy"],
+                         {"writer": "reviewer-agent", "critic": "writer-agent"})
+
+    def test_cli_clear_returns_to_the_race(self) -> None:
+        self.pin("writer-agent", "reviewer-agent")
+        proc = subprocess.run(
+            [sys.executable, str(SERVER), "--state", str(self.root), "roles", "--clear"],
+            capture_output=True, text=True, timeout=30,
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertNotIn("policy", self.store.read())
+
+
 class TestPatchFlow(PairTestCase):
     def setUp(self) -> None:
         super().setUp()
