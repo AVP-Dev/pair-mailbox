@@ -15,8 +15,8 @@ if [ "$#" -lt 1 ]; then
   exit 2
 fi
 
-role="$1"
-state="${2:-.pair}"
+role="${PAIR_ROLE:-$1}"
+state="${PAIR_STATE:-${2:-.pair}}"
 
 here="$(cd -- "$(dirname -- "$0")" && pwd)"
 

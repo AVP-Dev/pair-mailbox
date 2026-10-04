@@ -162,9 +162,65 @@ bin/pairchat --all --once  # Cross-project telemetry: stream chats from all acti
 bin/pairctl all            # Table of all paired projects, current writers, and silence timers
 bin/pairctl status         # Inspect current workspace state JSON
 bin/pairctl why            # View active writers and their declared technical rationale
+bin/pairpilot             # Supervisor: keeps the pair alive unattended (see below)
+bin/pairpilot --once      # One supervisor pass, to see what it would do right now
+bin/pairpilot --launch agy=agy   # How to restart a role whose process died
 bin/pairwatch --unblock    # Background daemon to detect stalls and auto-approve [y/n] prompts
 bin/pairdoctor             # Health check and environment diagnostic utility
+bin/pair-duo opencode "task"   # Launch same-CLI dual session (writer/critic split in tmux)
+bin/pair-duo --worktree claude # Launch with isolated git worktree for the critic
 ```
+
+### 🧭 How far the pair runs without you
+
+`bin/pairctl autonomy <level>` (default `semi`). This axis is separate from the round
+mode above, because one asks *what the round is for* and the other *how far it goes alone*:
+
+| Autonomy | Restarts a dead agent | Confirms permission prompts | Closing a round |
+|---|---|---|---|
+| **`observe`** | no | no | human is driving; the evidence gate is off |
+| **`semi`** *(Default)* | yes | only from the permission allowlist | needs recorded evidence **and** one word: `bin/pairctl ok` |
+| **`auto`** | yes | only from the permission allowlist | needs recorded evidence; no word needed |
+
+`bin/pairpilot` is the process that watches the pair while both agents are idle. It delivers
+deferred messages, nudges a silent agent, confirms blocked permission prompts **from an
+allowlist only** (read-only tools by default), restarts an agent whose process died while its
+window lives, reports sealed patches nobody applied, writes a checkpoint digest for the
+human in `semi`, and writes a report when the round closes.
+
+It cannot move phases, grant or revoke write authority, commit, apply a peer's patch, or
+touch project files. Those are the boundaries that make the arrangement safe
+([PROTOCOL.md §13](file:///home/alexios/work/umputum/docs/PROTOCOL.md)).
+
+### 🔒 What the supervisor may press "y" on
+
+Only prompts matching the allowlist. The default list covers the work the protocol already
+requires an agent to do without a human — reads, in-project edits, tests and linters, local
+git, `git push` to a **feature branch**, and `gh pr create`. That is deliberate: a read-only
+default would stall the pair on every step, which is the exact failure this was built to
+remove.
+
+Refused at any allowlist setting:
+
+- everything in PROTOCOL.md §12 — secrets, ports/deploy, DB migrations, deleting data, production;
+- destroying the machine: `rm -rf /`, `rm -rf ~`, `rm -rf .`, `mkfs`, `dd if=`, `killall`;
+- git history and the default branch: push to `main`/`master`, `--force`, `reset --hard`, `clean -f`;
+- network and package installs: `curl`, `wget`, `pip install`, `npm install` — not because
+  networking is unsafe by itself, but because it is how a protected file leaves the machine;
+- piping into a shell: `| sh`, `| bash`, `$(`, `find … -exec`, which turn any read into execution.
+
+Refusals are reported, not silent: `pilot_unblock_refused` goes to the transcript with the
+reason, and the pane stays blocked for the human.
+
+Widen or narrow it yourself:
+
+```bash
+echo '{"allow": ["Read", "grep", "git status"]}' > .pair/permissions.json
+```
+
+The decision is made on the prompt text, not by parsing the command, so a harmless word can
+sit next to a dangerous one. Every approval is written to the transcript together with the
+exact line that was allowed — so the journal says what got a "yes".
 
 ---
 
@@ -181,7 +237,7 @@ Switch modes at runtime with a single command (`bin/pairctl mode <mode>`):
 
 ## 🧰 MCP Tool Reference
 
-`pair-mailbox` exposes 14 specialized MCP tools:
+`pair-mailbox` exposes 16 specialized MCP tools:
 
 | Category | Tool | Authorized Roles | Description |
 |---|---|---|---|
@@ -196,8 +252,10 @@ Switch modes at runtime with a single command (`bin/pairctl mode <mode>`):
 | **Safety & Patches** | `pair_patch_reserve` | Critic Only | Prepares a dedicated, mode `0600` patch file. Refused for writers and audit mode. |
 | | `pair_patch_seal` | Critic Only | Computes and securely records SHA-256 digest of the unified diff. |
 | | `pair_patch_verify` | Writer Only | Re-computes and verifies SHA-256 before applying. Halts immediately on mismatch. |
+| | `pair_patch_applied` | Writer Only | Records whether the apply succeeded. An unapplied sealed patch blocks closing the round. |
 | | `pair_patch_release` | Both | Deletes a patch file by exact absolute path (globs strictly prohibited). |
-| **Autonomy & Audit** | `pair_unblock` | Both | Inspects peer tmux pane for CLI prompts (`[y/N]`, `Allow execution?`) and resolves them. |
+| | `pair_evidence` | Both | Records a machine-checkable fact for this round (tests, lint, typecheck, commit, PR). `semi`/`auto` refuse to close a round without it. |
+| **Autonomy & Audit** | `pair_unblock` | Both | Inspects peer tmux pane for CLI prompts (`[y/N]`, `Allow execution?`). Confirms only allowlisted prompts and reports refusals. |
 | | `pair_transcript` | Both | Inspects full append-only audit trail including every rejected operation. |
 
 ---
@@ -232,16 +290,21 @@ To maintain absolute technical honesty, the pair-mailbox architecture explicitly
 The test suite validates security boundaries, race conditions, and invariant enforcement:
 
 ```bash
-python3 mcp/pair_mailbox/test_protocol.py
+python3 mcp/pair_mailbox/test_protocol.py   # protocol invariants
+python3 bin/pairpilot_test.py               # supervisor behaviour
 ```
 
-Highlights covered by the test suite (92/92 tests green):
+Highlights covered by the test suite (152 protocol + 56 supervisor tests green):
 - Strict single writer enforcement and refusal of illegitimate claim attempts.
 - Cryptographic patch tampering detection (`HASH MISMATCH` triggers immediate abort).
 - Path traversal and glob expansion rejection.
 - Advisory file locking (`fcntl.flock`) preventing race conditions between concurrent CLI processes.
 - Strict monotonic message sequencing (`seq-000001-...` with tokenized filenames).
-- CLI prompt detection and non-intrusive auto-unblocking.
+- CLI prompt detection, allowlist enforcement, and refusal instead of a blind `y`.
+- The closing gate: no evidence, failing evidence, an unapplied sealed patch, or a missing
+  human `ok` in `semi` each block `done` with a message naming the fix.
+- Supervisor restart safety: a live process is never respawned, an unknown launch command
+  is never guessed, `observe` never restarts, and write authority is never touched.
 
 ---
 
