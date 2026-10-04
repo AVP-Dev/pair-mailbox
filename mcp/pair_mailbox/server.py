@@ -1443,6 +1443,36 @@ class PairSession:
             raise ProtocolError(f"{path} was not reserved through pair_patch_reserve.")
         return record
 
+    def _releasable_patch(self, state: dict[str, Any], path: str) -> tuple[dict[str, Any], bool]:
+        """Запись патча, который эта роль имеет право снять, и сняла ли его писатель.
+
+        Своё — всегда. Чужое — только у писателя и только пока патч не решён.
+
+        Раньше чужой патч не мог снять никто: автор может, но если он ушёл —
+        некому. `pair_patch_applied` не помогает, он требует `verified_match`,
+        а файла может уже не быть. На этом раунд закрывался невозможно, и я
+        наступил на это вживую: патч соседа висел, а сервер отказал мне в
+        `pair_patch_release`. Запись в транскрипте при этом обязательна —
+        «снял писатель» и «снял автор» это разные вещи, и отчёт обязан их различать.
+        """
+        record = state.get("patches", {}).get(path)
+        if not record:
+            raise ProtocolError(f"{path} was not reserved through pair_patch_reserve.")
+        if record.get("owner") == self.role:
+            return record, False
+        if state.get("writer") != self.role:
+            raise ProtocolError(
+                f"{path} belongs to {record.get('owner')!r}, not {self.role!r}.",
+                "Only the writer may drop a patch they did not propose.",
+            )
+        if record.get("applied"):
+            raise ProtocolError(
+                f"{path} is already recorded as applied by {record.get('applied_by')!r}.",
+                "An applied patch is not unresolved. If the apply was wrong, say so in a note "
+                "and re-apply by hand; dropping the record here would hide both.",
+            )
+        return record, True
+
     def tool_pair_patch_seal(self, path: str) -> dict[str, Any]:
         """Compute and record the hash of a patch this role reserved."""
         if any(char in path for char in GLOB_CHARS):
@@ -1571,7 +1601,13 @@ class PairSession:
         }
 
     def tool_pair_patch_release(self, path: str) -> dict[str, Any]:
-        """Delete one of this role's own patch files, by exact path."""
+        """Delete a patch file and forget its record, by exact path.
+
+        Own patch: always. Someone else's: the writer may, while it is still
+        unresolved, and the transcript says the writer did it. A file already gone
+        from disk is not a problem — the record is what blocks the round, and this
+        is the only thing that removes it.
+        """
         if any(char in path for char in GLOB_CHARS):
             raise ProtocolError(
                 f"{path} contains a glob character.",
@@ -1580,7 +1616,7 @@ class PairSession:
             )
 
         def apply(state: dict[str, Any]) -> bool:
-            record = self._owned_patch(state, path)
+            record, by_writer = self._releasable_patch(state, path)
             # The record leaves state (state describes the present, the transcript
             # describes history), but the drop itself is written to the audit trail:
             # "a sealed patch was thrown away" is a fact the report must be able to
@@ -1588,7 +1624,8 @@ class PairSession:
             self.store.append_transcript(
                 "patch_dropped", self.role, path=path,
                 owner=record.get("owner"), sha256=record.get("sha256"),
-                sealed=bool(record.get("sealed")), applied=bool(record.get("applied")))
+                sealed=bool(record.get("sealed")), applied=bool(record.get("applied")),
+                released_by_writer=by_writer)
             del state["patches"][path]
             return bool(record)
 

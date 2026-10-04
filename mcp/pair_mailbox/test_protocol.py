@@ -693,6 +693,63 @@ class TestPatchAccounting(PairTestCase):
                           if e.get("kind") == "patch_seal"][0]["sha256"])
         self.assertTrue(events[0]["sealed"])
 
+    def test_the_writer_can_drop_a_patch_they_did_not_propose(self) -> None:
+        """Тупик, на который я наступил вживую.
+
+        Патч соседа висит, сосед ушёл, и раунд не закрыть: `applied` требует
+        `verified_match`, а `release` соседу недоступен. Раньше писателю тоже было
+        недоступно, и выхода не было ни у кого.
+        """
+        path = self.sealed_patch()
+        self.writer.tool_pair_patch_verify(path)
+        self.writer.tool_pair_patch_applied(path, ok=False, note="hunk rejected")
+        self.ready()
+        self.assertRefused(self.writer.tool_pair_advance, "done")
+        result = self.writer.tool_pair_patch_release(path)
+        self.assertEqual([], self.writer.unresolved_patches(self.store.read()))
+        self.assertTrue(result["known_to_server"])
+        self.assertEqual("done", self.writer.tool_pair_advance("done")["phase"])
+
+    def test_a_writer_dropping_someone_elses_patch_is_marked_as_such(self) -> None:
+        """"Снял писатель" и "снял автор" — разные вещи, и отчёт обязан их различать."""
+        path = self.sealed_patch()
+        self.writer.tool_pair_patch_release(path)
+        dropped = [e for e in self.store.read_transcript() if e.get("kind") == "patch_dropped"]
+        self.assertTrue(dropped[0]["released_by_writer"])
+        self.assertEqual("reviewer-agent", dropped[0]["owner"])
+
+    def test_the_writer_cannot_drop_a_patch_already_applied(self) -> None:
+        """Применённый патч не «нерешённый». Снести такую запись — значит спрятать
+        и сам факт применения, и его автора."""
+        path = self.sealed_patch()
+        self.writer.tool_pair_patch_verify(path)
+        self.writer.tool_pair_patch_applied(path, ok=True)
+        self.assertRefused(self.writer.tool_pair_patch_release, path, contains="already recorded")
+
+    def test_a_read_only_role_still_cannot_drop_a_foreign_patch(self) -> None:
+        """Право писателя — не право каждого.
+
+        Патч принадлежит третьей роли: писатель его снять может, а другая
+        не-писательская роль — нет. Иначе «писатель может» превратилось бы в
+        «все могут», а это ровно то, чего protokol опасается.
+        """
+        third = PairSession("third-agent", self.store)
+        path = third.tool_pair_patch_reserve()["path"]
+        Path(path).write_text("--- a\n+++ b\n", encoding="utf-8")
+        third.tool_pair_patch_seal(path)
+        self.assertRefused(self.peer.tool_pair_patch_release, path, contains="belongs to")
+        self.assertIn(path, [p["path"] for p in self.writer.unresolved_patches(self.store.read())])
+        self.writer.tool_pair_patch_release(path)
+
+    def test_release_works_when_the_file_was_already_deleted_by_hand(self) -> None:
+        """`rm` в обход сервера оставляет запись в state.json, и она блокирует
+        закрытие. Запись снимается здесь, и файла уже не требуется."""
+        path = self.sealed_patch()
+        Path(path).unlink()
+        result = self.writer.tool_pair_patch_release(path)
+        self.assertFalse(result["deleted"])
+        self.assertEqual([], self.writer.unresolved_patches(self.store.read()))
+
     def test_applied_requires_verify_first(self) -> None:
         path = self.sealed_patch()
         error = self.assertRefused(self.writer.tool_pair_patch_applied, path,
