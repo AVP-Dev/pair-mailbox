@@ -120,6 +120,10 @@ EVIDENCE_KINDS = ("test", "lint", "typecheck", "build", "diff", "commit", "pr", 
 
 EVIDENCE_KEEP = 50
 
+# Фазы, на которых слово человека «ок» что-то значит. Раньше проверялся только
+# номер раунда, и одобрение плана закрывало раунд на verify.
+OK_PHASES = ("verify", "done")
+
 # Auto-release is off unless the human turns it on. A writer that has finished
 # and gone quiet holds authority in no useful sense.
 STALL_SECONDS = int(os.environ.get("PAIR_STALL_SECONDS", "0") or 0)
@@ -193,9 +197,50 @@ def round_evidence(state: dict[str, Any]) -> list[dict[str, Any]]:
     return [item for item in (state.get("evidence") or []) if item.get("round") == current]
 
 
+OPEN_TASK = "open"
+TASK_STATUSES = (OPEN_TASK, "done", "dropped")
+
+
+def tasks_of(state: dict[str, Any]) -> list[dict[str, Any]]:
+    return list(state.get("tasks") or [])
+
+
+def open_tasks(state: dict[str, Any]) -> list[dict[str, Any]]:
+    return [item for item in tasks_of(state) if item.get("status") == OPEN_TASK]
+
+
+def next_task_id(state: dict[str, Any]) -> int:
+    return max((int(item.get("id", 0)) for item in tasks_of(state)), default=0) + 1
+
+
 def human_ok_for_round(state: dict[str, Any]) -> bool:
+    """Слово человека на чекпоинте — и только на том, где оно значимо.
+
+    Раньше проверялся только номер раунда, поэтому «ок: план одобряю» на фазе
+    plan закрывало раунд на verify. План и «правки проверены» — разные
+    утверждения, а гейт их не различал.
+
+    Теперь засчитывается только ok, сказанное на verify или done, и только пока
+    раунд на этой фазе. Откат фазы назад отменяет слово само собой: approve был
+    привязан к тому, что человек видел.
+    """
     current = int(state.get("round", 0))
-    return any(int(entry.get("round", -1)) == current for entry in (state.get("human_ok") or []))
+    if state.get("phase") not in OK_PHASES:
+        # Раунд откатили назад — сказанное на verify относилось к тому, что
+        # человек тогда видел, и после отката он этого уже не видел.
+        return False
+    entries = [entry for entry in (state.get("human_ok") or [])
+               if int(entry.get("round", -1)) == current]
+    if not entries:
+        return False
+    # Последнее слово решает: отзыв отменяет более раннее одобрение, а повторное
+    # «ок» после отзыва — новое слово.
+    last = entries[-1]
+    if last.get("revoke"):
+        return False
+    # И сказано оно должно быть на чекпоинте, где что-то значит: «план одобрен»
+    # и «правки проверены» — разные утверждения.
+    return last.get("phase") in OK_PHASES
 
 
 def unresolved_patches(state: dict[str, Any]) -> list[dict[str, Any]]:
@@ -228,8 +273,6 @@ def done_blockers(state: dict[str, Any]) -> list[str]:
     """
     blockers: list[str] = []
     autonomy = autonomy_of(state)
-    if autonomy == "observe":
-        return blockers
     round_number = int(state.get("round", 0))
 
     # Per kind, the LAST run decides, not any of them: tests failed, got fixed,
@@ -254,18 +297,28 @@ def done_blockers(state: dict[str, Any]) -> list[str]:
         )
 
     if state.get("mode", "fix") != "audit" and not any(
-            item.get("kind") == "test" and item.get("ok") for item in latest.values()):
+            item.get("kind") == "test" and item.get("ok")
+            and item.get("role") == state.get("writer")
+            for item in latest.values()):
         # Раньше гейт спрашивал «есть ли хоть одна успешная запись», и на этот
         # вопрос отвечал `kind="manual", value="looks good"`. Запись, неотличимая
         # от прогона, — это ровно то, чем гейт не должен закрываться: раунд с
         # красными тестами объявлялся закрытым, потому что автор описал словами,
         # что всё хорошо. В mode=audit требования нет — там результат работы это
         # находки в заметках, и прогона тестов может не быть по существу.
+        #
+        # И прогон должен быть писательский. Иначе гейт, который защищает от
+        # «закрыть на словах», закрывается на словах же — просто от другой роли:
+        # критик может записать ok=True и удовлетворить гейт человека, который
+        # право писать не имеет.
+        writer = state.get("writer")
         blockers.append(
-            f"round {round_number} has no passing test run, and mode=fix closes only on one. "
-            f"Call pair_evidence(kind=\"test\", value=\"181 passed, exit 0\") with what the "
-            f"machine actually printed. kind=lint, typecheck or a commit hash is not a "
-            f"substitute, and neither is a verdict that things look right."
+            f"round {round_number} has no passing test run from the writer "
+            f"({writer or 'nobody holds authority'}), and mode=fix closes only on one. "
+            f"The writer calls pair_evidence(kind=\"test\", value=\"181 passed, exit 0\") "
+            f"with what the machine actually printed. kind=lint, typecheck or a commit hash "
+            f"is not a substitute, another role's 'ok' is not a substitute either, and neither "
+            f"is a verdict that things look right."
         )
 
     if autonomy == "semi" and not human_ok_for_round(state):
@@ -273,6 +326,16 @@ def done_blockers(state: dict[str, Any]) -> list[str]:
             "autonomy is semi, so closing a round waits for the human. Send them the digest "
             "and, once they agree, run `bin/pairctl ok`. `bin/pairctl autonomy auto` closes "
             "without that."
+        )
+
+    for item in open_tasks(state):
+        blockers.append(
+            f"task #{item.get('id')} is still open: {str(item.get('text'))[:100]!r}. "
+            f"A round closes only when nothing is left open: pair_task(action=\"done\", id={item.get('id')}) "
+            f"with it finished, or pair_task(action=\"drop\", id={item.get('id')}, "
+            f"reason=\"why not\") if it turned out not to be needed. Dropping needs a "
+            f"reason on purpose — a task vanishes silently otherwise, which is the "
+            f"failure this list exists to prevent."
         )
 
     if state.get("mode", "fix") != "audit":
@@ -283,6 +346,111 @@ def done_blockers(state: dict[str, Any]) -> list[str]:
                 f"pair_patch_applied(path, ok), or pair_patch_release if it was rejected."
             )
     return blockers
+
+
+def render_tasks_md(state: dict[str, Any]) -> str:
+    """Журнал сессии: что задано, что сделано, чем доказано, что НЕ сделано.
+
+    Генерируется из состояния, а не пишется руками, поэтому не устаревает и не
+    может разойтись с фактами. Живёт в .pair, а не в docs: это рабочий журнал
+    пары, а не документация проекта, и коммитить его в публичный репозиторий
+    незачем.
+
+    Секция «не сделано» не может быть молча пустой: у открытой задачи она
+    заполнена автоматически, а закрытая обязана нести причину, если она брошена.
+    Именно это и нужно человеку, который вернулся через неделю.
+    """
+    items = tasks_of(state)
+    mark = {OPEN_TASK: "НЕ СДЕЛАНО", "done": "сделано", "dropped": "брошено"}
+    lines = [
+        "# Журнал сессии",
+        "",
+        f"- раунд: {state.get('round')}   фаза: {state.get('phase')}   "
+        f"режим: {state.get('mode')}   автономность: {autonomy_of(state)}",
+        f"- писатель: {state.get('writer') or 'не назначен'}",
+        f"- сгенерировано: {utcnow()}",
+        "",
+    ]
+    if not items:
+        lines += ["Задач нет. `pairctl task \"...\"` или pair_task(action=\"add\").", ""]
+        return "\n".join(lines)
+
+    still_open = [i for i in items if i.get("status") == OPEN_TASK]
+    lines += [
+        "## Сводка",
+        "",
+        f"- всего задач: {len(items)}",
+        f"- не сделано: {len(still_open)}"
+        + (f" — #{', #'.join(str(i['id']) for i in still_open)}" if still_open else ""),
+        "",
+        "## Задачи",
+        "",
+    ]
+    for item in items:
+        ident = item.get("id")
+        lines.append(f"### #{ident} — {mark.get(item.get('status'), item.get('status'))}")
+        lines.append("")
+        lines.append(str(item.get("text", "")).strip())
+        lines.append("")
+        lines.append(f"- добавил: {item.get('added_by')}   раунд: {item.get('round')}   "
+                     f"в {item.get('added_at')}")
+        if item.get("status") != OPEN_TASK:
+            lines.append(f"- закрыл: {item.get('closed_by')}   в {item.get('closed_at')}")
+        if item.get("status") == "dropped":
+            reason = str(item.get("reason") or "").strip()
+            lines.append(f"- почему брошено: {reason or 'ПРИЧИНА НЕ УКАЗАНА — это дефект'}")
+        proved = [e for e in (state.get("evidence") or []) if e.get("task") == ident]
+        if proved:
+            lines.append("- чем доказано:")
+            for entry in proved:
+                flag = "OK " if entry.get("ok") else "FAIL"
+                lines.append(f"    - {flag} {entry.get('kind')} [{entry.get('role')}] "
+                             f"{entry.get('value')}")
+        elif item.get("status") != OPEN_TASK:
+            lines.append("- чем доказано: НИЧЕМ. Закрыто без единого машинного факта.")
+        else:
+            lines.append("- чем доказано: ещё нет, работа не закончена.")
+        notes = [e for e in (state.get("evidence") or [])
+                 if e.get("task") == ident and not e.get("ok")]
+        if notes:
+            lines.append("- что падало:")
+            for entry in notes:
+                lines.append(f"    - {entry.get('value')}")
+        lines.append("")
+
+    if still_open:
+        lines += [
+            "## Что осталось за открытыми задачами",
+            "",
+            "Раунд не закроется, пока это не сделано или не брошено с причиной.",
+            "",
+        ]
+        for item in still_open:
+            lines.append(f"- #{item.get('id')}: {str(item.get('text'))[:120]}")
+        lines.append("")
+
+    loose = [e for e in (state.get("evidence") or []) if not e.get("task")]
+    if loose:
+        lines += [
+            "## Доказательства без привязки к задаче",
+            "",
+            "Записаны, когда открытых задач было больше одной, поэтому не отнесены "
+            "ни к какой. К задаче привязывается явно: pair_evidence(..., task=N).",
+            "",
+        ]
+        for entry in loose:
+            flag = "OK " if entry.get("ok") else "FAIL"
+            lines.append(f"- {flag} {entry.get('kind')} [{entry.get('role')}] {entry.get('value')} "
+                         f"— открыты были: {', '.join(f'#{i}' for i in entry.get('tasks_open') or []) or '—'}")
+        lines.append("")
+    return "\n".join(lines)
+
+
+def write_tasks_md(state_dir: Path, state: dict[str, Any]) -> Path:
+    target = Path(state_dir) / "tasks.md"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(render_tasks_md(state), encoding="utf-8")
+    return target
 
 
 def read_global_policy() -> dict[str, Any] | None:
@@ -346,6 +514,7 @@ class Store:
             "patches": {},
             "evidence": [],
             "human_ok": [],
+            "tasks": [],
         }
 
     def _load(self) -> dict[str, Any]:
@@ -362,6 +531,19 @@ class Store:
             return self.default_state()
         state = self.default_state()
         state.update(data)
+        # Старые состояния держали одну строку task. Переносим её в список, чтобы
+        # текст задачи не исчез: дальше он дописывается, а не перезаписывается.
+        # Мигрируем только если ключа tasks нет вовсе — то есть состояние
+        # правда старше списка. Явный пустой список значит «уже перешли на
+        # новый язык», и поднимать из него задачу снова нельзя.
+        legacy = str(state.get("task") or "").strip()
+        if legacy and "tasks" not in data:
+            state["tasks"] = [{
+                "id": 1, "text": legacy, "status": "open", "added_at": state.get("created_at"),
+                "added_by": "human", "round": int(state.get("round", 0)),
+                "reason": "", "closed_at": None, "closed_by": None,
+            }]
+        state.setdefault("tasks", [])
         return state
 
     def _save(self, state: dict[str, Any]) -> None:
@@ -1354,8 +1536,99 @@ class PairSession:
             "round": self.store.read().get("round", 0),
         }
 
+    def tool_pair_task(self, action: str, id: int | None = None, text: str = "",
+                        reason: str = "") -> dict[str, Any]:
+        """Общий список задач: одна правда на двоих, а не копия у каждого.
+
+        Список не заменяет заметки, а закрывает конкретную дыру: задача, добавленная
+        в середине раунда, молча исчезала, потому что state хранил одну строку task
+        и новая перезаписывала старую. Проверено: раунд закрывался как «задача Б» с
+        доказательствами, собранными по задаче А.
+
+        Права несимметричные, и это решение, а не недоработка: критик задачу
+        заводит — иначе он не сможет сказать «я нашёл ещё вот это», не печатая
+        в чужую заметку, — но закрывает её писатель, потому что реализует её он.
+        """
+        action = str(action or "").strip()
+        if action not in ("add", "done", "drop", "list"):
+            raise ProtocolError(f"unknown task action {action!r}. Use add, done, drop or list.")
+        state = self.store.read()
+
+        if action == "list":
+            items = tasks_of(state)
+            return {
+                "tasks": items,
+                "open": [item.get("id") for item in items if item.get("status") == OPEN_TASK],
+                "next_id": next_task_id(state),
+            }
+
+        if action == "add":
+            body = str(text or "").strip()
+            if not body:
+                raise ProtocolError("`text` is required: what has to be done.")
+            if len(body) > 2000:
+                raise ProtocolError("A task longer than 2000 characters is not a task.")
+
+            def add(st):
+                item = {
+                    "id": next_task_id(st), "text": body, "status": OPEN_TASK,
+                    "added_at": utcnow(), "added_by": self.role,
+                    "round": int(st.get("round", 0)), "reason": "",
+                    "closed_at": None, "closed_by": None,
+                }
+                st.setdefault("tasks", []).append(item)
+                return item
+
+            item = self.store.mutate(add)
+            self.store.append_transcript("task_added", self.role, task_id=item["id"],
+                                         text=body[:200])
+            return {"task": item,
+                    "why_it_matters": "An open task keeps the round from closing until it is "
+                                      "done or dropped with a reason."}
+
+        # done / drop — только у писателя.
+        if state.get("writer") != self.role:
+            raise ProtocolError(
+                f"only the writer closes tasks; {self.role!r} may add and list them.",
+                "You found it — add it with pair_task(action=\"add\", text=...) and the writer "
+                "will implement it. Closing someone's task is the writer's call.",
+            )
+        target = int(id or 0)
+
+        def close(st):
+            items = st.setdefault("tasks", [])
+            match = next((item for item in items if int(item.get("id", 0)) == target), None)
+            if not match:
+                known = ", ".join(str(item.get("id")) for item in items) or "none yet"
+                raise ProtocolError(f"no task #{target}. Known ids: {known}.")
+            if match.get("status") != OPEN_TASK:
+                raise ProtocolError(
+                    f"task #{target} is already {match.get('status')!r}.",
+                    "Nothing to change. If it came back up, add a new task that says so.",
+                )
+            if action == "drop" and not str(reason or "").strip():
+                raise ProtocolError(
+                    f"task #{target} cannot be dropped without a reason.",
+                    "Say in the reason why it is not needed, so the record shows the decision "
+                    "instead of a silent gap. If it is done, use action=\"done\".",
+                )
+            match["status"] = "done" if action == "done" else "dropped"
+            match["reason"] = str(reason or "").strip()
+            match["closed_at"] = utcnow()
+            match["closed_by"] = self.role
+            return match
+
+        item = self.store.mutate(close)
+        self.store.append_transcript("task_closed", self.role, task_id=item["id"],
+                                     status=item["status"], reason=item["reason"][:200])
+        remaining = [i["id"] for i in open_tasks(self.store.read())]
+        return {"task": item, "still_open": remaining,
+                "how_to_use": "Closing is honest bookkeeping. If the work is not actually "
+                              "finished, leave it open or drop it with a reason — the round "
+                              "cannot close over an open task, and that is the point."}
+
     def tool_pair_evidence(self, kind: str, value: str, ok: bool = True,
-                           note: str = "") -> dict[str, Any]:
+                           note: str = "", task: int | None = None) -> dict[str, Any]:
         """Record a fact a machine produced: tests, lint, a typecheck, a commit, a PR.
 
         This is what makes a round a result instead of an opinion. `value` is the
@@ -1377,6 +1650,11 @@ class PairSession:
             raise ProtocolError("`value` is required: the machine's own output, not a verdict.")
 
         def apply(state: dict[str, Any]) -> dict[str, Any]:
+            # К какой задаче относится факт. По умолчанию — единственная открытая:
+            # обычно в работе она одна, и спрашивать каждый раз значило бы
+            # заставлять агента повторять то, что уже следует из списка.
+            still_open = [item["id"] for item in open_tasks(state)]
+            owner = int(task) if task is not None else (still_open[0] if len(still_open) == 1 else None)
             record = {
                 "round": int(state.get("round", 0)),
                 "role": self.role,
@@ -1384,6 +1662,11 @@ class PairSession:
                 "value": str(value).strip(),
                 "ok": bool(ok),
                 "note": str(note or "").strip(),
+                "task": owner,
+                # Снимок открытых задач в момент записи. Если их было несколько,
+                # факт не привязан ни к одной — врать не хочется, но и терять
+                # его нельзя: по этому списку журнал поймёт, к чему относилось.
+                "tasks_open": still_open,
                 "at": utcnow(),
             }
             entries = state.setdefault("evidence", [])
@@ -1911,6 +2194,28 @@ def tool_definitions() -> list[dict[str, Any]]:
             },
         },
         {
+            "name": "pair_task",
+            "description": (
+                "The shared task list. Add what you found, close what is finished. The round "
+                "cannot close while any task is open, so a task added mid-round cannot be "
+                "forgotten: either it gets done, or it gets dropped with a reason on the "
+                "record. The critic adds tasks it discovered; only the writer closes them, "
+                "because implementing them is the writer's job (PROTOCOL.md 4)."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "action": {"type": "string", "enum": ["add", "done", "drop", "list"]},
+                    "id": {"type": "integer",
+                           "description": "Which task, for done/drop. Omit for add and list."},
+                    "text": {"type": "string", "description": "What to do. Required for add."},
+                    "reason": {"type": "string",
+                               "description": "Required for drop, and it may not be empty."},
+                },
+                "required": ["action"],
+            },
+        },
+        {
             "name": "pair_evidence",
             "description": (
                 "Record a machine-checkable fact about this round: the test suite with its "
@@ -1928,6 +2233,8 @@ def tool_definitions() -> list[dict[str, Any]]:
                     "ok": {"type": "boolean", "default": True,
                            "description": "false records a failure. It stays visible and blocks closing."},
                     "note": {"type": "string", "description": "Optional: how it was produced."},
+                    "task": {"type": "integer",
+                             "description": "Which task this proves. Defaults to the single open one."},
                 },
                 "required": ["kind", "value"],
             },
@@ -2016,6 +2323,7 @@ HANDLERS = {
     "pair_patch_verify": lambda session, args: session.tool_pair_patch_verify(**args),
     "pair_patch_release": lambda session, args: session.tool_pair_patch_release(**args),
     "pair_patch_applied": lambda session, args: session.tool_pair_patch_applied(**args),
+    "pair_task": lambda session, args: session.tool_pair_task(**args),
     "pair_evidence": lambda session, args: session.tool_pair_evidence(**args),
     "pair_note": lambda session, args: session.tool_pair_note(**args),
     "pair_transcript": lambda session, args: session.tool_pair_transcript(**args),
@@ -2306,23 +2614,37 @@ def run_ctl(args: argparse.Namespace, state_dir: Path) -> int:
     if command == "ok":
         # Одно слово человека на чекпоинте. Именно это делает semi «полуавтоматом»:
         # пара работает сама, но закрыть раунд без него не может.
+        #
+        # --revoke отзывает сказанное. Отзыв нужен не для удобства: человек
+        # смотрит на правки, говорит «ок» и видит, что после этого изменилось ещё
+        # что-то. Без отзыва единственный выход — сменить настройку или reset.
         state = store.read()
         round_number = int(state.get("round", 0))
+        revoke = bool(getattr(args, "revoke", False))
 
         def apply(st):
             entries = st.setdefault("human_ok", [])
-            if any(int(entry.get("round", -1)) == round_number for entry in entries):
+            same_round = [e for e in entries if int(e.get("round", -1)) == round_number]
+            if same_round and bool(same_round[-1].get("revoke")) == revoke:
                 return False
-            entries.append({"round": round_number, "at": utcnow(), "phase": st.get("phase")})
+            entries.append({"round": round_number, "at": utcnow(), "phase": st.get("phase"),
+                            "revoke": revoke})
             del entries[:-20]
             return True
 
         fresh = store.mutate(apply)
-        store.append_transcript("human_ok", "human", round=round_number, repeated=not fresh)
-        if fresh:
-            print(f"ok: round {round_number} may close")
+        store.append_transcript("human_ok_revoke" if revoke else "human_ok", "human",
+                                round=round_number, phase=state.get("phase"), changed=fresh)
+        if not fresh:
+            print(f"round {round_number}: {'already revoked' if revoke else 'already marked'}; "
+                  f"nothing changed")
+        elif revoke:
+            print(f"ok revoked for round {round_number}; it cannot close until you say ok again")
         else:
-            print(f"ok: round {round_number} was already marked; nothing changed")
+            print(f"ok: round {round_number} marked at phase {state.get('phase')!r}")
+            if state.get("phase") not in OK_PHASES:
+                print(f"  note: ok counts only at {', '.join(OK_PHASES)}; "
+                      f"this one will not close the round from {state.get('phase')!r}")
         return 0
 
     if command == "why":
@@ -2342,11 +2664,57 @@ def run_ctl(args: argparse.Namespace, state_dir: Path) -> int:
         return 0
 
     if command == "task":
-        def apply(state):
-            state["task"] = args.text
-        store.mutate(apply)
-        store.append_transcript("task", "human", text=args.text)
-        print("task recorded")
+        # Список, а не одна строка. Новая задача дописывается: старая не исчезает,
+        # и раунд не закроется, пока что-то не помечено сделанным или брошенным с
+        # причиной.
+        if args.done or args.drop:
+            target = int(args.done or args.drop)
+            want = "done" if args.done else "dropped"
+
+            def close(st):
+                match = next((i for i in st.get("tasks") or []
+                              if int(i.get("id", 0)) == target), None)
+                if not match:
+                    raise ProtocolError(f"no task #{target}")
+                if want == "dropped" and not str(args.reason or "").strip():
+                    raise ProtocolError("--drop needs --reason")
+                match["status"] = want
+                match["reason"] = str(args.reason or "").strip()
+                match["closed_at"] = utcnow()
+                match["closed_by"] = "human"
+                return match
+
+            item = store.mutate(close)
+            store.append_transcript("task_closed", "human", task_id=item["id"], status=want)
+            print(f"task #{item['id']} is {want}")
+        else:
+            body = " ".join(str(args.text or "").split())
+            if not body:
+                print("task needs text", file=sys.stderr)
+                return 2
+
+            def apply(state):
+                item = {"id": next_task_id(state), "text": body, "status": OPEN_TASK,
+                        "added_at": utcnow(), "added_by": "human",
+                        "round": int(state.get("round", 0)), "reason": "",
+                        "closed_at": None, "closed_by": None}
+                state.setdefault("tasks", []).append(item)
+                state["task"] = body  # для старых читателей и отчёта
+                return item
+
+            item = store.mutate(apply)
+            store.append_transcript("task_added", "human", task_id=item["id"], text=body[:200])
+            print(f"task #{item['id']} added: {body}")
+            still = [i["id"] for i in open_tasks(store.read())]
+            if len(still) > 1:
+                print(f"  open tasks now: {', '.join(str(i) for i in still)}")
+        return 0
+
+    if command == "tasks":
+        current = store.read()
+        path = write_tasks_md(store.root, current)
+        print(f"# Журнал сессии -> {path}\n")
+        print(render_tasks_md(current))
         return 0
 
     if command == "inbox":
@@ -2409,8 +2777,15 @@ def run_ctl(args: argparse.Namespace, state_dir: Path) -> int:
             shutil.rmtree(path, ignore_errors=True)
         store.state_path.unlink(missing_ok=True)
         store.transcript_path.unlink(missing_ok=True)
-        Store(store.root)
-        print("state reset")
+        fresh = Store(store.root)
+        # Стирание состояния не должно повышать права. Fresh state по умолчанию
+        # semi, то есть после wipe пара получала больше полномочий, чем до него, и
+        # никто этого не просил. observe — тот уровень, который делает меньше
+        # всего; повысить автономность оператор может явно.
+        fresh.mutate(lambda st: st.__setitem__("autonomy", "observe"))
+        store.append_transcript("reset", "human", autonomy="observe")
+        print("state reset; autonomy is now 'observe' — raise it with "
+              "`pairctl autonomy semi` if you want the pair to work on its own")
         return 0
 
     print(f"unknown command {command!r}", file=sys.stderr)
@@ -2630,13 +3005,23 @@ def build_parser() -> argparse.ArgumentParser:
     )
     autonomy.add_argument("level", choices=list(AUTONOMIES))
 
-    sub.add_parser(
+    ok = sub.add_parser(
         "ok",
-        help="human: say yes once, so the pair may close the round in autonomy=semi",
+        help="human: say yes at the verify checkpoint, so the pair may close the round",
     )
+    ok.add_argument("--revoke", action="store_true",
+                    help="human: take the yes back, e.g. after looking at what changed since")
 
-    task = sub.add_parser("task", help="human: record the task in shared state")
-    task.add_argument("text")
+    task = sub.add_parser("task", help="human: add a task to the shared list")
+    task.add_argument("text", nargs="?")
+    task.add_argument("--drop", metavar="ID", default=None,
+                      help="close task ID as dropped, with the reason below")
+    task.add_argument("--done", metavar="ID", default=None,
+                      help="close task ID as done")
+    task.add_argument("--reason", default="",
+                      help="why a task is dropped; required, an empty reason is refused")
+
+    sub.add_parser("tasks", help="human: print the shared task list with statuses")
 
     inbox = sub.add_parser("inbox", help="show a role's pending messages")
     inbox.add_argument("role")

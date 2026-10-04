@@ -67,6 +67,10 @@ class PilotCase(unittest.TestCase):
             "roles": {},
             "seen": {},
             "patches": {},
+            # Явный пустой список: состояние говорит на новом языке, и старая
+            # строка task не поднимается обратно открытой задачей. Иначе каждый
+            # тест этого файла получал бы блокер «задача не сделана».
+            "tasks": [],
         }
         state.update(fields)
         (self.state_dir / "state.json").write_text(
@@ -613,8 +617,12 @@ class TestCheckpoint(PilotCase):
         self.assertIn("pilot_checkpoint", self.transcript_kinds())
 
     def test_semi_with_ok_writes_no_digest(self) -> None:
-        self.verify_state(autonomy="semi", human_ok=[{"round": 4}],
-                          evidence=[{"round": 4, "kind": "test", "value": "117 passed", "ok": True}])
+        # ok засчитывается только если сказано на verify/done, а прогон засчитывается
+        # только от писателя — в фикстуре writer=agy, поэтому role тоже agy. Слово
+        # без фазы и факт без роли — это не то же самое.
+        self.verify_state(autonomy="semi", human_ok=[{"round": 4, "phase": "verify"}],
+                          evidence=[{"round": 4, "kind": "test", "value": "117 passed",
+                                     "ok": True, "role": "agy"}])
         pilot = self.pilot()
         pilot.tick()
         self.assertFalse((self.state_dir / "pilot" / "checkpoint-4.md").exists())
@@ -622,13 +630,25 @@ class TestCheckpoint(PilotCase):
     def test_semi_with_ok_but_no_evidence_still_digests(self) -> None:
         """Слово человека получили, а доказательства нет — закрывать всё равно
         нечем, и дайджест должен называть именно это."""
-        self.verify_state(autonomy="semi", human_ok=[{"round": 4}])
+        self.verify_state(autonomy="semi", human_ok=[{"round": 4, "phase": "verify"}])
         pilot = self.pilot()
         pilot.tick()
         text = (self.state_dir / "pilot" / "checkpoint-4.md").read_text(encoding="utf-8")
         self.assertIn("pair_evidence", text)
         self.assertNotIn("pairctl ok", text.split("## Что сделать")[0],
                          "слово человека уже есть, повторно просить его не нужно")
+
+    def test_ok_given_on_plan_is_asked_for_again(self) -> None:
+        """Одобрение плана не открывает закрытие раунда: человек должен увидеть
+        результат и сказать «ок» уже на verify."""
+        self.verify_state(autonomy="semi", human_ok=[{"round": 4, "phase": "plan"}],
+                          evidence=[{"round": 4, "kind": "test", "value": "117 passed",
+                                     "ok": True, "role": "agy"}])
+        pilot = self.pilot()
+        pilot.tick()
+        text = (self.state_dir / "pilot" / "checkpoint-4.md").read_text(encoding="utf-8")
+        self.assertIn("bin/pairctl ok", text,
+                      "слово, сказанное не на том чекпоинте, надо услышать заново")
 
     def test_auto_needs_no_human_word(self) -> None:
         self.verify_state(autonomy="auto")

@@ -78,9 +78,10 @@ class PairTestCase(unittest.TestCase):
             self.assertIn(contains, str(caught.exception).lower())
         return caught.exception
 
-    def record_test_evidence(self, value: str = "117 passed in 6.2s (exit 0)", ok: bool = True) -> None:
+    def record_test_evidence(self, value: str = "117 passed in 6.2s (exit 0)", ok: bool = True,
+                             task: int | None = None) -> None:
         """Record what a closing round needs: a machine-produced fact for THIS round."""
-        self.writer.tool_pair_evidence(kind="test", value=value, ok=ok)
+        self.writer.tool_pair_evidence(kind="test", value=value, ok=ok, task=task)
 
     def human_ok(self) -> None:
         """The one word a human says at a semi checkpoint, without leaving Python."""
@@ -486,6 +487,133 @@ class TestPatchFlow(PairTestCase):
         self.assertRefused(self.writer.tool_pair_patch_verify, path, contains="never sealed")
 
 
+class TestTaskList(PairTestCase):
+    """Список задач вместо одной строки. Потеря середины — не вопрос памяти
+    модели, а отсутствие места, где задача живёт: state хранил один `task`, и
+    новая задача перезаписывала старую. Воспроизведено: раунд закрывался как
+    «задача Б» с доказательствами, собранными по задаче А."""
+
+    def add_task(self, text: str = "починить панели", who: str = "human") -> int:
+        self.store.mutate(lambda st: st.setdefault("tasks", []).append({
+            "id": len(st.get("tasks") or []) + 1, "text": text, "status": "open",
+            "added_at": "now", "added_by": who, "round": int(st.get("round", 0)),
+            "reason": "", "closed_at": None, "closed_by": None}))
+        return len(self.store.read()["tasks"])
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.writer.tool_pair_claim(reason="writer")
+
+    def ready(self) -> None:
+        for phase in ("plan", "implement", "verify"):
+            self.writer.tool_pair_advance(phase)
+        self.human_ok()
+
+    def test_a_new_task_does_not_erase_the_old_one(self) -> None:
+        self.add_task("задача А")
+        self.add_task("задача Б")
+        texts = [item["text"] for item in self.store.read()["tasks"]]
+        self.assertEqual(["задача А", "задача Б"], texts)
+
+    def test_an_open_task_blocks_closing(self) -> None:
+        ident = self.add_task("починить панели")
+        self.ready()
+        error = self.assertRefused(self.writer.tool_pair_advance, "done")
+        self.assertIn(f"task #{ident} is still open", str(error))
+        self.assertIn("pair_task", str(error))
+
+    def test_a_dropped_task_needs_a_reason(self) -> None:
+        """Иначе задача исчезает молча, и это ровно тот провал, ради которого
+        список и сделан."""
+        ident = self.add_task("оказалось не нужно")
+        self.assertRefused(self.writer.tool_pair_task, "drop", ident, contains="without a reason")
+        self.assertEqual("open", self.store.read()["tasks"][0]["status"])
+
+    def test_a_dropped_task_keeps_the_reason_on_the_record(self) -> None:
+        ident = self.add_task("оказалось не нужно")
+        self.writer.tool_pair_task("drop", ident, reason="исправлено в 8335dd2")
+        item = self.store.read()["tasks"][0]
+        self.assertEqual("dropped", item["status"])
+        self.assertIn("8335dd2", item["reason"])
+        self.assertEqual("writer-agent", item["closed_by"])
+
+    def test_done_clears_the_stopper(self) -> None:
+        ident = self.add_task("починить панели")
+        self.ready()
+        self.writer.tool_pair_task("done", ident)
+        self.record_test_evidence()
+        self.assertEqual("done", self.writer.tool_pair_advance("done")["phase"])
+
+    def test_the_critic_may_add_a_task_but_not_close_one(self) -> None:
+        """Права несимметричные: критик заводит то, что нашёл, реализует и закрывает
+        писатель. Иначе либо критик не сможет добавить, либо сможет закрыть чужое."""
+        added = self.peer.tool_pair_task("add", text="ещё дыра: pane_alive")
+        self.assertEqual("open", added["task"]["status"])
+        self.assertEqual("reviewer-agent", added["task"]["added_by"])
+        self.assertRefused(self.peer.tool_pair_task, "done", added["task"]["id"],
+                           contains="only the writer closes")
+
+    def test_evidence_lands_on_the_only_open_task(self) -> None:
+        ident = self.add_task("починить панели")
+        self.record_test_evidence()
+        self.assertEqual(ident, self.store.read()["evidence"][-1]["task"])
+
+    def test_evidence_with_several_open_tasks_is_not_guessed(self) -> None:
+        """Врать нельзя: не приписываем факт задаче, к которой он может не
+        относиться, но и не теряем — снимок открытых задач едет с записью."""
+        self.add_task("задача А")
+        self.add_task("задача Б")
+        self.record_test_evidence()
+        entry = self.store.read()["evidence"][-1]
+        self.assertIsNone(entry["task"])
+        self.assertEqual([1, 2], entry["tasks_open"])
+
+    def test_the_journal_shows_done_and_not_done(self) -> None:
+        from server import render_tasks_md
+        first = self.add_task("задача А")
+        second = self.add_task("задача Б")
+        self.writer.tool_pair_claim(reason="writer")
+        self.record_test_evidence(value="190 passed, exit 0", task=first)
+        self.writer.tool_pair_task("drop", second, reason="покрыта пунктом 3")
+        text = render_tasks_md(self.store.read())
+        self.assertIn("#1 — НЕ СДЕЛАНО", text)
+        self.assertIn("#2 — брошено", text)
+        self.assertIn("покрыта пунктом 3", text)
+        self.assertIn("190 passed, exit 0", text)   # доказательство приписано к #1
+
+
+class TestHumanCheckpoint(PairTestCase):
+    """`pairctl ok` значил «одобрен план» и закрывал раунд на verify."""
+
+    def test_ok_given_on_plan_does_not_close_on_verify(self) -> None:
+        self.writer.tool_pair_claim(reason="writer")
+        for phase in ("plan", "implement", "verify"):
+            if phase == "plan":
+                self.store.mutate(lambda st: st.setdefault("human_ok", []).append(
+                    {"round": int(st.get("round", 0)), "at": "now", "phase": "plan"}))
+            self.writer.tool_pair_advance(phase)
+        self.record_test_evidence()
+        self.assertRefused(self.writer.tool_pair_advance, "done", contains="pairctl ok")
+
+    def test_ok_given_on_verify_closes(self) -> None:
+        self.writer.tool_pair_claim(reason="writer")
+        for phase in ("plan", "implement", "verify"):
+            self.writer.tool_pair_advance(phase)
+        self.record_test_evidence()
+        self.human_ok()
+        self.assertEqual("done", self.writer.tool_pair_advance("done")["phase"])
+
+    def test_a_revoke_takes_the_ok_back(self) -> None:
+        self.writer.tool_pair_claim(reason="writer")
+        for phase in ("plan", "implement", "verify"):
+            self.writer.tool_pair_advance(phase)
+        self.record_test_evidence()
+        self.human_ok()
+        self.store.mutate(lambda st: st.setdefault("human_ok", []).append(
+            {"round": int(st.get("round", 0)), "at": "now", "phase": "verify", "revoke": True}))
+        self.assertRefused(self.writer.tool_pair_advance, "done", contains="pairctl ok")
+
+
 class TestEvidenceGate(PairTestCase):
     """Гейт закрытия раунда. Уверенность моделей в собственных оценках почти
     всегда равна 100%, поэтому «все довольны» нельзя принять за доказательство,
@@ -598,9 +726,13 @@ class TestEvidenceGate(PairTestCase):
         self.assertRefused(self.writer.tool_pair_advance, "done",
                            contains="pairctl ok")
 
-    def test_observe_mode_needs_no_evidence(self) -> None:
+    def test_observe_mode_needs_evidence_too(self) -> None:
+        """Раньше observe отключал все гейты сразу, и это выглядело побочным
+        эффектом, а не решением: самый безопаский режим был единственным, где
+        раунд закрывался вообще ни с чем. По решению agy ранний выход убран —
+        observe значит «делать меньше», а не «не считать»."""
         self.set_autonomy("observe")
-        self.assertEqual(self.writer.tool_pair_advance("done")["phase"], "done")
+        self.assertRefused(self.writer.tool_pair_advance, "done", contains="passing evidence")
 
     def test_auto_needs_no_human_word(self) -> None:
         self.set_autonomy("auto")
@@ -613,13 +745,16 @@ class TestEvidenceGate(PairTestCase):
                                    contains="pairctl ok")
         self.assertIn("autonomy auto", str(error))
 
-    def test_peer_evidence_counts(self) -> None:
-        """Доказательство может принести кто угодно: важно, что оно машинное.
+    def test_peer_evidence_counts_but_cannot_close_a_fix_round(self) -> None:
+        """Доказательство может принести кто угодно — но гейт, который защищает
+        от «закрыть на словах», нельзя закрыть чужим «ок».
 
-        Вид при этом остаётся `test`: гейт смотрит на прогон, а не на того, кто его
-        сделал, и `typecheck` в mode=fix раунд больше не закрывает."""
-        self.peer.tool_pair_evidence(kind="test", value="mypy clean, exit 0")
+        Раньше критик без права запускать тесты мог записать kind=test, ok=True и
+        удовлетворить гейт писателя. Теперь прогон должен быть писательский."""
+        self.peer.tool_pair_evidence(kind="test", value="192 passed, exit 0")
         self.human_ok()
+        self.assertRefused(self.writer.tool_pair_advance, "done", contains="from the writer")
+        self.record_test_evidence()
         self.assertEqual(self.writer.tool_pair_advance("done")["phase"], "done")
 
     def test_unknown_kind_is_refused(self) -> None:
@@ -649,6 +784,7 @@ class TestEvidenceGate(PairTestCase):
         """Состояние от более новой сборки не должно выдать больше прав."""
         self.store.mutate(lambda state: state.__setitem__("autonomy", "turbo"))
         self.assertEqual(self.writer.tool_pair_state()["autonomy"], "observe")
+        self.record_test_evidence()
         self.assertEqual(self.writer.tool_pair_advance("done")["phase"], "done")
 
 

@@ -69,7 +69,10 @@ from server import (  # noqa: E402  - после sys.path
     autonomy_of,
     done_blockers,
     is_pid_alive,
+    open_tasks,
     permissions_path,
+    tasks_of,
+    write_tasks_md,
 )
 
 DEFAULT_INTERVAL = 15.0
@@ -703,8 +706,13 @@ class Pilot:
         if not self.remember(key):
             return
         path = write_report(self.state_dir, state)
-        self.store.append_transcript("pilot_report", "pairpilot", path=str(path))
-        log(f"раунд {state.get('round')} закрыт, отчёт: {path}")
+        # Журнал сессии пишется рядом с отчётом: раунд закрыт — значит человек
+        # вернётся и захочет одним взглядом увидеть, что было заказано, что
+        # сделано и что осталось за открытыми задачами.
+        journal = write_tasks_md(self.state_dir, state)
+        self.store.append_transcript("pilot_report", "pairpilot", path=str(path),
+                                     journal=str(journal))
+        log(f"раунд {state.get('round')} закрыт, отчёт: {path}, журнал: {journal}")
 
     # ------------------------------------------------------------------ tick
 
@@ -785,6 +793,25 @@ def write_report(state_dir: Path, state: dict) -> Path:
         f"- задача: {state.get('task') or 'НЕ ЗАДАЧЕНА'}",
         f"- фаза: {state.get('phase')}   режим: {state.get('mode')}   автономность: {autonomy(state)}",
         f"- писатель: {state.get('writer') or 'НЕ НАЗНАЧЕН'}",
+        "",
+        "## Задачи: готово / не готово",
+        "",
+    ]
+    task_items = tasks_of(state)
+    if task_items:
+        marks = {"open": "НЕ СДЕЛАНО", "done": "сделано", "dropped": "брошено"}
+        for item in task_items:
+            line = f"- #{item.get('id')} {marks.get(item.get('status'), '?')}: " \
+                   f"{str(item.get('text'))[:90]}"
+            if item.get("status") == "dropped" and item.get("reason"):
+                line += f" — {str(item.get('reason'))[:60]}"
+            lines.append(line)
+        unclosed = [i["id"] for i in task_items if i.get("status") == "open"]
+        if unclosed:
+            lines += ["", f"РАУНД НЕ ЗАКРЫТ: открытые задачи {', '.join(f'#{i}' for i in unclosed)}"]
+    else:
+        lines.append("- задач не заведено")
+    lines += [
         "",
         "## Доказательства этого раунда",
         "",
