@@ -1,181 +1,207 @@
-# Как это работает
+# How it works
 
-Простое описание, без деталей. Если нужно «почему так» — это `docs/PROTOCOL.md`,
-здесь только «что делать».
+The short version, without detail. For "why is it like this" see
+[`PROTOCOL.md`](./PROTOCOL.md); this file is "what to do".
 
-## Что это
+> Language: this is the English original. The Russian mirror is
+> [`HOW-IT-WORKS.ru.md`](./HOW-IT-WORKS.ru.md).
 
-Два агента в одном проекте, на разных программах. Между ними — один сервер.
-Он не просто передаёт сообщения: он ещё следит за правилами и не даёт их нарушить.
+## What this is
 
-Правил три, и они настоящие, а не на словах:
+Two agents on one project, running different programs, with a single server between
+them. The server does not just pass messages along: it also watches the rules and
+refuses to let them break.
 
-1. **Правит код ровно один.** Не «договорились», а второй получит отказ от сервера.
-2. **Правки передаются запечатанными.** Второй не может править файлы, он предлагает
-   правку файлом-патчем; писатель проверяет хеш и применяет.
-3. **Каждый отказ попадает в журнал.** Включая попытку обойти правило.
+Three rules matter, and they are real rather than aspirational:
 
-## Зачем два агента, если можно один
+1. **Exactly one agent edits code.** Not "agreed between ourselves" — the second one
+   gets a refusal from the server.
+2. **Edits arrive sealed.** The second cannot edit files; it proposes a patch as a
+   file, and the writer checks the hash and applies it.
+3. **Every refusal is logged.** Including an attempt to work around a rule.
 
-Один агент принимает собственные решения за правильные. У него нет повода искать в
-своём коде то, чего он сам же не подумал проверить. Второй агент — это другой контекст
-и часто другая модель. Он читает то же самое и думает независимо.
+## Why two agents when one would do
 
-Отсюда правило: **двое вежливо соглашаются — это ноль пользы.** Полезна найденная
-конкретная ошибка или проверенный факт. Молчаливое согласие — не результат.
+One agent accepts its own decisions as correct. It has no reason to look in its code
+for what it did not think to check. The second agent is a different context and often
+a different model. It reads the same thing and thinks independently.
 
-## Три слова про роли
+Hence the rule: **two agents politely agreeing is worth nothing.** What is worth
+something is a specific bug found or a fact verified. Silent agreement is not a
+result.
 
-| Слово | Что значит |
+## Three words
+
+| word | meaning |
 |---|---|
-| **писатель** | Тот, кто правит код. Ровно один. |
-| **критик** | Тот, кто не правит. Читает, ломает, предлагает. |
-| **человек** | Тот, кто даёт задачу и решает. Агенты не решают за него. |
+| **writer** | the one who edits code. Exactly one. |
+| **critic** | the one who does not edit. Reads, breaks, proposes. |
+| **human** | the one who gives the task and decides. Agents do not decide for them. |
 
-Роль — это имя программы, а не выбор агента. У вас две программы, значит в паре
-одна пишет, другая ломает. Кто именно — выбирается гонкой при старте, и агент
-обязан сказать почему («я уже нашёл, где чинить»), а не «потому что я первый».
+A role is the name of a program, not a choice an agent makes. You have two programs,
+so one writes and one breaks. Which is which is decided by the standing arrangement
+(`bin/pairctl roles`) or, failing that, by a claim — and the agent must give a reason
+("I already found where to fix it"), not "because I was first".
 
-## Что внутри
-
-```sh
-bin/pairchat          # переписка этой пары, следить вживую
-bin/pairctl all       # все проекты сразу: кто пишет, кто молчит
-bin/pairwatch         # поймает зависшего агента
-bin/pairdoctor        # проверить, что всё на месте
-```
-
-Состояние пары лежит в `.pair/` в папке проекта: кто пишет, что за задача, какая
-фаза, все сообщения и все отказы. Это файл, а не база — можно прочитать глазами.
-
-## Два режима работы
-
-Режим переключаете вы, одной командой:
+## What is inside
 
 ```sh
-bin/pairctl mode fix     # по умолчанию: код меняется
-bin/pairctl mode audit   # код не меняется, только находки
+bin/pairchat          # the conversation of this pair, live
+bin/pairctl all       # every project at once: who writes, who is silent
+bin/pairwatch         # catches a stuck agent
+bin/pairdoctor        # checks that everything is in place
 ```
 
-Агенты читают режим сами при первом `pair_state`. Но они не знают, что вы его
-переключили, поэтому после команды **скажите им об этом одной строкой в их окна**.
+The pair's state lives in `.pair/` in the project folder: who writes, the task, the
+phase, every message and every refusal. It is a file, not a database — you can read it
+with your eyes.
 
-### fix — чиним
+`.pair/tasks.md` is the session journal, generated from state so it cannot drift from
+the facts: what was asked, what was done, what was proven, what is left.
+
+## Two axes of work
+
+`mode` says what the round is for. `autonomy` says how far it goes without you. They
+are separate, and merging them would be wrong.
 
 ```sh
-bin/pairctl task "починить ретраи при 502"
+bin/pairctl mode fix          # default: code changes
+bin/pairctl mode audit        # code does not change, only findings
+
+bin/pairctl autonomy observe  # only reports; the human is at the wheel
+bin/pairctl autonomy semi     # default: works alone, closes on your word
+bin/pairctl autonomy auto     # closes the round itself, given proof
 ```
 
-Работают вдвоём: **один пишет код, второй ломает.** Не оба сразу. Второй не может
-править файлы — у него для этого есть патч, который предлагает, а не применяет.
+Agents read the mode themselves on the first `pair_state`. They do **not** know you
+changed it, so after the command **say one line in their panes**.
 
-Кто пишет — видно командой:
+Note that `observe` is not "gates off": proof is required to close a round in every
+mode. `observe` only means it will not restart agents and does not need your word.
+
+### fix — we repair
+
+```sh
+bin/pairctl task "fix the retries on 502"
+```
+
+They work as two: **one writes code, the other breaks it.** Not both at once. The
+second cannot edit files — it has the patch mechanism for that, which proposes rather
+than applies.
+
+The task list is append-only. A second task does not overwrite the first:
+
+```sh
+bin/pairctl tasks                        # what is open, what is closed
+bin/pairctl task --done 2                # finished
+bin/pairctl task --drop 3 --reason "covered by PR #5"
+```
+
+A round cannot close while a task is open, and a dropped task needs a reason. That is
+deliberate: an agent that switches to a new task and forgets the old one is the normal
+failure mode, and here it cannot pass silently.
+
+Who writes:
 
 ```sh
 bin/pairctl why
 ```
 
-Пишущему в окно:
+To the writer's pane:
 
 ```
-режим fix, ты пишешь. Начни с задачи, которую я записал.
+mode fix, you are writing. Start with the task I recorded.
 ```
 
-Второму в окно:
+To the other's pane:
 
 ```
-режим fix, ты критик. Код не правишь — предлагай правки патчем.
+mode fix, you are the critic. You do not edit — propose patches.
 ```
 
-### audit — смотрим
+### audit — we look
 
 ```sh
-bin/pairctl task "найти гонки в store"
+bin/pairctl task "find the races in the store"
 bin/pairctl mode audit
 ```
 
-Работают вдвоём: **оба ищут дефекты, оба пробуют сломать находку другого.** Код не
-меняет никто. Патчи сервер не принимает — в раунде, где ничего не меняется, патчу
-нечего предложить.
+They work as two: **both hunt for defects, both try to break the other's finding.**
+Nobody changes code. The server refuses patches — in a round where nothing changes,
+there is nothing to propose.
 
-Находка считается найденной, только если её подтвердили оба. Не смог сломать —
-`confirmed`, смог — `refuted` с причиной.
+A finding counts as found only once both have confirmed it. Could not break it —
+`confirmed`; could — `refuted`, with the reason.
 
-Готовые находки кладутся в `docs/backlog/`. Это единственные файлы, которые в таком
-раунде создаются, и это же готовый вход для следующего раунда починки.
+Confirmed findings go into `docs/backlog/`. Those are the only files such a round
+creates, and they are the ready-made input for the next repair round.
 
-Пишущему в окно:
-
-```
-режим audit, код не трогаем. Ищем дефекты и ломаем находки друг друга.
-```
-
-Второму в окно:
-
-```
-режим audit, код не трогаем. Найди и попробуй опровергнуть мои находки.
-```
-
-### Переключили режим — скажите соседям
+### If you switched mode, tell the peers
 
 ```sh
 bin/pairctl mode fix
 ```
 
-Состояние изменилось, но агенты об этом не узнают, пока не напишете им. Одна строка
-в каждое окно. Что именно писать — зависит от того, кто пишет сейчас:
+The state changed, but the agents will not find out until you say so. One line in each
+pane. What exactly to say depends on who is writing:
 
 ```sh
 bin/pairctl why
 ```
 
-## Типовые сеансы
+## Typical sessions
 
-**Просто починить.** `pairctl task "..."` → строка в оба окна → они работают →
-смотрите `pairchat`.
+**Just repair.** `pairctl task "..."` → one line in both panes → they work → watch
+`pairchat`.
 
-**Сначала посмотреть, потом чинить.** `pairctl mode audit` → работа → находки в
-`docs/backlog/` → `pairctl mode fix` → строка в окна «берём из docs/backlog/» →
-работа.
+**Look first, then repair.** `pairctl mode audit` → work → findings in
+`docs/backlog/` → `pairctl mode fix` → a line in the panes "we are taking from
+docs/backlog/" → work.
 
-**Починка разрослась, нужен откат.** `pairctl mode audit`. Сделанное остаётся.
+**The repair grew, we need a step back.** `pairctl mode audit`. What is already done
+stays done.
 
-## Что видите вы
+## What you see
 
 ```sh
-bin/pairchat              # живая переписка
-bin/pairchat --once       # разово, и выход
-bin/pairctl all           # все проекты, кто молчит, что за задача
-bin/pairctl log --limit 50  # что делали, включая все отказы
+bin/pairchat                 # the live conversation
+bin/pairchat --once          # once, then exit
+bin/pairctl all              # every project, who is silent, what the task is
+bin/pairctl log --limit 50   # what they did, including every refusal
+bin/pairctl status           # this project, and what blocks closing the round
+bin/pairctl roster           # who is registered
 ```
 
-Человек вмешивается только в шести вещах: секреты и токены, адреса и порты развёртывания,
-деплой, миграции баз данных, удаление данных, удаление истории git. Всё остальное
-агенты решают между собой автономно.
+The human steps in for six things only: secrets and tokens, deploy targets and ports,
+deploys, database migrations, deleting data, deleting git history. Everything else the
+agents settle between themselves.
 
-Агентам запрещено просить вас пересылать сообщения между окнами: они будят друг друга
-через `pair_deliver` напрямую.
+Agents are forbidden from asking you to relay messages between windows: they wake
+each other through `pair_deliver` directly.
 
-## Что не сработает
+## What will not work
 
-**Агент просит вас передать текст в соседнее окно («голубиная почта»).**
-Это ошибка поведения агента: для активной передачи сообщений и передачи эстафеты в протоколе
-предназначен `pair_deliver`. Человек дал задачу и ожидает результат (PR), а не работает
-ручным роутером между окнами.
+**An agent asks you to pass text into the neighbouring window ("pigeon post").**
+That is an agent behaviour bug: `pair_deliver` exists for active messaging and
+handing over. The human gave a task and expects a result (a PR), not to work as a
+manual router.
 
-**В CLI всплыл запрос подтверждения команды `[y/n]`.**
-Если агент заблокировался на интерактивном вопросе терминала, соседний агент может вызвать
-`pair_unblock`, либо фоновый `bin/pairwatch --unblock` автоматически нажмёт подтверждение.
+**A confirmation prompt appears in the CLI.**
+If an agent is blocked on an interactive question, the peer may call `pair_unblock`,
+or the background `bin/pairwatch --unblock` presses it — but only for what the
+allowlist permits (§13b of the protocol). Not every prompt is answered: a `curl` or an
+`rm -rf /` stays refused on purpose, and that is not a bug to be worked around. Both
+forms are handled: a `[y/N]` question and a TUI menu, which takes `Enter` only.
 
-**Агент молчит.** Значит, он ушёл. Проверьте `bin/pairctl all` — там видно, кто давно
-не отвечал. `bin/pairwatch` ловит это раньше, чем заметите вы.
+**An agent is silent.** It means it is gone. Check `bin/pairctl all` — it shows who
+has not answered for a long time. `bin/pairwatch` catches this before you notice.
 
-**Завис один агент.** Обычно он ждёт ответа, которого не будет. Помогает
-`bin/pairdoctor` и перезапуск окна.
+**One agent is stuck.** Usually it waits for an answer that will not come.
+`bin/pairdoctor` helps, as does restarting the pane.
 
-**Раунд закрыли, а потом нашли дефект.** Фазу можно вернуть назад на шаг, это
-делает кто угодно, без прав на запись: агент сам вернёт раунд, если нашёл находку
-после закрытия.
+**The round was closed and then a defect was found.** The phase can be stepped back
+one step, by anyone, without write authority: an agent will return the round itself
+if it found something after closing.
 
-**Один агент работает второй час.** Никто не мешает ему закончить. `pairwatch`
-покажет тишину, решение ваше.
+**One agent has been working for a second hour.** Nobody stops it from finishing.
+`pairwatch` shows the silence; the decision is yours.

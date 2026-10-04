@@ -15,11 +15,11 @@
 </p>
 
 <p align="center">
-  <a href="./README.md">🇬🇧 English Version</a> &bull; <strong>Русская версия</strong> &bull; <a href="./docs/PROTOCOL.md">📜 Протокол</a> &bull; <a href="./docs/HOW-IT-WORKS.md">💡 Как это работает</a> &bull; <a href="./docs/RUNBOOK.md">🛠 Runbook</a>
+  <a href="./README.md">🇬🇧 English Version</a> &bull; <strong>Русская версия</strong> &bull; <a href="./docs/PROTOCOL.md">📜 Протокол</a> [<a href="./docs/PROTOCOL.ru.md">ru</a>] &bull; <a href="./docs/HOW-IT-WORKS.md">💡 Как это работает</a> &bull; <a href="./docs/RUNBOOK.md">🛠 Runbook</a> [<a href="./docs/RUNBOOK.ru.md">ru</a>]
 </p>
 
 <p align="center">
-  <em>Объедините любых двух автономных AI-кодеров (OpenCode, Claude Code, Antigravity, OpenAI Codex) в дисциплинированную пару: один пишет код, а второй критикует, верифицирует гипотезы и предлагает криптографически опечатанные патчи — полностью автономно, без превращения человека в «почтового голубя».</em>
+  <em>Объедините любых двух автономных AI-кодеров (OpenCode, Claude Code, Antigravity, OpenAI Codex) в дисциплинированную пару: один пишет код, а второй критикует, верифицирует гипотезы и предлагает криптографически опечатанные патчи — без превращения человека в «почтового голубя». Человек всё равно даёт задачу и принимает PR, всё равно говорит одно слово на чекпоинте в режиме <code>semi</code>, и всё равно останавливает пару на секретах, деплоях, миграциях и необратимых удалениях.</em>
 </p>
 
 </div>
@@ -202,7 +202,7 @@ bin/pair-duo --worktree claude # Запуск с изолированным git 
 
 Он не умеет двигать фазы, выдавать или забирать право записи, коммитить, применять чужие
 патчи и трогать файлы проекта. Именно эти границы делают схему безопасной
-([PROTOCOL.md §13](file:///home/alexios/work/umputum/docs/PROTOCOL.md)).
+([PROTOCOL.md §13](./docs/PROTOCOL.md)).
 
 ### 🔒 На что сверхвизору можно жать «y»
 
@@ -264,11 +264,11 @@ echo '{"allow": ["Read", "grep", "git status"]}' > .pair/permissions.json
 
 В поставку входят готовые навыки, расширяющие возможности моделей:
 
-- **[`pair-work`](file:///home/alexios/work/umputum/skills/pair-work/SKILL.md)**: Полная автономная коллаборация: План &rarr; Код &rarr; Ревью &rarr; Тесты &rarr; PR без прерываний человека.
-- **[`pair-chat`](file:///home/alexios/work/umputum/.agents/skills/pair-chat/SKILL.md)**: Протокол общения, правила активной доставки `pair_deliver` и запрет «голубиной почты».
-- **[`pair-audit`](file:///home/alexios/.gemini/config/skills/pair-audit/SKILL.md)**: Аудит достоверности тестов: проверка, что тесты падали до правок и проходят после, без фиктивных моков.
-- **[`root-cause`](file:///home/alexios/.gemini/config/skills/root-cause/SKILL.md)**: Анализ первопричин методом «5 Почему» до начала модификации кода.
-- **[`pair-backlog`](file:///home/alexios/.gemini/config/skills/pair-backlog/SKILL.md)**: Сохранение подтвержденных дефектов вне скоупа задачи в `docs/backlog/`.
+- **[`pair-work`](./skills/pair-work/SKILL.md)**: Полная автономная коллаборация: План &rarr; Код &rarr; Ревью &rarr; Тесты &rarr; PR без прерываний человека.
+- **[`pair-chat`](./.agents/skills/pair-chat/SKILL.md)**: Протокол общения, правила активной доставки `pair_deliver` и запрет «голубиной почты».
+- **[`pair-audit`](./skills/pair-audit/SKILL.md)**: Аудит достоверности тестов: проверка, что тесты падали до правок и проходят после, без фиктивных моков.
+- **[`root-cause`](./skills/root-cause/SKILL.md)**: Анализ первопричин методом «5 Почему» до начала модификации кода.
+- **[`pair-backlog`](./skills/pair-backlog/SKILL.md)**: Сохранение подтвержденных дефектов вне скоупа задачи в `docs/backlog/`.
 
 ---
 

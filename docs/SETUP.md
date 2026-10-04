@@ -38,9 +38,16 @@ opencode                                    # pane 1
 agy                                         # pane 2
 ```
 
-Any two different CLIs, in any order. Whoever reads the task first ends up as writer, so
-pane order does not decide the roles. Neither agent needs to be told about the other: they
-find each other through the shared state directory.
+Any two different CLIs, in any order. Roles come from the standing arrangement if you set
+one, and only otherwise from a claim:
+
+```sh
+bin/pairctl roles --writer opencode --critic agy --global   # set it once
+```
+
+With an arrangement in place, pane order does not decide anything, and neither agent
+needs to be told about the other: they find each other through the shared state
+directory. Without one, whoever reads the task first ends up as writer.
 
 `pair_deliver` needs both agents inside tmux panes. Outside tmux, `pair_send`, `pair_read`
 and `pair_note` still work — only the live wake-up is lost.
@@ -144,6 +151,16 @@ give the second one role `opencode2`.
 
 ## Config shapes that cost us a bug each
 
+**The `timeout` above must exceed the protocol's wait ceiling.** `pair_read` can wait
+60 seconds, and that wait is part of the protocol: an agent that cannot wait never
+notices an incoming message, and the human starts relaying by hand. A client that
+gives up first tears the call down mid-wait, and the agent cannot tell "nobody
+answered" from "I was disconnected" — so it draws a conclusion about its peer instead
+of about itself. Hence 65000 against a 60s ceiling. The server also clamps the wait to
+what the client can survive and says so in the answer (`wait_capped_by_client_timeout`),
+and a test fails the suite if any profile in `cli-profiles.json` is set below the
+ceiling.
+
 `opencode` and Antigravity do **not** share an MCP config shape. Writing one in the other's format
 fails silently: the server is simply never registered, and the symptom is "the `pair_*` tools do
 not exist" rather than a config error.
@@ -158,7 +175,7 @@ Schema: `#/$defs/McpLocalConfig`, `additionalProperties: false`.
     "type": "local",
     "command": ["sh", "mcp/pair_mailbox/serve.sh", "opencode"],
     "enabled": true,
-    "timeout": 20000
+    "timeout": 65000
   }
 }
 ```
@@ -229,6 +246,12 @@ process is which, and a role a process can set for itself is not an identity.
 
 **Both agents must run from the same directory.** `--state .pair` resolves against the process
 working directory. Two different directories means two empty mailboxes and a silent failure.
+
+**A dead agent keeps its roster entry until someone prunes it.** `bin/pairctl roster`
+shows what is registered; `--prune` removes a role only when its process is dead **and**
+its pane is either gone or belongs to another live role. One fact is not enough: after
+a crash a live pane may be a shell you opened. Left alone, two dead entries sharing a
+live pane will make the supervisor skip a living peer.
 
 **Both CLIs ship several times a week.** Re-check the parts that are most likely to move:
 

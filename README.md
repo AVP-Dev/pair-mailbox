@@ -19,7 +19,7 @@
 </p>
 
 <p align="center">
-  <em>Turn any two autonomous AI coding agents (OpenCode, Claude Code, Antigravity, OpenAI Codex) into a disciplined, self-orchestrating pair: one writes code while the other adversarial-reviews, tests, and proposes cryptographically sealed patches — fully autonomously, with zero manual message relaying.</em>
+  <em>Turn any two autonomous AI coding agents (OpenCode, Claude Code, Antigravity, OpenAI Codex) into a disciplined, self-orchestrating pair: one writes code while the other adversarial-reviews, tests, and proposes cryptographically sealed patches — with zero manual message relaying between them. The human still gives the task and accepts the PR, still says one word at the verify checkpoint in <code>semi</code>, and still stops the pair for secrets, deploys, migrations and irreversible deletions.</em>
 </p>
 
 </div>
@@ -190,7 +190,7 @@ human in `semi`, and writes a report when the round closes.
 
 It cannot move phases, grant or revoke write authority, commit, apply a peer's patch, or
 touch project files. Those are the boundaries that make the arrangement safe
-([PROTOCOL.md §13](file:///home/alexios/work/umputum/docs/PROTOCOL.md)).
+([PROTOCOL.md §13](./docs/PROTOCOL.md)).
 
 ### 🔒 What the supervisor may press "y" on
 
@@ -264,11 +264,11 @@ Switch modes at runtime with a single command (`bin/pairctl mode <mode>`):
 
 Specialized agent skills included out of the box:
 
-- **[`pair-work`](file:///home/alexios/work/umputum/skills/pair-work/SKILL.md)**: Full autonomous collaboration. Drives the 4-turn loop without asking the human for permission or relaying text.
-- **[`pair-chat`](file:///home/alexios/work/umputum/.agents/skills/pair-chat/SKILL.md)**: Technical communication protocols, active delivery (`pair_deliver`), and strictly forbidding the "human pigeon" anti-pattern.
-- **[`pair-audit`](file:///home/alexios/.gemini/config/skills/pair-audit/SKILL.md)**: Proves test evidence is authentic: tests fail before changes, pass after, and nothing was mocked or weakened to force a green status.
-- **[`root-cause`](file:///home/alexios/.gemini/config/skills/root-cause/SKILL.md)**: 5-Whys systematic failure analysis before modifying code.
-- **[`pair-backlog`](file:///home/alexios/.gemini/config/skills/pair-backlog/SKILL.md)**: Formal lifecycle for capturing verified out-of-scope defects in `docs/backlog/`.
+- **[`pair-work`](./skills/pair-work/SKILL.md)**: Full autonomous collaboration. Drives the 4-turn loop without asking the human for permission or relaying text.
+- **[`pair-chat`](./.agents/skills/pair-chat/SKILL.md)**: Technical communication protocols, active delivery (`pair_deliver`), and strictly forbidding the "human pigeon" anti-pattern.
+- **[`pair-audit`](./skills/pair-audit/SKILL.md)**: Proves test evidence is authentic: tests fail before changes, pass after, and nothing was mocked or weakened to force a green status.
+- **[`root-cause`](./skills/root-cause/SKILL.md)**: 5-Whys systematic failure analysis before modifying code.
+- **[`pair-backlog`](./skills/pair-backlog/SKILL.md)**: Formal lifecycle for capturing verified out-of-scope defects in `docs/backlog/`.
 
 ---
 
