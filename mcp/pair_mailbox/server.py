@@ -62,8 +62,42 @@ DEFAULT_PROTOCOL_VERSION = "2024-11-05"
 SERVER_NAME = "pair-mailbox"
 SERVER_VERSION = "1.0.0"
 
+# Потолок ожидания в pair_read. Живое ожидание — часть протокола (§7): без него
+# агент, который не знает о письме, не узнает и не ответит, и канал умирает.
+#
+# Но сервер не должен обещать больше, чем клиент способен дождаться: opencode
+# рвёт MCP-вызов на 20 секундах, и 40 секунд разрешённого диапазона были
+# недостижимы. Клиент рвался раньше, чем сервер просыпался, — и по возвращённым
+# waited_seconds не было видно, что вызов прервал клиент, а не сервер.
+#
+# Отсюда два правила. Потолок здесь — последнее слово сервера, а фактический
+# предел — min(этот потолок, CLIENT_TIMEOUT с запасом), и он читается из
+# окружения, потому что клиент у каждого CLI свой. И проверка согласованности
+# при старте: профиль с таймаутом меньше потолка — это дефект конфигурации, и
+# молча пропускать его нельзя.
 MAX_READ_WAIT_SECONDS = 60
 DEFAULT_READ_WAIT_SECONDS = 0.0
+
+# Таймаут MCP-клиента по умолчанию, если он не задан в окружении. 20 секунд —
+# значение из коробки у opencode, и оно же было причиной находки.
+CLIENT_TIMEOUT_SECONDS = int(os.environ.get("PAIR_CLIENT_TIMEOUT", "20000"))
+
+# Запас между ожиданием сервера и терпением клиента. Без него сервер успевает
+# начать ответ ровно в момент, когда клиент уже отключился.
+READ_WAIT_MARGIN_SECONDS = 5.0
+
+
+def effective_read_wait(wait: float) -> tuple[float, bool]:
+    """Сколько реально ждать, и что пришлось урезать.
+
+    Возвращает (ожидание, урезано ли). Урезанное ожидание возвращается наружу
+    явно, потому что иначе агент видит «я попросил 60 и получил тишину» и не
+    может отличить «не ответили» от «меня отключили по таймауту».
+    """
+    capped = min(float(wait), float(MAX_READ_WAIT_SECONDS))
+    client_budget = max(0.0, (CLIENT_TIMEOUT_SECONDS / 1000.0) - READ_WAIT_MARGIN_SECONDS)
+    effective = min(capped, client_budget)
+    return effective, effective < capped
 GLOB_CHARS = ("*", "?", "[", "]")
 
 # Phase graph. Mirrors the shape that works in practice: scope the work, agree on
@@ -1407,7 +1441,7 @@ class PairSession:
             raise ProtocolError("`wait_seconds` must be a number.") from None
         if wait < 0:
             raise ProtocolError("`wait_seconds` must not be negative.")
-        wait = min(wait, MAX_READ_WAIT_SECONDS)
+        wait, was_capped = effective_read_wait(wait)
 
         # Both roles may wait. This used to be forced to zero for the writer, to stop
         # two agents blocking each other, but that killed the channel instead: an agent
@@ -1422,7 +1456,7 @@ class PairSession:
                 break
             time.sleep(0.1)
 
-        return {
+        answer = {
             "messages": messages,
             "count": len(messages),
             "waited_seconds": round(wait, 2),
@@ -1432,6 +1466,20 @@ class PairSession:
                 "check — read pair_state or pair_transcript and answer with what is true now."
             ),
         }
+        if was_capped:
+            # Раньше эта информация терялась, и вызов выглядел как обычная тишина.
+            # На деле клиент не дождался бы и большего: обрыв по таймауту выглядел
+            # бы как «никто не ответил», и агент делал вывод о соседе, а не о себе.
+            answer["wait_capped_by_client_timeout"] = True
+            answer["client_timeout_seconds"] = CLIENT_TIMEOUT_SECONDS
+            answer["max_read_wait_seconds"] = MAX_READ_WAIT_SECONDS
+            answer["why"] = (
+                f"You asked for more than this client can wait for. It cut the wait to "
+                f"{wait:.0f}s (client timeout {CLIENT_TIMEOUT_SECONDS}ms minus a "
+                f"{READ_WAIT_MARGIN_SECONDS:.0f}s margin). Raise PAIR_CLIENT_TIMEOUT, or ask "
+                f"for less and call again."
+            )
+        return answer
 
     def _drain(self, limit: int) -> list[dict[str, Any]]:
         def apply(state: dict[str, Any]) -> list[dict[str, Any]]:

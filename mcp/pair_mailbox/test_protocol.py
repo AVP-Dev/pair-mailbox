@@ -854,6 +854,64 @@ class TestRosterPrune(PairTestCase):
         self.assertIn("roster_pruned", [e["kind"] for e in self.store.read_transcript()])
 
 
+class TestReadWaitBudget(PairTestCase):
+    """pair_read не должен обещать больше, чем клиент способен дождаться.
+
+    Живое ожидание — часть протокола (§7), но opencode рвёт MCP-вызов на 20
+    секундах: 40 секунд из разрешённых 60 были недостижимы, и по возвращённым
+    waited_seconds нельзя было отличить «не ответили» от «меня отключили»."""
+
+    def test_a_long_wait_is_cut_to_what_the_client_survives(self) -> None:
+        import server as srv
+        with mock.patch.object(srv, "CLIENT_TIMEOUT_SECONDS", 20000):
+            wait, capped = srv.effective_read_wait(60)
+        self.assertTrue(capped)
+        self.assertLessEqual(wait, 15.0, "20с минус запас — потолок, который клиент выдержит")
+
+    def test_a_short_wait_is_left_alone(self) -> None:
+        import server as srv
+        with mock.patch.object(srv, "CLIENT_TIMEOUT_SECONDS", 20000):
+            wait, capped = srv.effective_read_wait(5)
+        self.assertFalse(capped)
+        self.assertEqual(5.0, wait)
+
+    def test_the_cap_is_reported_not_hidden(self) -> None:
+        """Раньше урезанное ожидание выглядело как обычная тишина, и агент делал
+        вывод о соседе, а не о собственном клиенте."""
+        import server as srv
+        with mock.patch.object(srv, "CLIENT_TIMEOUT_SECONDS", 20000), \
+             mock.patch.object(self.peer, "_drain", return_value=[]), \
+             mock.patch("time.sleep"):
+            answer = self.peer.tool_pair_read(wait_seconds=45)
+        self.assertTrue(answer["wait_capped_by_client_timeout"])
+        self.assertEqual(20000, answer["client_timeout_seconds"])
+        self.assertIn("PAIR_CLIENT_TIMEOUT", answer["why"])
+
+    def test_a_generous_client_gets_the_full_protocol_wait(self) -> None:
+        import server as srv
+        with mock.patch.object(srv, "CLIENT_TIMEOUT_SECONDS", 65000):
+            wait, capped = srv.effective_read_wait(60)
+        self.assertFalse(capped)
+        self.assertEqual(60.0, wait)
+
+    def test_every_profile_outlives_the_protocol_wait(self) -> None:
+        """Конфигурация, где клиент рвётся раньше сервера, — это дефект
+        конфигурации, и молча пропускать его нельзя."""
+        import json as _json
+        root = Path(__file__).resolve().parent.parent.parent
+        profiles = _json.loads((root / "cli-profiles.json").read_text(encoding="utf-8"))
+        import server as srv
+        for name, entry in profiles.items():
+            if name.startswith("_") or not isinstance(entry, dict):
+                continue
+            timeout = (entry.get("mcp") or {}).get("entry", {}).get("timeout")
+            with self.subTest(profile=name):
+                self.assertIsInstance(timeout, int, f"{name}: таймаут MCP не задан")
+                self.assertGreater(
+                    timeout / 1000.0, srv.MAX_READ_WAIT_SECONDS,
+                    f"{name}: клиент рвёт вызов раньше, чем сервер может проснуться")
+
+
 class TestAutonomyCommand(PairTestCase):
     """pairctl autonomy и pairctl ok: две команды человека, которыми он рулит."""
 
