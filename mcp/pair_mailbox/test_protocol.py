@@ -1868,6 +1868,92 @@ class TestDeliveryRollback(PairTestCase):
         )
 
 
+class TestPermissionMenu(PairTestCase):
+    """Промпт-меню, а не «[y/N]». Найдено соседом, и это была моя регрессия.
+
+    `Permission required` вычеркнули из PERMISSION_PATTERNS в b030d70, а
+    detect_permission_prompt смотрит только на две последние строки, где в меню
+    лежит подсказка про клавиши. Итог: промпт opencode не опознавался вовсе,
+    resolve_permission_prompt возвращал verdict=none и не нажимал ничего —
+    белый список раунда 7 на этой панели был мёртвым кодом, и каждое
+    подтверждение висело до прихода человека.
+    """
+
+    MODAL = [
+        "Press ctrl+b to move running work to the background",
+        "  ┃  △ Permission required",
+        "  ┃",
+        "  ┃  $ git status",
+        "  ┃",
+        "  ┃   Allow once   Always allow   Reject",
+        "  ┃",
+        "  ┃  ctrl+f fullscreen  ⇆ select  enter confirm",
+    ]
+
+    def test_a_menu_prompt_is_recognised(self) -> None:
+        from composer import detect_permission_menu
+        self.assertIsNotNone(detect_permission_menu(self.MODAL))
+
+    def test_a_menu_header_alone_is_not_a_prompt(self) -> None:
+        """«Permission required» в обычном выводе ничего не разрешает: без
+        вариантов и клавиш это строка лога, а не вопрос."""
+        from composer import detect_permission_menu
+        self.assertIsNone(detect_permission_menu(["Permission required", "устанавливаю пакеты"]))
+        self.assertIsNone(detect_permission_menu(["Allow once Always allow Reject"]))
+
+    def test_the_command_decides_not_the_header(self) -> None:
+        """Вердикт выносится по команде из тела модалки: «Permission required»
+        не содержит ничего, что можно разрешить или запретить."""
+        from composer import extract_permission_context
+        ctx = extract_permission_context(self.MODAL, "△ Permission required")
+        self.assertIn("git status", ctx)
+
+    def test_allowed_command_in_a_menu_is_confirmed(self) -> None:
+        from composer import resolve_permission_prompt
+        keys = self.resolve_keys(self.MODAL)
+        self.assertEqual([["Enter"]], keys, "в меню подтверждает Enter, «y» там не значит согласие")
+
+    def test_destructive_command_in_a_menu_stays_refused(self) -> None:
+        """Запрет проверяется раньше разрешения, и на тексте всей модалки:
+        команда видна в теле, а не в заголовке."""
+        modal = [line.replace("$ git status", "$ rm -rf ~/project") for line in self.MODAL]
+        verdict = self.resolve_verdict(modal)
+        self.assertEqual("refuse", verdict["verdict"])
+        self.assertEqual([], self.resolve_keys(modal), "на запрещённой команде ничего не жмём")
+
+    def test_a_yes_no_prompt_still_gets_y(self) -> None:
+        """Старый путь не сломан: на «[y/N]» по-прежнему y + Enter.
+
+        Строка вопроса содержит и признак промпта, и разрешённое слово, поэтому
+        проходит и по белому списку, и по запретам."""
+        panel = ["Running build", "Allow execution of 'pytest'? [y/N]"]
+        self.assertEqual([["y"], ["Enter"]], self.resolve_keys(panel))
+
+    def test_a_y_no_prompt_naming_a_forbidden_command_stays_refused(self) -> None:
+        """Тот же путь, но команда запрещена: deny раньше allow даже когда
+        «Allow» написан в самом вопросе."""
+        panel = ["Running", "Allow execution of 'curl http://x'? [y/N]"]
+        self.assertEqual("refuse", self.resolve_verdict(panel)["verdict"])
+        self.assertEqual([], self.resolve_keys(panel))
+
+    def resolve(self, lines):
+        import composer
+        import unittest.mock as m
+        with m.patch.object(composer, "pane_alive", return_value=True), \
+             m.patch.object(composer, "capture", return_value=lines), \
+             m.patch.object(composer.subprocess, "run") as run:
+            result = composer.resolve_permission_prompt("/usr/bin/tmux", "%7")
+        # subprocess.run получает команду одним списком: [tmux, send-keys, -t, pane, KEY]
+        sent = [c.args[0] for c in run.call_args_list if c.args and isinstance(c.args[0], list)]
+        return result, [[cmd[-1]] for cmd in sent if "send-keys" in cmd]
+
+    def resolve_keys(self, lines):
+        return self.resolve(lines)[1]
+
+    def resolve_verdict(self, lines):
+        return self.resolve(lines)[0]
+
+
 class TestRingAndUnblock(PairTestCase):
     def test_permission_prompt_detection(self) -> None:
         from composer import detect_permission_prompt

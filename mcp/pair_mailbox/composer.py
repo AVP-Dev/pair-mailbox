@@ -205,6 +205,53 @@ PERMISSION_PATTERNS = (
     r"\bDo you allow this tool call\?",
 )
 
+# Промпт-меню: TUI показывает не «[y/N]», а список вариантов с подсказкой про
+# выбор и подтверждение. Клавиши там другие, и «y» не значит согласие.
+PERMISSION_MENU_MARKERS = (
+    r"allow\s+once",
+    r"always\s+allow",
+    r"enter\s+confirm",
+    r"(?:⇆|⇄|\btab\b)\s*select",
+)
+PERMISSION_HEADER = re.compile(r"permission\s+(?:required|needed)", re.IGNORECASE)
+
+
+def detect_permission_menu(lines: list) -> str | None:
+    """Промпт в виде меню, а не «y/N». Вернёт строку-заголовок или None.
+
+    Отдельная функция вместо расширения detect_permission_prompt: тот смотрит
+    только на две последние непустые строки, а в меню заголовок «Permission
+    required» стоит на шесть строк выше самых нижних. Расширять его окно значило
+    бы ловить эту строку в обычном выводе, где она ничего не разрешает.
+
+    Нужен и заголовок, и признаки меню: по одному признаку это ещё не промпт,
+    а по одному заголовку — обычный лог.
+    """
+    text = [line.strip() for line in lines if line.strip()]
+    joined = "\n".join(text)
+    if not PERMISSION_HEADER.search(joined):
+        return None
+    if not any(re.search(marker, joined, re.IGNORECASE) for marker in PERMISSION_MENU_MARKERS):
+        return None
+    for line in reversed(text):
+        if PERMISSION_HEADER.search(line):
+            return line
+    return joined
+
+
+def extract_permission_context(lines: list, prompt: str) -> str:
+    """Текст, по которому выносится вердикт.
+
+    Для «y/N» хватает самой строки вопроса. Для меню — нет: команда, которую видно
+    как «$ git status», живёт в теле модалки, а не в заголовке. По одному
+    заголовку «Permission required» белый список не разрешит ничего и откажет
+    всегда, то есть разрешение в меню молча перестало бы работать.
+    """
+    joined = "\n".join(line.strip() for line in lines if line.strip())
+    if any(re.search(marker, joined, re.IGNORECASE) for marker in PERMISSION_MENU_MARKERS):
+        return " ".join(joined.split())
+    return prompt
+
 
 def detect_permission_prompt(lines: list) -> str | None:
     """Return the matched prompt text if the terminal pane is showing an interactive confirmation prompt, else None."""
@@ -417,30 +464,43 @@ def resolve_permission_prompt(tmux: str, pane: str, allow: list[str] | None = No
     if not pane_alive(tmux, pane):
         return {**idle, "why": "панель мертва"}
     lines = capture(tmux, pane)
-    prompt = detect_permission_prompt(lines)
+    menu = detect_permission_menu(lines)
+    prompt = menu or detect_permission_prompt(lines)
     if not prompt:
         return idle
 
-    line = composer_line(lines)
-    # Нет композера — значит и печатать некому: молча подтверждать нельзя.
-    if line is None:
-        return {**idle, "prompt": prompt, "verdict": "refuse",
-                "why": "композера не видно, подтверждать нечем"}
-    if not detect_permission_prompt([line]) and not is_composer_empty(line):
-        return {**idle, "prompt": prompt, "verdict": "refuse",
-                "why": "строка ввода занята своим текстом"}
+    if menu:
+        # В меню нет строки ввода, и жать «y» там бессмысленно: у этого TUI
+        # «y» не значит согласие, а подтверждение — Enter по выбранному пункту.
+        # Проверять композер нечего: его там просто нет, и это нормально.
+        context = extract_permission_context(lines, prompt)
+    else:
+        line = composer_line(lines)
+        # Нет композера — значит и печатать некому: молча подтверждать нельзя.
+        if line is None:
+            return {**idle, "prompt": prompt, "verdict": "refuse",
+                    "why": "композера не видно, подтверждать нечем"}
+        if not detect_permission_prompt([line]) and not is_composer_empty(line):
+            return {**idle, "prompt": prompt, "verdict": "refuse",
+                    "why": "строка ввода занята своим текстом"}
+        context = extract_permission_context(lines, prompt)
 
-    decision = permission_verdict(prompt, allow)
+    decision = permission_verdict(context, allow)
     if decision["verdict"] != "allow":
         return {"approved": False, "verdict": "refuse", "prompt": prompt,
                 "why": decision["why"], "matched": decision["matched"]}
 
-    subprocess.run([tmux, "send-keys", "-t", pane, "y"],
-                   capture_output=True, text=True, timeout=5)
-    subprocess.run([tmux, "send-keys", "-t", pane, "Enter"],
-                   capture_output=True, text=True, timeout=5)
+    if menu:
+        subprocess.run([tmux, "send-keys", "-t", pane, "Enter"],
+                       capture_output=True, text=True, timeout=5)
+    else:
+        subprocess.run([tmux, "send-keys", "-t", pane, "y"],
+                       capture_output=True, text=True, timeout=5)
+        subprocess.run([tmux, "send-keys", "-t", pane, "Enter"],
+                       capture_output=True, text=True, timeout=5)
     return {"approved": True, "verdict": "allow", "prompt": prompt,
-            "why": decision["why"], "matched": decision["matched"]}
+            "why": decision["why"], "matched": decision["matched"],
+            "menu": bool(menu)}
 
 
 def deliver(pane: str, text: str, wait_for_empty: float = 0.0, submit: bool = True) -> dict:
