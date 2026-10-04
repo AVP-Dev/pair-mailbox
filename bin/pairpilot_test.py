@@ -250,5 +250,140 @@ class TestTmuxPaths(PilotCase):
         self.assertNotIn("pilot_pane_dead", self.transcript_kinds())
 
 
+class TestOperatorSafety(PilotCase):
+    """Сверхвизор не должен вредить тому, кто его запустил."""
+
+    def test_own_pane_is_never_touched(self) -> None:
+        """Панель, в которой живёт сам сверхвизор, — это панель человека. Вбить
+        туда напоминание значит съесть то, что он печатает."""
+        self.inbox("opencode", 4)
+        self.write_state(writer="opencode", seen={"opencode": 0},
+                         roles={"opencode": {"last_seen": ago(9999), "pane": "%19"}})
+        pilot = self.pilot()
+        pilot.own_pane = "%19"
+        pilot.tick()
+        self.assertEqual("", pilot.pending("opencode"), "в свою панель не кладём")
+        self.assertIn("pilot_own_pane", self.transcript_kinds())
+
+    def test_pane_of_another_role_is_still_fine(self) -> None:
+        self.inbox("agy", 4)
+        self.write_state(seen={"agy": 0}, roles={"agy": {"last_seen": ago(60), "pane": "%20"}})
+        pilot = self.pilot()
+        pilot.own_pane = "%19"
+        pilot.tick()
+        self.assertTrue(pilot.pending("agy"), "чужая панель — наша работа")
+
+
+class TestVisibleWork(PilotCase):
+    """last_seen меряет участие в протоколе, а не работу."""
+
+    def patch_composer(self, line, empty: bool) -> None:
+        pairpilot.pane_alive = lambda tmux, pane: True
+        pairpilot.composer_line = lambda lines: line
+        pairpilot.is_composer_empty = lambda _line: empty
+
+    def setUp(self) -> None:
+        self._line = pairpilot.composer_line
+        self._empty = pairpilot.is_composer_empty
+        super().setUp()
+
+    def tearDown(self) -> None:
+        pairpilot.composer_line = self._line
+        pairpilot.is_composer_empty = self._empty
+        super().tearDown()
+
+    def silent_writer_state(self) -> None:
+        self.write_state(writer="agy", roles={"agy": {"last_seen": ago(9999), "pane": "%9"}})
+
+    def test_busy_pane_is_not_nudged_even_when_the_clock_ran_out(self) -> None:
+        self.silent_writer_state()
+        pilot = self.pilot()
+        pilot.tmux = "/usr/bin/true"
+        self.patch_composer("> я дописываю тест", empty=False)
+        pilot.tick()
+        self.assertEqual("", pilot.pending("agy"),
+                         "агент печатает — значит работает, и толкать его незачем")
+
+    def test_idle_pane_is_nudged(self) -> None:
+        self.silent_writer_state()
+        pilot = self.pilot()
+        pilot.tmux = "/usr/bin/true"
+        self.patch_composer(">", empty=True)
+        pilot.tick()
+        self.assertTrue(pilot.pending("agy"), "пустой композер — вот это дефект")
+
+    def test_missing_composer_counts_as_busy(self) -> None:
+        """TUI перерисовывается, композера нет. Бить в этот момент — значит
+        отправить клавиши в неизвестно что."""
+        self.silent_writer_state()
+        pilot = self.pilot()
+        pilot.tmux = "/usr/bin/true"
+        self.patch_composer(None, empty=True)
+        pilot.tick()
+        self.assertEqual("", pilot.pending("agy"))
+
+
+class TestObligations(PilotCase):
+    """Запрос, на который не ответили, обязан быть виден. Иначе он тихо умирает
+    в ящике, а пара выглядит спокойно."""
+
+    def obligation(self, seq: int, sender: str, receiver: str, age: int) -> None:
+        root = self.state_dir / "obligations"
+        root.mkdir(parents=True, exist_ok=True)
+        (root / f"{seq:06d}-x.json").write_text(json.dumps({
+            "seq": seq, "from": sender, "to": receiver,
+            "opened_at": ago(age), "subject": f"вопрос {seq}",
+        }), encoding="utf-8")
+
+    def test_fresh_obligation_is_left_alone(self) -> None:
+        self.obligation(1, "opencode", "agy", age=60)
+        self.write_state(roles={"agy": {"last_seen": ago(30), "pane": "%20"}})
+        pilot = self.pilot()
+        pilot.tick()
+        self.assertEqual("", pilot.pending("agy"), "только что спросили — ждём")
+
+    def test_recipient_is_poked_first(self) -> None:
+        self.obligation(7, "opencode", "agy", age=1000)
+        self.write_state(roles={"agy": {"last_seen": ago(30), "pane": "%20"}})
+        pilot = self.pilot()
+        pilot.tick()
+        self.assertIn("ответа в его почте нет", pilot.pending("agy"))
+        self.assertEqual("", pilot.pending("opencode"), "автор пока не в курсе, рано")
+
+    def test_author_is_told_when_the_wait_stretches(self) -> None:
+        self.obligation(7, "opencode", "agy", age=3000)
+        self.write_state(roles={"agy": {"last_seen": ago(30), "pane": "%20"}})
+        pilot = self.pilot()
+        pilot.tick()
+        self.assertIn("ответа в его почте нет", pilot.pending("agy"))
+        self.assertIn("жди вечно", pilot.pending("opencode"))
+
+    def test_answered_obligation_stops_being_nagged(self) -> None:
+        self.obligation(7, "opencode", "agy", age=3000)
+        (self.state_dir / "obligations" / "000007-x.json").unlink()
+        self.write_state(roles={"agy": {"last_seen": ago(30), "pane": "%20"}})
+        pilot = self.pilot()
+        pilot.tick()
+        self.assertEqual("", pilot.pending("agy"))
+        self.assertEqual("", pilot.pending("opencode"))
+
+    def test_broken_obligation_file_is_cleaned_not_crashed_on(self) -> None:
+        root = self.state_dir / "obligations"
+        root.mkdir(parents=True, exist_ok=True)
+        (root / "000001-bad.json").write_text("{не json", encoding="utf-8")
+        self.write_state(roles={"agy": {"last_seen": ago(30), "pane": "%20"}})
+        pilot = self.pilot()
+        pilot.tick()
+        self.assertEqual([], list(root.glob("*.json")), "битое обязательство убираем")
+
+    def test_skipped_role_gets_no_obligation_nag(self) -> None:
+        self.obligation(7, "codex", "agy", age=3000)
+        self.write_state(roles={"agy": {"last_seen": ago(30), "pane": "%20"},
+                                "codex": {"last_seen": ago(30), "pane": "%20"}})
+        pilot = self.pilot()
+        pilot.tick()
+        self.assertEqual("", pilot.pending("agy"), "общая панель — не тыкаем")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -40,7 +40,16 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "mcp" / "pair_mailbox"))
 
 try:
-    from composer import ComposerBusy, deliver, _tmux, pane_alive, resolve_permission_prompt
+    from composer import (  # noqa: E402
+        ComposerBusy,
+        capture,
+        composer_line,
+        deliver,
+        is_composer_empty,
+        _tmux,
+        pane_alive,
+        resolve_permission_prompt,
+    )
 except Exception as error:  # noqa: BLE001 - причина должна быть видна сразу
     print(f"pairpilot: не удалось подключить composer: {error}", file=sys.stderr)
     raise SystemExit(1)
@@ -49,6 +58,10 @@ from server import Store  # noqa: E402  - после sys.path
 
 DEFAULT_INTERVAL = 15.0
 DEFAULT_SILENCE = 600.0
+# Сколько ждать ответа на запрос, прежде чем дёрнуть получателя, и сколько —
+# прежде чем сказать об этом автору запроса.
+DEFAULT_REPLY_GRACE = 900.0
+DEFAULT_REPLY_HARD = 2400.0
 PROMPT_MARKERS = (">", "›", "❯")
 
 
@@ -70,18 +83,29 @@ def log(message: str) -> None:
 
 
 class Pilot:
-    def __init__(self, state_dir: Path, silence: float, interval: float) -> None:
+    def __init__(self, state_dir: Path, silence: float, interval: float,
+                 reply_grace: float = DEFAULT_REPLY_GRACE,
+                 reply_hard: float = DEFAULT_REPLY_HARD) -> None:
         self.state_dir = state_dir
         self.silence = silence
         self.interval = interval
+        self.reply_grace = reply_grace
+        self.reply_hard = reply_hard
         # Store умеет root — это сам каталог состояния: server.py делает ровно
         # то же. Со state_dir.parent мы бы читали несуществующий state.json.
         self.store = Store(state_dir)
         self.outbox = state_dir / "pilot"
         self.outbox.mkdir(parents=True, exist_ok=True)
         self.reported: set[str] = set()
-        self.tmux: str | None = None
         self.skip: set[str] = set()
+        try:
+            self.tmux: str | None = _tmux()
+        except Exception:
+            self.tmux = None
+        # Панель, в которой живёт сам сверхвизор. Это, обычно, панель оператора,
+        # а иногда и панель агента, который его запустил. Вбивать туда что-либо
+        # нельзя: там ждёт ввод человека, и мы бы съели его текст.
+        self.own_pane = os.environ.get("TMUX_PANE") or None
 
     # ------------------------------------------------------------------ state
 
@@ -162,6 +186,23 @@ class Pilot:
 
     # ---------------------------------------------------------------- nudges
 
+    def visibly_busy(self, pane: str) -> bool:
+        """Видно ли по панели, что агент работает прямо сейчас.
+
+        Композер занят — агент печатает или ждёт. Композера не видно вовсе —
+        TUI перерисовывается, и бить в этот момент тоже нельзя. Оба случая
+        означают «не трогать».
+        """
+        if self.tmux is None or not pane_alive(self.tmux, pane):
+            return False
+        try:
+            line = composer_line(capture(self.tmux, pane))
+        except Exception:  # noqa: BLE001 - панель могла исчезнуть между проверками
+            return False
+        if line is None:
+            return True
+        return not is_composer_empty(line)
+
     def role_seen_age(self, info: dict) -> float:
         stamp = parse_iso(info.get("last_seen"))
         return (datetime.now(timezone.utc) - stamp).total_seconds() if stamp else float("inf")
@@ -205,6 +246,12 @@ class Pilot:
         info = (state.get("roles") or {}).get(writer)
         if not info:
             return
+        pane = info.get("pane")
+        if pane and self.visibly_busy(pane):
+            # last_seen меряет участие в протоколе, а не работу. Писатель,
+            # погружённый в длинную правку, не зовёт pair_* инструменты, и часы
+            # у него сходят, хотя он работает. Видимая занятость — честнее часов.
+            return
         age = self.role_seen_age(info)
         if age < self.silence:
             return
@@ -218,6 +265,50 @@ class Pilot:
                 f"не считается: нужен реальный шаг или явная блокировка.")
         self.enqueue(writer, text)
         log(f"{writer} молчит {int(age // 60)} мин и держит фазу {state.get('phase')!r}")
+
+    def pending_answers(self, state: dict) -> None:
+        """Отправили запрос, ответа нет. Это хуже молчания: молчание может означать
+        «работаю», а отсутствие ответа на конкретный вопрос — что вопрос умер в
+        ящике. Сначала дёргаем того, кому отвечать: обычно он просто не дочитал.
+        Потом, если молчит и автор, — того, кто ждёт."""
+        root = self.state_dir / "obligations"
+        if not root.is_dir():
+            return
+        now = datetime.now(timezone.utc)
+        for path in sorted(root.glob("*.json")):
+            try:
+                record = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                path.unlink(missing_ok=True)
+                continue
+            opened = parse_iso(record.get("opened_at"))
+            if opened is None:
+                path.unlink(missing_ok=True)
+                continue
+            age = (now - opened).total_seconds()
+            seq, sender, receiver = record.get("seq"), record.get("from"), record.get("to")
+            subject = (record.get("subject") or "").strip()
+
+            if receiver and age >= self.reply_grace and receiver not in self.skip:
+                key = f"reply-{seq}-{receiver}"
+                if self.remember(key):
+                    text = (f"[pairpilot] {sender} ждёт ответа на запрос {seq} "
+                            f"уже {int(age // 60)} мин{f': {subject}' if subject else ''}. "
+                            f"Это запрос с expects_reply, а ответа в его почте нет. "
+                            f"Ответь или скажи, что он больше не нужен.")
+                    self.enqueue(receiver, text)
+                    log(f"{receiver} не ответил на запрос {seq} от {sender} "
+                        f"({int(age // 60)} мин)")
+
+            if sender and age >= self.reply_hard and sender not in self.skip:
+                key = f"waiting-{seq}-{sender}"
+                if self.remember(key):
+                    text = (f"[pairpilot] Ты ждёшь ответа на запрос {seq} от {receiver} "
+                            f"уже {int(age // 60)} мин{f': {subject}' if subject else ''}. "
+                            f"Ответа нет. Не жди вечно: сделай следующий шаг сам, "
+                            f"запиши в заметку, что запрос завис без ответа, и двигайся дальше.")
+                    self.enqueue(sender, text)
+                    log(f"{sender} ждёт ответа на запрос {seq} уже {int(age // 60)} мин")
 
     def dead_pane(self, state: dict) -> None:
         """Окно агента исчезло. Подтолкнуть нечем — это тот случай, где человек
@@ -277,14 +368,22 @@ class Pilot:
 
     def tick(self) -> dict:
         state = self.state()
-        if self.tmux is None:
-            self.tmux = _tmux() if _tmux() else None
         # Роли, сидящие на общей панели, неразличимы: в них не тыкаем.
         self.skip = {role for names in self.shared_panes(state).values() for role in names}
+        # Свою панель не трогаем никогда: там ввод человека.
+        if self.own_pane:
+            for role, info in (state.get("roles") or {}).items():
+                if info.get("pane") == self.own_pane:
+                    self.skip.add(role)
+                    if self.remember(f"ownpane-{role}-{self.own_pane}"):
+                        log(f"{role} сидит в моей же панели {self.own_pane} — не трогаю её")
+                        self.store.append_transcript("pilot_own_pane", "pairpilot",
+                                                     target=role, pane=self.own_pane)
         self.ambiguous(state)
         self.unblock(state)
         self.dead_pane(state)
         self.unread_peers(state)
+        self.pending_answers(state)
         self.flush_outbox(state)
         self.stale_writer(state)
         self.report_once(state)
@@ -354,11 +453,16 @@ def main() -> int:
     parser.add_argument("--state", default=os.environ.get("PAIR_STATE", ".pair"))
     parser.add_argument("--interval", type=float, default=DEFAULT_INTERVAL)
     parser.add_argument("--silence", type=float, default=DEFAULT_SILENCE)
+    parser.add_argument("--reply-grace", type=float, default=DEFAULT_REPLY_GRACE,
+                        help="seconds before the recipient of a request is poked")
+    parser.add_argument("--reply-hard", type=float, default=DEFAULT_REPLY_HARD,
+                        help="seconds before the author of a request is told it went unanswered")
     parser.add_argument("--once", action="store_true", help="один проход и выход")
     args = parser.parse_args()
 
     state_dir = Path(args.state).resolve()
-    pilot = Pilot(state_dir, silence=args.silence, interval=args.interval)
+    pilot = Pilot(state_dir, silence=args.silence, interval=args.interval,
+                  reply_grace=args.reply_grace, reply_hard=args.reply_hard)
 
     if args.once:
         state = pilot.tick()

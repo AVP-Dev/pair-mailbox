@@ -111,6 +111,28 @@ def log(message: str) -> None:
     print(f"[{SERVER_NAME}] {message}", file=sys.stderr, flush=True)
 
 
+def global_roles_path() -> Path:
+    """Where the human's across-every-project role pinning lives."""
+    return Path(os.environ.get("PAIR_ROLES", Path.home() / ".config" / "pair-mailbox" / "roles.json"))
+
+
+def read_global_policy() -> dict[str, Any] | None:
+    """The pinning the human set for all projects at once.
+
+    Read on every state load and only when the project has none of its own, so a
+    project can always override it and never the other way round. An unreadable or
+    nameless file means no policy, which leaves the race in place rather than
+    guessing — a wrong writer is far worse than a slow one.
+    """
+    try:
+        data = json.loads(global_roles_path().read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if isinstance(data, dict) and data.get("writer"):
+        return data
+    return None
+
+
 class ProtocolError(Exception):
     """A request that is well-formed MCP but violates the collaboration rules."""
 
@@ -132,10 +154,12 @@ class Store:
         self.mailbox_root = root / "mailbox"
         self.notes_root = root / "notes"
         self.patches_root = root / "patches"
+        self.obligations_root = root / "obligations"
         self.state_path = root / "state.json"
         self.transcript_path = root / "transcript.jsonl"
         self.lock_path = root / ".lock"
-        for directory in (self.root, self.mailbox_root, self.notes_root, self.patches_root):
+        for directory in (self.root, self.mailbox_root, self.notes_root,
+                          self.patches_root, self.obligations_root):
             directory.mkdir(parents=True, exist_ok=True)
 
     def default_state(self) -> dict[str, Any]:
@@ -351,7 +375,18 @@ class PairSession:
         как побочный эффект pair_claim.
         """
         policy = state.get("policy")
-        return policy if isinstance(policy, dict) else {}
+        if isinstance(policy, dict) and policy.get("writer"):
+            return policy
+        # Глобальная расстановка действует, только если её писатель РЕАЛЬНО
+        # работает в этом проекте. Иначе она вредна: назначенной роли здесь нет,
+        # она не появится никогда, и право записи не возьмёт уже никто — работа
+        # встанет с причиной, которую никто не формулирует.
+        roles = state.get("roles") or {}
+        if roles:
+            inherited = read_global_policy()
+            if inherited and inherited.get("writer") in roles:
+                return inherited
+        return {}
 
     # ------------------------------------------------------------------ tools
 
@@ -408,6 +443,15 @@ class PairSession:
             # Постоянная расстановка, если человек её задал. Тогда роль известна
             # заранее и спор о праве записи не возникает вовсе.
             "policy": self._policy(state) or None,
+            # Что я кому должен услышать. Показываю обоим: иначе про ожидание
+            # знает только сверхвизор, а это ровно то, о чём не знает никто.
+            "obligations": {
+                # «Жду» — это обязательства, открытые МНОЮ. «От меня ждут» —
+                # обязательства, где я получатель. Путать их опасно: один вариант
+                # ведёт к ожиданию, другой к долгу, и лечатся они противоположно.
+                "i_am_waiting_for": self._obligations_where("from", self.role),
+                "they_wait_for_me": self._obligations_where("to", self.role),
+            },
             "my_standing": (
                 "writer по постоянной расстановке" if policy_writer == self.role
                 else "критик по постоянной расстановке" if policy_writer
@@ -745,8 +789,71 @@ class PairSession:
         result["delivered_to_pane"] = pane
         return result
 
-    def tool_pair_send(self, to: str, text: str, subject: str = "") -> dict[str, Any]:
-        """Send one message to the peer. The label identifying you is added here,        not by you, so a peer cannot forge authorship."""
+    def _obligations_where(self, side: str, role: str | None) -> list[dict[str, Any]]:
+        """Open obligations, optionally filtered to one role.
+
+        Kept small on purpose: a long list of stale obligations is noise, and the
+        supervisor is what actually chases them.
+        """
+        out: list[dict[str, Any]] = []
+        if not self.store.obligations_root.is_dir():
+            return out
+        for path in sorted(self.store.obligations_root.glob("*.json")):
+            try:
+                record = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            if role is not None and record.get(side) != role:
+                continue
+            out.append({"seq": record.get("seq"), "from": record.get("from"),
+                        "to": record.get("to"), "opened_at": record.get("opened_at"),
+                        "subject": record.get("subject", "")})
+        return out[:20]
+
+    def _open_obligation(self, frm: str, to: str, seq: int, subject: str = "") -> dict[str, Any]:
+        """Record that `frm` is waiting for an answer from `to`.
+
+        The protocol's blind spot was exactly this: a message asking for a decision was
+        indistinguishable from small talk, so a request nobody answered looked like a quiet
+        evening. An obligation is a plain file, so the supervisor can read it without
+        understanding any of the conversation.
+        """
+        self.store.obligations_root.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        path = self.store.obligations_root / f"{seq:06d}-{stamp}-{frm}-{to}.json"
+        record = {"seq": seq, "from": frm, "to": to, "opened_at": utcnow(), "subject": subject}
+        atomic_write_json(path, record)
+        self.store.append_transcript("obligation_opened", frm, to=to, seq=seq, subject=subject)
+        return record
+
+    def _answer_obligations(self, answerer: str, author: str) -> list[int]:
+        """Called when `answerer` writes to `author`: whatever they owed each other closes.
+
+        Any later message counts as the answer, including a fresh request, because two agents
+        talking have by definition stopped waiting on each other. Judging the content would be
+        guesswork, and a wrong guess here means a real request gets nagged about at 3am.
+        """
+        closed: list[int] = []
+        for path in sorted(self.store.obligations_root.glob("*.json")) if self.store.obligations_root.is_dir() else []:
+            try:
+                record = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            if record.get("from") == answerer and record.get("to") == author:
+                path.unlink(missing_ok=True)
+                closed.append(int(record.get("seq", 0)))
+        if closed:
+            self.store.append_transcript("obligation_answered", answerer, author=author, seqs=closed)
+        return closed
+
+    def tool_pair_send(self, to: str, text: str, subject: str = "",
+                        expects_reply: bool = False) -> dict[str, Any]:
+        """Send one message to the peer. The label identifying you is added here,        not by you, so a peer cannot forge authorship.
+
+        Set `expects_reply` when the message asks for a decision, a review or an action. That
+        writes an obligation the supervisor watches, so a request nobody answered cannot end the
+        night in silence.
+        """
         if not isinstance(to, str) or not to.strip():
             raise ProtocolError("`to` is required.")
         to = to.strip()
@@ -789,14 +896,21 @@ class PairSession:
             atomic_write_json(inbox / filename, body)
             return {"seq": seq, "known_target": to in roles}
 
+        closed = self._answer_obligations(to, self.role)
         result = self.store.mutate(apply)
         self.store.append_transcript("send", self.role, to=to, seq=result["seq"], subject=subject)
+        obligation = None
+        if expects_reply:
+            obligation = self._open_obligation(self.role, to, seq=result["seq"],
+                                               subject=subject or text.strip()[:60])
         ring = self._ring(to, "сообщение", subject or text.strip()[:50])
         return {
             "delivered": True,
             "woke_peer": ring["rung"],
             "wake": ring.get("prompt") or ring.get("why"),
             "seq": result["seq"],
+            "awaits_answer": expects_reply,
+            "obligation": obligation,
             "target_is_registered": result["known_target"],
             "label_applied": f"Chat from {self.role}: ",
             "note": (
@@ -1236,6 +1350,14 @@ def tool_definitions() -> list[dict[str, Any]]:
                     "to": {"type": "string", "description": "The peer's role name."},
                     "text": {"type": "string", "description": "The message. Plain language, one paragraph."},
                     "subject": {"type": "string", "description": "Optional short subject line."},
+                    "expects_reply": {
+                        "type": "boolean",
+                        "default": False,
+                        "description": "Set it when the message asks for a decision, a review or an "
+                                       "action. The supervisor then watches for an answer and pokes "
+                                       "the recipient if none comes, so an unanswered request cannot "
+                                       "quietly end the night.",
+                    },
                 },
                 "required": ["to", "text"],
             },
@@ -1574,7 +1696,7 @@ def run_ctl(args: argparse.Namespace, state_dir: Path) -> int:
         # Постоянная расстановка: кто всегда пишет, кто всегда ревьюит.
         # Гонка остаётся как запасной вариант, но по умолчанию роли известны
         # заранее, и раунд начинается с работы, а не с торговли правами.
-        policy_path = Path(os.environ.get("PAIR_ROLES", Path.home() / ".config" / "pair-mailbox" / "roles.json"))
+        policy_path = global_roles_path()
         state = store.read()
         current = state.get("policy") if isinstance(state.get("policy"), dict) else {}
         wanted = dict(current)

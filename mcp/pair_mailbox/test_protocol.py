@@ -279,6 +279,108 @@ class TestPersistentRoles(PairTestCase):
         self.assertNotIn("policy", self.store.read())
 
 
+class TestGlobalRoles(PairTestCase):
+    """Расстановка, заданная разом для всех проектов, должна реально действовать,
+    а не просто лежать в файле."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self._orig_roles = os.environ.get("PAIR_ROLES")
+        self._roles_file = Path(self._tmp.name) / "roles.json"
+        os.environ["PAIR_ROLES"] = str(self._roles_file)
+
+    def tearDown(self) -> None:
+        if self._orig_roles is not None:
+            os.environ["PAIR_ROLES"] = self._orig_roles
+        else:
+            os.environ.pop("PAIR_ROLES", None)
+        super().tearDown()
+
+    def test_global_policy_applies_to_a_project_without_one(self) -> None:
+        self._roles_file.write_text(
+            json.dumps({"writer": "writer-agent", "critic": "reviewer-agent"}), encoding="utf-8")
+        self.writer.tool_pair_state()  # обе роли должны появиться в ростере
+        self.peer.tool_pair_state()
+        self.assertEqual(self.peer.tool_pair_state()["my_standing"],
+                         "критик по постоянной расстановке")
+
+    def test_global_policy_is_ignored_when_its_roles_never_show_up(self) -> None:
+        """Ролизация «opencode пишет» в проекте, где opencode не запускают, не
+        должна оставлять проект без писателя: это тихая остановка работы."""
+        self._roles_file.write_text(
+            json.dumps({"writer": "opencode", "critic": "agy"}), encoding="utf-8")
+        self.writer.tool_pair_state()
+        self.peer.tool_pair_state()
+        self.assertIn("гонк", self.writer.tool_pair_state()["my_standing"])
+        self.assertNotIn("policy", self.store.read())
+
+    def test_project_policy_wins_over_the_global_one(self) -> None:
+        self._roles_file.write_text(
+            json.dumps({"writer": "writer-agent", "critic": "reviewer-agent"}), encoding="utf-8")
+        self.writer.tool_pair_state()
+        self.peer.tool_pair_state()
+        self.store.mutate(lambda st: st.__setitem__("policy", {"writer": "reviewer-agent"}))
+        self.assertEqual(self.peer.tool_pair_state()["my_standing"],
+                         "writer по постоянной расстановке")
+
+    def test_missing_or_broken_global_file_leaves_the_race(self) -> None:
+        self.assertIn("гонк", self.writer.tool_pair_state()["my_standing"])
+        self._roles_file.write_text("{не json", encoding="utf-8")
+        self.assertIn("гонк", self.writer.tool_pair_state()["my_standing"])
+
+    def test_global_file_without_a_writer_is_ignored(self) -> None:
+        self._roles_file.write_text(json.dumps({"critic": "reviewer-agent"}), encoding="utf-8")
+        self.writer.tool_pair_state()
+        self.peer.tool_pair_state()
+        self.assertIn("гонк", self.writer.tool_pair_state()["my_standing"])
+
+
+class TestObligations(PairTestCase):
+    """Запрос, на который ждут ответа, должен быть виден как обязательство. Иначе
+    он умирает в ящике, и пара выглядит спокойно ровно до утра."""
+
+    def test_small_talk_creates_no_obligation(self) -> None:
+        self.writer.tool_pair_send(to="reviewer-agent", text="привет")
+        self.assertEqual([], list(self.store.obligations_root.glob("*.json")))
+
+    def test_request_creates_an_obligation(self) -> None:
+        result = self.writer.tool_pair_send(
+            to="reviewer-agent", text="проверь, что линтер зелёный", expects_reply=True)
+        self.assertTrue(result["awaits_answer"])
+        files = list(self.store.obligations_root.glob("*.json"))
+        self.assertEqual(1, len(files))
+        record = json.loads(files[0].read_text(encoding="utf-8"))
+        self.assertEqual("writer-agent", record["from"])
+        self.assertEqual("reviewer-agent", record["to"])
+        self.assertEqual(result["seq"], record["seq"])
+
+    def test_reply_closes_the_obligation(self) -> None:
+        self.writer.tool_pair_send(to="reviewer-agent", text="проверь", expects_reply=True)
+        self.peer.tool_pair_send(to="writer-agent", text="проверил, зелено")
+        self.assertEqual([], list(self.store.obligations_root.glob("*.json")))
+
+    def test_reply_from_a_third_role_does_not_close_it(self) -> None:
+        self.writer.tool_pair_send(to="reviewer-agent", text="проверь", expects_reply=True)
+        outsider = PairSession("codex-agent", self.store)
+        outsider.tool_pair_send(to="writer-agent", text="я тут ни при чём")
+        self.assertEqual(1, len(list(self.store.obligations_root.glob("*.json"))))
+
+    def test_state_shows_both_sides_of_the_obligation(self) -> None:
+        self.writer.tool_pair_send(to="reviewer-agent", text="проверь", expects_reply=True)
+        mine = self.writer.tool_pair_state()["obligations"]
+        self.assertEqual(1, len(mine["i_am_waiting_for"]))
+        self.assertEqual("reviewer-agent", mine["i_am_waiting_for"][0]["to"])
+        theirs = self.peer.tool_pair_state()["obligations"]
+        self.assertEqual(1, len(theirs["they_wait_for_me"]))
+        self.assertEqual([], self.peer.tool_pair_state()["obligations"]["i_am_waiting_for"])
+
+    def test_answering_twice_is_not_an_error(self) -> None:
+        self.writer.tool_pair_send(to="reviewer-agent", text="проверь", expects_reply=True)
+        self.peer.tool_pair_send(to="writer-agent", text="первый ответ")
+        self.peer.tool_pair_send(to="writer-agent", text="и ещё уточнение")
+        self.assertEqual([], list(self.store.obligations_root.glob("*.json")))
+
+
 class TestPatchFlow(PairTestCase):
     def setUp(self) -> None:
         super().setUp()
