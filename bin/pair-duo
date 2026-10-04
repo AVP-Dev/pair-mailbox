@@ -20,6 +20,9 @@ set -euo pipefail
 
 HERE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd -- "$HERE/.." && pwd)"
+# Определяется здесь, а не ниже: чтение постоянной расстановки происходит выше, чем
+# было это определение, и молча пустая переменная означала бы «расстановки нет».
+STATE_PATH="${PAIR_STATE:-$ROOT/.pair}"
 
 USE_WORKTREE=0
 SPLIT_OPT="-h"
@@ -88,7 +91,37 @@ CRITIC_ROLE="${CLI}-critic"
 if [[ -n "$TASK" ]]; then
   "$HERE/pairctl" task "$TASK"
 fi
-"$HERE/pairctl" assign "$WRITER_ROLE"
+
+# Authority is the human's to move (PROTOCOL §2). This script used to run
+# `pairctl assign` unconditionally, so every launch silently handed the role to
+# <cli>-writer — a launcher rewriting the trust boundary, which is the exact thing
+# the protocol exists to prevent. Observed live: `./finish.sh` left `opencode-writer`
+# as the writer while the standing arrangement still said `opencode`.
+#
+# So: the standing arrangement wins. Only when there is none does this script
+# appoint its own writer, and then it says so out loud rather than doing it quietly.
+EXISTING_WRITER="$("$HERE/pairctl" --state "$STATE_PATH" status 2>/dev/null \
+  | python3 -c 'import json,sys
+try:
+    print(json.load(sys.stdin).get("policy", {}).get("writer") or "")
+except Exception:
+    print("")' 2>/dev/null)"
+CURRENT_WRITER="$("$HERE/pairctl" --state "$STATE_PATH" status 2>/dev/null \
+  | python3 -c 'import json,sys
+try:
+    print(json.load(sys.stdin).get("writer") or "")
+except Exception:
+    print("")' 2>/dev/null)"
+
+if [[ -n "$EXISTING_WRITER" ]]; then
+  echo "pair-duo: standing arrangement says writer=$EXISTING_WRITER, leaving authority alone."
+  echo "pair-duo: if you want two copies of one CLI to hold authority, run pairctl assign yourself."
+elif [[ -n "$CURRENT_WRITER" ]]; then
+  echo "pair-duo: ${CURRENT_WRITER} already holds authority, leaving it alone."
+else
+  "$HERE/pairctl" assign "$WRITER_ROLE"
+  echo "pair-duo: no standing arrangement and no writer, so I appointed $WRITER_ROLE."
+fi
 
 CRITIC_DIR="$ROOT"
 if [[ "$USE_WORKTREE" -eq 1 ]]; then
@@ -109,8 +142,6 @@ IN_TMUX=0
 if [[ -n "${TMUX:-}" ]]; then
   IN_TMUX=1
 fi
-
-STATE_PATH="$ROOT/.pair"
 
 WRITER_INIT="export PAIR_ROLE='${WRITER_ROLE}' PAIR_STATE='${STATE_PATH}'; cd '${ROOT}'; echo '=== PAIR WRITER: ${WRITER_ROLE} ==='; ${WRITER_CMD}"
 CRITIC_INIT="export PAIR_ROLE='${CRITIC_ROLE}' PAIR_STATE='${STATE_PATH}'; cd '${CRITIC_DIR}'; echo '=== PAIR CRITIC: ${CRITIC_ROLE} ==='; ${CRITIC_CMD}"

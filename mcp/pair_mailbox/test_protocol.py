@@ -2511,6 +2511,55 @@ class TestPermissionMenu(PairTestCase):
         return self.resolve(lines)[0]
 
 
+class TestStatusLineIsNotAComposer(PairTestCase):
+    """`$0.00` в строке статуса TUI — это цена, а не шелл-промпт.
+
+    Наблюдено вживую: строка статуса opencode — `… umputum:master 412.4K (39%) · $0.00
+    ctrl+p commands`. `$` оттуда объявлялся маркером, `is_composer_empty` брал
+    после него `0.00  ctrl+p commands`, считал композер занятым, и доставка отказывала
+    навсегда: сосед не мог разбудить соседа, и приходилось слать `tmux send-keys`
+    руками."""
+
+    STATUS = "  ⬝⬝ esc interrupt  412.4K (39%) · $0.00  ctrl+p commands"
+
+    def test_a_status_line_is_not_taken_as_the_composer(self) -> None:
+        from composer import composer_line
+        self.assertIsNone(composer_line(["some output", self.STATUS]),
+                          "строка статусы не должна становиться строкой ввода")
+
+    def test_a_shell_prompt_ending_in_dollar_is_still_a_prompt(self) -> None:
+        """Регрессия, которую я внёс первой версией правки: настоящий промпт
+        `user@host:~$` не начинается со знака, и я принял его за статусную строку —
+        то есть сломал бы доставку в обычный шелл."""
+        from composer import composer_line, is_composer_empty
+        for prompt, expect_empty in ((["user@host:~$ "], True),
+                                     (["user@host:~$ rm -rf"], False),
+                                     (["root@box:/srv$ "], True)):
+            with self.subTest(prompt=prompt[0]):
+                line = composer_line(prompt)
+                self.assertIsNotNone(line)
+                self.assertEqual(expect_empty, is_composer_empty(line))
+
+    def test_an_empty_shell_prompt_is_still_empty(self) -> None:
+        from composer import composer_line, is_composer_empty
+        self.assertTrue(is_composer_empty(composer_line(["$ "]) or ""))
+        self.assertTrue(is_composer_empty(composer_line(["output", "$ "]) or ""))
+
+    def test_a_busy_shell_prompt_is_still_busy(self) -> None:
+        from composer import composer_line, is_composer_empty
+        self.assertFalse(is_composer_empty(composer_line(["$ python3 test.py"]) or ""))
+        self.assertFalse(is_composer_empty(composer_line(["> half typed"]) or ""))
+
+    def test_the_cost_rule_does_not_depend_on_brand_words(self) -> None:
+        """Правка по маркам брендов не держится: первая же смена темы её ломает.
+        Единственный устойчивый признак — значение после `$`."""
+        from composer import looks_like_status_line
+        self.assertTrue(looks_like_status_line("anything at all · $0.00 · ctrl+p commands"))
+        self.assertFalse(looks_like_status_line("user@host:~$"))
+        self.assertFalse(looks_like_status_line("> "))
+        self.assertFalse(looks_like_status_line("a line with no dollar at all"))
+
+
 class TestPermissionContext(PairTestCase):
     """Вердикт выносится по тексту, из которого реально видно команду.
 

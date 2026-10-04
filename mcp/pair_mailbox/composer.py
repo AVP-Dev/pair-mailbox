@@ -45,6 +45,27 @@ OVERSCAN_LINES = 3
 PROMPT_MARKERS = (">", "\u203a", "$", "#", "::", "ask>")
 
 
+def looks_like_status_line(line: str) -> bool:
+    """Строка статуса TUI распознаётся структурно, без названий брендов.
+
+    Правка на марках брендов не держится: первая же смена темы возвращает исходный
+    баг. Единственный устойчивый признак — `$`, за которым сразу идёт значение, то
+    есть цена: `$0.00`. Настоящий промпт на `$` заканчивается знаком, как
+    `user@host:~$`, и знака в конце строки быть не должно — иначе перестаёт
+    работать доставка в обычный шелл.
+    """
+    text = line.strip()
+    if not text:
+        return True
+    if re.fullmatch(r"[\u2500-\u259f\s═─━╹▀_-]+", text):
+        return True
+    if text.startswith("$"):
+        return False
+    if "$" not in text:
+        return False
+    return any(char.isdigit() for char in text.split("$", 1)[1][:3])
+
+
 class ComposerBusy(Exception):
     pass
 
@@ -125,7 +146,8 @@ def composer_line(lines: list) -> str | None:
     # Маркера нет вовсе. Тогда это либо чистая рамка TUI, где печатать некуда
     # (None, то есть занят), либо незнакомый вид панели — голый шелл, — где
     # последняя строка и есть промпт, как было до всех этих правок.
-    return None if is_footer_or_status_line(fallback or "") else fallback
+    return None if is_footer_or_status_line(fallback or "") else (
+        None if looks_like_status_line(fallback or "") else fallback)
 
 
 def is_composer_empty(line: str) -> bool:
