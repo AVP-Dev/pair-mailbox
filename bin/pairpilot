@@ -81,6 +81,11 @@ DEFAULT_REPLY_HARD = 2400.0
 # Сколько провисает sealed-патч, прежде чем это станет дефектом, а не делом,
 # которое писатель возьмёт через минуту.
 DEFAULT_PATCH_GRACE = 1800.0
+# Потолок перезапусков на роль в скользящем окне. Нужен потому, что ключ по pid
+# не спасает: команда может быть известна и неверна, pid будет каждый раз новый,
+# и без потолка это цикл падения, а не восстановление.
+DEFAULT_RESTART_LIMIT = 3
+DEFAULT_RESTART_WINDOW = 600.0
 PROMPT_MARKERS = (">", "›", "❯")
 AUTONOMIES = ("observe", "semi", "auto")
 
@@ -140,7 +145,9 @@ class Pilot:
                  reply_hard: float = DEFAULT_REPLY_HARD,
                  patch_grace: float = DEFAULT_PATCH_GRACE,
                  launch: dict[str, str] | None = None,
-                 allow: list[str] | None = None) -> None:
+                 allow: list[str] | None = None,
+                 restart_limit: int = DEFAULT_RESTART_LIMIT,
+                 restart_window: float = DEFAULT_RESTART_WINDOW) -> None:
         self.state_dir = state_dir
         self.silence = silence
         self.interval = interval
@@ -148,6 +155,8 @@ class Pilot:
         self.reply_hard = reply_hard
         self.patch_grace = patch_grace
         self.allow = allow
+        self.restart_limit = max(1, int(restart_limit))
+        self.restart_window = max(1.0, float(restart_window))
         # Store умеет root — это сам каталог состояния: server.py делает ровно
         # то же. Со state_dir.parent мы бы читали несуществующий state.json.
         self.store = Store(state_dir)
@@ -201,6 +210,51 @@ class Pilot:
 
     def launch_command(self, role: str) -> str:
         return self.launch.get(role, "").strip()
+
+    # ------------------------------------------------------------ restart budget
+
+    def restarts_file(self, role: str) -> Path:
+        return self.outbox / f".restarts-{role}"
+
+    def restart_history(self, role: str) -> list[float]:
+        """Когда именно роль перезапускали. Один timestamp на строку."""
+        try:
+            raw = self.restarts_file(role).read_text(encoding="utf-8").split()
+        except OSError:
+            return []
+        out = []
+        for item in raw:
+            try:
+                out.append(float(item))
+            except ValueError:
+                continue
+        return out
+
+    def note_restart(self, role: str) -> None:
+        """Записать попытку и сразу отбросить всё, что вышло за окно.
+
+        Обрезание здесь, а не при чтении, нужно затем, что иначе файл с историей
+        рос бы бесконечно по мере жизни проекта.
+        """
+        now = time.time()
+        keep = [stamp for stamp in self.restart_history(role) if now - stamp < self.restart_window]
+        keep.append(now)
+        try:
+            self.restarts_file(role).write_text(
+                " ".join(f"{stamp:.0f}" for stamp in keep), encoding="utf-8")
+        except OSError as error:
+            log(f"{role}: не записал историю перезапусков ({error}) — ограничение может не сработать")
+
+    def restart_allowed(self, role: str) -> bool:
+        """Не превышен ли лимит перезапусков этой роли в окне.
+
+        Считает попытки независимо от pid: скользящее окно останавливает и
+        процесс, падающий сразу после старта, у которого pid каждый раз новый.
+        """
+        now = time.time()
+        recent = [stamp for stamp in self.restart_history(role)
+                  if now - stamp < self.restart_window]
+        return len(recent) < self.restart_limit
 
     # ------------------------------------------------------------------ state
 
@@ -472,9 +526,23 @@ class Pilot:
                     log(f"{role}: процесс мёртв, а команды запуска я не знаю — скажи "
                         f"pairpilot --launch {role}='команда' или допиши в .pair/restart.json")
                 continue
-            key = f"restart-{role}-{pid}-{state.get('round')}"
-            if not self.remember(key):
+            # Два ограничения, и оба нужны. Отметка по pid не даёт трогать один
+            # и тот же упавший процесс снова. Но её одной НЕ хватает: если
+            # команда запуска неверна, процесс умирает с новым pid, отметка
+            # каждый раз новая, и при интервале 15 секунд это бесконечный цикл.
+            # Потолок в окне не зависит от pid вообще и останавливает именно его.
+            if not self.remember(f"restart-{role}-{pid}-{state.get('round')}"):
                 continue
+            if not self.restart_allowed(role):
+                self.store.append_transcript(
+                    "pilot_restart_throttled", "pairpilot", target=role, pane=pane, pid=pid,
+                    command=self.launch_command(role),
+                    reason=f"{self.restart_limit} перезапусков за {int(self.restart_window / 60)} мин")
+                log(f"{role}: перезапуск приостановлен — {self.restart_limit} попыток за "
+                    f"{int(self.restart_window / 60)} мин. Похоже, команда запуска неверна: "
+                    f"{self.launch_command(role)!r}. Ждёт человек.")
+                continue
+            self.note_restart(role)
             result = subprocess.run(
                 [self.tmux, "respawn-pane", "-k", "-t", pane, command],
                 capture_output=True, text=True, timeout=15)
@@ -789,6 +857,11 @@ def main() -> int:
                         help="seconds before the author of a request is told it went unanswered")
     parser.add_argument("--patch-grace", type=float, default=DEFAULT_PATCH_GRACE,
                         help="seconds before a sealed patch nobody applied becomes a defect")
+    parser.add_argument("--restart-limit", type=int, default=DEFAULT_RESTART_LIMIT,
+                        help="max restarts per role per window, whatever the pid. A launch "
+                             "command that is known but wrong otherwise loops forever.")
+    parser.add_argument("--restart-window", type=float, default=DEFAULT_RESTART_WINDOW,
+                        help="seconds the restart limit applies over")
     parser.add_argument("--launch", action="append", default=[], metavar="ROLE=CMD",
                         help="how to start a role if its process dies, e.g. --launch agy=agy. "
                              "Repeatable. Also PAIR_LAUNCH_<ROLE>, or .pair/restart.json.")
@@ -811,7 +884,8 @@ def main() -> int:
     state_dir = Path(args.state).resolve()
     pilot = Pilot(state_dir, silence=args.silence, interval=args.interval,
                   reply_grace=args.reply_grace, reply_hard=args.reply_hard,
-                  patch_grace=args.patch_grace, launch=launch, allow=allow)
+                  patch_grace=args.patch_grace, launch=launch, allow=allow,
+                  restart_limit=args.restart_limit, restart_window=args.restart_window)
 
     if args.once:
         state = pilot.tick()

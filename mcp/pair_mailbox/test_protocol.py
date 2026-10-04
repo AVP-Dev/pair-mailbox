@@ -1699,6 +1699,28 @@ class TestRingAndUnblock(PairTestCase):
         self.assertFalse(res["rung"])
         self.assertIn("PAIR_DISABLE_RING", res["why"])
 
+    def test_ring_survives_an_invisible_composer(self) -> None:
+        """`composer_line` возвращает None, когда композера не видно.
+
+        `is_composer_empty(None)` падает на NoneType.rstrip, и до этой правки любой
+        звонок в панель, где TUI перерисовался, ронял звонящего — то есть
+        pair_note мог упасть целиком из-за чужой панели."""
+        import composer
+        self.store.mutate(lambda s: s.setdefault("roles", {})
+                          .setdefault("reviewer-agent", {}).update({"pane": "%45"}))
+        os.environ.pop("PAIR_DISABLE_RING", None)
+        orig_line = composer.composer_line
+        orig_which = composer.shutil.which
+        composer.composer_line = lambda lines: None
+        composer.shutil.which = lambda name: "/usr/bin/tmux"
+        try:
+            result = self.writer._ring("reviewer-agent", "заметка", "детали")
+        finally:
+            composer.composer_line = orig_line
+            composer.shutil.which = orig_which
+        self.assertFalse(result["rung"], "в невидимый композер не лезем")
+        self.assertIn("не виден", result["why"])
+
     def test_ring_avoids_self_pane(self) -> None:
         os.environ.pop("PAIR_DISABLE_RING", None)
         os.environ["TMUX_PANE"] = "%99"

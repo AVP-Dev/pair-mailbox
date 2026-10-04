@@ -12,6 +12,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -319,6 +320,64 @@ class TestRestart(PilotCase):
         self.assertEqual(1, self.calls.count(
             ["/usr/bin/tmux", "respawn-pane", "-k", "-t", "%7", "agy --resume"]),
             "один умерший процесс — один перезапуск, а не каждые 15 секунд")
+
+    def test_dying_on_start_stops_being_restarted_forever(self) -> None:
+        """Дыра, найденная на ревью.
+
+        Ключ по pid спасает от повторного перезапуска одного и того же упавшего
+        процесса — и ровно поэтому не спасает от другого: если команда запуска
+        неверна, процесс умирает с НОВЫМ pid, ключ каждый раз новый, и при
+        интервале 15 секунд это бесконечный цикл. Потолок в окне не зависит от
+        pid, поэтому именно он его останавливает."""
+        pilot = self.pilot_with_launch()
+        for attempt in range(6):
+            # каждая неудачная попытка даёт новый pid, как и было бы в бою
+            self.write_state(writer="agy", round=3,
+                             roles={"agy": {"last_seen": ago(600), "pid": 999000 + attempt,
+                                            "pane": "%7"}})
+            pilot.tick()
+        respawns = [call for call in self.calls if "respawn-pane" in call]
+        self.assertEqual(pilot.restart_limit, len(respawns),
+                         f"перезапусков должно быть не больше {pilot.restart_limit}, "
+                         f"а их {len(respawns)}")
+        self.assertIn("pilot_restart_throttled", self.transcript_kinds())
+
+    def test_restart_budget_expires_with_the_window(self) -> None:
+        """Потолок не должен становиться permanent: иначе после сбоя сеть
+        отвалилась бы пара насовсем."""
+        pilot = self.pilot_with_launch()
+        pilot.restart_window = 60.0
+        for attempt in range(pilot.restart_limit + 2):
+            self.write_state(writer="agy", round=3,
+                             roles={"agy": {"last_seen": ago(600), "pid": 998000 + attempt,
+                                            "pane": "%7"}})
+            pilot.tick()
+        self.assertEqual(pilot.restart_limit, len([c for c in self.calls if "respawn-pane" in c]))
+        # Окно истекло: попытки вне окна не должны считаться.
+        pilot.restarts_file("agy").write_text(
+            " ".join(str(int(time.time() - 3600)) for _ in range(pilot.restart_limit)),
+            encoding="utf-8")
+        self.write_state(writer="agy", round=3,
+                         roles={"agy": {"last_seen": ago(600), "pid": 998111, "pane": "%7"}})
+        pilot.tick()
+        self.assertEqual(pilot.restart_limit + 1,
+                         len([c for c in self.calls if "respawn-pane" in c]))
+
+    def test_budget_is_per_role_not_global(self) -> None:
+        """Исчерпание попыток у agy не должно запрещать перезапуск claude."""
+        pilot = self.pilot_with_launch()
+        pilot.launch["claude"] = "claude"
+        for _ in range(pilot.restart_limit + 2):
+            self.write_state(writer="agy", round=3,
+                             roles={"agy": {"last_seen": ago(600), "pid": self.DEAD_PID,
+                                            "pane": "%7"}})
+            pilot.tick()
+        self.write_state(writer="agy", round=3,
+                         roles={"agy": {"last_seen": ago(600), "pid": self.DEAD_PID, "pane": "%7"},
+                                "claude": {"last_seen": ago(600), "pid": self.DEAD_PID, "pane": "%8"}})
+        pilot.tick()
+        self.assertTrue(any("claude" in str(call) for call in self.calls),
+                        "у другого агента свой бюджет")
 
     def test_live_process_is_never_respawned(self) -> None:
         """Молчание лечится напоминанием, смерть — перезапуском. Убить того,

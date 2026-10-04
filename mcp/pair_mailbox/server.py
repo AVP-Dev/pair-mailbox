@@ -892,10 +892,16 @@ class PairSession:
         deadline = time.monotonic() + 1.5
         while True:
             line = composer_line(capture(tmux, pane))
-            if is_composer_empty(line):
+            # None — композер не виден, и это не то же самое, что «свободен».
+            # `is_composer_empty(None)` падает на NoneType.rstrip, то есть любой
+            # звонок в панель, где TUI перерисовался, ронял звонящего. Отсутствие
+            # строки ввода — это «не трогать», ровно как в deliver().
+            if line is not None and is_composer_empty(line):
                 break
             if time.monotonic() >= deadline:
-                return {"rung": False, "why": "композер соседа занят, не перебиваем"}
+                reason = "композер соседа не виден, не перебиваем" if line is None \
+                    else "композер соседа занят, не перебиваем"
+                return {"rung": False, "why": reason}
             time.sleep(0.3)
         prompt = f"pair: {kind} от {self.role} — {detail}. Прочитай pair_read."
         if len(prompt) > 150:
