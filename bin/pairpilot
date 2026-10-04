@@ -167,6 +167,7 @@ class Pilot:
         self.outbox.mkdir(parents=True, exist_ok=True)
         self.reported: set[str] = set()
         self.skip: set[str] = set()
+        self._default_list_named = False
         try:
             self.tmux: str | None = _tmux()
         except Exception:
@@ -698,17 +699,44 @@ class Pilot:
     def allowlist(self) -> list[str]:
         """Белый список разрешений: явный аргумент, потом файл человека.
 
-        Если файла нет — пустой список, а пустой список в
-        resolve_permission_prompt означает «не подтверждать ничего». Это не
-        осторожность ради осторожности: до появления белого списка «y» уходил на
-        любой промпт, включая удаляющий.
+        Файла нет — список по умолчанию, и это граница, которую задал человек:
+        внутри проекта можно всё, что нужно для работы, запрещено то, что вредит
+        системе, чужому проекту или необратимо стирает. Запреты проверяются первыми
+        и не отменяются настройкой.
+
+        Раньше здесь был пустой список, а пустой значил «не подтверждать ничего».
+        Файла `.pair/permissions.json` при этом не существовало, так что сверхвизор
+        не подтверждал ни одного промпта — и снаружи это выглядело как молчание
+        соседа, а не как отказ по настройке.
         """
         if self.allow is not None:
             return self.allow
         try:
-            return load_allow_patterns(str(permissions_path(self.state_dir)))
+            patterns, on_default = load_allow_patterns(str(permissions_path(self.state_dir)))
         except Exception:  # noqa: BLE001
             return []
+        if on_default:
+            self.note_default_allowlist()
+        return patterns
+
+    def note_default_allowlist(self) -> None:
+        """Сказать в журнал, что работа идёт на списке по умолчанию.
+
+    Один раз за процесс. Молча работать на дефолтном списке нельзя: человек,
+    читая журнал, должен видеть, каким правилом подтверждались его команды.
+    """
+        if self._default_list_named:
+            return
+        self._default_list_named = True
+        from composer import DEFAULT_ALLOW_PATTERNS
+        self.store.append_transcript(
+            "pilot_default_allowlist", "pairpilot",
+            patterns=len(DEFAULT_ALLOW_PATTERNS),
+            file=str(permissions_path(self.state_dir)),
+            note="permissions.json не найден, работаю на списке по умолчанию; "
+                 "запреты §12 действуют независимо от него")
+        log("permissions.json не найден — работаю на списке по умолчанию "
+            f"({len(DEFAULT_ALLOW_PATTERNS)} шаблонов). Запреты §12 действуют всегда.")
 
     def unblock(self, state: dict) -> None:
         """Агент стоит на [y/N]. До утра это выглядит как зависание, хотя всего
@@ -999,7 +1027,7 @@ def main() -> int:
         else:
             print(f"pairpilot: --launch ждёт ROLE=CMD, получено {item!r}", file=sys.stderr)
             return 2
-    allow = load_allow_patterns(args.allow) if args.allow else None
+    allow = load_allow_patterns(args.allow)[0] if args.allow else None
 
     state_dir = Path(args.state).resolve()
     pilot = Pilot(state_dir, silence=args.silence, interval=args.interval,

@@ -183,23 +183,31 @@ def permissions_path(root: Path) -> Path:
 
 
 def load_allowlist(root: Path) -> list[str]:
-    """The permission allowlist, or an empty list.
+    """Разрешённые шаблоны и признак, что мы на списке по умолчанию.
 
-    Empty means "confirm nothing": a missing or broken file must not widen what an
-    unattended supervisor is allowed to press "y" on.
+    Раньше отсутствующий файл означал пустой список, то есть «не подтверждать
+    ничего», и сверхвизор не подтверждал вообще ничего — при этом снаружи это
+    выглядело как молчание соседа, а не как отказ по настройке. Граница задана
+    человеком: внутри проекта можно всё, что нужно для работы, запрещено то, что
+    вредит системе или чужому проекту. Поэтому файла нет = список по умолчанию.
+
+    Сломанный файл — другое дело: оператор что-то настраивал, и молча подставлять
+    дефолт вместо его настройки хуже, чем остановиться.
     """
     from composer import load_allow_patterns
 
     path = permissions_path(root)
     try:
-        if not path.is_file():
-            return []
+        is_file = path.is_file()
     except OSError:
-        return []
+        is_file = False
+    if not is_file:
+        from composer import DEFAULT_ALLOW_PATTERNS
+        return list(DEFAULT_ALLOW_PATTERNS), True
     try:
         return load_allow_patterns(str(path))
     except Exception:  # noqa: BLE001 - сломанная настройка не должна ронять сервер
-        return []
+        return [], False
 
 
 def autonomy_of(state: dict[str, Any]) -> str:
@@ -1221,9 +1229,17 @@ class PairSession:
             tmux = _tmux()
         except Exception as exc:
             return {"unblocked": False, "why": str(exc), "prompt": ""}
-        allow = load_allowlist(self.store.root)
+        allow, on_default = load_allowlist(self.store.root)
+        # `allow or None` здесь раньше превращал дефолтный список в DEFAULT, а
+        # пустой — в «подтверждать ничего». Теперь список всегда осмысленный: пустой
+        # значит явный запрет от человека, а не отсутствие файла.
         try:
-            result = resolve_permission_prompt(tmux, pane, allow=allow or None)
+            result = resolve_permission_prompt(tmux, pane, allow=allow)
+            if on_default and result.get("approved"):
+                self.store.append_transcript(
+                    "unblock_default_allowlist", self.role, target=target, pane=pane,
+                    prompt=result.get("prompt"), matched=result.get("matched"),
+                    note="permissions.json отсутствует, подтверждено по списку по умолчанию")
         except Exception as exc:  # noqa: BLE001 - чужая панель не должна ронять сервер
             return {"unblocked": False, "why": f"панель не прочиталась: {exc}", "prompt": ""}
         matched = result.get("prompt") or ""

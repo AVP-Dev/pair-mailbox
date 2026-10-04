@@ -433,29 +433,64 @@ DEFAULT_ALLOW_PATTERNS = (
 )
 
 
-def load_allow_patterns(spec: str | None) -> list[str]:
+def load_allow_patterns(spec: str | None) -> tuple[list[str], bool]:
     """Прочитать белый список разрешений: JSON-файл или список шаблонов.
 
-    Пусто на входе означает «не подтверждать ничего». Нечитаемый список тоже
-    даёт пустой: сломанная настройка не должна расширять права сверхвизора.
+    Возвращает (шаблоны, работали_ли_мы_на_дефолтных).
+
+    Раньше здесь стояло «пусто = не подтверждать ничего», и это привело к тому, что
+    сверхвизор не подтверждал вообще ничего: файла `.pair/permissions.json` не
+    существует, путь к нему превращался в единственный шаблон '.pair/permissions.json',
+    он не находился в тексте промпта — и каждый запрос получал отказ. Снаружи это
+    выглядело как «сосед перестал подтверждать».
+
+    Теперь граница та, что задал человек: внутри проекта можно всё, что нужно для
+    работы, запрещено то, что вредит системе, чужому проекту или необратимо стирает.
+    Это ровно DEFAULT_ALLOW_PATTERNS плюс NEVER_ALLOW_PATTERNS поверх, который
+    проверяется первым. Отсутствие файла означает «работай на списке по умолчанию»,
+    а не «не подтверждать ничего»; файл по-прежнему сужает и расширяет.
+
+    Явный пустой список — это осознанный отказ от автоподтверждения, и он
+    отличается от отсутствующего файла. Нечитаемый файл даёт пустой: сломанная
+    настройка не должна молча расширять права.
     """
-    if not spec or not str(spec).strip():
-        return []
+    if spec is None:
+        return list(DEFAULT_ALLOW_PATTERNS), True
+    if not str(spec).strip():
+        # Пустая строка — это осознанный отказ от автоподтверждения, и он отличается
+        # от отсутствующего файла. Разница видна только в этой функции, поэтому
+        # различаем здесь, а не в вызывающем коде.
+        return [], False
     text = str(spec).strip()
-    raw: object = text
     try:
         candidate = Path(text).expanduser()
-        if candidate.is_file():
-            raw = json.loads(candidate.read_text(encoding="utf-8"))
-        else:
-            raw = [part.strip() for part in text.split(",") if part.strip()]
     except (OSError, ValueError):
-        return []
+        return [], True
+    if candidate.is_file():
+        try:
+            raw: object = json.loads(candidate.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            # Файл есть и он сломан. Молча брать дефолты здесь нельзя: оператор
+            # явно что-то настраивал, и тихо откатывать его настройку к дефолту —
+            # хуже, чем остановиться и сказать.
+            return [], False
+    else:
+        # Строка без запятых и без существующего файла. Раньше она становилась
+        # шаблоном целиком, и это молча ломало автоподтверждение; теперь это
+        # читается как список из одного элемента только если в строке есть запятые.
+        parts = [part.strip() for part in text.split(",") if part.strip()]
+        # Путь к несуществующему файлу — это тоже «настройки нет», а не шаблон.
+        # Раньше именно он становился единственным шаблоном ('.pair/permissions.json')
+        # и не находился в тексте промпта, то есть автоподтверждение не работало
+        # никогда. Список через запятую — настоящая настройка и читается как список.
+        if len(parts) == 1 and ("/" in parts[0] or "\\" in parts[0]):
+            return list(DEFAULT_ALLOW_PATTERNS), True
+        return parts, False
     if isinstance(raw, dict):
         raw = raw.get("allow") or []
     if not isinstance(raw, list):
-        return []
-    return [str(item) for item in raw if str(item).strip()]
+        return [], False
+    return [str(item) for item in raw if str(item).strip()], False
 
 
 def permission_verdict(prompt: str, allow: list[str] | None = None) -> dict:

