@@ -31,6 +31,7 @@ from server import (  # noqa: E402
     ProtocolError,
     Store,
     discover_projects,
+    is_pid_alive,
     main,
     project_row,
     render_table,
@@ -1279,6 +1280,100 @@ class TestMailboxInvariants(PairTestCase):
             lambda: self.writer.tool_pair_advance("scoping"),
             contains="allowed: implement.",
         )
+
+    def test_is_pid_alive(self) -> None:
+        self.assertTrue(is_pid_alive(os.getpid()))
+        self.assertFalse(is_pid_alive(-1))
+        self.assertFalse(is_pid_alive(0))
+        self.assertFalse(is_pid_alive(None))
+        self.assertFalse(is_pid_alive(99999999))
+
+    def test_duo_roles_registration_and_stale_pane_cleanup(self) -> None:
+        # Prepopulate state with a stale role that has a dead PID holding pane %99
+        def seed(state):
+            roles = state.setdefault("roles", {})
+            roles["old-agent"] = {
+                "first_seen": "2026-01-01T00:00:00+00:00",
+                "last_seen": "2026-01-01T00:00:00+00:00",
+                "pid": 99999999,
+                "pane": "%99",
+            }
+        self.store.mutate(seed)
+
+        # Now start an agent in pane %99
+        orig_pane = os.environ.get("TMUX_PANE")
+        try:
+            os.environ["TMUX_PANE"] = "%99"
+            duo_writer = PairSession("opencode-writer", self.store)
+            duo_critic = PairSession("opencode-critic", self.store)
+
+            # Trigger registration
+            duo_writer.tool_pair_state()
+
+            state = self.store.read()
+            # Stale role's pane should have been cleared
+            self.assertNotIn("pane", state["roles"]["old-agent"])
+            # New role has pane %99
+            self.assertEqual(state["roles"]["opencode-writer"]["pane"], "%99")
+
+            # Critic can also register without conflict
+            os.environ["TMUX_PANE"] = "%100"
+            duo_critic.tool_pair_state()
+            state = self.store.read()
+            self.assertEqual(state["roles"]["opencode-critic"]["pane"], "%100")
+        finally:
+            if orig_pane is not None:
+                os.environ["TMUX_PANE"] = orig_pane
+            else:
+                os.environ.pop("TMUX_PANE", None)
+
+    def test_peer_status_reports_dead_process(self) -> None:
+        def seed(state):
+            roles = state.setdefault("roles", {})
+            roles["ghost-agent"] = {
+                "first_seen": "2026-01-01T00:00:00+00:00",
+                "last_seen": "2026-01-01T00:00:00+00:00",
+                "pid": 99999999,
+            }
+        self.store.mutate(seed)
+
+        status = self.writer.tool_pair_state()
+        ghost = status["peers"]["ghost-agent"]
+        self.assertFalse(ghost["alive"])
+        self.assertFalse(ghost["will_read_new_messages"])
+        self.assertIn("dead", ghost["hint"].lower())
+
+    def test_deliver_composer_busy_fallback_to_mailbox(self) -> None:
+        # Prepopulate reviewer pane
+        def seed(state):
+            roles = state.setdefault("roles", {})
+            roles["reviewer-agent"] = {
+                "first_seen": "2026-01-01T00:00:00+00:00",
+                "last_seen": "2026-01-01T00:00:00+00:00",
+                "pid": os.getpid(),
+                "pane": "%55",
+            }
+        self.store.mutate(seed)
+
+        import composer
+        orig_deliver = composer.deliver
+
+        def mock_deliver(pane, text, wait_for_empty=0.0, submit=True):
+            raise composer.ComposerBusy("user is actively typing")
+
+        composer.deliver = mock_deliver
+        try:
+            res = self.writer.tool_pair_deliver(to="reviewer-agent", text="important payload")
+            self.assertFalse(res["delivered"])
+            self.assertTrue(res.get("fallback_sent"))
+            self.assertIn("typing", res["why"])
+
+            # Verify message landed in reviewer's mailbox
+            read = self.peer.tool_pair_read(wait_seconds=0)
+            self.assertEqual(read["count"], 1)
+            self.assertIn("important payload", read["messages"][0]["text"])
+        finally:
+            composer.deliver = orig_deliver
 
 
 if __name__ == "__main__":

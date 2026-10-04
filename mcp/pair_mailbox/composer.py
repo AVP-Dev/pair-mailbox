@@ -27,7 +27,7 @@ CHUNK_BYTES = 170
 
 # Что считаем приглашением ввести текст. Универсально: последняя строка, где
 # после маркера пусто или почти пусто.
-PROMPT_MARKERS = (">", "\u203a", "$", "#", "::", "ask>", "│")
+PROMPT_MARKERS = (">", "\u203a", "$", "#", "::", "ask>")
 
 
 class ComposerBusy(Exception):
@@ -56,14 +56,52 @@ def capture(tmux: str, pane: str) -> list:
     return lines[-CAPTURE_LINES:]
 
 
-def composer_line(lines: list) -> str:
-    """Последняя строка, где пользователь может печатать."""
+def is_footer_or_status_line(line: str) -> bool:
+    """Проверка, является ли строка служебным футером или рамкой TUI."""
+    s = line.strip()
+    if not s:
+        return True
+    # Чистые горизонтальные разделители и рамки (─, ━, ═, ▀, ▄, ╹, etc.)
+    if re.fullmatch(r"[\u2500-\u259f\s═─━╹▀_-]+", s):
+        return True
+    return False
+
+
+def composer_line(lines: list) -> str | None:
+    """Последняя строка, куда человек может печатать, или None если композера нет.
+
+    Две формы панели, и ошибка здесь молча отключает доставку целиком:
+    голый шелл, где последняя непустая строка и есть промпт, и TUI, который
+    рисует строку статуса ПОД своим композером.
+
+    Второй случай стоил нам ночи: строка статуса agy содержит вертикальную
+    черту из PROMPT_MARKERS и хвост в десятки символов, поэтому «последняя
+    непустая строка» объявляла СВОБОДНЫЙ композер занятым, и pair_deliver
+    к соседу отказывал навсегда.
+
+    Ловить футер по маркерам бренда (имя модели, эмодзи) не держится: первая
+    же смена темы возвращает исходный баг. Поэтому единственное правило, которое
+    работает, структурное: композер — это последняя строка, НАЧИНАЮЩАЯСЯ с
+    маркера промпта, а всё, что ниже неё, — обстановка.
+
+    None означает «композер не виден» и это не то же самое, что «свободен»:
+    панель из одной рамки печатать некуда, и сообщить о ней как о свободной
+    значит отправить keystrokes в никуда. Вызывающий обязан считать None занятой.
+    """
+    fallback = None
     for line in reversed(lines):
         stripped = line.rstrip()
         if not stripped.strip():
             continue
-        return stripped
-    return ""
+        if fallback is None:
+            fallback = stripped
+        for marker in PROMPT_MARKERS:
+            if stripped.lstrip().startswith(marker):
+                return stripped
+    # Маркера нет вовсе. Тогда это либо чистая рамка TUI, где печатать некуда
+    # (None, то есть занят), либо незнакомый вид панели — голый шелл, — где
+    # последняя строка и есть промпт, как было до всех этих правок.
+    return None if is_footer_or_status_line(fallback or "") else fallback
 
 
 def is_composer_empty(line: str) -> bool:
@@ -71,12 +109,15 @@ def is_composer_empty(line: str) -> bool:
     s = line.rstrip()
     if not s.strip():
         return True
+    # Если строка — пустая рамка TUI вида '  ┃  ' или '  │  '
+    if re.fullmatch(r"[\s\u2500-\u257f|]+", s):
+        return True
     for marker in PROMPT_MARKERS:
         idx = s.rfind(marker)
         if idx != -1:
             tail = s[idx + len(marker):].strip()
             # рамка TUI, рамки-разделители, курсор
-            tail = re.sub(r"[\u2500-\u257f\u2588]", "", tail).strip()
+            tail = re.sub(r"[\u2500-\u257f\u2588|]", "", tail).strip()
             return len(tail) <= 2
     return False
 
@@ -180,7 +221,10 @@ def resolve_permission_prompt(tmux: str, pane: str) -> str | None:
         return None
 
     line = composer_line(lines)
-    if line and not detect_permission_prompt([line]) and not is_composer_empty(line):
+    # Нет композера — значит и печатать некому: молча подтверждать нельзя.
+    if line is None:
+        return None
+    if not detect_permission_prompt([line]) and not is_composer_empty(line):
         return None
 
     subprocess.run([tmux, "send-keys", "-t", pane, "y"],
@@ -203,10 +247,13 @@ def deliver(pane: str, text: str, wait_for_empty: float = 0.0, submit: bool = Tr
     deadline = time.monotonic() + max(0.0, wait_for_empty)
     while True:
         line = composer_line(capture(tmux, pane))
-        if is_composer_empty(line):
+        # None — композер не виден вовсе. Это не «свободно»: печатать некуда,
+        # и отправлять клавиши мимо композера нельзя.
+        if line is not None and is_composer_empty(line):
             break
         if time.monotonic() >= deadline:
-            raise ComposerBusy("композер занят: " + (line.strip()[-60:] or "?"))
+            seen = line.strip()[-60:] if line else "композер не виден"
+            raise ComposerBusy("композер занят: " + (seen or "?"))
         time.sleep(0.5)
 
     body = " ".join(text.split())

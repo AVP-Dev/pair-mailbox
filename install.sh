@@ -48,7 +48,8 @@ def present(profile):
     spec = profile["mcp"]
     names = {"opencode": "opencode", "agy": "agy", "codex": "codex", "claude": "claude"}
     key = next((k for k, v in PROFILES.items() if v is profile), "")
-    if binary(names.get(key, key)):
+    bin_name = profile.get("binary", names.get(key, key))
+    if binary(bin_name):
         return True
     cfg = expand(spec["path"])
     return cfg.parent.exists()

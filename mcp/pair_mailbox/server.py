@@ -253,6 +253,17 @@ def atomic_write_json(path: Path, payload: Any) -> None:
         raise
 
 
+def is_pid_alive(pid: Any) -> bool:
+    """True if pid is an integer of a currently running process."""
+    if not isinstance(pid, int) or pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError as err:
+        return err.errno == errno.EPERM
+
+
 class PairSession:
     """One agent's view of the shared state, bound to a role at construction."""
 
@@ -266,13 +277,39 @@ class PairSession:
 
     def _register(self, state: dict[str, Any]) -> None:
         roles = state.setdefault("roles", {})
+        pane = os.environ.get("TMUX_PANE")
+        current_pid = os.getpid()
+
+        # If this role already existed with a different living PID, record collision
+        existing = roles.get(self.role)
+        if existing and existing.get("pid") and existing["pid"] != current_pid:
+            if is_pid_alive(existing["pid"]):
+                self.store.append_transcript(
+                    "role_collision",
+                    self.role,
+                    current_pid=current_pid,
+                    existing_pid=existing["pid"],
+                )
+
+        # If another role holds the same tmux pane, check if that other process is dead
+        if pane:
+            for other_name, other_info in list(roles.items()):
+                if other_name != self.role and other_info.get("pane") == pane:
+                    other_pid = other_info.get("pid")
+                    if other_pid and not is_pid_alive(other_pid):
+                        other_info.pop("pane", None)
+                    elif other_pid and is_pid_alive(other_pid):
+                        self.store.append_transcript(
+                            "pane_collision",
+                            self.role,
+                            pane=pane,
+                            other_role=other_name,
+                            other_pid=other_pid,
+                        )
+
         entry = roles.setdefault(self.role, {"first_seen": utcnow(), "reads": 0, "sends": 0})
         entry["last_seen"] = utcnow()
-        entry["pid"] = os.getpid()
-        # A child inherits the parent environment, so this server sees the tmux pane
-        # its agent lives in. That is the whole address book needed to knock on the
-        # peer's door without the agent doing anything about it.
-        pane = os.environ.get("TMUX_PANE")
+        entry["pid"] = current_pid
         if pane:
             entry["pane"] = pane
 
@@ -390,17 +427,24 @@ class PairSession:
             except Exception:
                 age = None
             closed = phase == "done"
+            pid = info.get("pid")
+            alive = is_pid_alive(pid) if pid else None
+            hint = "Listening."
+            if closed:
+                hint = (
+                    "The round is closed. This role has moved on and will not read new"
+                    " messages. To get it back: pair_advance('implement')."
+                )
+            elif alive is False:
+                hint = f"Process is no longer running (PID {pid} is dead)."
             out[name] = {
                 "role": "writer" if name == writer else "critic",
                 "last_seen": info.get("last_seen"),
                 "silent_seconds": age,
+                "alive": alive,
                 "round_closed": closed,
-                "will_read_new_messages": not closed,
-                "hint": (
-                    "The round is closed. This role has moved on and will not read new"
-                    " messages. To get it back: pair_advance('implement')."
-                    if closed else "Listening."
-                ),
+                "will_read_new_messages": not closed and (alive is not False),
+                "hint": hint,
             }
         return out
 
@@ -648,7 +692,13 @@ class PairSession:
             result = deliver(pane, text, wait_for_empty=wait_for_empty, submit=submit)
         except ComposerBusy as exc:
             self.store.append_transcript("deliver_busy", self.role, to=to, reason=str(exc))
-            return {"delivered": False, "why": str(exc)}
+            send_res = self.tool_pair_send(to=to, text=text, subject="[mailbox fallback: composer busy]")
+            return {
+                "delivered": False,
+                "why": str(exc),
+                "fallback_sent": True,
+                "seq": send_res.get("seq"),
+            }
         self.store.append_transcript("deliver", self.role, to=to, **result)
         result["delivered_to_pane"] = pane
         return result

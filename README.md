@@ -164,6 +164,8 @@ bin/pairctl status         # Inspect current workspace state JSON
 bin/pairctl why            # View active writers and their declared technical rationale
 bin/pairwatch --unblock    # Background daemon to detect stalls and auto-approve [y/n] prompts
 bin/pairdoctor             # Health check and environment diagnostic utility
+bin/pair-duo opencode "task"   # Launch same-CLI dual session (writer/critic split in tmux)
+bin/pair-duo --worktree claude # Launch with isolated git worktree for the critic
 ```
 
 ---

@@ -1,0 +1,131 @@
+#!/usr/bin/env bash
+# bin/pair-duo — Launch a dual-instance (same-CLI) pair programming session in tmux.
+#
+# Usage:
+#   bin/pair-duo [options] <cli> [task]
+#
+# Options:
+#   --worktree    Create an isolated git worktree for the critic pane
+#   --vertical    Split panes vertically (top/bottom) instead of horizontally (left/right)
+#   -h, --help    Show this help
+#
+# Supported CLIs:
+#   opencode, agy, claude, codex
+#
+# Examples:
+#   bin/pair-duo opencode "refactor auth middleware"
+#   bin/pair-duo --worktree claude "add integration tests for payments"
+#   bin/pair-duo agy
+set -euo pipefail
+
+HERE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="$(cd -- "$HERE/.." && pwd)"
+
+USE_WORKTREE=0
+SPLIT_OPT="-h"
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --worktree)
+      USE_WORKTREE=1
+      shift
+      ;;
+    --vertical)
+      SPLIT_OPT="-v"
+      shift
+      ;;
+    -h|--help)
+      sed -n '2,20p' "$0" | sed 's/^# //' | sed 's/^#//'
+      exit 0
+      ;;
+    *)
+      break
+      ;;
+  esac
+done
+
+if [[ $# -lt 1 ]]; then
+  echo "error: CLI name required (opencode, agy, claude, codex)" >&2
+  echo "usage: bin/pair-duo [--worktree] <cli> [task]" >&2
+  exit 2
+fi
+
+CLI="$1"
+TASK="${2:-}"
+
+case "$CLI" in
+  opencode|agy|claude|codex)
+    ;;
+  *)
+    echo "error: unsupported CLI '$CLI'. Supported: opencode, agy, claude, codex" >&2
+    exit 2
+    ;;
+esac
+
+if ! command -v tmux >/dev/null 2>&1; then
+  echo "error: tmux is required for pair-duo" >&2
+  exit 1
+fi
+
+if ! command -v "$CLI" >/dev/null 2>&1; then
+  echo "warning: binary '$CLI' was not found on PATH. Proceeding anyway..." >&2
+fi
+
+# Determine launch commands per CLI
+WRITER_CMD="$CLI"
+CRITIC_CMD="$CLI"
+if [[ "$CLI" == "opencode" ]]; then
+  # opencode defaults to a shared background daemon per account;
+  # --standalone ensures each window has its own local instance and MCP configuration.
+  WRITER_CMD="opencode --standalone"
+  CRITIC_CMD="opencode --standalone"
+fi
+
+WRITER_ROLE="${CLI}-writer"
+CRITIC_ROLE="${CLI}-critic"
+
+# Record task and initial authority if specified
+if [[ -n "$TASK" ]]; then
+  "$HERE/pairctl" task "$TASK"
+fi
+"$HERE/pairctl" assign "$WRITER_ROLE"
+
+CRITIC_DIR="$ROOT"
+if [[ "$USE_WORKTREE" -eq 1 ]]; then
+  WT_DIR="$ROOT/.pair/worktrees/${CRITIC_ROLE}"
+  mkdir -p "$ROOT/.pair/worktrees"
+  if [[ -d "$WT_DIR" ]]; then
+    echo "pair-duo: using existing worktree at $WT_DIR"
+  else
+    BRANCH_NAME="duo/${CRITIC_ROLE}-$(date +%s)"
+    echo "pair-duo: creating git worktree at $WT_DIR on branch $BRANCH_NAME"
+    git worktree add "$WT_DIR" -b "$BRANCH_NAME"
+  fi
+  CRITIC_DIR="$WT_DIR"
+fi
+
+# Check if we are already inside a tmux session
+IN_TMUX=0
+if [[ -n "${TMUX:-}" ]]; then
+  IN_TMUX=1
+fi
+
+STATE_PATH="$ROOT/.pair"
+
+WRITER_INIT="export PAIR_ROLE='${WRITER_ROLE}' PAIR_STATE='${STATE_PATH}'; cd '${ROOT}'; echo '=== PAIR WRITER: ${WRITER_ROLE} ==='; ${WRITER_CMD}"
+CRITIC_INIT="export PAIR_ROLE='${CRITIC_ROLE}' PAIR_STATE='${STATE_PATH}'; cd '${CRITIC_DIR}'; echo '=== PAIR CRITIC: ${CRITIC_ROLE} ==='; ${CRITIC_CMD}"
+
+if [[ "$IN_TMUX" -eq 1 ]]; then
+  # Inside tmux: split current window
+  tmux split-window $SPLIT_OPT -c "$CRITIC_DIR" "$SHELL -c \"$CRITIC_INIT\""
+  tmux select-pane -L 2>/dev/null || tmux select-pane -U 2>/dev/null || true
+  eval "$WRITER_INIT"
+else
+  # Outside tmux: create a new session
+  SESSION_NAME="duo-${CLI}-$(date +%s)"
+  echo "pair-duo: starting tmux session '$SESSION_NAME'..."
+  tmux new-session -d -s "$SESSION_NAME" -n "pair" -c "$ROOT" "$SHELL -c \"$WRITER_INIT\""
+  tmux split-window -t "$SESSION_NAME" $SPLIT_OPT -c "$CRITIC_DIR" "$SHELL -c \"$CRITIC_INIT\""
+  tmux select-layout -t "$SESSION_NAME" even-horizontal 2>/dev/null || true
+  tmux attach-session -t "$SESSION_NAME"
+fi

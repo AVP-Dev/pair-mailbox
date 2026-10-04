@@ -162,6 +162,8 @@ bin/pairctl status         # JSON-снимок состояния текущег
 bin/pairctl why            # Кто держит авторитет записи и какое техническое обоснование он заявил
 bin/pairwatch --unblock    # Фоновый сторож: ловит зависания и автоматически жмет [y/n]
 bin/pairdoctor             # Диагностика окружения и проверка доступности компонентов
+bin/pair-duo opencode "задача" # Запуск дуо-режима для одного CLI (сплит writer/critic в tmux)
+bin/pair-duo --worktree claude # Запуск с изолированным git worktree для критика
 ```
 
 ---
