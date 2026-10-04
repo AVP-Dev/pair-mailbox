@@ -514,6 +514,62 @@ class TestEvidenceGate(PairTestCase):
         self.human_ok()
         self.assertEqual(self.writer.tool_pair_advance("done")["phase"], "done")
 
+    def test_a_verdict_is_not_a_test_run(self) -> None:
+        """Гейт спрашивал «есть ли хоть одна успешная запись», и на этот вопрос
+        отвечал `kind="manual", value="looks good"`. Запись, неотличимая от
+        прогона, и закрывала раунд вместо того, чтобы его держать."""
+        self.writer.tool_pair_evidence(kind="manual", value="looks good to me", ok=True)
+        self.human_ok()
+        error = self.assertRefused(self.writer.tool_pair_advance, "done")
+        self.assertIn("no passing test run", str(error))
+        self.assertIn('kind="test"', str(error))
+
+    def test_a_passing_test_run_satisfies_that_gate(self) -> None:
+        self.record_test_evidence()
+        self.human_ok()
+        self.assertEqual(self.writer.tool_pair_advance("done")["phase"], "done")
+
+    def test_an_audit_round_does_not_demand_a_test_run(self) -> None:
+        """В mode=audit результат работы — находки в заметках, и прогона тестов
+        может не быть по существу. Гейт не должен требовать то, чего в этом
+        режиме не делают."""
+        self.store.mutate(lambda state: state.__setitem__("mode", "audit"))
+        self.writer.tool_pair_evidence(kind="manual", value="28 findings, all confirmed", ok=True)
+        self.human_ok()
+        self.assertEqual(self.writer.tool_pair_advance("done")["phase"], "done")
+
+    def test_a_failing_test_run_is_not_replaced_by_a_passing_lint_run(self) -> None:
+        """Правило «последний прогон решает» действует по виду, а не по раунду
+        целиком: зелёный lint не отменяет красный тест."""
+        self.record_test_evidence("3 failed, exit 1", ok=False)
+        self.writer.tool_pair_evidence(kind="lint", value="clean, exit 0", ok=True)
+        self.human_ok()
+        self.assertRefused(self.writer.tool_pair_advance, "done", contains="failing evidence")
+
+    def test_a_flood_of_later_entries_cannot_evict_this_rounds_failure(self) -> None:
+        """Журнал был обрезан по EVIDENCE_KEEP=50 без учёта раунда, а гейт читает
+        state, а не транскрипт. Пятьдесят записей после падения — и раунд с
+        красными тестами закрывался, потому что журнал переполнился."""
+        self.record_test_evidence("3 failed, exit 1", ok=False)
+        for index in range(60):
+            self.writer.tool_pair_evidence(kind="commit", value=f"noise {index}", ok=True)
+        entries = self.store.read()["evidence"]
+        failing = [e for e in entries if not e.get("ok") and e.get("kind") == "test"]
+        self.assertTrue(failing, "запись о падении текущего раунда обязана выжить")
+        self.human_ok()
+        self.assertRefused(self.writer.tool_pair_advance, "done", contains="failing evidence")
+
+    def test_evidence_of_old_rounds_is_still_trimmed(self) -> None:
+        """Полоса для прошлых раундов остаётся, иначе state растёт бесконечно."""
+        self.store.mutate(lambda state: state.__setitem__("evidence", [
+            {"round": 0, "kind": "commit", "value": f"old {i}", "ok": True, "at": "then"}
+            for i in range(120)
+        ]))
+        self.record_test_evidence()
+        entries = self.store.read()["evidence"]
+        self.assertLessEqual(sum(1 for e in entries if e["round"] == 0), 50)
+        self.assertTrue(any(e["round"] != 0 for e in entries), "запись текущего раунда на месте")
+
     def test_failing_evidence_blocks_closing(self) -> None:
         """Красный тест, записанный честно, обязан мешать закрыть раунд. Иначе
         проще записать, что всё хорошо, чем чинить."""
@@ -558,8 +614,11 @@ class TestEvidenceGate(PairTestCase):
         self.assertIn("autonomy auto", str(error))
 
     def test_peer_evidence_counts(self) -> None:
-        """Доказательство может принести кто угодно: важно, что оно машинное."""
-        self.peer.tool_pair_evidence(kind="typecheck", value="mypy clean, exit 0")
+        """Доказательство может принести кто угодно: важно, что оно машинное.
+
+        Вид при этом остаётся `test`: гейт смотрит на прогон, а не на того, кто его
+        сделал, и `typecheck` в mode=fix раунд больше не закрывает."""
+        self.peer.tool_pair_evidence(kind="test", value="mypy clean, exit 0")
         self.human_ok()
         self.assertEqual(self.writer.tool_pair_advance("done")["phase"], "done")
 

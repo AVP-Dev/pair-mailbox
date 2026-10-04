@@ -253,6 +253,21 @@ def done_blockers(state: dict[str, Any]) -> list[str]:
             f"and PR. Kinds: {', '.join(EVIDENCE_KINDS)}."
         )
 
+    if state.get("mode", "fix") != "audit" and not any(
+            item.get("kind") == "test" and item.get("ok") for item in latest.values()):
+        # Раньше гейт спрашивал «есть ли хоть одна успешная запись», и на этот
+        # вопрос отвечал `kind="manual", value="looks good"`. Запись, неотличимая
+        # от прогона, — это ровно то, чем гейт не должен закрываться: раунд с
+        # красными тестами объявлялся закрытым, потому что автор описал словами,
+        # что всё хорошо. В mode=audit требования нет — там результат работы это
+        # находки в заметках, и прогона тестов может не быть по существу.
+        blockers.append(
+            f"round {round_number} has no passing test run, and mode=fix closes only on one. "
+            f"Call pair_evidence(kind=\"test\", value=\"181 passed, exit 0\") with what the "
+            f"machine actually printed. kind=lint, typecheck or a commit hash is not a "
+            f"substitute, and neither is a verdict that things look right."
+        )
+
     if autonomy == "semi" and not human_ok_for_round(state):
         blockers.append(
             "autonomy is semi, so closing a round waits for the human. Send them the digest "
@@ -1373,7 +1388,16 @@ class PairSession:
             }
             entries = state.setdefault("evidence", [])
             entries.append(record)
-            del entries[:-EVIDENCE_KEEP]  # keep the tail; the rest is history
+            # Записи текущего раунда не вытесняются никогда. Гейт закрытия читает
+            # их из state, а не из транскрипта, поэтому вытесненная запись о падении
+            # просто перестаёт учитываться: раунд с красными тестами закрывался
+            # потому, что журнал переполнился. Полоса для прошлых раундов остаётся,
+            # иначе state растёт бесконечно.
+            current = int(state.get("round", 0))
+            older = [item for item in entries if int(item.get("round", 0)) != current]
+            mine = [item for item in entries if int(item.get("round", 0)) == current]
+            del older[: max(0, len(older) - EVIDENCE_KEEP)]
+            state["evidence"] = older + mine
             return record
 
         record = self.store.mutate(apply)
