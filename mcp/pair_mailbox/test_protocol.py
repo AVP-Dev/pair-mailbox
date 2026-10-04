@@ -22,6 +22,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from shutil import which as shutil_which
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -1653,6 +1654,96 @@ class TestMultiProject(PairTestCase):
         )
         self.assertEqual(done.returncode, 1)
         self.assertIn("нет", done.stdout + done.stderr)
+
+
+class TestStalePaneSurvives(PairTestCase):
+    """Ростер не должен сносить панель у живой роли.
+
+    Так стоило нам ночи: панель была жива, pid принадлежал роли, которая просто
+    перезапустилась, регистрация другой роли решила «pid чужой и мёртвый» и
+    снесла `pane`. Доставка к живому соседу после этого отказывала с «нет
+    панели tmux», а сосед сидел в соседнем окне и ждал."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        import server
+        self.server = server
+
+    def pane_alive(self, value: bool):
+        """Подменяем pane_exists на время теста и обязательно возвращаем.
+
+        Подмена ставится здесь, а не в setUp, потому что два теста ниже проверяют
+        сам pane_exists — со стабильной подменой они проверяли бы её же.
+        """
+        real = self.server.pane_exists
+        self.server.pane_exists = lambda pane: value
+        self.addCleanup(setattr, self.server, "pane_exists", real)
+
+    def register(self, role: str, pane: str, pid: int) -> PairSession:
+        self.store.mutate(lambda s: s.setdefault("roles", {}).setdefault(role, {}).update(
+            {"pane": pane, "pid": pid}))
+        return PairSession(role, self.store)
+
+    def join_pane(self, pane: str) -> None:
+        """Новая роль заходит на панель, и _register начинает её проверять.
+
+        Это обязательный шаг теста, а не украшение: конфликт панелей находится
+        только там, где у РЕГИСТРИРУЮЩЕЙСЯ роли есть своя TMUX_PANE. Без неё
+        проверка просто не выполняется, и тест проходит бы, ничего не проверив.
+        """
+        previous = os.environ.get("TMUX_PANE")
+        os.environ["TMUX_PANE"] = pane
+        self.addCleanup(lambda: os.environ.__setitem__("TMUX_PANE", previous)
+                        if previous is not None else os.environ.pop("TMUX_PANE", None))
+
+    def test_live_pane_of_a_restarted_role_is_kept(self) -> None:
+        """Роль перезапустилась: pid сменился, но окно то же. Панель обязана
+        остаться, иначе сосед станет недоступен ровно тогда, когда он нужен."""
+        self.pane_alive(True)                        # окно живо, pid — нет
+        self.register("agy", "%20", 999999)
+        newcomer = PairSession("claude", self.store)
+        newcomer.tool_pair_state()
+        self.assertEqual(self.store.read()["roles"]["agy"].get("pane"), "%20")
+
+    def test_pane_is_cleared_when_both_facts_hold(self) -> None:
+        """pid мёртв И панели нет в tmux — тогда панель действительно мёртва."""
+        self.pane_alive(False)
+        self.register("agy", "%20", 999999)
+        self.join_pane("%20")
+        newcomer = PairSession("claude", self.store)
+        newcomer.tool_pair_state()
+        roles = self.store.read()["roles"]
+        self.assertIsNone(roles["agy"].get("pane"))
+        kinds = [e["kind"] for e in self.store.read_transcript()]
+        self.assertIn("pane_stale_cleared", kinds)
+
+    def test_live_pid_on_the_same_pane_is_still_a_collision(self) -> None:
+        """Две живые роли на одной панели — это неразличимо, и об этом надо
+        сказать, а не молча выбрать одну."""
+        self.pane_alive(True)
+        self.register("agy", "%20", os.getpid())
+        self.join_pane("%20")
+        newcomer = PairSession("claude", self.store)
+        newcomer.tool_pair_state()
+        kinds = [e["kind"] for e in self.store.read_transcript()]
+        self.assertIn("pane_collision", kinds)
+        self.assertEqual(self.store.read()["roles"]["agy"].get("pane"), "%20")
+
+    def test_a_malformed_id_is_not_vouched_for(self) -> None:
+        """После ребута %1 может принадлежать совсем другому окну, поэтому
+        панель проверяется только настоящим запросом к tmux, а не формой строки."""
+        self.assertFalse(self.server.pane_exists(""))
+        self.assertFalse(self.server.pane_exists("%999999999"), "несуществующая панель — не живая")
+        self.assertFalse(self.server.pane_exists("opencode"), "имя процесса — не панель")
+
+    def test_a_live_pane_is_recognised(self) -> None:
+        import subprocess
+        if not shutil_which("tmux"):
+            self.skipTest("tmux не установлен")
+        mine = os.environ.get("TMUX_PANE")
+        if not mine:
+            self.skipTest("мы не внутри tmux")
+        self.assertTrue(self.server.pane_exists(mine))
 
 
 class TestRingAndUnblock(PairTestCase):

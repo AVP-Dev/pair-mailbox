@@ -443,6 +443,34 @@ def is_pid_alive(pid: Any) -> bool:
         return err.errno == errno.EPERM
 
 
+def pane_exists(pane: str) -> bool:
+    """True if tmux still has this pane id.
+
+    A pane id alone proves nothing across a reboot or a session change: %1 is a
+    short-lived name that a fresh session reuses for an unrelated window. That is
+    why clearing a stale pane needs this check and not just a dead pid.
+
+    False whenever tmux is absent — the honest answer is "cannot vouch for it",
+    and the caller is deciding whether to drop a record, so failing closed keeps
+    the record rather than guessing.
+    """
+    if not pane or not re.fullmatch(r"%[0-9]+", str(pane)):
+        return False
+    try:
+        tmux = shutil.which("tmux")
+        if not tmux:
+            return False
+        result = subprocess.run([tmux, "display-message", "-p", "-t", str(pane), "#{pane_dead}"],
+                                capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    # Несуществующая панель — это НЕ «жива». tmux на такой запрос отвечает
+    # кодом 0 и ПУСТЫМ выводом, так что проверка только на код успеха и на
+    # "не 1" объявляла бы живой любую фантомную панель — ровно тот случай, от
+    # которого мы чистим запись.
+    return result.returncode == 0 and result.stdout.strip() in ("0", "false")
+
+
 class PairSession:
     """One agent's view of the shared state, bound to a role at construction."""
 
@@ -470,20 +498,34 @@ class PairSession:
                     existing_pid=existing["pid"],
                 )
 
-        # If another role holds the same tmux pane, check if that other process is dead
+        # Another role claims this pane. Clearing its pane on a dead pid alone cost
+        # us a night: the panel was alive, its process belonged to a role that had
+        # merely restarted, so delivery to a live peer failed with "has no tmux
+        # pane" while the peer sat two windows away, waiting.
+        #
+        # So a pane goes away only on two independent facts: the process is gone
+        # AND tmux no longer has the panel. After a reboot or a session change the
+        # panel is absent too, which is what makes this correct in the other
+        # direction — never clearing would leave a phantom %1 pointing at whatever
+        # window now owns that id.
         if pane:
             for other_name, other_info in list(roles.items()):
                 if other_name != self.role and other_info.get("pane") == pane:
                     other_pid = other_info.get("pid")
-                    if other_pid and not is_pid_alive(other_pid):
+                    if other_pid and not is_pid_alive(other_pid) and not pane_exists(other_info["pane"]):
                         other_info.pop("pane", None)
-                    elif other_pid and is_pid_alive(other_pid):
+                        self.store.append_transcript(
+                            "pane_stale_cleared", self.role, pane=pane,
+                            other_role=other_name, other_pid=other_pid,
+                        )
+                    elif other_pid:
                         self.store.append_transcript(
                             "pane_collision",
                             self.role,
                             pane=pane,
                             other_role=other_name,
                             other_pid=other_pid,
+                            other_alive=is_pid_alive(other_pid),
                         )
 
         entry = roles.setdefault(self.role, {"first_seen": utcnow(), "reads": 0, "sends": 0})
