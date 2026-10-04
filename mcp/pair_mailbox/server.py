@@ -2574,6 +2574,69 @@ def run_ctl(args: argparse.Namespace, state_dir: Path) -> int:
         print(f"расстановка: писатель {wanted.get('writer') or '—'}, критик {wanted.get('critic') or '—'}")
         return 0
 
+    if command == "roster":
+        # Что записан в ростере, кто из этого ещё существует.
+        #
+        # `roster` без флагов только показывает. `--prune` удаляет, и удаляет по
+        # двум независимым фактам сразу: процесс мёртв И панели больше нет. Одного
+        # факта мало — умерший агент мог оставить после себя живую панель, а живой
+        # pid с чужой панелью означает, что запись указывает не туда.
+        #
+        # Удалять молча нельзя: ростер это общая память пары, и человек должен
+        # видеть, что именно убрали и почему.
+        current = store.read()
+        roles_now = current.get("roles") or {}
+        # Кто живой и на какой панели. Нужно, чтобы отличить «панели нет» от
+        # «панель есть, но она не эта».
+        living = {role: info.get("pane") for role, info in roles_now.items()
+                  if isinstance(info.get("pid"), int) and info["pid"] > 0
+                  and is_pid_alive(info["pid"])}
+        entries = []
+        for role, info in roles_now.items():
+            pid = info.get("pid")
+            pane = info.get("pane")
+            pid_dead = isinstance(pid, int) and pid > 0 and not is_pid_alive(pid)
+            pane_gone = bool(pane) and not pane_exists(pane)
+            holder = next((other for other, other_pane in living.items()
+                           if other != role and other_pane == pane), None)
+            entries.append((role, info, pid_dead, pane_gone or holder is not None, holder))
+        if not args.prune:
+            if not entries:
+                print("ростер пуст")
+                return 0
+            for role, info, pid_dead, wrong, holder in sorted(entries):
+                mark = "жив" if not pid_dead else "мёртв"
+                extra = ", панели нет" if wrong and not holder else ""
+                if holder:
+                    extra = f", панель занята живой ролью {holder}"
+                print(f"{role:18} pid={info.get('pid')} pane={info.get('pane') or '—'}  {mark}{extra}")
+            print("\n--prune удалит записи с мёртвым pid, у которых панели нет "
+                  "или панель принадлежит другой живой роли")
+            return 0
+
+        doomed = {role: True for role, _, pid_dead, wrong, _ in entries
+                  if pid_dead and wrong}
+        if not doomed:
+            print("нечего чистить: нет записей одновременно с мёртвым pid и без панели")
+            return 0
+        if current.get("writer") in doomed:
+            print(f"refusing to prune {current['writer']!r}: it still holds write authority. "
+                  f"Move it with `pairctl assign` or `pairctl release` first.",
+                  file=sys.stderr)
+            return 2
+
+        def prune(state):
+            roles = state.get("roles") or {}
+            for role in doomed:
+                roles.pop(role, None)
+            state["roles"] = roles
+
+        store.mutate(prune)
+        store.append_transcript("roster_pruned", "human", removed=sorted(doomed))
+        for role in sorted(doomed):
+            print(f"удалён {role}")
+        return 0
+
     if command == "release":
         def apply(state):
             state["writer"] = None
@@ -2981,6 +3044,10 @@ def build_parser() -> argparse.ArgumentParser:
     assign.add_argument("role")
 
     sub.add_parser("release", help="human: clear write authority")
+
+    roster = sub.add_parser("roster", help="human: show who is registered, --prune to clean")
+    roster.add_argument("--prune", action="store_true",
+                        help="remove roles whose process is dead AND whose pane is gone")
 
     roles = sub.add_parser(
         "roles",

@@ -22,6 +22,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 from shutil import which as shutil_which
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -786,6 +787,71 @@ class TestEvidenceGate(PairTestCase):
         self.assertEqual(self.writer.tool_pair_state()["autonomy"], "observe")
         self.record_test_evidence()
         self.assertEqual(self.writer.tool_pair_advance("done")["phase"], "done")
+
+
+class TestRosterPrune(PairTestCase):
+    """`pairctl roster --prune`.
+
+    Ростер — общая память пары, и в нём годами лежат записи умерших сессий: на
+    живой панели agy числились ещё claude, codex и обе роли duo. Мёртвая запись
+    занимает место, путает отчёт и портит skip. Удалять можно не молча и не по
+    одному признаку, а по двум независимым фактам."""
+
+    def ctl(self, *argv: str) -> int:
+        return main(["--state", str(self.root), *argv])
+
+    def dead_role(self, role: str, pane: str, pid: int = 999999) -> None:
+        self.store.mutate(lambda st: st.setdefault("roles", {}).update(
+            {role: {"pane": pane, "pid": pid, "last_seen": "then", "first_seen": "then"}}))
+
+    def test_prune_removes_a_dead_role_whose_pane_is_gone(self) -> None:
+        self.dead_role("ghost", "%999999")
+        self.assertEqual(0, self.ctl("roster", "--prune"))
+        self.assertNotIn("ghost", self.store.read()["roles"])
+
+    def test_prune_keeps_a_dead_role_whose_pane_still_exists(self) -> None:
+        """Одного мёртвого pid мало: после смерти агента могла остаться живая
+        панель, и удалять запись рано."""
+        self.dead_role("leftover", "%20")
+        with mock.patch("server.pane_exists", return_value=True):
+            self.assertEqual(0, self.ctl("roster", "--prune"))
+        self.assertIn("leftover", self.store.read()["roles"])
+
+    def test_prune_removes_a_dead_role_whose_pane_belongs_to_someone_living(self) -> None:
+        """Третий случай, который и ждал в бою: панель жива, но принадлежит другой
+        живой роли. Запись не просто устарела — она указывает не туда."""
+        self.dead_role("claude", "%20")
+        self.store.mutate(lambda st: st.setdefault("roles", {}).update(
+            {"agy": {"pane": "%20", "pid": os.getpid()}}))
+        with mock.patch("server.pane_exists", return_value=True):
+            self.assertEqual(0, self.ctl("roster", "--prune"))
+        roles = self.store.read()["roles"]
+        self.assertNotIn("claude", roles)
+        self.assertIn("agy", roles, "живую роль трогать нельзя")
+
+    def test_prune_never_touches_a_living_role(self) -> None:
+        self.store.mutate(lambda st: st.setdefault("roles", {}).update(
+            {"agy": {"pane": "%20", "pid": os.getpid()}}))
+        self.assertEqual(0, self.ctl("roster", "--prune"))
+        self.assertIn("agy", self.store.read()["roles"])
+
+    def test_prune_refuses_to_remove_the_writer(self) -> None:
+        """Иначе можно было бы очистить ростер и вместе с ним держателя права,
+        не сказав ни слова."""
+        self.writer.tool_pair_claim(reason="writer")
+        self.dead_role("writer-agent", "%999999")
+        self.assertEqual(2, self.ctl("roster", "--prune"))
+        self.assertIn("writer-agent", self.store.read()["roles"])
+
+    def test_roster_without_prune_only_looks(self) -> None:
+        self.dead_role("ghost", "%999999")
+        self.assertEqual(0, self.ctl("roster"))
+        self.assertIn("ghost", self.store.read()["roles"])
+
+    def test_pruning_is_in_the_audit_trail(self) -> None:
+        self.dead_role("ghost", "%999999")
+        self.ctl("roster", "--prune")
+        self.assertIn("roster_pruned", [e["kind"] for e in self.store.read_transcript()])
 
 
 class TestAutonomyCommand(PairTestCase):

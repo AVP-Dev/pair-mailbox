@@ -21,11 +21,14 @@
 """
 import argparse
 import os
+import shlex
 import shutil
 import subprocess
 import sys
 import time
 from pathlib import Path
+
+SHELL = os.environ.get("SHELL") or "/bin/sh"
 
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT / "mcp" / "pair_mailbox"))
@@ -45,10 +48,95 @@ def python_ok(argv: list[str]) -> bool:
     return result.returncode == 0
 
 
+def launch_command_for(role: str) -> str | None:
+    """Команда запуска роли из cli-profiles.json.
+
+    Роль и имя CLI совпадают (opencode, agy, claude, codex), поэтому профиль
+    ищем по имени роли. Неизвестная роль — это не повод падать: показываем, что
+    не нашли, и оставляем человека разбираться.
+    """
+    try:
+        import json as _json
+        profiles = _json.loads((ROOT / "cli-profiles.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    entry = profiles.get(role)
+    if isinstance(entry, dict):
+        cmd = entry.get("launch")
+        if cmd:
+            return str(cmd)
+    return None
+
+
+def launch_standing_pair(args) -> None:
+    """Постоянная расстановка: писатель и критик из policy, каждый своим CLI.
+
+    Право записи здесь не трогаем. Оно уже у того, кого назначил человек, и
+    скрипт, который его двигает, нарушает PROTOCOL.md §2 — раньше именно это и
+    происходило, молча, при каждом запуске.
+    """
+    import json as _json
+
+    try:
+        state = _json.loads((ROOT / args.state / "state.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        print("не прочиталось состояние — кого поднимать, неизвестно", file=sys.stderr)
+        return
+    policy = state.get("policy") if isinstance(state.get("policy"), dict) else {}
+    writer_role = policy.get("writer") or state.get("writer")
+    critic_role = policy.get("critic")
+    if not critic_role:
+        known = [r for r in (state.get("roles") or {}) if r != writer_role]
+        critic_role = known[0] if known else None
+    if not writer_role:
+        print("в расстановке нет писателя: `bin/pairctl roles --writer <роль>`", file=sys.stderr)
+        return
+    if not critic_role:
+        print("в расстановке нет критика: `bin/pairctl roles --critic <роль>`", file=sys.stderr)
+        return
+    if writer_role == critic_role:
+        print("писатель и критик одна и та же роль — так пара не работает", file=sys.stderr)
+        return
+
+    missing = [r for r in (writer_role, critic_role) if not launch_command_for(r)]
+    if missing:
+        print(f"в cli-profiles.json нет команды запуска для: {', '.join(missing)}", file=sys.stderr)
+        return
+
+    state_path = (ROOT / args.state).resolve()
+    init = lambda role, label: (
+        f"export PAIR_ROLE='{role}' PAIR_STATE='{state_path}'; cd '{ROOT}'; "
+        f"echo '=== {label}: {role} ==='; {launch_command_for(role)}"
+    )
+    session = f"pair-{writer_role}-{critic_role}-{int(time.time())}"
+    writer_init = init(writer_role, "PAIR WRITER")
+    critic_init = init(critic_role, "PAIR CRITIC")
+
+    if os.environ.get("TMUX"):
+        run(["tmux", "split-window", "-h", "-c", str(ROOT), f'{shlex.quote(SHELL)} -c '
+             f'{shlex.quote(critic_init)}'])
+        run(["tmux", "select-pane", "-L"])
+    else:
+        run(["tmux", "new-session", "-d", "-s", session, "-n", "pair", "-c", str(ROOT),
+             f'{shlex.quote(SHELL)} -c {shlex.quote(writer_init)}'])
+        run(["tmux", "split-window", "-t", session, "-h", "-c", str(ROOT),
+             f'{shlex.quote(SHELL)} -c {shlex.quote(critic_init)}'])
+        run(["tmux", "select-layout", "-t", session, "even-horizontal"])
+        run(["tmux", "attach-session", "-t", session])
+    print(f"постоянная расстановка: писатель {writer_role}, критик {critic_role}")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Поднять парную сессию целиком")
     parser.add_argument("--task", default="", help="задача для пары")
-    parser.add_argument("--cli", default="opencode", help="CLI для обоих окон")
+    parser.add_argument("--cli", default="opencode",
+                        help="CLI для обоих окон; используется только с --duo")
+    parser.add_argument("--duo", action="store_true",
+                        help="поднять две копии одного CLI вместо постоянной расстановки. "
+                             "Передаёт право записи на <cli>-writer, поэтому только по "
+                             "явному выбору человека")
+    parser.add_argument("--no-prune", action="store_true",
+                        help="не чистить ростер от мёртвых записей")
     parser.add_argument("--no-pair", action="store_true",
                         help="поставить и проверить, но агентов не поднимать")
     parser.add_argument("--state", default=os.environ.get("PAIR_STATE", ".pair"))
@@ -107,7 +195,18 @@ def main() -> int:
     step("6. агенты в свежих окнах")
     if args.task:
         run([ROOT / "bin" / "pairctl", "--state", args.state, "task", args.task])
-    run([ROOT / "bin" / "pair-duo", args.cli] + ([args.task] if args.task else []))
+    # Ростер чистим до запуска, иначе свежие агенты Registerятся поверх записей
+    # прошлых сессий и получают чужие панели.
+    if not args.no_prune:
+        run([ROOT / "bin" / "pairctl", "--state", args.state, "roster", "--prune"])
+    if args.duo:
+        # Явный выбор человека. bin/pair-duo назначает писателем <cli>-writer, и
+        # раньше это происходило молча при любом запуске — то есть скрипт двигал
+        # право записи без спроса, а это запрещено PROTOCOL.md §2.
+        print(f"duo-режим: две копии {args.cli}, писателем станет {args.cli}-writer")
+        run([ROOT / "bin" / "pair-duo", args.cli] + ([args.task] if args.task else []))
+    else:
+        launch_standing_pair(args)
 
     step("7. что получилось")
     time.sleep(8)  # агентам нужно время на регистрацию в MCP
