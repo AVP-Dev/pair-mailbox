@@ -201,10 +201,12 @@ def human_ok_for_round(state: dict[str, Any]) -> bool:
 def unresolved_patches(state: dict[str, Any]) -> list[dict[str, Any]]:
     """Sealed patches that nobody has recorded as applied or released.
 
-    `applied` is written once, at reserve, and never flipped anywhere else in the
-    protocol, so before `pair_patch_applied` existed a round could close over a
-    patch that had been sitting sealed and untouched since the night before. That
-    is the exact shape of work that looks finished and is not.
+    `applied` is set to False at reserve and flipped only by `pair_patch_applied`.
+    Before that verb existed there was nowhere to say whether a patch had reached
+    the tree, so a round could close over a proposal that had been sitting sealed
+    and untouched since the night before. That is the exact shape of work that
+    looks finished and is not. A failed apply leaves `applied` False on purpose:
+    a rejected hunk is not an answer, it is an open question.
     """
     out = []
     for path, record in (state.get("patches") or {}).items():
@@ -1535,7 +1537,6 @@ class PairSession:
                     "changed proposal gets into the tree under the wrong hash.",
                 )
             record["applied"] = bool(ok)
-            record["applied_ok"] = bool(ok)
             record["applied_at"] = utcnow()
             record["applied_by"] = self.role
             if note:

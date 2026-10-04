@@ -415,6 +415,36 @@ class TestRestart(PilotCase):
         pilot.tick()
         self.assertEqual([], self.calls, "в observe перезапуск — это действие, а не сообщение")
 
+    def test_own_pane_is_never_respawned(self) -> None:
+        """Пятый тормоз перезапуска: панель самого сверхвизора.
+
+        `respawn-pane -k` убивает панель насовсем. Если это панель человека —
+        там его ввод и сам сверхвизор: перезапуск роли убил бы оператора,
+        который его запустил. Остальные пути (напоминание, разблокировка) эту
+        панель берегут, и без проверки перезапуск остался бы единственным
+        исключением из правила, которое везде записано словами.
+        """
+        self.dead_writer_state()
+        pilot = self.pilot_with_launch()
+        pilot.own_pane = "%7"
+        pilot.tick()
+        self.assertEqual([], self.calls, "свою панель не перезапускаем никогда")
+        self.assertNotIn("pilot_restart", self.transcript_kinds())
+        self.assertIn("pilot_own_pane", self.transcript_kinds())
+
+    def test_role_sharing_a_pane_is_not_respawned(self) -> None:
+        """Общая панель — это два агента в одном окне. Перезапуск одного из них
+        убил бы второго вместе с его вводом, а из состояния не видно, кто где."""
+        self.write_state(writer="agy", round=3, roles={
+            "agy": {"last_seen": ago(600), "pid": self.DEAD_PID, "pane": "%7"},
+            "claude": {"last_seen": ago(30), "pid": os.getpid(), "pane": "%7"},
+        })
+        pilot = self.pilot_with_launch()
+        pilot.tick()
+        self.assertEqual([], self.calls, "общую панель не перезапускаем")
+        self.assertNotIn("pilot_restart", self.transcript_kinds())
+        self.assertIn("pilot_pane_shared", self.transcript_kinds())
+
     def test_failed_respawn_is_recorded_not_hidden(self) -> None:
         self.dead_writer_state()
         pilot = self.pilot_with_launch()

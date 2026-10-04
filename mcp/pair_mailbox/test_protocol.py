@@ -52,6 +52,11 @@ class PairTestCase(unittest.TestCase):
         self.writer = PairSession("writer-agent", self.store)
         self.peer = PairSession("reviewer-agent", self.store)
         self._orig_tmux_pane = os.environ.pop("TMUX_PANE", None)
+        # Запоминаем ДО того, как среда очищена: тесты ниже проверяют pane_exists
+        # против настоящей панели, а setUp убирает переменную, чтобы роли в наборе
+        # не слали спам в окно оператора (F-08). Без этого запоминания такая
+        # проверка пропускалась бы всегда, то есть никогда.
+        self._pane_at_startup = self._orig_tmux_pane
         self._orig_disable_ring = os.environ.get("PAIR_DISABLE_RING")
         os.environ["PAIR_DISABLE_RING"] = "1"
 
@@ -1737,13 +1742,47 @@ class TestStalePaneSurvives(PairTestCase):
         self.assertFalse(self.server.pane_exists("opencode"), "имя процесса — не панель")
 
     def test_a_live_pane_is_recognised(self) -> None:
-        import subprocess
         if not shutil_which("tmux"):
             self.skipTest("tmux не установлен")
-        mine = os.environ.get("TMUX_PANE")
+        mine = self._pane_at_startup
         if not mine:
-            self.skipTest("мы не внутри tmux")
+            self.skipTest("набор запущен вне tmux")
         self.assertTrue(self.server.pane_exists(mine))
+
+    def test_real_tmux_answers_both_ways(self) -> None:
+        """Единственная здесь проверка, которую нельзя подменить: настоящий tmux,
+        оба ответа.
+
+        Остальные тесты этого класса подменяют pane_exists, поэтому функция,
+        которая отвечала бы False всегда, прошла бы весь набор зелёным — а это
+        ровно старый баг: живая панель объявлена мёртвой, запись стёрта, живой
+        сосед становится недоступен. Свой tmux здесь поднимает сам тест, поэтому
+        проверка не зависит от того, внутри tmux ли запущен набор.
+
+        Второй ответ важнее первого: после смерти сессии %N — имя без
+        содержимого, и именно его pane_exists обязан назвать фантомом.
+        """
+        tmux = shutil_which("tmux")
+        if not tmux:
+            self.skipTest("tmux не установлен")
+        session = f"pairtest-{os.getpid()}"
+        subprocess.run([tmux, "kill-session", "-t", session], capture_output=True, timeout=10)
+        self.addCleanup(subprocess.run, [tmux, "kill-session", "-t", session],
+                        capture_output=True, timeout=10)
+        made = subprocess.run([tmux, "new-session", "-d", "-s", session],
+                              capture_output=True, text=True, timeout=10)
+        if made.returncode != 0:
+            self.skipTest(f"tmux не даёт создать сессию: {made.stderr.strip()[:80]}")
+        listed = subprocess.run([tmux, "list-panes", "-t", session, "-F", "#{pane_id}"],
+                                capture_output=True, text=True, timeout=10)
+        panes = listed.stdout.split()
+        self.assertTrue(panes, "у сессии есть панель")
+        pane = panes[0]
+        self.assertTrue(self.server.pane_exists(pane), f"живая панель {pane} — живая")
+
+        subprocess.run([tmux, "kill-session", "-t", session], capture_output=True, timeout=10)
+        self.assertFalse(self.server.pane_exists(pane),
+                         f"{pane} после смерти сессии — фантом, а не панель")
 
 
 class TestRingAndUnblock(PairTestCase):
