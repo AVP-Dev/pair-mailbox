@@ -297,6 +297,12 @@ NEVER_ALLOW_PATTERNS = (
     r"\.kube/config",
     # Труба в шелл превращает любое чтение в выполнение.
     r"\|\s*(?:sudo\s+)?(?:ba|z|k|da)?sh\b",
+    # Код, переданный интерпретатору строкой, — это произвольное выполнение, а не
+    # проверка. Именно так выглядел обход белого списка:
+    # `python3 -c "import urllib.request; urllib.request.urlopen('http://x')" # test`
+    # Слово «test» в комментарии удовлетворяло шаблону разрешения, а `urllib` в
+    # запрещённых категориях не значится — сеть через него не отлавливалась.
+    r"\b(?:python3?|node|ruby|perl)\s+-c\b",
     r"\$\(",
     r"`",
     r"\bfind\b[^\n]*-(?:delete|exec|execdir|ok)\b",
@@ -385,10 +391,12 @@ DEFAULT_ALLOW_PATTERNS = (
     # локальные проверки: тесты и сборки
     r"\b(?:pytest|unittest|nose|tox|nox|jest|vitest|mocha|rspec|cargo\s+test|go\s+test)\b",
     r"\b(?:ruff|flake8|pylint|mypy|pyright|eslint|prettier|tsc|black|isort)\b",
-    # Интерпретатор с тестом, линтером или сборкой в команде: `python3 -m pytest`,
-    # `python3 mcp/pair_mailbox/test_protocol.py`, `node --test`. Голое `python3`
-    # здесь не значит «любой код»: без доменного слова это refused.
-    r"\b(?:python3?|node|ruby)\b[^\n]*(?:test|tests|pytest|unittest|lint|check|build)",
+    # Интерпретатор с проверкой в команде: `python3 -m pytest`,
+    # `python3 mcp/pair_mailbox/test_protocol.py`, `node --test`. Ключевое слово
+    # должно быть АРГУМЕНТОМ. Прежний `[^\n]*` позволял ему всплыть откуда угодно
+    # дальше по строке, и хватало слова «test» в комментарии или внутри строковой
+    # константы — см. NEVER_ALLOW_PATTERNS про `-c`.
+    r"\b(?:python3?|node|ruby)\s+(?:-\S+\s+)*(?:[^\s]*[_./-]?)(?:test|tests|pytest|unittest|lint|check|build)",
     r"\bmake\b",
     r"\bnpm\s+(?:run\s+\w+|test|ci)\b",
     r"\bbuild\b",

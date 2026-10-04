@@ -35,8 +35,20 @@ class PilotCase(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.state_dir = Path(self.tmp.name) / ".pair"
         self.state_dir.mkdir(parents=True)
+        # TMUX_PANE убираем на время теста и возвращаем после. В test_protocol.py
+        # это было сделано из-за F-08 (набор не должен слать реальный спам в окно
+        # оператора), а здесь — по другой и более неприятной причине: тесты
+        # обязательств используют панель %20, и при запуске набора ИЗ %20 пилот
+        # считает, что agy сидит в его собственной панели, добавляет её в skip и
+        # молчит. Набор падал два теста в зависимости от того, из какой панели его
+        # запустили, — то есть проверка зависела от места, а не от кода.
+        self._orig_tmux_pane = os.environ.pop("TMUX_PANE", None)
 
     def tearDown(self) -> None:
+        if self._orig_tmux_pane is not None:
+            os.environ["TMUX_PANE"] = self._orig_tmux_pane
+        else:
+            os.environ.pop("TMUX_PANE", None)
         self.tmp.cleanup()
 
     def pilot(self, silence: float = 600.0) -> "pairpilot.Pilot":
