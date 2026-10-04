@@ -277,16 +277,68 @@ class Pilot:
             stamp.unlink(missing_ok=True)
 
     def panes(self, state: dict) -> dict[str, list[str]]:
-        """Кто на какой панели. Роли, делящие панель, неразличимы."""
+        """Кто на какой панели, без мёртвых.
+
+        Мёртвая роль не делает панель общей. Проверено вживую: claude и codex
+        держались в ростере с одной панелью %20, записи пережили их процессы, и
+        `skip` содержал всех троих — включая живого agy. Сверхвизор переставал
+        обслуживать проект из-за двух умерших соседей.
+
+        Роль считается живой по process'у; панель без живого процесса — просто
+        запись, а не окно, где кто-то сидит. Два независимых факта, как в
+        `pane_exists`: имя панели не доказывает, что в ней кто-то есть.
+        """
         table: dict[str, list[str]] = {}
         for role, info in (state.get("roles") or {}).items():
             pane = info.get("pane")
-            if pane:
-                table.setdefault(pane, []).append(role)
+            if not pane:
+                continue
+            pid = info.get("pid")
+            if isinstance(pid, int) and pid > 0 and not is_pid_alive(pid):
+                continue
+            table.setdefault(pane, []).append(role)
         return table
+
+    def stale_roles(self, state: dict) -> dict[str, str]:
+        """Роли с мёртвым процессом, но всё ещё числящиеся. Не удаляются молча:
+        ростер — общая память, и решение очистить его принимает человек."""
+        out = {}
+        for role, info in (state.get("roles") or {}).items():
+            pid = info.get("pid")
+            if isinstance(pid, int) and pid > 0 and not is_pid_alive(pid):
+                out[role] = f"pid {pid} is gone"
+        return out
 
     def shared_panes(self, state: dict) -> dict[str, list[str]]:
         return {pane: names for pane, names in self.panes(state).items() if len(names) > 1}
+
+    def pane_occupied_by_other(self, state: dict, role: str, pane: str) -> str | None:
+        """Живая роль на этой панели, кроме самой `role`. None — панель свободна.
+
+        Запись о мёртвом агенте не делает панель занятой: если в ней кто-то жив,
+        перезапуск ушедшего роли ударит по живому соседу. Считаем только по
+        процессам, потому что имя панели — это адрес, а не свидетельство."""
+        for other, info in (state.get("roles") or {}).items():
+            if other == role or info.get("pane") != pane:
+                continue
+            pid = info.get("pid")
+            if isinstance(pid, int) and pid > 0 and is_pid_alive(pid):
+                return other
+        return None
+
+    def gone_roles(self, state: dict) -> None:
+        """Роли, чей процесс умер, но запись в ростере осталась.
+
+        Молчание здесь вреднее шума: из-за таких записей общая панель выглядела
+        занятой, и сверхвизор переставал будить живого соседа. Говорим один раз
+        за роль и оставляем решать человеку — молча чистить ростер нельзя.
+        """
+        for role, why in self.stale_roles(state).items():
+            if not self.remember(f"gone-{role}"):
+                continue
+            log(f"{role}: {why}, но запись в ростере осталась и панель считалась общей. "
+                f"Чистить ростер — `pairctl release` или новая сессия.")
+            self.store.append_transcript("pilot_stale_role", "pairpilot", target=role, why=why)
 
     def ambiguous(self, state: dict) -> bool:
         """Две роли на одной панели — значит ростер врёт, и бить в неё нельзя.
@@ -529,6 +581,17 @@ class Pilot:
                     log(f"{role}: процесс мёртв, а команды запуска я не знаю — скажи "
                         f"pairpilot --launch {role}='команда' или допиши в .pair/restart.json")
                 continue
+            # Панель могла достаться роли по наследству: запись агента осталась, а
+            # сидит там уже кто-то живой. Стучаться в чужое окно бессмысленно —
+            # respawn без -k всё равно откажет, но лишний шум в журнале хуже.
+            squatter = self.pane_occupied_by_other(state, role, pane)
+            if squatter:
+                if self.remember(f"restart-squat-{role}-{pane}"):
+                    self.store.append_transcript("pilot_restart_impossible", "pairpilot",
+                                                 target=role, pid=pid, pane=pane,
+                                                 why=f"панель занята живой ролью {squatter}")
+                    log(f"{role}: панель {pane} занята живой ролью {squatter} — не трогаю")
+                continue
             # Два ограничения, и оба нужны. Отметка по pid не даёт трогать один
             # и тот же упавший процесс снова. Но её одной НЕ хватает: если
             # команда запуска неверна, процесс умирает с новым pid, отметка
@@ -547,20 +610,49 @@ class Pilot:
                 continue
             self.note_restart(role)
             result = subprocess.run(
-                [self.tmux, "respawn-pane", "-k", "-t", pane, command],
+                # Без -k. tmux отказывается перезапускать живую панель, и это
+                # ровно то, что нужно: если после смерти агента в панели открыт
+                # шелл или отладчик, он принадлежит человеку, и -k его убивал бы.
+                # Перезапуск срабатывает только там, где панель действительно мертва,
+                # а занятую панель мы оставляем человеку с записью в транскрипт.
+                [self.tmux, "respawn-pane", "-t", pane, command],
                 capture_output=True, text=True, timeout=15)
             if result.returncode == 0:
                 self.store.append_transcript("pilot_restart", "pairpilot", target=role,
                                              pane=pane, pid=pid, command=command)
+                # Перезапуск поднимает процесс, а не память: у вернувшейся роли
+                # нет ни задачи, ни истории раунда. Команда запуска в профилях —
+                # «agy», «claude» — без --resume, и подробности того, как
+                # продолжить сессию, не знает никто, кроме человека.
+                #
+                # Поэтому оставляем записку, а не угадываем флаг: она указывает
+                # на журнал задач, где написано, что осталось. Работает с любым
+                # CLI и не требует от профиля знания протокола.
+                note = self.state_dir / "notes" / f"pilot-restart-{role}.md"
+                try:
+                    note.parent.mkdir(parents=True, exist_ok=True)
+                    note.write_text(
+                        f"# Перезапуск роли {role}\n\n"
+                        f"Процесс {pid} был мёртв, роль поднята заново в {pane}.\n"
+                        f"Контекста раунда у тебя нет — это цена перезапуска.\n\n"
+                        f"Что делать: прочитай `.pair/tasks.md`. Там список задач, что\n"
+                        f"сделано, чем доказано и что осталось за открытыми пунктами.\n"
+                        f"Фаза раунда и писатель — в `pairctl status`.\n",
+                        encoding="utf-8")
+                except OSError as error:
+                    self.store.append_transcript("pilot_restart_note_failed", "pairpilot",
+                                                 target=role, error=str(error)[:120])
                 log(f"{role}: процесс {pid} был мёртв, перезапустил в {pane} ({command})")
                 writer = " — это писатель, фаза продолжится" if role == state.get("writer") else ""
                 if writer:
                     log(writer)
             else:
+                # Панель занята — почти всегда это человек или его шелл после
+                # падения агента. Говорим прямо, что это не зависание.
+                detail = (result.stderr or result.stdout or "").strip()[:120]
                 self.store.append_transcript("pilot_restart_failed", "pairpilot", target=role,
-                                             pane=pane, pid=pid, command=command,
-                                             error=(result.stderr or "").strip()[:200])
-                log(f"{role}: перезапуск не удался — {(result.stderr or '').strip()[:80]}")
+                                             pane=pane, pid=pid, command=command, why=detail)
+                log(f"{role}: перезапуск не удался — {detail or 'причина не названа'}")
 
     def stalled_patches(self, state: dict) -> None:
         """Sealed-патч, который никто не применил и не отклонил.
@@ -730,6 +822,7 @@ class Pilot:
                         self.store.append_transcript("pilot_own_pane", "pairpilot",
                                                      target=role, pane=self.own_pane)
         self.ambiguous(state)
+        self.gone_roles(state)
         self.unblock(state)
         self.restart_agent(state)
         self.dead_pane(state)

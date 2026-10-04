@@ -320,11 +320,52 @@ class TestRestart(PilotCase):
         pilot.launch = {"agy": command} if command else {}
         return pilot
 
+    def test_the_restart_never_kills_whats_in_the_pane(self) -> None:
+        """`-k` был единственным, что разрешало убить процесс человека.
+
+        Без него tmux отказывается перезапускать живую панель, поэтому занятую
+        панель — шелл или отладчик, открытый человеком после падения агента, —
+        остаётся нетронутой, а отказ попадает в транскрипт как отказ."""
+        self.dead_writer_state()
+        pilot = self.pilot_with_launch()
+        pilot.tick()
+        sent = [call for call in self.calls if "respawn-pane" in call]
+        self.assertTrue(sent)
+        for call in sent:
+            self.assertNotIn("-k", call, "перезапуск не должен убивать содержимое панели")
+
+    def test_a_dead_role_does_not_make_a_pane_shared(self) -> None:
+        """Живой дефект: claude и codex держались в ростере с панелью agy, и
+        `skip` содержал всех троих — сверхвизор переставал обслуживать живого
+        соседа из-за двух умерших записей."""
+        self.write_state(writer="agy", round=3, roles={
+            "agy": {"last_seen": ago(10), "pid": os.getpid(), "pane": "%7"},
+            "claude": {"last_seen": ago(9000), "pid": 999999, "pane": "%7"},
+        })
+        pilot = self.pilot()
+        pilot.tmux = "/usr/bin/tmux"
+        pilot.tick()
+        self.assertNotIn("agy", pilot.skip, "живой сосед не должен попадать под skip")
+        self.assertNotIn("pilot_pane_shared", self.transcript_kinds())
+        self.assertIn("pilot_stale_role", self.transcript_kinds())
+
+    def test_a_stale_role_is_reported_once_not_every_tick(self) -> None:
+        self.write_state(writer="agy", roles={
+            "agy": {"last_seen": ago(10), "pid": os.getpid(), "pane": "%7"},
+            "codex": {"last_seen": ago(9000), "pid": 999999, "pane": "%7"},
+        })
+        pilot = self.pilot()
+        pilot.tick()
+        pilot.tick()
+        pilot.tick()
+        stale = [k for k in self.transcript_kinds() if k == "pilot_stale_role"]
+        self.assertEqual(1, len(stale), "об умершей роли говорим один раз, а не каждый тик")
+
     def test_dead_writer_is_respawned(self) -> None:
         self.dead_writer_state()
         pilot = self.pilot_with_launch()
         pilot.tick()
-        self.assertEqual(["/usr/bin/tmux", "respawn-pane", "-k", "-t", "%7", "agy --resume"],
+        self.assertEqual(["/usr/bin/tmux", "respawn-pane", "-t", "%7", "agy --resume"],
                          self.calls[0])
         self.assertIn("pilot_restart", self.transcript_kinds())
 
@@ -334,7 +375,7 @@ class TestRestart(PilotCase):
         pilot.tick()
         pilot.tick()
         self.assertEqual(1, self.calls.count(
-            ["/usr/bin/tmux", "respawn-pane", "-k", "-t", "%7", "agy --resume"]),
+            ["/usr/bin/tmux", "respawn-pane", "-t", "%7", "agy --resume"]),
             "один умерший процесс — один перезапуск, а не каждые 15 секунд")
 
     def test_dying_on_start_stops_being_restarted_forever(self) -> None:
@@ -457,9 +498,17 @@ class TestRestart(PilotCase):
         })
         pilot = self.pilot_with_launch()
         pilot.tick()
-        self.assertEqual([], self.calls, "общую панель не перезапускаем")
+        self.assertEqual([], self.calls, "панель, где сидит живой сосед, не трогаем")
         self.assertNotIn("pilot_restart", self.transcript_kinds())
-        self.assertIn("pilot_pane_shared", self.transcript_kinds())
+        # Панель больше не «общая»: одна из двух записей принадлежит мёртвому
+        # процессу, а мёртвая запись не делает окно занятым. Сообщается о
+        # мёртвой роли и об отказе перезапуска, а не о двусмысленности.
+        self.assertNotIn("pilot_pane_shared", self.transcript_kinds())
+        self.assertIn("pilot_stale_role", self.transcript_kinds())
+        impossible = [json.loads(line) for line in
+                      (self.state_dir / "transcript.jsonl").read_text(encoding="utf-8").splitlines()
+                      if line.strip() and json.loads(line).get("kind") == "pilot_restart_impossible"]
+        self.assertIn("claude", impossible[-1]["why"])
 
     def test_failed_respawn_is_recorded_not_hidden(self) -> None:
         self.dead_writer_state()

