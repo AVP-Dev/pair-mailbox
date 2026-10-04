@@ -97,6 +97,29 @@ PHASE_BACKWARD: dict[str, str] = {
 # instructions from state and prompt, and those two must not contradict the task.
 MODES = ("fix", "audit")
 
+# How much the pair runs without the human. This is deliberately a SEPARATE axis
+# from `mode`: mode says what a round is for, autonomy says how far it may go on
+# its own. Folding them together would make `pairctl mode auto` silently turn an
+# audit round back into a code round, because every audit check tests `mode ==
+# "audit"`.
+#
+# - observe: the supervisor only speaks. It does not restart a dead agent and
+#   does not confirm a permission prompt. The human is at the wheel.
+# - semi (default): the supervisor restarts a dead agent and confirms prompts on
+#   the allowlist, and closing a round needs evidence plus one word from the human.
+# - auto: the same, and the round may close itself once the evidence is there.
+#
+# §12 is outside this axis entirely: secrets, ports, deploys, migrations, deleting
+# data or git history, and production stop the pair in every mode.
+AUTONOMIES = ("observe", "semi", "auto")
+
+# What may be recorded as proof that the round did something. Every kind here is
+# something a machine can produce on its own; "the peer seemed happy" is not one
+# of them, which is the whole point.
+EVIDENCE_KINDS = ("test", "lint", "typecheck", "build", "diff", "commit", "pr", "manual")
+
+EVIDENCE_KEEP = 50
+
 # Auto-release is off unless the human turns it on. A writer that has finished
 # and gone quiet holds authority in no useful sense.
 STALL_SECONDS = int(os.environ.get("PAIR_STALL_SECONDS", "0") or 0)
@@ -114,6 +137,135 @@ def log(message: str) -> None:
 def global_roles_path() -> Path:
     """Where the human's across-every-project role pinning lives."""
     return Path(os.environ.get("PAIR_ROLES", Path.home() / ".config" / "pair-mailbox" / "roles.json"))
+
+
+def permissions_path(root: Path) -> Path:
+    """Where the human keeps the list of prompts a supervisor may confirm."""
+    return Path(os.environ.get("PAIR_PERMISSIONS", root / "permissions.json"))
+
+
+def load_allowlist(root: Path) -> list[str]:
+    """The permission allowlist, or an empty list.
+
+    Empty means "confirm nothing": a missing or broken file must not widen what an
+    unattended supervisor is allowed to press "y" on.
+    """
+    from composer import load_allow_patterns
+
+    path = permissions_path(root)
+    try:
+        if not path.is_file():
+            return []
+    except OSError:
+        return []
+    try:
+        return load_allow_patterns(str(path))
+    except Exception:  # noqa: BLE001 - сломанная настройка не должна ронять сервер
+        return []
+
+
+def autonomy_of(state: dict[str, Any]) -> str:
+    """Read the autonomy level, refusing to invent one.
+
+    An unknown value is treated as `observe`, the level that does the least: a
+    state written by a newer build must never hand this build more authority than
+    the human asked for.
+    """
+    value = state.get("autonomy", "semi")
+    return value if value in AUTONOMIES else "observe"
+
+
+# The three helpers below are plain functions of the state, not methods, because
+# two processes need to agree on them: the server decides whether a round may
+# close, and bin/pairpilot has to tell the human the same thing in the same words.
+# A second copy of this rule would eventually disagree with the first, and the
+# human would be shown "all good" by one side and refused by the other.
+
+
+def round_evidence(state: dict[str, Any]) -> list[dict[str, Any]]:
+    """Evidence recorded for the round that is running right now.
+
+    Scoped to the round on purpose. Evidence is not a trophy the pair keeps: what
+    proved round 3 says nothing about round 7, and carrying it forward would let a
+    later round be closed by an earlier round's tests.
+    """
+    current = int(state.get("round", 0))
+    return [item for item in (state.get("evidence") or []) if item.get("round") == current]
+
+
+def human_ok_for_round(state: dict[str, Any]) -> bool:
+    current = int(state.get("round", 0))
+    return any(int(entry.get("round", -1)) == current for entry in (state.get("human_ok") or []))
+
+
+def unresolved_patches(state: dict[str, Any]) -> list[dict[str, Any]]:
+    """Sealed patches that nobody has recorded as applied or released.
+
+    `applied` is written once, at reserve, and never flipped anywhere else in the
+    protocol, so before `pair_patch_applied` existed a round could close over a
+    patch that had been sitting sealed and untouched since the night before. That
+    is the exact shape of work that looks finished and is not.
+    """
+    out = []
+    for path, record in (state.get("patches") or {}).items():
+        if not record.get("sealed") or record.get("applied"):
+            continue
+        out.append({"path": path, "owner": record.get("owner"),
+                    "sha256": record.get("sha256"),
+                    "sealed_at": record.get("sealed_at"),
+                    "verified_match": record.get("verified_match")})
+    return out
+
+
+def done_blockers(state: dict[str, Any]) -> list[str]:
+    """Everything that must be true before a round may close, in plain words.
+
+    The refusal message is the only thing the writer sees at that moment, so it
+    has to say what is missing and what to call. A gate nobody can satisfy is
+    indistinguishable from a broken server.
+    """
+    blockers: list[str] = []
+    autonomy = autonomy_of(state)
+    if autonomy == "observe":
+        return blockers
+    round_number = int(state.get("round", 0))
+
+    # Per kind, the LAST run decides, not any of them: tests failed, got fixed,
+    # ran again — the round may close. Otherwise the first failure would hold the
+    # round open forever, because the journal only grows.
+    latest: dict[Any, dict[str, Any]] = {}
+    for item in round_evidence(state):
+        latest[item.get("kind")] = item
+    failed = [item for item in latest.values() if not item.get("ok")]
+    passed = [item for item in latest.values() if item.get("ok")]
+    if failed:
+        names = ", ".join(f"{item.get('kind')}={item.get('value')!r}" for item in failed)
+        blockers.append(
+            f"round {round_number} ends on failing evidence ({names}). Fix it and record the "
+            f"passing result, or say in a note why the failure does not block closing."
+        )
+    if not passed:
+        blockers.append(
+            f"round {round_number} has no passing evidence. Call pair_evidence with what you "
+            f"actually ran: tests with the count and exit code, lint, typecheck, or the commit "
+            f"and PR. Kinds: {', '.join(EVIDENCE_KINDS)}."
+        )
+
+    if autonomy == "semi" and not human_ok_for_round(state):
+        blockers.append(
+            "autonomy is semi, so closing a round waits for the human. Send them the digest "
+            "and, once they agree, run `bin/pairctl ok`. `bin/pairctl autonomy auto` closes "
+            "without that."
+        )
+
+    if state.get("mode", "fix") != "audit":
+        for item in unresolved_patches(state):
+            blockers.append(
+                f"patch {item['path']} (sha256 {item['sha256']}) was sealed by {item['owner']} "
+                f"and never applied. Verify it with pair_patch_verify, then "
+                f"pair_patch_applied(path, ok), or pair_patch_release if it was rejected."
+            )
+    return blockers
 
 
 def read_global_policy() -> dict[str, Any] | None:
@@ -166,6 +318,7 @@ class Store:
         return {
             "task": "",
             "mode": "fix",
+            "autonomy": "semi",
             "writer": None,
             "phase": "scoping",
             "round": 0,
@@ -174,6 +327,8 @@ class Store:
             "roles": {},
             "seen": {},
             "patches": {},
+            "evidence": [],
+            "human_ok": [],
         }
 
     def _load(self) -> dict[str, Any]:
@@ -406,6 +561,7 @@ class PairSession:
         mode = state.get("mode", "fix")
         if mode not in MODES:
             mode = "fix"
+        autonomy = autonomy_of(state)
         current_phase = state.get("phase", "scoping")
         you_are_writer = writer == self.role
         if you_are_writer:
@@ -440,6 +596,21 @@ class PairSession:
                 ),
             }[mode],
             "writer": writer,
+            "autonomy": autonomy,
+            "autonomy_meaning": {
+                "observe": (
+                    "The human is driving. The supervisor speaks but does not act: it will not "
+                    "restart a dead agent and will not confirm a permission prompt."
+                ),
+                "semi": (
+                    "The pair works unattended, but closing a round needs recorded evidence and "
+                    "one word from the human (`bin/pairctl ok`). §12 stops you either way."
+                ),
+                "auto": (
+                    "Unattended to the end: with evidence recorded, the round may close itself. "
+                    "Only §12 stops you."
+                ),
+            }[autonomy],
             # Постоянная расстановка, если человек её задал. Тогда роль известна
             # заранее и спор о праве записи не возникает вовсе.
             "policy": self._policy(state) or None,
@@ -467,6 +638,16 @@ class PairSession:
             "roles": self._known_roles(state),
             "unread": self._unread_count(state),
             "peers": self._peer_status(state, writer),
+            # Что ещё мешает закрыть раунд. Агент должен видеть это ДО того, как
+            # потратит ход на заведомо отказанный pair_advance("done").
+            "closing_blocked_by": self._done_blockers(state),
+            "evidence_this_round": [
+                {"kind": item.get("kind"), "value": item.get("value"), "ok": item.get("ok"),
+                 "role": item.get("role")}
+                for item in self.round_evidence(state)
+            ],
+            "awaiting_human_ok": (autonomy == "semi" and not self.human_ok_for_round(state)),
+            "unresolved_patches": self.unresolved_patches(state) if mode != "audit" else [],
             "how_to_transfer_authority": (
                 "Only the human can move write authority: `pairctl assign <role>`. "
                 "A peer message never transfers it, in either direction."
@@ -517,6 +698,20 @@ class PairSession:
     def _unread_count(self, state: dict[str, Any]) -> int:
         seen = int(state.get("seen", {}).get(self.role, 0))
         return max(0, len(self._inbox_files()) - seen)
+
+    # ------------------------------------------------------------- evidence
+
+    def round_evidence(self, state: dict[str, Any]) -> list[dict[str, Any]]:
+        return round_evidence(state)
+
+    def human_ok_for_round(self, state: dict[str, Any]) -> bool:
+        return human_ok_for_round(state)
+
+    def unresolved_patches(self, state: dict[str, Any]) -> list[dict[str, Any]]:
+        return unresolved_patches(state)
+
+    def _done_blockers(self, state: dict[str, Any]) -> list[str]:
+        return done_blockers(state)
 
     def _inbox_files(self) -> list[Path]:
         inbox = self.store.mailbox_root / self.role
@@ -713,11 +908,17 @@ class PairSession:
         return {"rung": True, "pane": pane, "prompt": prompt}
 
     def tool_pair_unblock(self, peer: str = "") -> dict[str, Any]:
-        """Check if a peer's tmux pane is waiting on an interactive permission prompt (e.g. [y/n]) and approve it.
+        """Check whether a peer's tmux pane is stuck on a permission prompt, and
+        confirm it only if the prompt is on the allowlist.
 
-        Use when the peer agent has stalled or silent_seconds is growing, to prevent sessions from blocking on CLI prompts.
+        Use when the peer agent has stalled or silent_seconds is growing, to prevent
+        sessions from blocking on CLI prompts.
+
+        The allowlist is why this is not a free "y". Anything that writes, runs or
+        deletes is refused by default and reported, because an agent left alone with
+        a destructive prompt is better than one that says yes on your behalf.
         """
-        from composer import _tmux, pane_alive, resolve_permission_prompt
+        from composer import _tmux, resolve_permission_prompt
 
         target = peer.strip()
         state = self.store.read()
@@ -739,15 +940,32 @@ class PairSession:
             tmux = _tmux()
         except Exception as exc:
             return {"unblocked": False, "why": str(exc), "prompt": ""}
-        matched = resolve_permission_prompt(tmux, pane)
-        if matched:
-            self.store.append_transcript("unblock", self.role, target=target, pane=pane, prompt=matched)
+        allow = load_allowlist(self.store.root)
+        try:
+            result = resolve_permission_prompt(tmux, pane, allow=allow or None)
+        except Exception as exc:  # noqa: BLE001 - чужая панель не должна ронять сервер
+            return {"unblocked": False, "why": f"панель не прочиталась: {exc}", "prompt": ""}
+        matched = result.get("prompt") or ""
+        if result.get("approved"):
+            self.store.append_transcript("unblock", self.role, target=target, pane=pane,
+                                         prompt=matched, matched=result.get("matched"))
+        elif result.get("verdict") == "refuse":
+            self.store.append_transcript("unblock_refused", self.role, target=target, pane=pane,
+                                         prompt=matched, why=result.get("why"))
         return {
-            "unblocked": bool(matched),
+            "unblocked": bool(result.get("approved")),
             "peer": target,
             "pane": pane,
-            "prompt": matched or "",
-            "status": f"Подтверждение [y] отправлено: {matched}" if matched else "Запрос разрешения не обнаружен в панели",
+            "prompt": matched,
+            "verdict": result.get("verdict"),
+            "why": result.get("why"),
+            "status": (
+                f"Подтверждение [y] отправлено: {matched}"
+                if result.get("approved")
+                else f"Запрос разрешения НЕ подтверждён ({result.get('why')}): {matched}"
+                if result.get("verdict") == "refuse"
+                else "Запрос разрешения не обнаружен в панели"
+            ),
         }
 
     def tool_pair_deliver(self, to: str, text: str, wait_for_empty: float = 0.0, submit: bool = True) -> dict[str, Any]:
@@ -993,6 +1211,12 @@ class PairSession:
 
         Closing is refused over unread mail, because a report the writer never
         read is not a report.
+
+        In `semi` and `auto` it is also refused without evidence: a round that no
+        machine ever checked is a round that finished by opinion. Confident models
+        report 100% certainty on most of their own estimates, so "everyone seemed
+        happy" is not a signal the gate can accept. §12 stops the pair in every
+        autonomy level and is not something this gate can wave through.
         """
         if phase not in PHASES:
             raise ProtocolError(f"unknown phase {phase!r}; expected one of {', '.join(PHASES)}.")
@@ -1029,6 +1253,13 @@ class PairSession:
                         f"{unread} unread message(s) in your inbox; a round cannot be closed over unread mail.",
                         "Run pair_read first. If the peer still needs something, it has not been said yet.",
                     )
+                blockers = self._done_blockers(state)
+                if blockers:
+                    raise ProtocolError(
+                        "this round cannot be closed yet: " + " ".join(blockers),
+                        "Everything here is checkable. Record the proof, or say in a note which "
+                        "part of the task is knowingly left open and why.",
+                    )
             state["phase"] = phase
             if reopening:
                 state.pop("closed_at", None)
@@ -1046,6 +1277,59 @@ class PairSession:
             "previous": from_phase,
             "reopened": reopening,
             "round": self.store.read().get("round", 0),
+        }
+
+    def tool_pair_evidence(self, kind: str, value: str, ok: bool = True,
+                           note: str = "") -> dict[str, Any]:
+        """Record a fact a machine produced: tests, lint, a typecheck, a commit, a PR.
+
+        This is what makes a round a result instead of an opinion. `value` is the
+        machine's own output — "117 passed in 6.2s", "exit 0", a commit sha, a PR
+        URL. `ok=false` is not a confession of failure, it is the record that stops
+        the round from closing until somebody deals with it.
+
+        Evidence belongs to the round it was gathered in. Closing round 7 on what
+        proved round 3 is the thing this exists to prevent.
+        """
+        kind = (kind or "").strip()
+        if kind not in EVIDENCE_KINDS:
+            raise ProtocolError(
+                f"`kind` must be one of {', '.join(EVIDENCE_KINDS)}.",
+                "Use 'manual' for something a human checked by hand, and say in `note` what "
+                "they looked at. An invented kind cannot be checked by anyone.",
+            )
+        if not str(value or "").strip():
+            raise ProtocolError("`value` is required: the machine's own output, not a verdict.")
+
+        def apply(state: dict[str, Any]) -> dict[str, Any]:
+            record = {
+                "round": int(state.get("round", 0)),
+                "role": self.role,
+                "kind": kind,
+                "value": str(value).strip(),
+                "ok": bool(ok),
+                "note": str(note or "").strip(),
+                "at": utcnow(),
+            }
+            entries = state.setdefault("evidence", [])
+            entries.append(record)
+            del entries[:-EVIDENCE_KEEP]  # keep the tail; the rest is history
+            return record
+
+        record = self.store.mutate(apply)
+        self.store.append_transcript("evidence", self.role, evidence_kind=kind,
+                                     value=record["value"][:200], ok=record["ok"],
+                                     round=record["round"])
+        state = self.store.read()
+        failed = [item for item in self.round_evidence(state) if not item.get("ok")]
+        passed = [item for item in self.round_evidence(state) if item.get("ok")]
+        return {
+            "recorded": record,
+            "round": record["round"],
+            "passed_this_round": len(passed),
+            "failing_this_round": len(failed),
+            "closing_blocked_by": ([f"{item.get('kind')}: {item.get('value')}" for item in failed]
+                                   or []),
         }
 
     # ------------------------------------------------------------ patch flow
@@ -1170,6 +1454,63 @@ class PairSession:
             ),
         }
 
+    def tool_pair_patch_applied(self, path: str, ok: bool = True, note: str = "") -> dict[str, Any]:
+        """Record the outcome of applying a sealed patch. Writer only.
+
+        The protocol had no verb for this: a patch was sealed and verified, and
+        nothing ever said whether it reached the tree. A round could therefore
+        close over a proposal that had been sitting untouched since yesterday, and
+        nothing in the state, the transcript or the report would admit it. Closing
+        a round now requires that every sealed patch is accounted for.
+
+        `ok=false` means the apply failed — a rejected hunk, a conflict, a context
+        that no longer matched. That counts as unresolved, so the round stays open
+        until it is fixed or the patch is released with a reason.
+        """
+        if any(char in path for char in GLOB_CHARS):
+            raise ProtocolError(f"{path} contains a glob character; exact paths only.")
+        current = self.store.read()
+        if current.get("writer") != self.role:
+            raise ProtocolError(
+                "only the writer applies patches.",
+                "You proposed it; the writer owns applying it and recording the outcome.",
+            )
+
+        def apply(state: dict[str, Any]) -> dict[str, Any]:
+            record = self._any_patch(state, path)
+            if not record.get("sealed"):
+                raise ProtocolError(f"{path} was never sealed, so there is nothing to have applied.")
+            if not record.get("verified_match"):
+                raise ProtocolError(
+                    f"{path} was never verified against its sealed hash.",
+                    "Call pair_patch_verify first. Applying a patch nobody re-hashed is how a "
+                    "changed proposal gets into the tree under the wrong hash.",
+                )
+            record["applied"] = bool(ok)
+            record["applied_ok"] = bool(ok)
+            record["applied_at"] = utcnow()
+            record["applied_by"] = self.role
+            if note:
+                record["applied_note"] = str(note)[:400]
+            return record
+
+        record = self.store.mutate(apply)
+        self.store.append_transcript("patch_applied", self.role, path=path, ok=bool(ok),
+                                     sha256=record.get("sha256"))
+        remaining = self.unresolved_patches(self.store.read())
+        return {
+            "path": path,
+            "applied": bool(ok),
+            "applied_by": self.role,
+            "sha256": record.get("sha256"),
+            "still_unresolved": [item["path"] for item in remaining],
+            "how_to_use": (
+                "Recorded. If the apply failed, fix it and record the passing outcome, or "
+                "pair_patch_release with the reason so the round is not held open by a patch "
+                "both sides already abandoned."
+            ) if not ok else "Recorded. This patch no longer blocks closing the round.",
+        }
+
     def tool_pair_patch_release(self, path: str) -> dict[str, Any]:
         """Delete one of this role's own patch files, by exact path."""
         if any(char in path for char in GLOB_CHARS):
@@ -1181,6 +1522,14 @@ class PairSession:
 
         def apply(state: dict[str, Any]) -> bool:
             record = self._owned_patch(state, path)
+            # The record leaves state (state describes the present, the transcript
+            # describes history), but the drop itself is written to the audit trail:
+            # "a sealed patch was thrown away" is a fact the report must be able to
+            # show, and once the record is gone this is the only place it survives.
+            self.store.append_transcript(
+                "patch_dropped", self.role, path=path,
+                owner=record.get("owner"), sha256=record.get("sha256"),
+                sealed=bool(record.get("sealed")), applied=bool(record.get("applied")))
             del state["patches"][path]
             return bool(record)
 
@@ -1442,6 +1791,47 @@ def tool_definitions() -> list[dict[str, Any]]:
             },
         },
         {
+            "name": "pair_evidence",
+            "description": (
+                "Record a machine-checkable fact about this round: the test suite with its "
+                "count and exit code, lint, typecheck, a commit sha, a PR URL. In semi and "
+                "auto the round cannot be closed without it, so 'it seems to work' has "
+                "nowhere to go. ok=false records a failure honestly instead of hiding it, and "
+                "blocks closing until it is resolved or explained in a note."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "kind": {"type": "string", "enum": list(EVIDENCE_KINDS)},
+                    "value": {"type": "string",
+                              "description": "The machine's own output, not your verdict. e.g. '117 passed, exit 0'."},
+                    "ok": {"type": "boolean", "default": True,
+                           "description": "false records a failure. It stays visible and blocks closing."},
+                    "note": {"type": "string", "description": "Optional: how it was produced."},
+                },
+                "required": ["kind", "value"],
+            },
+        },
+        {
+            "name": "pair_patch_applied",
+            "description": (
+                "Record the outcome of applying a sealed patch. Writer only, and only after "
+                "pair_patch_verify matched. Without this the protocol had no way to say a "
+                "patch had been applied, so a round could close over a proposal nobody ever "
+                "touched. ok=false means the apply failed and stays unresolved."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Exact path of the sealed patch."},
+                    "ok": {"type": "boolean", "default": True,
+                           "description": "false if the apply failed. The patch then still blocks closing."},
+                    "note": {"type": "string", "description": "Optional: hunk, commit, what went wrong."},
+                },
+                "required": ["path"],
+            },
+        },
+        {
             "name": "pair_note",
             "description": (
                 "Append a durable note to the shared notes directory under a slug kind, for example "
@@ -1472,8 +1862,11 @@ def tool_definitions() -> list[dict[str, Any]]:
         {
             "name": "pair_unblock",
             "description": (
-                "Check if a peer agent's terminal pane is blocked waiting on an interactive permission prompt "
-                "(e.g. [y/n] or Allow) and send 'y' to unblock them."
+                "Check if a peer agent's terminal pane is blocked waiting on an interactive "
+                "permission prompt (e.g. [y/n] or Allow). The prompt is confirmed only if it "
+                "matches the permission allowlist — read-only tools by default — and a refusal "
+                "is reported rather than silently pressed yes. Anything that writes, runs or "
+                "deletes waits for the human."
             ),
             "inputSchema": {
                 "type": "object",
@@ -1502,6 +1895,8 @@ HANDLERS = {
     "pair_patch_seal": lambda session, args: session.tool_pair_patch_seal(**args),
     "pair_patch_verify": lambda session, args: session.tool_pair_patch_verify(**args),
     "pair_patch_release": lambda session, args: session.tool_pair_patch_release(**args),
+    "pair_patch_applied": lambda session, args: session.tool_pair_patch_applied(**args),
+    "pair_evidence": lambda session, args: session.tool_pair_evidence(**args),
     "pair_note": lambda session, args: session.tool_pair_note(**args),
     "pair_transcript": lambda session, args: session.tool_pair_transcript(**args),
     "pair_unblock": lambda session, args: session.tool_pair_unblock(**args),
@@ -1654,15 +2049,22 @@ def run_ctl(args: argparse.Namespace, state_dir: Path) -> int:
 
     if command == "status":
         state = store.read()
+        session = PairSession("pairctl", store)
         print(json.dumps(
             {
                 "state_dir": str(store.root),
                 "task": state.get("task", ""),
                 "mode": state.get("mode", "fix"),
+                "autonomy": autonomy_of(state),
                 "writer": state.get("writer"),
                 "policy": state.get("policy"),
                 "phase": state.get("phase"),
                 "round": state.get("round"),
+                "human_ok": session.human_ok_for_round(state),
+                "evidence_this_round": len(session.round_evidence(state)),
+                "unresolved_patches": [item["path"] for item in session.unresolved_patches(state)],
+                "closing_blocked_by": session._done_blockers(state),
+                "permission_allowlist": str(permissions_path(store.root)),
                 "roles": {name: info.get("last_seen") for name, info in state.get("roles", {}).items()},
             },
             indent=2,
@@ -1762,6 +2164,45 @@ def run_ctl(args: argparse.Namespace, state_dir: Path) -> int:
         store.mutate(lambda state: state.__setitem__("mode", mode))
         store.append_transcript("mode", "human", mode=mode, previous=previous)
         print(f"round mode is now {mode!r}")
+        return 0
+
+    if command == "autonomy":
+        level = args.level
+        if level not in AUTONOMIES:
+            print(f"error: unknown autonomy {level!r}; expected one of {', '.join(AUTONOMIES)}",
+                  file=sys.stderr)
+            return 2
+        previous = autonomy_of(store.read())
+        store.mutate(lambda state: state.__setitem__("autonomy", level))
+        store.append_transcript("autonomy", "human", autonomy=level, previous=previous)
+        notes = {
+            "observe": "сверхвизор только сообщает: упавшего не перезапускает, разрешения не подтверждает",
+            "semi": "работа идёт сама, но закрыть раунд без доказательств и без 'pairctl ok' нельзя",
+            "auto": "работа идёт сама до закрытия раунда, нужен только записанный факт",
+        }
+        print(f"autonomy is now {level!r}: {notes[level]}")
+        return 0
+
+    if command == "ok":
+        # Одно слово человека на чекпоинте. Именно это делает semi «полуавтоматом»:
+        # пара работает сама, но закрыть раунд без него не может.
+        state = store.read()
+        round_number = int(state.get("round", 0))
+
+        def apply(st):
+            entries = st.setdefault("human_ok", [])
+            if any(int(entry.get("round", -1)) == round_number for entry in entries):
+                return False
+            entries.append({"round": round_number, "at": utcnow(), "phase": st.get("phase")})
+            del entries[:-20]
+            return True
+
+        fresh = store.mutate(apply)
+        store.append_transcript("human_ok", "human", round=round_number, repeated=not fresh)
+        if fresh:
+            print(f"ok: round {round_number} may close")
+        else:
+            print(f"ok: round {round_number} was already marked; nothing changed")
         return 0
 
     if command == "why":
@@ -2062,6 +2503,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="human: choose what a round is for — 'fix' changes code, 'audit' does not",
     )
     round_mode.add_argument("mode", choices=list(MODES))
+
+    autonomy = sub.add_parser(
+        "autonomy",
+        help="human: how far the pair may go without you — 'observe', 'semi' or 'auto'",
+    )
+    autonomy.add_argument("level", choices=list(AUTONOMIES))
+
+    sub.add_parser(
+        "ok",
+        help="human: say yes once, so the pair may close the round in autonomy=semi",
+    )
 
     task = sub.add_parser("task", help="human: record the task in shared state")
     task.add_argument("text")

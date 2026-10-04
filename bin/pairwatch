@@ -7,10 +7,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "mcp" / "pair_mailbox"))
 try:
-    from composer import _tmux, resolve_permission_prompt
+    from composer import _tmux, load_allow_patterns, resolve_permission_prompt
     # Store живёт в server.py, а не в storage.py: модуля storage не существует,
     # импорт падал молча, и --unblock не писал в транскрипт.
-    from server import Store
+    from server import Store, load_allowlist
 except Exception as error:  # noqa: BLE001 - причина должна быть видна
     print(f"pairwatch: {error}", file=sys.stderr)
     resolve_permission_prompt = None
@@ -63,18 +63,34 @@ try:
         st = load()
         roles = st.get("roles", {})
         if auto_unblock and resolve_permission_prompt:
+            allow = load_allowlist(state_dir)
             for name, info in roles.items():
                 pane = info.get("pane")
                 now = time.monotonic()
                 if pane and (now - last_unblock.get(pane, 0.0) >= 30.0):
                     try:
                         tmux = _tmux()
-                        matched = resolve_permission_prompt(tmux, pane)
-                        if matched:
+                        result = resolve_permission_prompt(tmux, pane, allow=allow or None)
+                        # Раньше здесь стояло `if matched:`, а функция возвращала
+                        # строку. Теперь она возвращает вердикт, и любая непустая
+                        # структура прошла бы как «подтвердили» — то есть рапорт
+                        # о разблокировке печатался бы каждые 30 секунд на пустом
+                        # месте, а на деле никто ничего не нажимал.
+                        prompt = result.get("prompt") or ""
+                        if result.get("approved"):
                             last_unblock[pane] = now
                             if store:
-                                store.append_transcript("unblock", "pairwatch", target=name, pane=pane, prompt=matched)
-                            print(f"\n\033[32m[авторазблокировка]\033[0m подтверждён запрос разрешения для {name} в панели {pane}: {matched}")
+                                store.append_transcript("unblock", "pairwatch", target=name,
+                                                        pane=pane, prompt=prompt)
+                            print(f"\n\033[32m[авторазблокировка]\033[0m подтверждён запрос разрешения для {name} в панели {pane}: {prompt}")
+                        elif result.get("verdict") == "refuse":
+                            last_unblock[pane] = now
+                            if store:
+                                store.append_transcript("unblock_refused", "pairwatch", target=name,
+                                                        pane=pane, prompt=prompt,
+                                                        why=result.get("why"))
+                            print(f"\n\033[33m[отказ]\033[0m {name} в панели {pane} ждёт человека: "
+                                  f"{result.get('why')} — {prompt}")
                     except Exception:
                         pass
         t_last, ev = last_event()

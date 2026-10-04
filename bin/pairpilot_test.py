@@ -8,6 +8,8 @@
 """
 import importlib.util
 import json
+import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -206,21 +208,28 @@ class TestTmuxPaths(PilotCase):
     """Пути, которые зовут tmux. Им нужна подмена, иначе они проверяются
     только в бою — а именно там падал append_transcript с чужим role=."""
 
-    def fake_tmux(self, alive=True, prompt=None):
+    def fake_tmux(self, alive=True, prompt=None, verdict="allow"):
         pilot = self.pilot()
         pilot.tmux = "/usr/bin/true"
         pairpilot.pane_alive = lambda tmux, pane: alive
-        pairpilot.resolve_permission_prompt = lambda tmux, pane: prompt
+        pairpilot.resolve_permission_prompt = (
+            lambda tmux, pane, allow=None: {"approved": verdict == "allow",
+                                            "verdict": verdict,
+                                            "prompt": prompt or "",
+                                            "why": "в белом списке" if verdict == "allow" else "не в белом списке",
+                                            "matched": None})
         return pilot
 
     def tearDown(self) -> None:
         pairpilot.pane_alive = self._real_alive
         pairpilot.resolve_permission_prompt = self._real_prompt
+        pairpilot.subprocess = self._real_subprocess
         super().tearDown()
 
     def setUp(self) -> None:
         self._real_alive = getattr(pairpilot, "pane_alive", None)
         self._real_prompt = getattr(pairpilot, "resolve_permission_prompt", None)
+        self._real_subprocess = getattr(pairpilot, "subprocess", None)
         super().setUp()
 
     def test_missing_pane_is_recorded_without_crashing(self) -> None:
@@ -239,15 +248,345 @@ class TestTmuxPaths(PilotCase):
 
     def test_permission_prompt_is_confirmed_and_logged(self) -> None:
         self.write_state(roles={"agy": {"last_seen": ago(10), "pane": "%9"}})
-        pilot = self.fake_tmux(prompt="Allow execution of bash?")
+        pilot = self.fake_tmux(prompt="Allow Read of server.py?")
         pilot.tick()
         self.assertIn("pilot_unblock", self.transcript_kinds())
+
+    def test_refused_permission_is_recorded_not_pressed(self) -> None:
+        """Отказ — это результат. Молча не нажать «y» нельзя: человек должен
+        знать, что панель стоит и почему он должен встать к ней сам."""
+        self.write_state(roles={"agy": {"last_seen": ago(10), "pane": "%9"}})
+        pilot = self.fake_tmux(prompt="Allow execution of bash? rm -rf /", verdict="refuse")
+        pilot.tick()
+        self.assertIn("pilot_unblock_refused", self.transcript_kinds())
+        self.assertNotIn("pilot_unblock", self.transcript_kinds())
+
+    def test_observe_mode_never_confirms_a_prompt(self) -> None:
+        self.write_state(autonomy="observe", roles={"agy": {"last_seen": ago(10), "pane": "%9"}})
+        pilot = self.fake_tmux(prompt="Allow Read of server.py?")
+        pilot.tick()
+        self.assertNotIn("pilot_unblock", self.transcript_kinds(),
+                         "в observe человек за рулём, сверхвизор только говорит")
 
     def test_live_pane_produces_no_panic(self) -> None:
         self.write_state(writer="agy", roles={"agy": {"last_seen": ago(10), "pane": "%9"}})
         pilot = self.fake_tmux()
         pilot.tick()
         self.assertNotIn("pilot_pane_dead", self.transcript_kinds())
+
+
+class TestRestart(PilotCase):
+    """Перезапуск упавшего агента. Это чинит ровно ту ночную поломку, когда pid
+    GONE, а запись в ростере живёт часами."""
+
+    DEAD_PID = 999999
+
+    def setUp(self) -> None:
+        self._real_subprocess = getattr(pairpilot, "subprocess", None)
+        self.calls: list[list[str]] = []
+        pairpilot.subprocess = _FakeSubprocess(self.calls)
+        super().setUp()
+
+    def tearDown(self) -> None:
+        pairpilot.subprocess = self._real_subprocess
+        super().tearDown()
+
+    def dead_writer_state(self, **extra) -> None:
+        self.write_state(writer="agy", round=3,
+                         roles={"agy": {"last_seen": ago(600), "pid": self.DEAD_PID, "pane": "%7"}},
+                         **extra)
+
+    def pilot_with_launch(self, command: str = "agy --resume"):
+        pilot = self.pilot()
+        pilot.tmux = "/usr/bin/tmux"
+        pairpilot.pane_alive = lambda tmux, pane: True
+        pilot.launch = {"agy": command} if command else {}
+        return pilot
+
+    def test_dead_writer_is_respawned(self) -> None:
+        self.dead_writer_state()
+        pilot = self.pilot_with_launch()
+        pilot.tick()
+        self.assertEqual(["/usr/bin/tmux", "respawn-pane", "-k", "-t", "%7", "agy --resume"],
+                         self.calls[0])
+        self.assertIn("pilot_restart", self.transcript_kinds())
+
+    def test_restart_happens_once_per_dead_pid(self) -> None:
+        self.dead_writer_state()
+        pilot = self.pilot_with_launch()
+        pilot.tick()
+        pilot.tick()
+        self.assertEqual(1, self.calls.count(
+            ["/usr/bin/tmux", "respawn-pane", "-k", "-t", "%7", "agy --resume"]),
+            "один умерший процесс — один перезапуск, а не каждые 15 секунд")
+
+    def test_live_process_is_never_respawned(self) -> None:
+        """Молчание лечится напоминанием, смерть — перезапуском. Убить того,
+        кто просто занят работой, — значит отнять у него контекст."""
+        self.write_state(writer="agy",
+                         roles={"agy": {"last_seen": ago(10), "pid": os.getpid(), "pane": "%7"}})
+        pilot = self.pilot_with_launch()
+        pilot.tick()
+        self.assertEqual([], self.calls)
+        self.assertNotIn("pilot_restart", self.transcript_kinds())
+
+    def test_restart_needs_a_known_command(self) -> None:
+        """Нет команды — нет перезапуска и громкая запись об этом. Выдуманная
+        команда хуже отсутствующей: панель оживает и сразу падает."""
+        self.dead_writer_state()
+        pilot = self.pilot_with_launch(command="")
+        pilot.tick()
+        self.assertEqual([], self.calls)
+        self.assertIn("pilot_restart_impossible", self.transcript_kinds())
+
+    def test_dead_process_without_a_pane_is_left_to_the_human(self) -> None:
+        """Окно, закрытое человеком, не поднимается молча: это не зависание,
+        это решение."""
+        self.write_state(writer="agy",
+                         roles={"agy": {"last_seen": ago(600), "pid": self.DEAD_PID, "pane": "%7"}})
+        pilot = self.pilot_with_launch()
+        pairpilot.pane_alive = lambda tmux, pane: False
+        pilot.tick()
+        self.assertEqual([], self.calls)
+        self.assertIn("pilot_restart_impossible", self.transcript_kinds())
+
+    def test_observe_mode_does_not_restart(self) -> None:
+        self.dead_writer_state(autonomy="observe")
+        pilot = self.pilot_with_launch()
+        pilot.tick()
+        self.assertEqual([], self.calls, "в observe перезапуск — это действие, а не сообщение")
+
+    def test_failed_respawn_is_recorded_not_hidden(self) -> None:
+        self.dead_writer_state()
+        pilot = self.pilot_with_launch()
+        self.calls.clear()
+        pairpilot.subprocess = _FakeSubprocess(self.calls, returncode=1, stderr="can't find pane")
+        pilot.tick()
+        self.assertIn("pilot_restart_failed", self.transcript_kinds())
+
+
+class _FakeSubprocess:
+    """Подмена subprocess.run: пишет вызовы и возвращает заранее заданный код."""
+
+    def __init__(self, calls: list[list[str]], returncode: int = 0, stderr: str = "") -> None:
+        self.calls = calls
+        self.returncode = returncode
+        self.stderr = stderr
+        self.run = self._run
+
+    def _run(self, argv, **kwargs):
+        self.calls.append(list(argv))
+        return type("Result", (), {"returncode": self.returncode,
+                                   "stdout": "", "stderr": self.stderr})()
+
+
+class TestStalledPatches(PilotCase):
+    """Sealed-патч, который никто не применил. Структурная дыра была в том, что
+    `applied` не менялось никогда, поэтому «применён» и «висит с прошлой ночи»
+    выглядели одинаково."""
+
+    def sealed(self, sealed_age: int = 4000, applied: bool = False, owner: str = "codex") -> dict:
+        patch = self.state_dir / "patches" / "pair-codex-1.patch"
+        patch.parent.mkdir(parents=True, exist_ok=True)
+        patch.write_text("--- a\n+++ b\n", encoding="utf-8")
+        self.write_state(writer="agy", phase="verify", round=2,
+                         roles={"agy": {"last_seen": ago(10), "pane": "%1"},
+                                owner: {"last_seen": ago(10), "pane": "%2"}},
+                         patches={str(patch): {"owner": owner, "sealed": True,
+                                               "sealed_at": ago(sealed_age),
+                                               "sha256": "deadbeef", "applied": applied}})
+        return patch
+
+    def pilot_with_grace(self, grace: float) -> "pairpilot.Pilot":
+        pilot = self.pilot()
+        pilot.patch_grace = grace
+        return pilot
+
+    def test_stalled_patch_wakes_the_writer_with_the_hash(self) -> None:
+        self.sealed()
+        pilot = self.pilot_with_grace(1800)
+        pilot.tick()
+        pending = pilot.pending("agy")
+        self.assertIn("pair_patch_verify", pending)
+        self.assertIn("deadbeef", pending)
+        self.assertIn("pair_patch_applied", pending)
+
+    def test_patched_owner_is_told_too(self) -> None:
+        """Автор патча молчал и счёл его принятым. Его персональное дело —
+        сказать, применён он или нет."""
+        self.sealed()
+        pilot = self.pilot_with_grace(1800)
+        pilot.tick()
+        self.assertIn("pair_patch_applied", pilot.pending("codex"))
+
+    def test_fresh_patch_is_left_alone(self) -> None:
+        self.sealed(sealed_age=60)
+        self.pilot_with_grace(1800).tick()
+        self.assertEqual("", self.pilot().pending("agy"), "минуту назад запечатали — это не дефект")
+
+    def test_applied_patch_is_not_complained_about(self) -> None:
+        self.sealed(applied=True)
+        self.pilot_with_grace(1800).tick()
+        self.assertEqual("", self.pilot().pending("agy"))
+
+    def test_audit_round_does_not_chase_patches(self) -> None:
+        self.sealed()
+        self.write_state(mode="audit", writer="agy", phase="verify", round=2,
+                         roles={"agy": {"last_seen": ago(10), "pane": "%1"},
+                                "codex": {"last_seen": ago(10), "pane": "%2"}},
+                         patches={str(self.state_dir / "patches" / "pair-codex-1.patch"):
+                                  {"owner": "codex", "sealed": True, "sealed_at": ago(4000),
+                                   "applied": False}})
+        self.pilot_with_grace(1800).tick()
+        self.assertEqual("", self.pilot().pending("agy"), "в аудите патчей не бывает вовсе")
+
+    def test_nag_is_sent_once(self) -> None:
+        self.sealed()
+        pilot = self.pilot_with_grace(1800)
+        pilot.tick()
+        first = pilot.pending("agy")
+        pilot.tick()
+        self.assertEqual(first, pilot.pending("agy"), "одно и то же письмо дважды не отправляем")
+
+    def test_stall_key_survives_a_path_with_slashes(self) -> None:
+        """Ключ строится из пути патча. Если в имя отметки попадёт '/', remember()
+        упадёт на первом же патче — и надзиратель упадёт вместе с ним."""
+        self.sealed()
+        pilot = self.pilot_with_grace(1800)
+        pilot.tick()
+        stamps = [p.name for p in (self.state_dir / "pilot").iterdir() if p.name.startswith(".stalled")]
+        self.assertTrue(stamps, "отметка должна лежать плоско в pilot/, а не в каталогах")
+        self.assertTrue(all("/" not in name for name in stamps))
+
+
+class TestStamps(PilotCase):
+    """Отметки должны переживать перезапуск сверхвизора, иначе он с утра
+    «не помнит», что уже дёргал соседа, и пишет то же самое снова."""
+
+    def test_stamp_name_is_stable_across_processes(self) -> None:
+        """Встроенный hash() для строк случайный на каждый запуск Python."""
+        script = (
+            "import importlib.util, sys;"
+            f"spec=importlib.util.spec_from_loader('p', None);"
+            f"m=importlib.util.module_from_spec(spec);"
+            f"m.__dict__['__file__']={str(ROOT / 'bin' / 'pairpilot')!r};"
+            f"exec(compile(open({str(ROOT / 'bin' / 'pairpilot')!r}, encoding='utf-8').read(),"
+            f" 'p', 'exec'), m.__dict__);"
+            "print(m.stamp_name('unblock-agy-Do you want to proceed?'))"
+        )
+        first = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True,
+                               env=dict(os.environ, PYTHONHASHSEED="1"))
+        second = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True,
+                                env=dict(os.environ, PYTHONHASHSEED="999"))
+        self.assertTrue(first.returncode == 0, first.stderr)
+        self.assertEqual(first.stdout.strip(), second.stdout.strip(),
+                         "имя отметки не должно зависеть от PYTHONHASHSEED")
+
+    def test_stamp_name_has_no_path_separators(self) -> None:
+        name = pairpilot.stamp_name("stalled-/tmp/x/.pair/patches/pair-codex-1.patch-agy")
+        self.assertNotIn("/", name)
+
+
+class TestCheckpoint(PilotCase):
+    """В semi закрыть раунд нельзя без слова человека. Значит человек должен
+    получить всё для решения и команду, которой решает."""
+
+    def verify_state(self, **extra) -> None:
+        self.write_state(phase="verify", round=4, writer="agy",
+                         roles={"agy": {"last_seen": ago(10), "pane": "%1"}}, **extra)
+
+    def pilot_auto(self):
+        pilot = self.pilot()
+        pilot.autonomy = None
+        return pilot
+
+    def test_semi_without_ok_writes_a_digest(self) -> None:
+        self.verify_state(autonomy="semi")
+        pilot = self.pilot()
+        pilot.tick()
+        digest = self.state_dir / "pilot" / "checkpoint-4.md"
+        self.assertTrue(digest.exists(), "человеку нужен дайджест, а не тишина")
+        text = digest.read_text(encoding="utf-8")
+        self.assertIn("bin/pairctl ok", text)
+        self.assertIn("pair_evidence", text)
+        self.assertIn("pilot_checkpoint", self.transcript_kinds())
+
+    def test_semi_with_ok_writes_no_digest(self) -> None:
+        self.verify_state(autonomy="semi", human_ok=[{"round": 4}],
+                          evidence=[{"round": 4, "kind": "test", "value": "117 passed", "ok": True}])
+        pilot = self.pilot()
+        pilot.tick()
+        self.assertFalse((self.state_dir / "pilot" / "checkpoint-4.md").exists())
+
+    def test_semi_with_ok_but_no_evidence_still_digests(self) -> None:
+        """Слово человека получили, а доказательства нет — закрывать всё равно
+        нечем, и дайджест должен называть именно это."""
+        self.verify_state(autonomy="semi", human_ok=[{"round": 4}])
+        pilot = self.pilot()
+        pilot.tick()
+        text = (self.state_dir / "pilot" / "checkpoint-4.md").read_text(encoding="utf-8")
+        self.assertIn("pair_evidence", text)
+        self.assertNotIn("pairctl ok", text.split("## Что сделать")[0],
+                         "слово человека уже есть, повторно просить его не нужно")
+
+    def test_auto_needs_no_human_word(self) -> None:
+        self.verify_state(autonomy="auto")
+        pilot = self.pilot()
+        pilot.tick()
+        self.assertFalse((self.state_dir / "pilot" / "checkpoint-4.md").exists())
+
+    def test_observe_writes_no_digest(self) -> None:
+        self.verify_state(autonomy="observe")
+        pilot = self.pilot()
+        pilot.tick()
+        self.assertFalse((self.state_dir / "pilot" / "checkpoint-4.md").exists())
+
+    def test_unapplied_patch_is_named_in_the_digest(self) -> None:
+        patch = self.state_dir / "patches" / "pair-codex-9.patch"
+        patch.parent.mkdir(parents=True, exist_ok=True)
+        patch.write_text("x", encoding="utf-8")
+        self.verify_state(autonomy="semi",
+                          patches={str(patch): {"owner": "codex", "sealed": True,
+                                                "sealed_at": ago(9000), "applied": False}},
+                          human_ok=[{"round": 4}])
+        pilot = self.pilot()
+        pilot.tick()
+        text = (self.state_dir / "pilot" / "checkpoint-4.md").read_text(encoding="utf-8")
+        self.assertIn("pair-codex-9.patch", text)
+
+    def test_unknown_autonomy_is_treated_as_observe(self) -> None:
+        """Состояние от более новой сборки не должно выдать этой сборке больше
+        прав, чем человек просил."""
+        self.verify_state(autonomy="turbo")
+        pilot = self.pilot()
+        pilot.tick()
+        self.assertFalse((self.state_dir / "pilot" / "checkpoint-4.md").exists())
+
+
+class TestReportNotCovered(PilotCase):
+    def test_report_lists_unapplied_patches_and_failed_evidence(self) -> None:
+        patch = self.state_dir / "patches" / "pair-codex-7.patch"
+        patch.parent.mkdir(parents=True, exist_ok=True)
+        patch.write_text("x", encoding="utf-8")
+        self.write_state(phase="done", closed_at=ago(60), round=3, writer="agy", autonomy="auto",
+                         roles={"agy": {"last_seen": ago(60), "pane": "%1"}},
+                         evidence=[{"round": 3, "kind": "test", "value": "12 failed", "ok": False},
+                                   {"round": 3, "kind": "lint", "value": "clean", "ok": True}],
+                         patches={str(patch): {"owner": "codex", "sealed": True,
+                                               "sealed_at": ago(9000), "applied": False}})
+        pilot = self.pilot()
+        pilot.tick()
+        text = (self.state_dir / "REPORT.md").read_text(encoding="utf-8")
+        self.assertIn("FAIL test", text)
+        self.assertIn("pair-codex-7.patch", text)
+        self.assertIn("НЕ ПОКРЫТО", text)
+
+    def test_report_says_so_when_there_is_no_evidence(self) -> None:
+        self.write_state(phase="done", closed_at=ago(60), round=3, writer="agy",
+                         roles={"agy": {"last_seen": ago(60), "pane": "%1"}})
+        self.pilot().tick()
+        text = (self.state_dir / "REPORT.md").read_text(encoding="utf-8")
+        self.assertIn("НИ ОДНОГО", text)
 
 
 class TestOperatorSafety(PilotCase):

@@ -17,6 +17,8 @@ import re
 import shutil
 import subprocess
 import time
+import json
+from pathlib import Path
 
 # Живая реплика прокручивается; окно снимка берём с запасом.
 CAPTURE_LINES = 40
@@ -208,30 +210,229 @@ def detect_permission_prompt(lines: list) -> str | None:
     return None
 
 
-def resolve_permission_prompt(tmux: str, pane: str) -> str | None:
+# Шесть стоп-категорий PROTOCOL.md §12 плюс всё, что меняет состояние вне
+# репозитория. Совпадение с любым из них запрещает автоподтверждение при любом
+# белом списке: решение человека не переопределяется настройкой инструмента.
+NEVER_ALLOW_PATTERNS = (
+    r"\.env\b",
+    r"\bsecrets?\b",
+    r"\btokens?\b",
+    r"\bapi[_ -]?keys?\b",
+    r"\bpasswords?\b",
+    r"\bcredentials?\b",
+    # Чтение тоже умеет красть. `cat` стоит в белом списке как чтение, поэтому
+    # путь к секрету должен быть запрещён сам по себе, иначе «прочитать ключ» —
+    # это разрешённое чтение.
+    r"\.ssh\b",
+    r"id_rsa|id_dsa|id_ecdsa|id_ed25519",
+    r"/etc/(?:shadow|passwd|sudoers)",
+    r"\.(?:pem|p12|pfx|key)\b",
+    r"\.npmrc\b",
+    r"\.aws\b",
+    r"\.git-credentials\b",
+    r"\.kube/config",
+    # Труба в шелл превращает любое чтение в выполнение.
+    r"\|\s*(?:sudo\s+)?(?:ba|z|k|da)?sh\b",
+    r"\$\(",
+    r"`",
+    r"\bfind\b[^\n]*-(?:delete|exec|execdir|ok)\b",
+    r"\bxargs\b",
+    r":\(\)\s*\{",
+    r">\s*/dev/",
+    r"\bmkfs\b",
+    r"\bdd\s+if=",
+    r"\bdeploy\b",
+    r"\bkubectl\b",
+    r"\bhelm\b",
+    r"\bdocker\b",
+    r"\bssh\b",
+    r"\bsudo\b",
+    r"\bterraform\b",
+    r"\bmigrat(?:e|ion)\b",
+    r"\bdrop\s+(?:table|database)\b",
+    r"\btruncate\b",
+    r"\bdelete\s+(?:from|all)\b",
+    # §10: «в main не пушат никогда». Push в фиче-ветку и создание PR — часть
+    # работы по протоколу, поэтому запрещён не push вообще, а push в main/master
+    # и переписывание истории.
+    r"\bgit\s+push\b[^\n]*\b(?:main|master)\b",
+    r"\bgit\s+push\b[^\n]*--force\b",
+    r"\bgit\s+reset\s+--hard\b",
+    r"\bgit\s+clean\b[^\n]*-[a-z]*f",
+    r"\bgit\s+filter-branch\b",
+    r"\bgit\s+reflog\s+expire\b",
+    r"\bgit\s+rebase\b[^\n]*\b(?:main|master)\b",
+    # Деструкция системы. Внутри проекта rm -rfbuild/ — обычная уборка, и её
+    # нельзя запрещать вместе с rm -rf /: разница не в команде, а в цели.
+    r"\brm\s+-[a-zA-Z]*[rf][a-zA-Z]*\s+(?:/|~|\$HOME|\*|\.\s*$|\.\.)",
+    r"\brm\s+-[a-zA-Z]*[rf][a-zA-Z]*\s+/[a-z]",
+    r"\brmdir\b",
+    r"\bkill(?:all)?\b",
+    r"\bchmod\s+777\b",
+    r"\bprod(?:uction)?\b",
+    r":\d{2,5}\b",
+    # Сеть. Не потому что сеть опасна сама по себе, а потому что она позволяет
+    # вынести наружу то, что §12 защищает, и скачать то, что не проверял никто.
+    r"\bcurl\b",
+    r"\bwget\b",
+    r"\bnc\b\s+-",
+    # Установка пакетов тянет чужой код в проект и меняет окружение оператора.
+    r"\bpip[23]?\s+install\b",
+    r"\bnpm\s+install\b",
+    r"\b(?:gem|cargo|go\s+get)\s+(?:install|add|get)\b",
+    r"\bnpm\s+publish\b",
+)
+
+# Белый список по умолчанию: чтение плюс локальная работа внутри проекта.
+#
+# Границу провели там, где она проходит по §10 и §12, а не там, где строго:
+# §10 требует коммитов и PR, поэтому «только чтение» парализует пару, а §12
+# запрещает не «работу», а конкретные вещи — секреты, деплой, миграции,
+# удаление данных и истории git, прод. Запрещённое остаётся запрещённым при любом
+# белом списке (см. NEVER_ALLOW_PATTERNS), а разрешённое здесь — это работа, которую
+# протокол и так обязан делать без человека.
+#
+# Чего здесь нет и почему: сетевых вызовов (curl/wget) и `ssh`. «Позволить сеть» —
+# это не про чтение файлов, это про возможность вынести их наружу, а §12 про секреты
+# не делает исключений на «только чтение».
+DEFAULT_ALLOW_PATTERNS = (
+    # чтение
+    r"\bRead\b",
+    r"\bread_file\b",
+    r"\bview\b",
+    r"\bglob\b",
+    r"\bgrep\b",
+    r"\bsearch\b",
+    r"\blist(?:_dir|ing)?\b",
+    r"\bcat\b",
+    r"\bhead\b",
+    r"\btail\b",
+    r"\bls\b",
+    r"\bfind\b",
+    # правка внутри проекта
+    r"\bwrite\b",
+    r"\bedit\b",
+    r"\bcreate\b",
+    r"\breplace\b",
+    r"\bpatch\b",
+    r"\bapply\b",
+    r"\bformat\b",
+    r"\blint\b",
+    # локальные проверки: тесты и сборки
+    r"\b(?:pytest|unittest|nose|tox|nox|jest|vitest|mocha|rspec|cargo\s+test|go\s+test)\b",
+    r"\b(?:ruff|flake8|pylint|mypy|pyright|eslint|prettier|tsc|black|isort)\b",
+    # Интерпретатор с тестом, линтером или сборкой в команде: `python3 -m pytest`,
+    # `python3 mcp/pair_mailbox/test_protocol.py`, `node --test`. Голое `python3`
+    # здесь не значит «любой код»: без доменного слова это refused.
+    r"\b(?:python3?|node|ruby)\b[^\n]*(?:test|tests|pytest|unittest|lint|check|build)",
+    r"\bmake\b",
+    r"\bnpm\s+(?:run\s+\w+|test|ci)\b",
+    r"\bbuild\b",
+    # Уборка артефактов внутри проекта — обычная часть работы. Цель обязана быть
+    # относительной: `rm -rf /`, `rm -rf ~` и `rm -rf .` отсеяны запретами выше,
+    # а эти lookahead'ы не дают им пройти второй раз. `./dist` — цель
+    # относительная, поэтому проходит.
+    r"\brm\s+-[a-zA-Z]+\s+(?![/~$*])(?!\.{1,2}(?:\s|$))[^\s]+",
+    # локальный git: §10 требует ветку и коммит, поэтому это разрешено
+    r"\bgit\s+(?:status|diff|log|show|branch|remote|describe|rev-parse|add|commit|"
+    r"checkout|switch|stash|tag|blame|shortlog|reflog)\b",
+    # отправка работы: push в фиче-ветку и PR. Запрет push в main/master и
+    # --force стоит в NEVER_ALLOW_PATTERNS и проверяется первым.
+    r"\bgit\s+push\b",
+    r"\bgh\s+(?:pr|issue|run|workflow)\b",
+)
+
+
+def load_allow_patterns(spec: str | None) -> list[str]:
+    """Прочитать белый список разрешений: JSON-файл или список шаблонов.
+
+    Пусто на входе означает «не подтверждать ничего». Нечитаемый список тоже
+    даёт пустой: сломанная настройка не должна расширять права сверхвизора.
+    """
+    if not spec or not str(spec).strip():
+        return []
+    text = str(spec).strip()
+    raw: object = text
+    try:
+        candidate = Path(text).expanduser()
+        if candidate.is_file():
+            raw = json.loads(candidate.read_text(encoding="utf-8"))
+        else:
+            raw = [part.strip() for part in text.split(",") if part.strip()]
+    except (OSError, ValueError):
+        return []
+    if isinstance(raw, dict):
+        raw = raw.get("allow") or []
+    if not isinstance(raw, list):
+        return []
+    return [str(item) for item in raw if str(item).strip()]
+
+
+def permission_verdict(prompt: str, allow: list[str] | None = None) -> dict:
+    """Можно ли сверхвизору без человека нажать «y» на этом промпте.
+
+    Default-deny, и запрет проверяется раньше разрешения. Цена двух ошибок не
+    симметрична: зависший агент стоит одной ночи, а подтверждённая опасная
+    команда уничтожает то, что нельзя вернуть.
+
+    Отказ возвращается с причиной: его читает человек, а необъяснённое «нет»
+    неотличимо от сломанного сверхвизора.
+
+    Известное ограничение, о котором честнее сказать, чем сделать вид: решение
+    принимается по тексту строки, а не по разбору команды. Строка может содержать
+    безобидное слово рядом с опасным — «Read» в описании задачи. Отсюда три
+    правила: белый список по умолчанию состоит только из чтения, запреты
+    проверяются первыми и не отменяются настройкой, а совпадение записывается в
+    транскрипт вместе с самой строкой — по журналу видно, на что именно было
+    сказано «да».
+    """
+    patterns = DEFAULT_ALLOW_PATTERNS if allow is None else tuple(allow)
+    for pattern in NEVER_ALLOW_PATTERNS:
+        if re.search(pattern, prompt, re.IGNORECASE):
+            return {"verdict": "refuse", "matched": pattern,
+                    "why": f"запрещённая категория (§12): {pattern}"}
+    for pattern in patterns:
+        if re.search(pattern, prompt, re.IGNORECASE):
+            return {"verdict": "allow", "matched": pattern, "why": "в белом списке"}
+    return {"verdict": "refuse", "matched": None,
+            "why": "не в белом списке разрешений"}
+
+
+def resolve_permission_prompt(tmux: str, pane: str, allow: list[str] | None = None) -> dict:
     """Check if the pane is stalled waiting for a permission confirmation and confirm it.
 
-    Returns the prompt text that was approved, or None.
+    Returns a verdict dict: {approved, verdict, prompt, why, matched}. A refusal is
+    a first-class outcome, not an error: the pane is still blocked, and somebody
+    must be told that the supervisor deliberately left it that way.
     """
+    idle = {"approved": False, "verdict": "none", "prompt": "", "why": "", "matched": None}
     if not pane_alive(tmux, pane):
-        return None
+        return {**idle, "why": "панель мертва"}
     lines = capture(tmux, pane)
     prompt = detect_permission_prompt(lines)
     if not prompt:
-        return None
+        return idle
 
     line = composer_line(lines)
     # Нет композера — значит и печатать некому: молча подтверждать нельзя.
     if line is None:
-        return None
+        return {**idle, "prompt": prompt, "verdict": "refuse",
+                "why": "композера не видно, подтверждать нечем"}
     if not detect_permission_prompt([line]) and not is_composer_empty(line):
-        return None
+        return {**idle, "prompt": prompt, "verdict": "refuse",
+                "why": "строка ввода занята своим текстом"}
+
+    decision = permission_verdict(prompt, allow)
+    if decision["verdict"] != "allow":
+        return {"approved": False, "verdict": "refuse", "prompt": prompt,
+                "why": decision["why"], "matched": decision["matched"]}
 
     subprocess.run([tmux, "send-keys", "-t", pane, "y"],
                    capture_output=True, text=True, timeout=5)
     subprocess.run([tmux, "send-keys", "-t", pane, "Enter"],
                    capture_output=True, text=True, timeout=5)
-    return prompt
+    return {"approved": True, "verdict": "allow", "prompt": prompt,
+            "why": decision["why"], "matched": decision["matched"]}
 
 
 def deliver(pane: str, text: str, wait_for_empty: float = 0.0, submit: bool = True) -> dict:

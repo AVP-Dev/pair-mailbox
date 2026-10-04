@@ -8,29 +8,38 @@
 оператора.
 
 Поэтому у пары обязан быть кто-то, кто смотрит на неё извне. Этот скрипт.
-Он умеет ровно четыре вещи и не умеет ни одной пятой:
+Он умеет ровно семь вещей и не умеет ни одной восьмой:
 
   1. доставить отложенное сообщение, когда композер соседа освободился
      (переживающая доставка: сообщение живёт в outbox, пока не долетело);
-  2. подтолкнуть молчащего агента — молчание дольше порога это дефект, а не норма;
-  3. подтвердить зависший запрос разрешения, чтобы агент не стоял до утра;
-  4. написать отчёт, когда раунд закрылся.
+  2. подтолкнуть молчающего агента — молчание дольше порога это дефект, а не норма;
+  3. подтвердить зависший запрос разрешения, но только из белого списка;
+  4. перезапустить агента, процесс которого умер, а окно ещё живо;
+  5. сказать про зависший sealed-патч обеим сторонам и не дать раунду закрыться;
+  6. собрать дайджест для человека на чекпоинте semi;
+  7. написать отчёт, когда раунд закрылся.
 
 И принципиально НЕ умеет: двигать фазу, выдавать или забирать право записи,
-коммитить, трогать файлы проекта. Право записи перемещает только человек, и если
-сверхвизор сможет его выдать, то он перестаёт быть ограничением (PROTOCOL.md §2).
-Поэтому спор о том, кто пишет, он разрешает только сообщением: «ты молчишь вот
-столько, вот твоя обязанность по последнему событию».
+коммитить, применять чужие патчи, трогать файлы проекта. Право записи перемещает
+только человек, и если сверхвизор сможет его выдать, то он перестаёт быть
+ограничением (PROTOCOL.md §2). Поэтому спор о том, кто пишет, он разрешает
+только сообщением: «ты молчишь вот столько, вот твоя обязанность по последнему
+событию».
 
 Запуск:
 
     bin/pairpilot                 # следить
     bin/pairpilot --once          # один проход, для проверки вручную
     bin/pairpilot --silence 300   # порог молчания, секунд
+    bin/pairpilot --launch agy=agy # как поднимать роль, если её процесс умер
+    bin/pairpilot --allow 'r"^git status' # что ещё можно подтверждать само
 """
 import argparse
+import hashlib
 import json
 import os
+import re
+import subprocess
 import sys
 import time
 from datetime import datetime, timezone
@@ -47,6 +56,7 @@ try:
         deliver,
         is_composer_empty,
         _tmux,
+        load_allow_patterns,
         pane_alive,
         resolve_permission_prompt,
     )
@@ -54,7 +64,13 @@ except Exception as error:  # noqa: BLE001 - причина должна быт�
     print(f"pairpilot: не удалось подключить composer: {error}", file=sys.stderr)
     raise SystemExit(1)
 
-from server import Store  # noqa: E402  - после sys.path
+from server import (  # noqa: E402  - после sys.path
+    Store,
+    autonomy_of,
+    done_blockers,
+    is_pid_alive,
+    permissions_path,
+)
 
 DEFAULT_INTERVAL = 15.0
 DEFAULT_SILENCE = 600.0
@@ -62,7 +78,43 @@ DEFAULT_SILENCE = 600.0
 # прежде чем сказать об этом автору запроса.
 DEFAULT_REPLY_GRACE = 900.0
 DEFAULT_REPLY_HARD = 2400.0
+# Сколько провисает sealed-патч, прежде чем это станет дефектом, а не делом,
+# которое писатель возьмёт через минуту.
+DEFAULT_PATCH_GRACE = 1800.0
 PROMPT_MARKERS = (">", "›", "❯")
+AUTONOMIES = ("observe", "semi", "auto")
+
+
+def autonomy(state: dict) -> str:
+    """Уровень самостоятельности из состояния, без выдуманных значений.
+
+    Неизвестное значение читается как observe — тот уровень, который делает
+    меньше всего. Состояние, записанное более новой сборкой, не должно выдать
+    этой сборке больше прав, чем человек просил.
+    """
+    return autonomy_of(state)
+
+
+def stable_tag(text: str) -> str:
+    """Короткий стабильный отпечаток строки.
+
+    Встроенный hash() для строк рандомизирован на каждый запуск процесса, а эти
+    отметки должны переживать перезапуск: иначе после рестарта сверхвизор
+    «забывает», что уже дёргал соседа, и пишет то же самое снова — всю ночь.
+    """
+    return hashlib.sha256(text.encode("utf-8", "replace")).hexdigest()[:8]
+
+
+def stamp_name(key: str) -> str:
+    """Имя файла-отметки для ключа.
+
+    Ключи строятся из путей (например, пути патча), а путь в имени файла
+    превращается в каталоги, которых нет: `remember()` падал с FileNotFoundError
+    на первом же патче. Поэтому ключ сначала приводится к безопасному виду, а
+    для уникальности к нему добавляется стабильный отпечаток.
+    """
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "_", key).strip("_")[:80]
+    return f"{safe}.{stable_tag(key)}"
 
 
 def now_iso() -> str:
@@ -85,12 +137,17 @@ def log(message: str) -> None:
 class Pilot:
     def __init__(self, state_dir: Path, silence: float, interval: float,
                  reply_grace: float = DEFAULT_REPLY_GRACE,
-                 reply_hard: float = DEFAULT_REPLY_HARD) -> None:
+                 reply_hard: float = DEFAULT_REPLY_HARD,
+                 patch_grace: float = DEFAULT_PATCH_GRACE,
+                 launch: dict[str, str] | None = None,
+                 allow: list[str] | None = None) -> None:
         self.state_dir = state_dir
         self.silence = silence
         self.interval = interval
         self.reply_grace = reply_grace
         self.reply_hard = reply_hard
+        self.patch_grace = patch_grace
+        self.allow = allow
         # Store умеет root — это сам каталог состояния: server.py делает ровно
         # то же. Со state_dir.parent мы бы читали несуществующий state.json.
         self.store = Store(state_dir)
@@ -106,6 +163,44 @@ class Pilot:
         # а иногда и панель агента, который его запустил. Вбивать туда что-либо
         # нельзя: там ждёт ввод человека, и мы бы съели его текст.
         self.own_pane = os.environ.get("TMUX_PANE") or None
+        self.launch = self._launch_commands(launch or {})
+
+    # ------------------------------------------------------------- restart map
+
+    def _launch_commands(self, given: dict[str, str]) -> dict[str, str]:
+        """Как запустить роль, если её процесс умер.
+
+        Порядок источников от «явного» к «угаданному»: то, что человек написал
+        сам, потом профиль в cli-profiles.json, потом переменная окружения.
+        Ничего не угадываем по имени: команда, которой не существует, хуже
+        отсутствия команды, потому что панель оживает и сразу падает.
+        """
+        out: dict[str, str] = {}
+        file_cmd = self.state_dir / "restart.json"
+        try:
+            if file_cmd.is_file():
+                data = json.loads(file_cmd.read_text(encoding="utf-8"))
+                if isinstance(data, dict):
+                    out.update({str(k): str(v) for k, v in data.items()})
+        except (OSError, json.JSONDecodeError):
+            log("restart.json не читается, команды запуска беру из профилей")
+        profiles = ROOT / "cli-profiles.json"
+        try:
+            data = json.loads(profiles.read_text(encoding="utf-8"))
+            for name, profile in (data or {}).items():
+                if not name.startswith("_") and isinstance(profile, dict) and profile.get("launch"):
+                    out.setdefault(name, str(profile["launch"]))
+        except (OSError, json.JSONDecodeError):
+            pass
+        out.update(given)
+        for role in list(out):
+            env_cmd = os.environ.get(f"PAIR_LAUNCH_{re.sub(r'[^A-Za-z0-9]', '_', role).upper()}")
+            if env_cmd:
+                out[role] = env_cmd
+        return out
+
+    def launch_command(self, role: str) -> str:
+        return self.launch.get(role, "").strip()
 
     # ------------------------------------------------------------------ state
 
@@ -114,7 +209,7 @@ class Pilot:
 
     def remember(self, key: str) -> bool:
         """True, если этого раунда мы ещё не делали. Не даёт повторять запись."""
-        stamp = self.state_dir / "pilot" / f".{key}"
+        stamp = self.state_dir / "pilot" / f".{stamp_name(key)}"
         if stamp.exists():
             return False
         stamp.write_text(now_iso(), encoding="utf-8")
@@ -331,26 +426,205 @@ class Pilot:
             if not self.remember(key):
                 continue
             self.store.append_transcript("pilot_pane_dead", "pairpilot", target=role, pane=pane)
-            log(f"{role}: панель {pane} мертва — нужен человек, чтобы открыть окно")
+            log(f"{role}: панель {pane} мертва — нужно открыть окно")
+
+    # -------------------------------------------------------------- restart
+
+    def restart_agent(self, state: dict) -> None:
+        """Перезапустить агента, процесс которого умер, а окно ещё живо.
+
+        Именно этот случай стоил нам ночи: pid GONE, а запись в ростере живёт
+        часами, потому что перезапускать некому и сказать некому.
+
+        Чего перезапуск НЕ делает, хотя мог бы, и почему:
+
+        - не трогает право записи. Роль возвращается с тем же именем из
+          MCP-конфига, а писателем остаётся тот, кого назначил человек. Это и
+          делает перезапуск безопасным: он чинит процесс, а не границу доверия
+          (PROTOCOL.md §2). Авторитет по-прежнему двигает только человек;
+        - не поднимает панель, которой нет. Окно, закрытое человеком, не
+          resurrected'ится молча: это не зависание, это решение, и решение
+          человека;
+        - не трогает живой процесс, даже если тот молчит. Молчание лечится
+          напоминанием, смерть — перезапуском. Смешивать их нельзя: убитый
+          сосед не потеряет контекст, а занятый работой — потеряет.
+        """
+        if self.tmux is None or autonomy(state) == "observe":
+            return
+        for role, info in (state.get("roles") or {}).items():
+            if role in self.skip:
+                continue
+            pid = info.get("pid")
+            if not isinstance(pid, int) or pid <= 0 or is_pid_alive(pid):
+                continue
+            pane = info.get("pane")
+            if not pane or not pane_alive(self.tmux, pane):
+                if self.remember(f"restart-nopane-{role}"):
+                    self.store.append_transcript("pilot_restart_impossible", "pairpilot",
+                                                 target=role, pid=pid, why="нет живой панели")
+                    log(f"{role}: процесс мёртв (pid {pid}), но окна нет — нужен человек")
+                continue
+            command = self.launch_command(role)
+            if not command:
+                if self.remember(f"restart-nocmd-{role}"):
+                    self.store.append_transcript("pilot_restart_impossible", "pairpilot",
+                                                 target=role, pid=pid, why="не знаю команды запуска")
+                    log(f"{role}: процесс мёртв, а команды запуска я не знаю — скажи "
+                        f"pairpilot --launch {role}='команда' или допиши в .pair/restart.json")
+                continue
+            key = f"restart-{role}-{pid}-{state.get('round')}"
+            if not self.remember(key):
+                continue
+            result = subprocess.run(
+                [self.tmux, "respawn-pane", "-k", "-t", pane, command],
+                capture_output=True, text=True, timeout=15)
+            if result.returncode == 0:
+                self.store.append_transcript("pilot_restart", "pairpilot", target=role,
+                                             pane=pane, pid=pid, command=command)
+                log(f"{role}: процесс {pid} был мёртв, перезапустил в {pane} ({command})")
+                writer = " — это писатель, фаза продолжится" if role == state.get("writer") else ""
+                if writer:
+                    log(writer)
+            else:
+                self.store.append_transcript("pilot_restart_failed", "pairpilot", target=role,
+                                             pane=pane, pid=pid, command=command,
+                                             error=(result.stderr or "").strip()[:200])
+                log(f"{role}: перезапуск не удался — {(result.stderr or '').strip()[:80]}")
+
+    def stalled_patches(self, state: dict) -> None:
+        """Sealed-патч, который никто не применил и не отклонил.
+
+        Дыра была структурной: `applied` записывался при резервировании и больше
+        никогда не менялся, так что «применён» и «лежит с прошлой ночи» выглядели
+        одинаково. Теперь применение фиксирует писатель, закрытие раунда требует
+        разобраться с каждым патчем, а сверхвизор говорит обеим сторонам.
+
+        Сам патч сверхвизор не применяет. Это правка файлов проекта не писателем,
+        то есть ровно тот обход §1, ради которого схема и выглядит надёжной.
+        """
+        if state.get("phase") == "done" or state.get("mode") == "audit":
+            return
+        writer = state.get("writer")
+        now = datetime.now(timezone.utc)
+        for path, record in (state.get("patches") or {}).items():
+            if not record.get("sealed") or record.get("applied"):
+                continue
+            sealed_at = parse_iso(record.get("sealed_at"))
+            if sealed_at is None or (now - sealed_at).total_seconds() < self.patch_grace:
+                continue
+            owner = record.get("owner")
+            names = [name for name in (writer, owner) if name and name not in self.skip]
+            for name in names:
+                key = f"stalled-{path}-{name}"
+                if not self.remember(key):
+                    continue
+                if name == writer:
+                    text = (f"[pairpilot] Патч {path} запечатан {owner}, sha256 "
+                            f"{record.get('sha256')} и до сих пор не применён. Проверь его "
+                            f"pair_patch_verify и либо примени и запиши pair_patch_applied, "
+                            f"либо отпусти через pair_patch_release с причиной: раунд не "
+                            f"закроется, пока это не решено.")
+                else:
+                    text = (f"[pairpilot] Твой патч {path} запечатан и висит неприменённым. "
+                            f"Скажи соседу: он применён или отклонён, и запиши это через "
+                            f"pair_patch_applied либо pair_patch_release. Молчание здесь "
+                            f"выглядит как готовность, а её нет.")
+                self.enqueue(name, text)
+                log(f"патч {path} висит неприменённым, {name} поставлен в известность")
+
+    def allowlist(self) -> list[str]:
+        """Белый список разрешений: явный аргумент, потом файл человека.
+
+        Если файла нет — пустой список, а пустой список в
+        resolve_permission_prompt означает «не подтверждать ничего». Это не
+        осторожность ради осторожности: до появления белого списка «y» уходил на
+        любой промпт, включая удаляющий.
+        """
+        if self.allow is not None:
+            return self.allow
+        try:
+            return load_allow_patterns(str(permissions_path(self.state_dir)))
+        except Exception:  # noqa: BLE001
+            return []
 
     def unblock(self, state: dict) -> None:
         """Агент стоит на [y/N]. До утра это выглядит как зависание, хотя всего
-        один Enter всё решил бы."""
-        if self.tmux is None:
+        один Enter всё решил бы.
+
+        Но «один Enter» — это ещё и «y» на вопросе «rm -rf?». Поэтому
+        подтверждается только то, что попало в белый список, а по умолчанию он
+        состоит из чтения. Отказ — не ошибка, а результат: панель остаётся
+        заблокированной, и об этом должен узнать человек."""
+        if self.tmux is None or autonomy(state) == "observe":
             return
+        allow = self.allow
         for role, info in (state.get("roles") or {}).items():
             pane = info.get("pane")
             if not pane or role in self.skip or not pane_alive(self.tmux, pane):
                 continue
             try:
-                prompt = resolve_permission_prompt(self.tmux, pane)
+                result = resolve_permission_prompt(self.tmux, pane, allow=allow)
             except Exception:  # noqa: BLE001 - сверхвизор не должен падать из-за панели
                 continue
-            if prompt and self.remember(f"unblock-{role}-{hash(prompt) & 0xffffff:06x}"):
-                self.store.append_transcript("pilot_unblock", "pairpilot", target=role, prompt=prompt[:120])
-                log(f"{role}: подтвердил запрос разрешения — {prompt[:60]}")
+            prompt = result.get("prompt") or ""
+            if result.get("approved"):
+                if self.remember(f"unblock-{role}-{stable_tag(prompt)}"):
+                    self.store.append_transcript("pilot_unblock", "pairpilot", target=role,
+                                                 prompt=prompt[:120], matched=result.get("matched"))
+                    log(f"{role}: подтвердил запрос разрешения — {prompt[:60]}")
+            elif result.get("verdict") == "refuse":
+                if self.remember(f"unblock-refused-{role}-{stable_tag(prompt)}"):
+                    self.store.append_transcript("pilot_unblock_refused", "pairpilot", target=role,
+                                                 prompt=prompt[:120], why=result.get("why"))
+                    log(f"{role}: НЕ подтвердил «{prompt[:50]}» — {result.get('why')}. Нужен человек.")
 
     # ---------------------------------------------------------------- report
+
+    def checkpoint(self, state: dict) -> None:
+        """Человеку нужен дайджест, а не вопрос из пустоты.
+
+        В autonomy=semi закрыть раунд нельзя без `bin/pairctl ok`. Значит,
+        если этого слова нет, а раунд дошёл до проверки, человек должен получить
+        всё, что нужно для решения, и команду, которой это решается. Иначе
+        «полуавтомат» — это способность остановиться и ждать, ничего не говоря.
+        """
+        if autonomy(state) != "semi" or state.get("phase") != "verify":
+            return
+        round_number = state.get("round")
+        if not self.remember(f"checkpoint-{round_number}"):
+            return
+        blockers = _done_blockers(state)
+        if not blockers:
+            return
+        path = self.outbox / f"checkpoint-{round_number}.md"
+        lines = [
+            f"# Чекпоинт раунда {round_number}",
+            "",
+            f"- задача: {state.get('task') or 'НЕ ЗАДАЧЕНА'}",
+            f"- писатель: {state.get('writer') or 'НЕ НАЗНАЧЕН'}",
+            f"- режим раунда: {state.get('mode')}   автономность: semi",
+            "",
+            "## Что мешает закрыть раунд",
+            "",
+        ]
+        lines += [f"- {item}" for item in blockers]
+        lines += [
+            "",
+            "## Что сделать",
+            "",
+            "Прочитай это и одно слово в ответ:",
+            "",
+            f"    bin/pairctl ok",
+            "",
+            "Либо, если работа должна идти дальше без тебя до утра:",
+            "",
+            "    bin/pairctl autonomy auto",
+            "",
+        ]
+        path.write_text("\n".join(lines), encoding="utf-8")
+        self.store.append_transcript("pilot_checkpoint", "pairpilot", round=round_number,
+                                     path=str(path), blockers=len(blockers))
+        log(f"раунд {round_number} ждёт одного слова человека: {path}")
 
     def report_once(self, state: dict) -> None:
         """Человек должен получить результат, а не молчание. Пишем отчёт в файл,
@@ -381,13 +655,27 @@ class Pilot:
                                                      target=role, pane=self.own_pane)
         self.ambiguous(state)
         self.unblock(state)
+        self.restart_agent(state)
         self.dead_pane(state)
         self.unread_peers(state)
         self.pending_answers(state)
+        self.stalled_patches(state)
         self.flush_outbox(state)
         self.stale_writer(state)
+        self.checkpoint(state)
         self.report_once(state)
         return state
+
+
+def _done_blockers(state: dict) -> list[str]:
+    """Что мешает закрыть раунд — тем же кодом, что и сервер.
+
+    Правило принадлежит серверу, и вторая его копия рано или поздно разошлась бы
+    с первой: человек получил бы отчёт «всё хорошо» от одной стороны и отказ от
+    другой. Поэтому сверхвизор не переписывает правило, а спрашивает его у того,
+    кто его применяет.
+    """
+    return done_blockers(state)
 
 
 def write_report(state_dir: Path, state: dict) -> Path:
@@ -405,6 +693,14 @@ def write_report(state_dir: Path, state: dict) -> Path:
     for event in events:
         kinds[event.get("kind", "?")] = kinds.get(event.get("kind", "?"), 0) + 1
     refused = sum(v for k, v in kinds.items() if k in ("refuse", "refused", "deliver_busy"))
+    denied = kinds.get("pilot_unblock_refused", 0) + kinds.get("unblock_refused", 0)
+    restarted = kinds.get("pilot_restart", 0)
+    dropped = [event for event in events if event.get("kind") == "patch_dropped"]
+    restarts_blocked = [event for event in events if event.get("kind") == "pilot_restart_impossible"]
+    evidence = [item for item in (state.get("evidence") or [])
+                if item.get("round") == int(state.get("round", 0))]
+    stalled = [path for path, record in (state.get("patches") or {}).items()
+               if record.get("sealed") and not record.get("applied")]
 
     notes = []
     notes_dir = state_dir / "notes"
@@ -419,8 +715,19 @@ def write_report(state_dir: Path, state: dict) -> Path:
         f"# Отчёт по раунду {state.get('round')}",
         "",
         f"- задача: {state.get('task') or 'НЕ ЗАДАЧЕНА'}",
-        f"- фаза: {state.get('phase')}   режим: {state.get('mode')}",
+        f"- фаза: {state.get('phase')}   режим: {state.get('mode')}   автономность: {autonomy(state)}",
         f"- писатель: {state.get('writer') or 'НЕ НАЗНАЧЕН'}",
+        "",
+        "## Доказательства этого раунда",
+        "",
+    ]
+    if evidence:
+        for item in evidence:
+            mark = "OK " if item.get("ok") else "FAIL"
+            lines.append(f"- {mark} {item.get('kind')} [{item.get('role')}] {item.get('value')}")
+    else:
+        lines.append("- НИ ОДНОГО. Раунд закрыт без единого машинного факта.")
+    lines += [
         "",
         "## Что в транскрипте",
         "",
@@ -430,19 +737,42 @@ def write_report(state_dir: Path, state: dict) -> Path:
     lines += [
         "",
         f"Отказов и потерянных доставок: {refused}.",
-        "",
-        "## Последние заметки",
-        "",
-    ]
-    lines += notes or ["- нет"]
-    lines += [
+        f"Разрешений НЕ подтверждено автоматически: {denied}.",
+        f"Перезапущено упавших агентов: {restarted}.",
         "",
         "## Чего этот отчёт НЕ доказывает",
         "",
         "- что код правильный: доказывают тесты, а не заметки;",
         "- что всё в задаче сделано: сверхвизор видит события, а не смысл работы.",
         "",
+        "## НЕ ПОКРЫТО",
+        "",
     ]
+    if stalled:
+        lines.append("Sealed-патчи без применения и без отклонения:")
+        lines += [f"- {path}" for path in stalled]
+    else:
+        lines.append("- sealed-патчей без применения нет.")
+    if dropped:
+        lines.append(f"Отклонённые патчи (сознательно снятые): {len(dropped)}")
+    if restarts_blocked:
+        lines.append("Перезапуск не состоялся, нужен человек:")
+        lines += [f"- {event.get('target')}: {event.get('why')}" for event in restarts_blocked]
+    if denied:
+        lines.append("Запросы разрешения, оставленные человеку:")
+        lines += [f"- {event.get('target')}: {event.get('why')}"
+                  for event in events if event.get("kind") in ("pilot_unblock_refused", "unblock_refused")]
+    if state.get("phase") != "done":
+        blockers = _done_blockers(state)
+        lines.append("Что мешает закрыть раунд:")
+        lines += [f"- {item}" for item in blockers] or ["- ничего"]
+    lines += [
+        "",
+        "## Последние заметки",
+        "",
+    ]
+    lines += notes or ["- нет"]
+    lines += [""]
     out = state_dir / "REPORT.md"
     out.write_text("\n".join(lines), encoding="utf-8")
     return out
@@ -457,12 +787,31 @@ def main() -> int:
                         help="seconds before the recipient of a request is poked")
     parser.add_argument("--reply-hard", type=float, default=DEFAULT_REPLY_HARD,
                         help="seconds before the author of a request is told it went unanswered")
+    parser.add_argument("--patch-grace", type=float, default=DEFAULT_PATCH_GRACE,
+                        help="seconds before a sealed patch nobody applied becomes a defect")
+    parser.add_argument("--launch", action="append", default=[], metavar="ROLE=CMD",
+                        help="how to start a role if its process dies, e.g. --launch agy=agy. "
+                             "Repeatable. Also PAIR_LAUNCH_<ROLE>, or .pair/restart.json.")
+    parser.add_argument("--allow", default=os.environ.get("PAIR_PERMISSIONS"),
+                        help="permission allowlist: a file of patterns, or a comma-separated "
+                             "list. Empty means confirm nothing.")
     parser.add_argument("--once", action="store_true", help="один проход и выход")
     args = parser.parse_args()
 
+    launch: dict[str, str] = {}
+    for item in args.launch:
+        role, _, command = item.partition("=")
+        if role.strip() and command.strip():
+            launch[role.strip()] = command.strip()
+        else:
+            print(f"pairpilot: --launch ждёт ROLE=CMD, получено {item!r}", file=sys.stderr)
+            return 2
+    allow = load_allow_patterns(args.allow) if args.allow else None
+
     state_dir = Path(args.state).resolve()
     pilot = Pilot(state_dir, silence=args.silence, interval=args.interval,
-                  reply_grace=args.reply_grace, reply_hard=args.reply_hard)
+                  reply_grace=args.reply_grace, reply_hard=args.reply_hard,
+                  patch_grace=args.patch_grace, launch=launch, allow=allow)
 
     if args.once:
         state = pilot.tick()

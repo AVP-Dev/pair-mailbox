@@ -1,7 +1,8 @@
 {
-  "_readme": "Форматы MCP и навыков по CLI. Роль сервера = имя CLI. Добавить свой CLI = добавить сюда объект и запустить ./install.sh <имя>.",
+  "_readme": "Форматы MCP и навыков по CLI. Роль сервера = имя CLI. Добавить свой CLI = добавить сюда объект и запустить ./install.sh <имя>. Поле launch — команда, которой bin/pairpilot поднимает роль, если её процесс умер (см. PROTOCOL.md §13).",
 
   "opencode": {
+    "launch": "opencode --standalone",
     "label": "OpenCode",
     "mcp": {
       "path": "~/.config/opencode/opencode.jsonc",
@@ -14,6 +15,7 @@
   },
 
   "agy": {
+    "launch": "agy",
     "label": "Antigravity CLI",
     "mcp": {
       "path": "~/.gemini/config/mcp_config.json",
@@ -26,6 +28,7 @@
   },
 
   "codex": {
+    "launch": "codex",
     "label": "Codex CLI",
     "mcp": {
       "path": "~/.codex/config.toml",
@@ -37,6 +40,7 @@
   },
 
   "claude": {
+    "launch": "claude",
     "label": "Claude Code",
     "mcp": {
       "path": "~/.claude.json",
