@@ -1749,6 +1749,34 @@ class TestStalePaneSurvives(PairTestCase):
             self.skipTest("набор запущен вне tmux")
         self.assertTrue(self.server.pane_exists(mine))
 
+    def test_the_two_pane_checks_never_disagree(self) -> None:
+        """server.pane_exists и composer.pane_alive делают одно и то же.
+
+        Правка про фантомные панели попала сначала в одну функцию, а вторую с
+        тем же именем и той же работой пропустили: `pairpilot` зовёт именно её,
+        и `%999999` остался «живым» навсегда. Расхождение проще всего не допустить
+        сравнением — правка одной функции без другой уронит этот тест.
+        """
+        from composer import pane_alive
+        if not shutil_which("tmux"):
+            self.skipTest("tmux не установлен")
+        tmux = shutil_which("tmux")
+        for pane in ("%999999", "%998877", "%0"):
+            self.assertEqual(
+                self.server.pane_exists(pane), pane_alive(tmux, pane),
+                f"{pane}: server и composer обязаны отвечать одинаково")
+
+    def test_a_phantom_pane_is_not_alive_for_the_pilot_either(self) -> None:
+        """Конкретный фантом, на котором ловился баг: несуществующая панель,
+        которой tmux отвечает кодом 0 и пустой строкой."""
+        from composer import pane_alive
+        if not shutil_which("tmux"):
+            self.skipTest("tmux не установлен")
+        self.assertFalse(pane_alive(shutil_which("tmux"), "%999999"))
+        mine = self._pane_at_startup
+        if mine:
+            self.assertTrue(pane_alive(shutil_which("tmux"), mine), "живая панель живая")
+
     def test_real_tmux_answers_both_ways(self) -> None:
         """Единственная здесь проверка, которую нельзя подменить: настоящий tmux,
         оба ответа.

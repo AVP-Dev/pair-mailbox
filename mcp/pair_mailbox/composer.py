@@ -52,9 +52,18 @@ def _tmux() -> str:
 
 
 def pane_alive(tmux: str, pane: str) -> bool:
+    """Жива ли панель tmux.
+
+    Правило ровно то же, что в server.pane_exists, и это не совпадение: tmux на
+    запрос несуществующей панели отвечает кодом 0 и ПУСТЫМ выводом, поэтому
+    проверка «код успеха и не „1“» объявляет живой любую фантомную панель. Раньше
+    правка живла только в server.pane_exists, а pairpilot зовёт эту функцию — и
+    фантом %999999 считался живым, из-за чего pilot_pane_dead не писался
+    никогда. Расхождение двух одинаково названных функций и было дырой.
+    """
     r = subprocess.run([tmux, "display-message", "-p", "-t", pane, "#{pane_dead}"],
                        capture_output=True, text=True, timeout=5)
-    return r.returncode == 0 and r.stdout.strip() != "1"
+    return r.returncode == 0 and r.stdout.strip() in ("0", "false")
 
 
 def capture(tmux: str, pane: str) -> list:
