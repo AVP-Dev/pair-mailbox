@@ -246,10 +246,45 @@ Stepping back from `done` increments `round` and clears `closed_at`.
 
 ## 7. A live channel: the agent waits, it does not sleep
 
-Two ways to send:
-- **`pair_deliver`** — active: types into the peer's pane and presses Enter, waking
-  it at once.
-- **`pair_send`** — passive: drops into the mailbox.
+**The rule that makes the pair work: a turn ends with a bounded `pair_read`.**
+
+Not as a preference — as the mechanism. Nothing can wake an agent that is not calling
+any tool, and **no agent tool exists in any MCP implementation that can inject a turn
+into another agent's client**: MCP is client-driven, so a server answers requests and
+cannot push a new turn into the host. The mailbox is the only universal channel, and
+reading it is the only universal wake-up.
+
+That is why `pair_read` is a bounded wait rather than an instant read. An agent that
+ends its turn with `pair_read(wait_seconds=N)` is never idle *with unread mail*: it is
+either reading, or it already has the message. The cost is latency — the agent waits
+instead of exiting. The alternative costs the round its night.
+
+Delivery is the second path, and it is best-effort by nature:
+- **`pair_deliver`** — active: types into the peer's pane and presses Enter.
+- **`pair_send`** — passive: drops into the mailbox, which always works.
+
+`pair_deliver` cannot be relied on. It needs the peer's composer to be visible, and a
+full-screen TUI hides it: on OpenCode the capture holds only frames and a status line,
+so delivery refuses with "composer not visible" and the message falls back to the
+mailbox. The refusal is correct — typing into an unseen pane would send the text into
+`vi`, `less` or a running build.
+
+So the split is: **the mailbox is the guarantee, delivery is the accelerator.** A
+wake-up adapter per CLI is allowed to exist, and the table below says so honestly; but
+nothing may depend on one.
+
+| CLI | adapter | if unsupported |
+|---|---|---|
+| OpenCode | plugin + host API | reminder only, mailbox still delivered |
+| Antigravity (`agy`) | native reactive messaging | reminder only |
+| Claude, Codex | `tmux send-keys` | reminder only |
+| anything else | none | reminder only |
+
+The supervisor nudges a role that has unread mail and has gone quiet — once, not every
+tick, recorded as `pilot_unread_nudge`. That nudge goes through the same unreliable
+delivery, so treat it as best-effort. The pull is what actually works.
+
+Two ways to send, then:
 
 `pair_read(wait_seconds=N)` is the normal way to hear from your peer. Empty — call
 again. The ceiling is 60 seconds; when time is up, get back to work.

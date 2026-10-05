@@ -89,6 +89,12 @@ class PilotCase(unittest.TestCase):
             return []
         return [json.loads(line)["kind"] for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
 
+    def transcript_entries(self) -> list[dict]:
+        path = self.state_dir / "transcript.jsonl"
+        if not path.exists():
+            return []
+        return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+
 
 class TestLiveness(PilotCase):
     def test_silent_writer_is_nudged_once_only(self) -> None:
@@ -119,6 +125,33 @@ class TestLiveness(PilotCase):
         нечего, и бить его значит мешать."""
         self.write_state(writer="agy", roles={"agy": {"last_seen": ago(30), "pane": "%1"},
                                               "codex": {"last_seen": ago(3600), "pane": "%2"}})
+        pilot = self.pilot()
+        pilot.tick()
+        self.assertEqual("", pilot.pending("codex"))
+
+    def test_unread_nudge_is_sent_once_and_not_every_tick(self) -> None:
+        """Напоминание о непрочитанном — ускоритель, а не основа: агент
+        заканчивает ход сам (PROTOCOL §7), и напоминание не должно превращаться в
+        поток, который сам и будит, и засыпает."""
+        self.inbox("codex", 2)
+        self.write_state(writer="agy", roles={"codex": {"last_seen": ago(60), "pane": "%1"}},
+                         seen={"codex": 0})
+        pilot = self.pilot()
+        pilot.tick()
+        first = pilot.pending("codex")
+        self.assertTrue(first)
+        pilot.tick()
+        pilot.tick()
+        # Считаем события в журнале, а не текст: текст напоминания одинаковый
+        # каждый раз, и сравнение строк повтор не видит вовсе.
+        nudges = [e for e in self.transcript_entries() if e.get("kind") == "pilot_unread_nudge"]
+        self.assertEqual(1, len(nudges),
+                         "напоминание не должно повторяться каждый тик")
+
+    def test_unread_nudge_does_not_touch_a_role_with_nothing_unread(self) -> None:
+        """Напоминание без письма — шум, а помощь."""
+        self.write_state(writer="agy", roles={"codex": {"last_seen": ago(60), "pane": "%1"}},
+                         seen={"codex": 0})
         pilot = self.pilot()
         pilot.tick()
         self.assertEqual("", pilot.pending("codex"))
