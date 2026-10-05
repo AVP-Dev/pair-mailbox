@@ -92,6 +92,69 @@ def pane_alive(tmux: str, pane: str) -> bool:
     return r.returncode == 0 and r.stdout.strip() in ("0", "false")
 
 
+def pane_identity(tmux: str, pane: str) -> dict:
+    """Кто именно сидит в панели: не «жива ли», а «наша ли».
+
+    Одного `#{pane_dead}` мало, и это была дыра между проектами. Номер панели
+    `%N` переживает смерть процесса, который его занимал: панель жива, но
+    принадлежит уже другому проекту. На этой машине несколько проектов на
+    pair-mailbox, поэтому звонок по записанному в состоянии номеру попадал в
+    чужой композер, и один проект вбивал свои сообщения в агента другого.
+    """
+    r = subprocess.run(
+        [tmux, "display-message", "-p", "-t", pane,
+         "#{pane_dead}\t#{pane_current_path}"],
+        capture_output=True, text=True, timeout=5)
+    # tmux на НЕСУЩЕСТВУЮЩУЮ панель отвечает кодом 0 и пустым выводом — это
+    # ровно тот же факт, из-за которого фантомная панель когда-то считалась
+    # живой. Поэтому одного кода возврата мало: пустой вывод тоже означает,
+    # что панели нет. Раньше exists выводился только из returncode и врал:
+    # итог был безопасным случайно, а не по замыслу.
+    parts = r.stdout.strip().split("\t") if r.stdout.strip() else []
+    dead = parts[0].strip() if parts else ""
+    if r.returncode != 0 or not dead:
+        return {"exists": False, "alive": False, "path": ""}
+    path = parts[1].strip() if len(parts) > 1 else ""
+    return {"exists": True, "alive": dead in ("0", "false"), "path": path}
+
+
+def pane_is_foreign(tmux: str, pane: str, project_root) -> tuple:
+    """Панель доказуемо не наша? Fail-closed: не доказали своё — не печатаем.
+
+    Возвращает (True, причина) если в панель печатать нельзя, и (False, "") если
+    можно. Пустой cwd не доказывает ничего, поэтому трактуется как «чужая»:
+    молча отказаться от доставки правильнее, чем вбить текст не туда.
+
+    Строгость намеренная и вторая по важности после fail-closed: панель
+    принимается, только если её cwd совпадает с корнем проекта или лежит внутри
+    него. Панель, запущенная из ОБЩЕГО родителя вроде ~/work, отклоняется, хотя
+    формально это родитель проекта. Иначе такую панель объявили бы своей сразу
+    несколько проектов на этой машине, и межпроектная инъекция вернулась бы
+    ровно тем же путём, который здесь закрывается.
+    """
+    ident = pane_identity(tmux, pane)
+    if not ident["exists"]:
+        return True, "панель отсутствует"
+    if not ident["alive"]:
+        return True, "панель мертва"
+
+    try:
+        ours = Path(project_root).resolve()
+    except OSError as exc:
+        return True, f"не резолвится корень проекта: {exc}"
+    raw = ident["path"]
+    if not raw:
+        return True, "tmux не сообщил cwd панели, идентичность не доказана"
+    try:
+        theirs = Path(raw).resolve()
+    except OSError as exc:
+        return True, f"не резолвится cwd панели: {exc}"
+
+    if theirs == ours or ours in theirs.parents:
+        return False, ""
+    return True, f"панель принадлежит другому проекту: {theirs}"
+
+
 def capture(tmux: str, pane: str) -> list:
     r = subprocess.run([tmux, "capture-pane", "-p", "-t", pane],
                        capture_output=True, text=True, timeout=5)
@@ -101,13 +164,59 @@ def capture(tmux: str, pane: str) -> list:
     return lines[-CAPTURE_LINES:]
 
 
+# Рамки TUI: box-drawing и блочные глифы. Одна константа намеренно: вопрос
+# «это часть рамки?» задавался в двух местах двумя разными диапазонами —
+# 2500-259f в одном и 2500-257f в другом, — и разница в один символ была
+# ровно тем, что делало занятый композер пустым. Тот же урок, что и с
+# расхождением pane_alive / server.pane_exists: одна мысль, одно место.
+BOX_GLYPH = r"\u2500-\u259f"
+
+
+# Угловые глифы рамки поля ввода: вертикаль и повороты. Строка поля ввода
+# начинается с одного из них и у пустой рамки, и у рамки с набранным текстом.
+INPUT_BOX_CORNERS = "\u2579\u257a\u2578\u2576\u257b\u2502\u2503\u2551\u2552"
+
+
+def is_input_box_row(line: str) -> bool:
+    """Строка поля ввода TUI — и пустая, и с набранным текстом.
+
+    Различать их здесь не нужно: нужно знать, что строка принадлежит полю ввода,
+    а занятость определяет is_composer_empty. Раньше распознавание требовало, чтобы
+    строка целиком состояла из рамочных глифов, и как только в поле ввода
+    появлялся хоть один символ, composer_line отдавал None, то есть «печатать
+    некуда»: начал человек печатать — доставка снова невозможна.
+    """
+    text = line.lstrip()
+    if not text:
+        return False
+    return text[0] in INPUT_BOX_CORNERS
+
+
+def is_input_box_border(line: str) -> bool:
+    """Нижняя граница поля ввода TUI: рамка, которая расширяется при наборе.
+
+    Признак структурный, без названий брендов: строка состоит только из
+    рамочных и блочных глифов. Нужна потому, что у OpenCode нет ASCII-маркера
+    промпта: поле ввода — рамка, а под ней строка статуса. Композер искался
+    только как «строка, начинающаяся с маркера», поэтому панель OpenCode не
+    опознавалась никогда и молча считалась занятой — доставка и звонок в неё
+    были невозможны в принципе, а не изредка.
+    """
+    text = line.rstrip()
+    if not text.strip():
+        return False
+    if re.search(r"[^\s" + BOX_GLYPH + r"|]", text):
+        return False
+    return True
+
+
 def is_footer_or_status_line(line: str) -> bool:
     """Проверка, является ли строка служебным футером или рамкой TUI."""
     s = line.strip()
     if not s:
         return True
     # Чистые горизонтальные разделители и рамки (─, ━, ═, ▀, ▄, ╹, etc.)
-    if re.fullmatch(r"[\u2500-\u259f\s═─━╹▀_-]+", s):
+    if re.fullmatch(rf"[{BOX_GLYPH}\s═─━╹▀_-]+", s):
         return True
     return False
 
@@ -134,18 +243,40 @@ def composer_line(lines: list) -> str | None:
     значит отправить keystrokes в никуда. Вызывающий обязан считать None занятой.
     """
     fallback = None
+    above = None
     for line in reversed(lines):
         stripped = line.rstrip()
         if not stripped.strip():
             continue
         if fallback is None:
             fallback = stripped
+        elif above is None:
+            above = stripped
         for marker in PROMPT_MARKERS:
             if stripped.lstrip().startswith(marker):
                 return stripped
-    # Маркера нет вовсе. Тогда это либо чистая рамка TUI, где печатать некуда
-    # (None, то есть занят), либо незнакомый вид панели — голый шелл, — где
-    # последняя строка и есть промпт, как было до всех этих правок.
+
+    # Маркера нет вовсе. Здесь раньше была дыра, стоившая нам доставки в OpenCode
+    # полностью: его поле ввода не начинается ни с одного маркера промпта, это
+    # рамка, а под ней строка статуса. Последняя непустая строка — статус, он и
+    # опознаётся как статус, и функция возвращала None, то есть «композера нет».
+    # Вызывающий обязан считать None занятой, поэтому панель OpenCode была
+    # непроходимо занята всегда, и ни звонок, ни deliver в неё не проходили.
+    #
+    # Поэтому рамка, под которой лежит строка статуса, и есть композер. Проверка
+    # структурная и брендонезависимая: рамка + статус снизу.
+    # Поле ввода идёт ABOVE статуса, поэтому в обратном обходе `above` — это
+    # строка поля ввода, а `fallback` (последняя непустая строка) — статус под
+    # ней. Берётся строка поля ввода целиком, а не только пустая рамка: с
+    # набранным текстом она перестаёт быть «рамочной» в строгом смысле, но
+    # остаётся тем же полем ввода — просто занятым.
+    if above is not None and is_input_box_row(above) \
+            and looks_like_status_line(fallback or ""):
+        return above
+
+    # Ни маркера, ни пары «рамка над статусом». Тогда это либо чистая рамка TUI,
+    # где печатать некуда (None, то есть занят), либо незнакомый вид панели —
+    # голый шелл, — где последняя строка и есть промпт, как было до всех правок.
     return None if is_footer_or_status_line(fallback or "") else (
         None if looks_like_status_line(fallback or "") else fallback)
 
@@ -155,8 +286,14 @@ def is_composer_empty(line: str) -> bool:
     s = line.rstrip()
     if not s.strip():
         return True
-    # Если строка — пустая рамка TUI вида '  ┃  ' или '  │  '
-    if re.fullmatch(r"[\s\u2500-\u257f|]+", s):
+    # Пустая рамка TUI: '  ┃  ', '  │  ' или нижняя граница поля ввода OpenCode.
+    # Диапазон здесь намеренно BOX_GLYPH, а не прежние 2500-257f: ▀ — это 2580, он
+    # на единицу выше той границы, поэтому рамка поля ввода не проходила и
+    # пустой композер OpenCode читался как занятый. Проверка живёт в
+    # is_input_box_border, отдельного дубликата здесь нет намеренно: две
+    # одинаковые проверки в двух местах — это ровно тот класс расхождения,
+    # который уже стоил нам неработающей доставки.
+    if is_input_box_border(s):
         return True
     for marker in PROMPT_MARKERS:
         idx = s.rfind(marker)

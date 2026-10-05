@@ -1,0 +1,31 @@
+# Project-local verification profile для pair-mailbox.
+#
+# Формат: name<TAB>layer<TAB>required<TAB>command
+# dispatcher: ./scripts/verify-project.sh [--list|--dry-run|--only layers]
+#
+# Здесь только команды, которые уже подтверждены и реально прогоняются в этом
+# репозитории. Выдуманной успешной проверки быть не должно: отсутствующая
+# проверка фиксируется как blocked, а не записывается строкой, которая всегда
+# зелёная.
+#
+# Слои static и positive дают быстрый цикл (около 30 секунд), слой integration
+# добавляет инсталлер и занимает около шести минут. Полный гейт запускается
+# перед финализацией раунда, быстрый — после каждой правки.
+#
+# Секретов здесь быть не должно: команда, способная раскрыть секрет, не
+# попадает в гейт.
+
+# --- static: быстрые проверки перед каждой правкой ---
+shell-syntax	static	1	bash -n scripts/verify-project.sh scripts/security-scan.sh scripts/file-size-gate.sh bin/pair-duo bin/pairctl mcp/pair_mailbox/serve.sh
+file-size	static	1	./scripts/file-size-gate.sh
+
+# --- positive: поведение, которое обязано работать ---
+protocol	positive	1	python3 mcp/pair_mailbox/test_protocol.py
+supervisor	positive	1	python3 bin/pairpilot_test.py
+file-size-gate-tests	positive	1	bash scripts/file-size-gate_test.sh
+
+# --- integration: медленное, но обязательное перед финализацией ---
+installer	integration	1	python3 install_test.py
+
+# --- security: базовая линия без внешних зависимостей ---
+secret-baseline	security	1	./scripts/security-scan.sh

@@ -1232,6 +1232,17 @@ class PairSession:
         )
         if probe.returncode != 0 or probe.stdout.strip() == "1":
             return {"rung": False, "why": "панель соседа мертва"}
+        # Живость — не идентичность. Номер панели переживает смерть процесса,
+        # который её занимал, и на этой машине несколько проектов на
+        # pair-mailbox: звонок по записанному номеру будил чужого агента.
+        from composer import pane_is_foreign
+        foreign, why_foreign = pane_is_foreign(tmux, pane, self.store.root)
+        if foreign:
+            self.store.append_transcript(
+                "ring_refused_foreign_pane", self.role, to=target,
+                pane=pane, reason=why_foreign,
+            )
+            return {"rung": False, "why": why_foreign}
         from composer import capture, composer_line, is_composer_empty
         deadline = time.monotonic() + 1.5
         while True:
@@ -1350,6 +1361,32 @@ class PairSession:
         pane = (state.get("roles", {}).get(to) or {}).get("pane")
         if not pane:
             return {"delivered": False, "why": f"у {to} нет панели tmux, он вне tmux"}
+        # Та же проверка, что и в _ring: печатать в панель, которая доказуемо
+        # принадлежит другому проекту, нельзя. Сообщение уходит в ящик.
+        from composer import _tmux, pane_is_foreign
+        try:
+            foreign, why_foreign = pane_is_foreign(_tmux(), pane, self.store.root)
+        except ComposerBusy as exc:
+            foreign, why_foreign = True, f"tmux недоступен: {exc}"
+        if foreign:
+            self.store.append_transcript(
+                "deliver_refused_foreign_pane", self.role, to=to,
+                pane=pane, reason=why_foreign,
+            )
+            # Причина отказа — в теме сообщения, а не только в транскрипте.
+            # У защиты три разных отказа (панели нет, панель мертва, панель
+            # чужого проекта), и одна общая тема «панель чужого проекта» вводила
+            # соседа в заблуждение: agy получил отказ «панель отсутствует» с
+            # темой про чужой проект и пошёл искать несуществующий конфликт.
+            send_res = self.tool_pair_send(
+                to=to, text=text,
+                subject=f"[mailbox fallback: {why_foreign}]")
+            return {
+                "delivered": False,
+                "why": why_foreign,
+                "fallback_sent": True,
+                "seq": send_res.get("seq"),
+            }
         try:
             result = deliver(pane, text, wait_for_empty=wait_for_empty, submit=submit)
         except ComposerBusy as exc:
