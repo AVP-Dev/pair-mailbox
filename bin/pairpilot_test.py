@@ -132,6 +132,90 @@ class PilotCase(unittest.TestCase):
         return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
 
 
+class TestWakeFileIntegrity(PilotCase):
+    """Пробуждение — один файл на роль, и он не теряет то, что уже накопил.
+
+    Поводов о пробуждении два (`unread_peers` и `stale_writer`), а файл один.
+    Перезапись выглядела безобидно, пока не посчитано: она обнуляла `asked_at`,
+    то есть терпение начиналось заново, и стирала `escalated`, то есть один и тот
+    же факт эскалировался дважды — по первому поводу, а потом уже по второму.
+    """
+
+    def test_since_seconds_is_measured_before_the_file_is_removed(self) -> None:
+        """`since_seconds` обязан что-то значить.
+
+        Порядок был перепутан: `unlink` шёл до `stat`, а `exists()` после удаления
+        всегда `False`, поэтому поле всегда было 0 — то есть по нему нельзя было
+        понять, сколько роль молчала. Здесь файл намеренно состарен, иначе
+        округление до целых секунд скрыло бы ошибку нуля.
+        """
+        self.write_state(writer="agy", roles={"agy": {"last_seen": ago(3600), "pid": 1, "pane": "%1"}})
+        pilot = self.pilot()
+        pilot.tick()
+        path = pilot.wake_root / "agy.json"
+        self.assertTrue(path.exists())
+        old = time.time() - 600
+        os.utime(path, (old, old))
+        # Роль отвечает: last_seen сдвинулся, пробуждение снимается.
+        self.write_state(writer="agy", roles={"agy": {"last_seen": now_iso(), "pid": 1, "pane": "%1"}})
+        pilot.tick()
+        entries = [e for e in self.transcript_entries()
+                   if e.get("kind") == "pilot_wake_acknowledged"]
+        self.assertEqual(1, len(entries))
+        self.assertGreaterEqual(
+            entries[0]["since_seconds"], 590,
+            "молчание измеряется до удаления файла, иначе поле всегда ноль")
+
+    def test_two_reasons_escalate_once_not_twice(self) -> None:
+        """Два повода о пробуждении — одна эскалация.
+
+        Проверка на семантику, а не на список вызовов: поднять `wake_grace` в ноль
+        мало, нужно чтобы оба повода сработали в одном раунде на одну роль.
+        """
+        self.inbox("agy", 3)
+        self.write_state(writer="agy", roles={"agy": {"last_seen": ago(3600), "pid": 1, "pane": "%1"}})
+        pilot = self.pilot()
+        pilot.wake_grace = 0.0
+        pilot.tick()
+        pilot.tick()
+        pilot.tick()
+        kinds = [e.get("kind") for e in self.transcript_entries()]
+        self.assertGreaterEqual(
+            kinds.count("pilot_wake_escalated"), 1,
+            "хотя бы одна эскалация обязана быть")
+        self.assertEqual(
+            1, kinds.count("pilot_wake_escalated"),
+            "непрочитанные и молчание писателя — один факт пробуждения, "
+            "а не два")
+
+    def test_a_pending_wake_keeps_its_first_moment(self) -> None:
+        """`asked_at` — момент постановки вопроса, а не последней записи.
+
+        Обновление счётчика с того момента, когда роль уже должна была проснуться,
+        делает «терпение» бесконечным: вопрос, на который не ответили, снова
+        получает полный срок ожидания.
+        """
+        # `last_seen` держим ОДНОЙ строкой на весь тест: `ago()` даёт разные
+        # микросекунды в каждом вызове, и роль получается «проснувшейся» сама
+        # собой — то есть проверяла бы не то.
+        quiet = ago(3600)
+        self.write_state(writer="agy", roles={"agy": {"last_seen": quiet, "pid": 1, "pane": "%1"}})
+        pilot = self.pilot()
+        pilot.tick()
+        first = self.wake(pilot, "agy")
+        self.assertTrue(first)
+        first_asked = first["asked_at"]
+        # Второй повод на ту же роль, без её ответа.
+        self.inbox("agy", 2)
+        pilot.tick()
+        second = self.wake(pilot, "agy")
+        self.assertTrue(second, "второй повод не должен стирать висящее пробуждение")
+        self.assertEqual(first_asked, second["asked_at"],
+                         "срок терпения считается от первого вопроса")
+        self.assertIn("непрочитанных", " ".join(second["reasons"]),
+                      "второй повод обязан быть виден в том же файле")
+
+
 class TestLiveness(PilotCase):
     def test_silent_writer_is_woken_silently(self) -> None:
         """Молчащий писатель: пробуждение записано, в композер не напечатано.

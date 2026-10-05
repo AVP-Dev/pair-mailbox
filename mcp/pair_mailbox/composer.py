@@ -312,30 +312,6 @@ def pane_is_foreign(tmux: str, pane: str, project_root) -> tuple:
 
 
 def pane_pid(tmux: str, pane: str) -> int:
-    """pid процесса, который занимает панель, или 0 если это не доказать.
-
-    Именно этот вопрос отличает «роль мертва» от «в записи stale pid». Номер
-    `%N` переживает смерть процесса, который его занимал: панель жива, и в ней
-    кто-то есть — просто это уже другой агент. Наоборот, роль могла
-    перезапуститься сама, и её pid в ростере устарел, хотя панель занята.
-
-    Ноль вместо исключения: вызывающий решает, что делать с неопределённостью, и
-    «не знаю» здесь должно означать «не знаю», а не падение.
-    """
-    ident = pane_identity(tmux, pane)
-    if not (ident["exists"] and ident["alive"]):
-        return 0
-    r = subprocess.run(
-        [tmux, "display-message", "-p", "-t", pane, "#{pane_pid}"],
-        capture_output=True, text=True, timeout=5)
-    out = r.stdout.strip()
-    if r.returncode != 0 or not out.isdigit():
-        return 0
-    pid = int(out)
-    return pid if pid > 0 else 0
-
-
-def pane_pid(tmux: str, pane: str) -> int:
     """pid ПРОЦЕССА ПАНЕЛИ — обычно это шелл, а не агент. Не «pid роли».
 
     Возвращать его и называть «pid процесса, который занимает панель» было бы

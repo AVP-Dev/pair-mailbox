@@ -435,14 +435,40 @@ class Pilot:
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
             info = (state.get("roles") or {}).get(role) or {}
-            path.write_text(json.dumps({
+            # Висящее пробуждение дополняется, а не перезаписывается.
+            #
+            # Поводов о пробуждении два (`unread_peers` и `stale_writer`), а файл
+            # на роль один. Перезапись теряла `asked_at` — терпение начиналось
+            # заново, — и признак `escalated`, то есть один и тот же факт
+            # эскалировался дважды: сначала по первому поводу, потом, уже после
+            # перезаписи, по второму. Снимок `seen_at_ask` берётся только при
+            # первой постановке: он отвечает на вопрос «проснулся ли роль после
+            # вопроса», и обновлять его — значит задавать вопрос заново.
+            previous: dict = {}
+            try:
+                previous = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                previous = {}
+            if not isinstance(previous, dict):
+                previous = {}
+            prior_reasons = previous.get("reasons")
+            if not isinstance(prior_reasons, list):
+                prior_reasons = [previous["reason"]] if previous.get("reason") else []
+            seen = [str(r) for r in prior_reasons]
+            if reason not in seen:
+                seen.append(reason)
+            payload = dict(previous)
+            payload.update({
                 "role": role,
-                "reason": reason,
-                "asked_at": utcnow(),
-                "seen_at_ask": info.get("last_seen"),
-                "unread_at_ask": self.unread(state, role),
+                "reason": seen[-1],
+                "reasons": seen,
+                "asked_at": previous.get("asked_at") or utcnow(),
+                "seen_at_ask": previous.get("seen_at_ask", info.get("last_seen")),
+                "unread_at_ask": int(previous.get("unread_at_ask", self.unread(state, role))),
                 "text": text,
-            }, ensure_ascii=False, indent=2), encoding="utf-8")
+            })
+            payload.setdefault("asked_at", utcnow())
+            path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         except OSError as error:
             # Не записали — значит, будить нечем, и это надо сказать, а не
             # сделать вид, что роль получила напоминание.
@@ -485,11 +511,18 @@ class Pilot:
             unread_now = self.unread(state, role)
             woke = (seen_now != seen_ask) or (unread_now < int(wake.get("unread_at_ask", 0)))
             if woke:
+                # Порядок обязателен: раньше файл сначала удалялся, и `stat`
+                # потом всегда давал «нет файла», то есть since_seconds был
+                # всегда 0 — поле, по которому судят, сколько роль молчала,
+                # не сказало ничего.
+                try:
+                    since = int(now - path.stat().st_mtime)
+                except OSError:
+                    since = 0
                 path.unlink(missing_ok=True)
                 self.store.append_transcript("pilot_wake_acknowledged", "pairpilot",
                                              target=role, reason=wake.get("reason"),
-                                             since_seconds=int(now - path.stat().st_mtime)
-                                             if path.exists() else 0)
+                                             since_seconds=since)
                 log(f"{role}: проснулся сам, печать не понадобилась")
                 continue
             if wake.get("escalated"):
