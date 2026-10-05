@@ -2801,13 +2801,20 @@ class TestRingAndUnblock(PairTestCase):
         os.environ.pop("PAIR_DISABLE_RING", None)
         orig_line = composer.composer_line
         orig_which = composer.shutil.which
+        orig_foreign = composer.pane_is_foreign
         composer.composer_line = lambda lines: None
         composer.shutil.which = lambda name: "/usr/bin/tmux"
+        # Панели %45 не существует, и проверка идентичности отвергла бы её раньше,
+        # чем дойдёт до композера. Тест про невидимый композер, поэтому
+        # принадлежность панели объявляется заранее, а не подменяется пустым
+        # результатом: иначе он проверял бы уже другую ветку.
+        composer.pane_is_foreign = lambda tmux, pane, root: (False, "")
         try:
             result = self.writer._ring("reviewer-agent", "заметка", "детали")
         finally:
             composer.composer_line = orig_line
             composer.shutil.which = orig_which
+            composer.pane_is_foreign = orig_foreign
         self.assertFalse(result["rung"], "в невидимый композер не лезем")
         self.assertIn("не виден", result["why"])
 
@@ -3061,6 +3068,8 @@ class TestMailboxInvariants(PairTestCase):
 
         import composer
         orig_deliver = composer.deliver
+        orig_foreign = composer.pane_is_foreign
+        composer.pane_is_foreign = lambda tmux, pane, root: (False, "")
 
         def mock_deliver(pane, text, wait_for_empty=0.0, submit=True):
             return {"delivered": False, "unverified": True, "chars": len(text),
@@ -3077,6 +3086,7 @@ class TestMailboxInvariants(PairTestCase):
             self.assertIn("payload worth keeping", read["messages"][0]["text"])
         finally:
             composer.deliver = orig_deliver
+            composer.pane_is_foreign = orig_foreign
 
     def test_deliver_composer_busy_fallback_to_mailbox(self) -> None:
         # Prepopulate reviewer pane
@@ -3092,6 +3102,8 @@ class TestMailboxInvariants(PairTestCase):
 
         import composer
         orig_deliver = composer.deliver
+        orig_foreign = composer.pane_is_foreign
+        composer.pane_is_foreign = lambda tmux, pane, root: (False, "")
 
         def mock_deliver(pane, text, wait_for_empty=0.0, submit=True):
             raise composer.ComposerBusy("user is actively typing")
@@ -3109,6 +3121,194 @@ class TestMailboxInvariants(PairTestCase):
             self.assertIn("important payload", read["messages"][0]["text"])
         finally:
             composer.deliver = orig_deliver
+            composer.pane_is_foreign = orig_foreign
+
+
+class TestPaneIdentityIsNotLiveness(PairTestCase):
+    """Живость панели — не её идентичность.
+
+    Номер панели `%N` переживает смерть процесса, который её занимал. На этой
+    машине несколько проектов на pair-mailbox, поэтому проверка только на
+    `pane_dead` позволяла одному проекту вбивать сообщения в композер агента
+    другого. Два независимых факта: панель жива И принадлежит нам.
+    """
+
+    def test_a_pane_of_another_project_is_refused(self) -> None:
+        import composer
+        orig = composer.pane_identity
+        composer.pane_identity = lambda tmux, pane: {
+            "exists": True, "alive": True, "path": "/home/alexios/work/phronesis"}
+        try:
+            foreign, why = composer.pane_is_foreign(
+                "tmux", "%1", Path(__file__).resolve().parents[2])
+        finally:
+            composer.pane_identity = orig
+        self.assertTrue(foreign, "панель чужого проекта печатать нельзя")
+        self.assertIn("другому проекту", why)
+
+    def test_our_own_pane_is_allowed(self) -> None:
+        import composer
+        root = Path(__file__).resolve().parents[2]
+        orig = composer.pane_identity
+        composer.pane_identity = lambda tmux, pane: {
+            "exists": True, "alive": True, "path": str(root)}
+        try:
+            foreign, _ = composer.pane_is_foreign("tmux", "%1", root)
+        finally:
+            composer.pane_identity = orig
+        self.assertFalse(foreign, "своя панель проходит")
+
+    def test_an_unprovable_pane_fails_closed(self) -> None:
+        """Пустой cwd не доказывает ничего, поэтому это отказ, а не разрешение."""
+        import composer
+        root = Path(__file__).resolve().parents[2]
+        orig = composer.pane_identity
+        composer.pane_identity = lambda tmux, pane: {
+            "exists": True, "alive": True, "path": ""}
+        try:
+            foreign, why = composer.pane_is_foreign("tmux", "%1", root)
+        finally:
+            composer.pane_identity = orig
+        self.assertTrue(foreign)
+        self.assertIn("не доказана", why)
+
+    def test_a_dead_pane_is_refused(self) -> None:
+        """Мутация показала, что этот случай не покрыт: зелёное ничего не значило."""
+        import composer
+        orig = composer.pane_identity
+        composer.pane_identity = lambda tmux, pane: {
+            "exists": True, "alive": False, "path": "/home/alexios/work/umputum"}
+        try:
+            foreign, why = composer.pane_is_foreign(
+                "tmux", "%1", Path(__file__).resolve().parents[2])
+        finally:
+            composer.pane_identity = orig
+        self.assertTrue(foreign, "в мёртвую панель не печатаем")
+        self.assertIn("мертва", why)
+
+    def test_a_missing_pane_is_refused(self) -> None:
+        """tmux на несуществующую панель отвечает кодом 0 и ПУСТЫМ выводом.
+
+        Старый inline-probe в _ring считал такой ответ «живым» и слал send-keys
+        в фантомный номер. Здесь та же панель обязана быть отвергнута.
+        """
+        import composer
+        orig = composer.pane_identity
+        composer.pane_identity = lambda tmux, pane: {
+            "exists": False, "alive": False, "path": ""}
+        try:
+            foreign, why = composer.pane_is_foreign(
+                "tmux", "%999999", Path(__file__).resolve().parents[2])
+        finally:
+            composer.pane_identity = orig
+        self.assertTrue(foreign, "фантомная панель не проходит")
+        self.assertIn("отсутствует", why)
+
+    def test_a_shared_parent_directory_is_refused(self) -> None:
+        """Панель из ~/work общая для нескольких проектов — значит не наша.
+
+        Если бы её принимали, межпроектная инъекция вернулась бы тем же путём.
+        """
+        import composer
+        root = Path("/home/alexios/work/umputum")
+        orig = composer.pane_identity
+        composer.pane_identity = lambda tmux, pane: {
+            "exists": True, "alive": True, "path": "/home/alexios/work"}
+        try:
+            foreign, why = composer.pane_is_foreign("tmux", "%1", root)
+        finally:
+            composer.pane_identity = orig
+        self.assertTrue(foreign)
+        self.assertIn("другому проекту", why)
+
+    def test_ring_refuses_a_pane_of_another_project(self) -> None:
+        import composer
+        self.store.mutate(lambda s: s.setdefault("roles", {})
+                          .setdefault("reviewer-agent", {}).update({"pane": "%45"}))
+        os.environ.pop("PAIR_DISABLE_RING", None)
+        orig_which = composer.shutil.which
+        orig_foreign = composer.pane_is_foreign
+        composer.shutil.which = lambda name: "/usr/bin/tmux"
+        composer.pane_is_foreign = lambda tmux, pane, root: (
+            True, "панель принадлежит другому проекту: /home/alexios/work/phronesis")
+        try:
+            result = self.writer._ring("reviewer-agent", "заметка", "детали")
+        finally:
+            composer.shutil.which = orig_which
+            composer.pane_is_foreign = orig_foreign
+        self.assertFalse(result["rung"], "в чужую панель не звоним")
+        self.assertIn("другому проекту", result["why"])
+        kinds = [e.get("kind") for e in self.store.read_transcript(limit=0)]
+        self.assertIn("ring_refused_foreign_pane", kinds)
+
+    def test_deliver_refuses_a_pane_of_another_project_and_keeps_the_message(self) -> None:
+        """Отказ не должен превращаться в потерю сообщения."""
+        import composer
+        self.store.mutate(lambda s: s.setdefault("roles", {}).setdefault(
+            "reviewer-agent", {"pid": os.getpid(), "pane": "%55"}))
+        orig_deliver = composer.deliver
+        orig_which = composer.shutil.which
+        orig_foreign = composer.pane_is_foreign
+        called = []
+        composer.shutil.which = lambda name: "/usr/bin/tmux"
+        composer.pane_is_foreign = lambda tmux, pane, root: (
+            True, "панель принадлежит другому проекту: /home/alexios/work/phronesis")
+        composer.deliver = lambda *a, **k: called.append(a) or {}
+        try:
+            res = self.writer.tool_pair_deliver(to="reviewer-agent", text="payload worth keeping")
+        finally:
+            composer.deliver = orig_deliver
+            composer.shutil.which = orig_which
+            composer.pane_is_foreign = orig_foreign
+        self.assertFalse(res["delivered"])
+        self.assertEqual(called, [], "в чужую панель ничего не печатаем")
+        self.assertTrue(res.get("fallback_sent"))
+        read = self.peer.tool_pair_read(wait_seconds=0)
+        self.assertEqual(read["count"], 1)
+        self.assertIn("payload worth keeping", read["messages"][0]["text"])
+
+
+class TestComposerOfAnOpencodePane(PairTestCase):
+    """У OpenCode нет ASCII-маркера промпта: поле ввода — рамка над статусом.
+
+    Композер искался только как «строка с маркером промпта», поэтому панель
+    OpenCode не опознавалась никогда, `composer_line` отдавал None, а вызывающий
+    обязан считать None занятой. Доставка и звонок в OpenCode были невозможны
+    в принципе, а не изредка — и это молча уходило в ящик.
+    """
+
+    BORDER = "  \u2579\u2580\u2580\u2580\u2580\u2580\u2580\u2580\u2580  "
+    STATUS = "  \u25a0\u25a0\u25a0 esc interrupt   92.0K (9%) \u00b7 $0.00  ctrl+p commands"
+
+    def test_border_above_status_is_recognised_as_the_composer(self) -> None:
+        from composer import composer_line
+        found = composer_line(["", self.BORDER, self.STATUS])
+        self.assertIsNotNone(found, "рамка над статусом и есть композер OpenCode")
+        self.assertEqual(found.strip(), self.BORDER.strip())
+
+    def test_a_pristine_border_is_an_empty_composer(self) -> None:
+        from composer import composer_line, is_composer_empty
+        found = composer_line(["", self.BORDER, self.STATUS])
+        self.assertTrue(is_composer_empty(found))
+
+    def test_a_typed_border_is_a_busy_composer(self) -> None:
+        """Текст в рамке — значит композер занят, и перебивать нельзя."""
+        from composer import composer_line, is_composer_empty
+        typed = "  \u2579\u2580\u2580 typing right now \u2580\u2580  "
+        found = composer_line(["", typed, self.STATUS])
+        self.assertIsNotNone(found)
+        self.assertFalse(is_composer_empty(found))
+
+    def test_a_bare_frame_still_yields_none(self) -> None:
+        """Панель из одной рамки печатать некуда — это «занято», а не «свободно»."""
+        from composer import composer_line
+        self.assertIsNone(composer_line(["  \u2500\u2500\u2500\u2500\u2500\u2500  "]))
+
+    def test_the_block_glyph_is_inside_the_frame_range(self) -> None:
+        """\u2580 был на единицу выше прежней границы, и рамка не проходила fullmatch."""
+        import re
+        from composer import BOX_GLYPH
+        self.assertTrue(re.fullmatch(rf"[{BOX_GLYPH}]+", "\u2580\u2580\u2580"))
 
 
 if __name__ == "__main__":
