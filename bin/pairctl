@@ -11,6 +11,8 @@
 #   bin/pairctl task "fix the retry storm in the client"
 #   bin/pairctl assign opencode          # opencode becomes the writer
 #   bin/pairctl release                  # nobody holds authority
+#   bin/pairctl pane --role opencode mail:0.0   # bind a role to a pane by hand
+#   bin/pairctl pane --role opencode --clear    # back to what tmux reports
 #   bin/pairctl inbox agy                # read what is waiting for a role
 #   bin/pairctl notes                    # shared plan/decision/finding notes
 #   bin/pairctl log [--limit N]          # the audit trail

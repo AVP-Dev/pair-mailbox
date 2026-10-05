@@ -827,6 +827,34 @@ def pane_exists(pane: str) -> bool:
     return pane_alive(tmux, pane)
 
 
+def pin_verdict(tmux, pin: str, project_root: Path) -> tuple:
+    """Годится ли закреплённая панель, и если нет — почему.
+
+    Переопределение человеком («эта роль сидит вот здесь») обязано проходить ту же
+    проверку, что и адрес, снятый с панели автоматически. Иначе `pairctl pane`
+    стал бы дырой в изоляции, ради которой он и затевался: один неверный адрес,
+    и письмо роли уходит в чужой проект — ровно то, что чинили пункты 1 и 2.
+
+    Два независимых отказа, и они не взаимозаменяемы:
+    - панели нет (`pane_alive`) — ссылка протухла;
+    - панель чужая (`pane_is_foreign`) — ссылка живая, но ведёт не сюда.
+
+    Без tmux ответ «не годится»: подтвердить нечем, а подтверждать на слово —
+    значит вернуть поломку, которую переопределение как раз и лечит.
+    """
+    if not pin:
+        return False, "адрес не задан"
+    if not tmux:
+        return False, "tmux недоступен, проверить нечем"
+    from composer import pane_alive, pane_is_foreign
+    if not pane_alive(tmux, pin):
+        return False, "панели по этому адресу больше нет"
+    foreign, why_foreign = pane_is_foreign(tmux, pin, project_root)
+    if foreign:
+        return False, f"панель чужая: {why_foreign}"
+    return True, "панель жива и наша"
+
+
 class PairSession:
     """One agent's view of the shared state, bound to a role at construction."""
 
@@ -840,8 +868,32 @@ class PairSession:
 
     def _register(self, state: dict[str, Any]) -> None:
         roles = state.setdefault("roles", {})
-        pane = os.environ.get("TMUX_PANE")
         current_pid = os.getpid()
+        entry = roles.setdefault(self.role, {"first_seen": utcnow(), "reads": 0, "sends": 0})
+        tmux = shutil.which("tmux")
+
+        # Переопределение человека решается первым, потому что оно определяет,
+        # ЧЬЯ это панель, а всё остальное в этой функции смотрит на панель, которая
+        # и так вывелась из окружения процесса. Порядок не косметический: проверка
+        # «панель занята другой ролью» ниже обязана видеть именно ту панель,
+        # которая будет записана, иначе переопределение молча создаст двух
+        # претендентов на один композер.
+        pin = entry.get("pane_pin")
+        pin_why = ""
+        if pin:
+            pin_ok, pin_why = pin_verdict(tmux, pin, self.store.project_root)
+            if pin_ok:
+                pane = pin
+            else:
+                # Закрепление с протухшим адресом снимается, но не молча: молча
+                # снятое переопределение неотличимо от того, которого не было
+                # никогда, и человек считал бы, что оно в силе.
+                entry.pop("pane_pin", None)
+                entry.pop("pane_pin_why", None)
+                self.store.append_transcript("pane_pin_dropped", self.role,
+                                             pin=pin, why=pin_why)
+                pin = ""
+        pane = pin or os.environ.get("TMUX_PANE")
 
         # If this role already existed with a different living PID, record collision
         existing = roles.get(self.role)
@@ -887,7 +939,22 @@ class PairSession:
         entry = roles.setdefault(self.role, {"first_seen": utcnow(), "reads": 0, "sends": 0})
         entry["last_seen"] = utcnow()
         entry["pid"] = current_pid
-        if pane:
+        if pin:
+            # Переопределение выигрывает у окружения. Именно это и было сломано:
+            # ручная правка state.json не чинила ничего, потому что `_register`
+            # перезаписывал `pane` на каждом вызове любого инструмента. Такая
+            # «починка» жила ровно до следующего звонка.
+            #
+            # В транскрипт пишется отличие, а не сам факт: обновление идёт на
+            # каждом инструменте, и запись на каждом вызове засыпала бы журнал
+            # одинаковыми строками — ровно тот потолок, который здесь чинится.
+            if entry.get("pane") != pin:
+                self.store.append_transcript("pane_pin_honoured", self.role,
+                                             pane=pin, was=entry.get("pane"),
+                                             why="переопределение человека")
+            entry["pane"] = pin
+            entry["pane_pin_why"] = pin_why
+        elif pane:
             # Пишем устойчивый адрес `<сессия>:<окно>.<панель>`, а не %N: номер
             # перенумеровывается и протухает в окружении процесса, имя с окном —
             # нет. Обратная совместимость не выбирается: pane_exists, deliver и
@@ -898,7 +965,6 @@ class PairSession:
             # запись повторяется на каждом вызове любого инструмента, и при
             # буквальном сравнении она шла бы в транскрипт десятки раз за сессию
             # и съедала бы ровно тот потолок, который здесь и чинится.
-            tmux = shutil.which("tmux")
             address = ""
             if tmux:
                 # Именно session_address, а не canonical_pane: тот на отказе
@@ -2997,6 +3063,78 @@ def run_ctl(args: argparse.Namespace, state_dir: Path) -> int:
         print(f"расстановка: писатель {wanted.get('writer') or '—'}, критик {wanted.get('critic') or '—'}")
         return 0
 
+    if command == "pane":
+        # Переопределение привязки панели рукой человека.
+        #
+        # Зачем оно, если адрес и так снимается с панели: `_register` берёт адрес из
+        # `TMUX_PANE` окружения процесса, и у сервера, который сам себя перерегистри-
+        # стрирует после рестарта, это окружение бывает чужим или протухшим. Правка
+        # state.json вручную тут не помогает: `_register` перезаписывает `pane` на
+        # каждом вызове, и «починка» живёт до следующего звонка. Ключ `pane_pin`
+        # читается раньше окружения, поэтому выигрывает.
+        #
+        # Адрес проверяется той же мерой, что и снятый автоматически, иначе
+        # переопределение стало бы дырой в изоляции между проектами.
+        tmux = shutil.which("tmux")
+        role = args.role
+        state = store.read()
+        roles_now = state.setdefault("roles", {})
+        if role not in roles_now:
+            print(f"warning: {role!r} has never connected; registered roles: "
+                  f"{', '.join(sorted(roles_now)) or '—'}")
+
+        if args.clear:
+            if not roles_now.get(role, {}).get("pane_pin"):
+                print(f"у роли {role} и так нет переопределения панели")
+                return 0
+            store.mutate(lambda st: (st["roles"][role].pop("pane_pin", None),
+                                     st["roles"][role].pop("pane_pin_why", None)))
+            store.append_transcript("pane_pin_cleared", role, by="human")
+            print(f"переопределение панели роли {role} снято, снова берётся из tmux")
+            return 0
+
+        if not args.address:
+            info = roles_now.get(role, {})
+            if not info:
+                print(f"роль {role} не подключалась; панель неизвестна")
+                return 1
+            pin = info.get("pane_pin")
+            if pin:
+                print(f"{role} закреплена за {pin}")
+                print(f"  {info.get('pane_pin_why') or 'причина не записана'}")
+                print(f"  записано в ростер: {info.get('pane')}")
+            else:
+                print(f"{role} переопределения не имеет, панель из tmux: "
+                      f"{info.get('pane') or '—'}")
+            return 0
+
+        ok, why = pin_verdict(tmux, args.address, store.project_root)
+        if not ok:
+            # Отказ здесь обязателен: записать негодный адрес — значит на следующем
+            # же вызове `pair_deliver` уйти в чужой проект или в никуда.
+            print(f"error: {args.address!r} не годится: {why}", file=sys.stderr)
+            return 1
+
+        def apply_pin(st):
+            entry = st.setdefault("roles", {}).setdefault(
+                role, {"first_seen": utcnow(), "reads": 0, "sends": 0})
+            previous = entry.get("pane")
+            entry["pane_pin"] = args.address
+            entry["pane_pin_why"] = f"закреплено человеком: {why}"
+            # Сразу записываем в `pane`, чтобы переопределение начало действовать
+            # без ожидания следующего вызова инструмента, а не только после него.
+            entry["pane"] = args.address
+            entry["last_seen"] = entry.get("last_seen") or utcnow()
+            return previous
+
+        previous = store.mutate(apply_pin)
+        store.append_transcript("pane_pin_set", role, by="human",
+                                pane=args.address, was=previous, why=why)
+        print(f"{role} закреплена за {args.address} ({why})")
+        if previous and previous != args.address:
+            print(f"  было: {previous}")
+        return 0
+
     if command == "roster":
         # Что записан в ростере, кто из этого ещё существует.
         #
@@ -3277,7 +3415,6 @@ def run_ctl(args: argparse.Namespace, state_dir: Path) -> int:
         if not args.yes:
             print("refusing to reset without --yes", file=sys.stderr)
             return 2
-        import shutil
 
         for path in (store.mailbox_root, store.notes_root, store.patches_root):
             shutil.rmtree(path, ignore_errors=True)
@@ -3490,6 +3627,16 @@ def build_parser() -> argparse.ArgumentParser:
     assign.add_argument("role")
 
     sub.add_parser("release", help="human: clear write authority")
+
+    pane = sub.add_parser(
+        "pane",
+        help="human: bind a role to a pane by hand, or --clear to go back to what tmux says",
+    )
+    pane.add_argument("--role", required=True, help="role whose binding to set")
+    pane.add_argument("address", nargs="?",
+                      help="pane to bind it to: %%N or <session>:<window>.<pane>")
+    pane.add_argument("--clear", action="store_true",
+                      help="drop the override; the pane goes back to what the process reports")
 
     roster = sub.add_parser("roster", help="human: show who is registered, --prune to clean")
     roster.add_argument("--prune", action="store_true",
