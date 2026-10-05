@@ -49,13 +49,55 @@ class AssetError(RuntimeError):
     """Ассета нет или он не выполняет свою часть контракта."""
 
 
-def load_asset(path: Path, required: tuple[str, ...] = ()) -> str:
+# Символ, после которого HTML5-парсер считает, что script закончился. Правило из
+# спецификации: закрывающая последовательность "</script" завершает элемент, если
+# дальше идёт tab, LF, FF, пробел, "/" или ">". Регистр не важен.
+SCRIPT_END = "</script"
+SCRIPT_END_TERMINATORS = "\t\n\f />"
+
+
+def breaks_out_of_script(text: str) -> str | None:
+    """Первое место, где `text` закрывает script, и кусок вокруг него.
+
+    Здесь не «а есть ли в файле подстрока "</script"», а ровно то, что делает
+    браузер: ищется последовательность, за которой стоит разделитель из
+    спецификации. Разница существенная — в JavaScript регулярное выражение
+    `/<\\/script/` содержит ту же букву за слэшем, но страницу не ломает, и
+    проверка по подстроке запрещала бы писать в ассете совершенно рабочий код.
+
+    Экранировать проблемный литерал нельзя: если ассет содержит его в КОММЕНТАРИИ,
+    то после правки комментарий перестанет быть комментарием по смыслу, а после
+    правки в строке изменится сам текст ошибки, который человек будет читать.
+    Поэтому единственное честное действие — отказаться собирать страницу и
+    сказать, в какой строке ассета дело.
+    """
+    lowered = text.lower()
+    start = 0
+    while True:
+        found = lowered.find(SCRIPT_END, start)
+        if found < 0:
+            return None
+        after = found + len(SCRIPT_END)
+        if after < len(text) and text[after] in SCRIPT_END_TERMINATORS:
+            line = text.count("\n", 0, found) + 1
+            context = text[max(0, found - 40):found + 40].replace("\n", " ")
+            return f"строка {line}: ...{context}..."
+        start = found + 1
+
+
+def load_asset(path: Path, required: tuple[str, ...] = (), in_script: bool = False) -> str:
     """Прочитать ассет, проверив, что он на месте и не пустой.
 
     `required` — обязательные куски содержимого. Для CSS это токены из
     `docs/theme-tokens.md`: страница, потерявшая `--border`, не сломается молча, а
     просто станет другой, и заметить это можно только глазами. Проверка здесь
     превращает такую правку в ошибку сборки.
+
+    `in_script` — ассет будет вставлен внутрь `<script>`. Тогда закрывающая
+    последовательность в нём означает не «лишний текст», а конец элемента: всё
+    остальное уедет в страницу сырым текстом, DOM не построится, и человек увидит
+    исходник вместо дашборда. Молчаливый браузер тут быть не может, поэтому
+    сборка отказывается.
     """
     try:
         text = path.read_text(encoding="utf-8")
@@ -66,6 +108,12 @@ def load_asset(path: Path, required: tuple[str, ...] = ()) -> str:
     missing = [token for token in required if token not in text]
     if missing:
         raise AssetError(f"{path.name}: нет обязательных токенов: {', '.join(missing)}")
+    if in_script:
+        offending = breaks_out_of_script(text)
+        if offending:
+            raise AssetError(
+                f"{path.name}: закрывающий тег script внутри ассета разорвал бы "
+                f"страницу на полуслове ({offending}). Перепишите его словами.")
     return text
 
 
@@ -84,7 +132,7 @@ def render_page(snapshot: dict[str, Any], *, refresh_seconds: int = 0,
     пустоту вместо проверки и прошёл бы, ничего не собрав.
     """
     css_text = load_asset(CSS_FILE, REQUIRED_TOKENS) if css is None else css
-    scripts = "".join(load_asset(path) for path in JS_ORDER) if js is None else js
+    scripts = "".join(load_asset(path, in_script=True) for path in JS_ORDER) if js is None else js
     data = snapshot_json(snapshot)
     info = snapshot.get("round") or {}
     title = f"{snapshot.get('project') or 'пара'} — раунд {info.get('number', '?')}"

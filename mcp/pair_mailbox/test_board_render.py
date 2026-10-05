@@ -32,8 +32,9 @@ import unittest
 from html.parser import HTMLParser
 from pathlib import Path
 
-from board_render import (CSS_FILE, JS_ORDER, JS_FILE, LABELS_FILE, REQUIRED_TOKENS,
-                          AssetError, load_asset, render_page, write_page)
+from board_render import (CSS_FILE, SCRIPT_END_TERMINATORS, JS_ORDER, JS_FILE,
+                          LABELS_FILE, REQUIRED_TOKENS, AssetError, breaks_out_of_script,
+                          load_asset, render_page, write_page)
 from board_snapshot import build_snapshot
 from pair_test_base import PairTestCase
 
@@ -41,6 +42,32 @@ REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 
 SNAPSHOT_RE = re.compile(
     r'<script id="snapshot" type="application/json">(.*?)</script>', re.S)
+
+# Закрывающая последовательность script по спецификации HTML5: "</script", после
+# которого идёт tab, LF, FF, пробел, "/" или ">". Регулярное выражение с прогнозом,
+# потому что сам lookahead и есть часть правила, а не украшение.
+SCRIPT_END_RE = re.compile(r"</script(?=[\t\n\f />])", re.I)
+
+
+def _script_blocks_per_html5(page: str) -> list[str]:
+    """Содержимое блоков `<script>` так, как их увидит браузер.
+
+    Именно эта функция повторяет правило из спецификации, а не полагается на
+    разбор HTML-парсером: разрывы и незакрытые блоки — ровно тот дефект, который
+    здесь ловится, и он обязан быть виден в тесте, а не в браузере человека.
+    """
+    blocks: list[str] = []
+    position = 0
+    while True:
+        start = page.find("<script>", position)
+        if start < 0:
+            return blocks
+        start += len("<script>")
+        match = SCRIPT_END_RE.search(page, start)
+        if not match:
+            return blocks
+        blocks.append(page[start:match.start()])
+        position = match.end()
 
 # Глобалы, которые вызываются, но не объявляются в файле.
 BUILTINS = {"isNaN", "parseInt", "parseFloat", "setTimeout", "setInterval",
@@ -74,6 +101,11 @@ def _stub_snapshot(**overrides) -> dict:
 class AssembleTest(unittest.TestCase):
     def setUp(self) -> None:
         self.snapshot = _stub_snapshot()
+        # Свой каталог для двух тестов, которые пишут ассет на диск: поднимать
+        # ради них `Store` было бы приспособлением без нужды.
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.root = Path(self._tmp.name)
 
     def test_page_is_one_self_contained_file(self):
         page = render_page(self.snapshot)
@@ -126,6 +158,83 @@ class AssembleTest(unittest.TestCase):
         for needed in ("snapshot", "app", "project", "stamp", "theme-toggle",
                        "watch-toggle"):
             self.assertIn(needed, parser.ids)
+
+    def test_inlined_js_contains_no_script_closer(self):
+        # Находка agy: литерал закрывающего тега script в КОММЕНТАРИИ ассета.
+        # Ассет инлайнится внутрь <script>, и HTML5 закрывает элемент на такой
+        # строке независимо от того, комментарий это или код: всё остальное уезжает
+        # в страницу сырым текстом, DOM не строится, человек видит исходник.
+        # Проверка идёт по собранной странице, а не по исходнику, потому что
+        # именно собранная страница отдаётся браузеру.
+        page = render_page(self.snapshot)
+        head, _, rest = page.partition("<script>\n")
+        self.assertTrue(rest, "в странице нет блока скриптов")
+        body, _, _ = rest.partition("\n</script>")
+        self.assertIsNone(breaks_out_of_script(body),
+                          "в инлайненном скрипте есть закрывающий тег script")
+        # Ровно три закрывающих тега на страницу: снимок, скрипты, и ничего лишнего.
+        self.assertEqual(page.lower().count("</script"), 2)
+
+    def test_script_closer_in_a_comment_is_refused_by_the_renderer(self):
+        hostile = self.root / "hostile.js"
+        hostile.write_text(
+            "/* упоминание закрывающего тега: </script> идёт в комментарии */\n"
+            "console.log(1);\n", encoding="utf-8")
+        with self.assertRaises(AssetError) as caught:
+            load_asset(hostile, in_script=True)
+        message = str(caught.exception)
+        self.assertIn("hostile.js", message)
+        self.assertIn("строка 1", message)
+
+    def test_a_working_slash_sequence_is_not_a_breaker(self):
+        # Регулярка `/<\\/script/` содержит ту же букву, но страницу не ломает.
+        # Проверка по подстроке запрещала бы писать в ассете рабочий код, поэтому
+        # отличать надо по следующему символу, а не по наличию букв.
+        safe = self.root / "safe.js"
+        safe.write_text("var re = /<\\/script/;\nconsole.log(re);\n", encoding="utf-8")
+        self.assertIsNone(breaks_out_of_script(safe.read_text(encoding="utf-8")))
+        self.assertTrue(load_asset(safe, in_script=True))
+
+    def test_every_breaker_shape_is_detected(self):
+        # Правило из спецификации: за "</script" закрывает tab, LF, FF, пробел,
+        # "/" или ">". Каждая форма проверена, иначе правило проверяется на одном
+        # примере и не значит ничего.
+        for terminator in SCRIPT_END_TERMINATORS:
+            self.assertIsNotNone(breaks_out_of_script("x</script" + terminator + "y"),
+                                 f"не замечен разделитель {terminator!r}")
+        # Регистр не важен, и не-разделитель после букв не закрывает.
+        self.assertIsNotNone(breaks_out_of_script("</SCRIPT>"))
+        self.assertIsNone(breaks_out_of_script("</scripta>"))
+
+    def test_real_assets_are_clean(self):
+        for path in JS_ORDER:
+            self.assertIsNone(breaks_out_of_script(path.read_text(encoding="utf-8")),
+                              f"{path.name} содержит закрывающий тег script")
+
+    def test_client_code_survives_as_one_whole_script_block(self):
+        """Сильная форма той же проверки: блоки скриптов вырезаются по правилу HTML5.
+
+        `HTMLParser` из stdlib разрывает `<script>` на литерале `</script>` так же,
+        как браузер, — но молча: тест, проверяющий только id элементов, такой разрыв
+        не замечает, потому что атрибуты разметки никуда не делись, и страница проходит
+        проверку с кашей из исходника вместо отрисовки. Именно это и произошло с
+        нашим набором до правки: 41 тест были зелёными на сломанной странице.
+
+        Здесь проверяется не «есть ли в файле подстрока», а то, что браузер видит:
+        блок скриптов ровно один, и клиентский код в нём целый — от `function` до
+        финального вызова `render`.
+        """
+        page = render_page(self.snapshot)
+        blocks = _script_blocks_per_html5(page)
+        # Блок снимка открывается тегом с атрибутами, а не голым <script>, поэтому
+        # регулярка находит ровно один блок — клиентский. Снимок проверяется
+        # отдельно, через SNAPSHOT_RE и json.loads.
+        self.assertEqual(len(blocks), 1, "клиентский скрипт разорван на части")
+        client = blocks[0]
+        for fragment in ("function readSnapshot", "function renderRound",
+                         "function renderEvents", "render(readSnapshot());"):
+            self.assertIn(fragment, client,
+                          f"клиент потерял {fragment!r}: блок разорван")
 
     def test_toggles_are_real_buttons_with_types(self):
         page = render_page(self.snapshot)
