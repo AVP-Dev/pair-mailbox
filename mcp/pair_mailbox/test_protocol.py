@@ -1316,6 +1316,108 @@ class TestPatchAccounting(PairTestCase):
         self.assertEqual(self.writer.unresolved_patches(self.store.read()), [])
 
 
+class TestOverflowedComposer(PairTestCase):
+    """Свёрнутый длинный ввод — это присутствие, а не отсутствие.
+
+    Проверка доставки ищет ХВОСТ набранного текста. Когда текст длиннее видимой
+    области, TUI сворачивает его в «↑ N more lines», хвоста на экране нет, и
+    проверка объявляет неподтверждённую доставку при тексте, который на экране
+    есть. Дальше сообщение дублируется в ящик — и человек видит одно и то же
+    дважды: в ящике и в композере. Наблюдалось вживую на 4259 символах.
+    """
+
+    OVERFLOWED = ["", "  some output", "> ↑ 14 more lines"]
+    PLAIN = ["", "  some output", ">"]
+
+    def test_overflow_is_detected(self) -> None:
+        import composer
+        self.assertTrue(composer.composer_overflowed(self.OVERFLOWED))
+        self.assertFalse(composer.composer_overflowed(self.PLAIN),
+                         "обычный промпт переполнением не считается")
+
+    def test_overflow_needs_an_actual_composer(self) -> None:
+        """Переполнение без композера — это отсутствие композера, а не переполнение."""
+        import composer
+        self.assertFalse(composer.composer_overflowed(["  frame only", "  ═══"]))
+
+    def test_delivery_over_an_overflowed_composer_counts_as_delivered(self) -> None:
+        """Главный инвариант: текст на экране не удваивается в ящик."""
+        import composer
+        sent: list[str] = []
+
+        def fake_run(cmd, **kw):
+            if "send-keys" in cmd:
+                sent.append(cmd[-1])
+            return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+        orig = (composer.subprocess.run, composer.capture, composer._tmux,
+                composer.pane_alive)
+        # pane_alive тоже ходит в tmux через subprocess.run и по пустому выводу
+        # решил бы, что панели нет. Заглушкиваем его отдельно, иначе тест проверял
+        # бы не доставку, а поведение заглушки.
+        composer.subprocess.run = fake_run
+        # Композер пуст СНАЧАЛА, иначе deliver правомерно откажет «занято».
+        # Переполнение появляется после ввода: ровно это и происходит в жизни,
+        # когда набранного текста становится больше, чем помещается в строку.
+        frames = [self.PLAIN, self.OVERFLOWED]
+
+        def fake_capture(tmux, pane):
+            return frames.pop(0) if len(frames) > 1 else self.OVERFLOWED
+
+        composer.capture = fake_capture
+        composer._tmux = lambda: "tmux"
+        composer.pane_alive = lambda tmux, pane: True
+        try:
+            res = composer.deliver("%1", "очень длинный текст " * 300, wait_for_empty=0)
+        finally:
+            (composer.subprocess.run, composer.capture, composer._tmux,
+             composer.pane_alive) = orig
+        self.assertTrue(res["delivered"], "переполненный композер это доставка, а не отказ")
+        self.assertTrue(res.get("tail_hidden"))
+        self.assertNotIn("unverified", res,
+                         "подтверждение не выдаётся, если текст доказуемо на экране")
+        self.assertIn("Enter", sent, "Enter всё равно отправляется")
+
+
+class TestInputBoxCornerVsSideFrame(PairTestCase):
+    """Поле ввода отличается от боковой рамки геометрией угла.
+
+    Нижняя граница поля ввода opencode начинается с угла `╹`, а боковые рамки
+    панели — с вертикали `┃`. Если считать за поле ввода любую рамку, то
+    панель из одних рамок объявится доступной для печати, и send-keys уйдёт
+    мимо композера. Настоящая ловушка была обратной: панель opencode считалась
+    занятой всегда, потому что `›` — эхо свёрнутого вызова инструмента — входит
+    в PROMPT_MARKERS и выглядел как промпт.
+    """
+
+    def test_lower_corner_is_the_input_row(self) -> None:
+        from composer import composer_line
+        panel = ["  ┃ Build · something", "  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀",
+                 "   ⬝⬝⬝ esc interrupt  320.9K (31%) · $0.00  ctrl+p commands", ""]
+        found = composer_line(panel)
+        self.assertIsNotNone(found)
+        self.assertTrue(found.strip().startswith("╹"), f"ожидалась нижняя граница, получено {found!r}")
+
+    def test_the_input_row_beats_a_tool_call_echo(self) -> None:
+        """`›` входит в PROMPT_MARKERS, но эхо вызова инструмента — не композер."""
+        from composer import composer_line, is_composer_empty
+        panel = ["  Thought", "     › pair.pair_send [to=agy, subject=... done]",
+                 "  ┃  Build · something", "  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀",
+                 "   ⬝⬝⬝ esc interrupt  320.9K (31%) · $0.00  ctrl+p commands", ""]
+        found = composer_line(panel)
+        self.assertIsNotNone(found)
+        self.assertTrue(found.strip().startswith("╹"),
+                        f"эхо вызова инструмента перебило настоящий композер: {found!r}")
+        self.assertTrue(is_composer_empty(found),
+                        "свободный композер не должен читаться как занятый из-за эха")
+
+    def test_a_panel_of_frames_alone_is_not_writable(self) -> None:
+        from composer import composer_line
+        panel = ["  ┃  Build · something", "  ┃", "  ┃", ""]
+        self.assertIsNone(composer_line(panel),
+                          "панель из рамок печатать некуда: это «занято», а не «свободно»")
+
+
 class TestNoteTailReads(PairTestCase):
     """Заметки не читаются целиком: ни файловым инструментом, ни подавно.
 
