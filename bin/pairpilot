@@ -58,6 +58,7 @@ try:
         _tmux,
         load_allow_patterns,
         pane_alive,
+        pane_key,
         resolve_permission_prompt,
     )
 except Exception as error:  # noqa: BLE001 - причина должна быть видна сразу
@@ -304,8 +305,18 @@ class Pilot:
             pid = info.get("pid")
             if isinstance(pid, int) and pid > 0 and not is_pid_alive(pid):
                 continue
-            table.setdefault(pane, []).append(role)
+            table.setdefault(self.pane_key(pane), []).append(role)
         return table
+
+    def pane_key(self, pane: str) -> str:
+        """Ключ группировки панелей, одинаковый для обоих форматов ссылки.
+
+        Группировка по самой строке перестала работать, как только в состоянии
+        появились адреса сессий: `%1` и `mail:0.1` — одна панель, а таблица видела
+        две. Дальше это ломало `ambiguous()`, а тот, не увидев двух ролей на одной
+        панели, считал её свободной и бил в неё — то есть в чужой композер.
+        """
+        return pane_key(self.tmux, pane)
 
     def stale_roles(self, state: dict) -> dict[str, str]:
         """Роли с мёртвым процессом, но всё ещё числящиеся. Не удаляются молча:
@@ -326,8 +337,13 @@ class Pilot:
         Запись о мёртвом агенте не делает панель занятой: если в ней кто-то жив,
         перезапуск ушедшего роли ударит по живому соседу. Считаем только по
         процессам, потому что имя панели — это адрес, а не свидетельство."""
+        key = self.pane_key(pane)
         for other, info in (state.get("roles") or {}).items():
-            if other == role or info.get("pane") != pane:
+            # Сравнение по ключу, а не по строке: сосед может быть записан адресом
+            # сессии, а `pane` пришёл из `%N`, и это та же панель. При сравнении
+            # строк сверхвизор решил бы, что панель свободна, и перезапустил в
+            # ней чужого агента.
+            if other == role or self.pane_key(info.get("pane")) != key:
                 continue
             pid = info.get("pid")
             if isinstance(pid, int) and pid > 0 and is_pid_alive(pid):
@@ -879,8 +895,12 @@ class Pilot:
         self.skip = {role for names in self.shared_panes(state).values() for role in names}
         # Свою панель не трогаем никогда: там ввод человека.
         if self.own_pane:
+            own_key = self.pane_key(self.own_pane)
             for role, info in (state.get("roles") or {}).items():
-                if info.get("pane") == self.own_pane:
+                # Своя панель приходит из окружения как `%N`, а роль записана
+                # адресом сессии. Сравнение строк перестаёт срабатывать, и
+                # сверхвизор начинает вбивать сообщения в панель человека.
+                if self.pane_key(info.get("pane")) == own_key:
                     self.skip.add(role)
                     if self.remember(f"ownpane-{role}-{self.own_pane}"):
                         log(f"{role} сидит в моей же панели {self.own_pane} — не трогаю её")

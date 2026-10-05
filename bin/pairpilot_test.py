@@ -617,6 +617,32 @@ class TestRestart(PilotCase):
                       if line.strip() and json.loads(line).get("kind") == "pilot_restart_impossible"]
         self.assertIn("claude", impossible[-1]["why"])
 
+    def test_a_squatter_recorded_in_the_other_format_is_still_a_squatter(self) -> None:
+        """Тот же запрет, но сосед записан адресом сессии, а не `%N`.
+
+        Панель, занятая живым соседом, перезапускать нельзя: `respawn-pane` убивает
+        и его ввод. При сравнении строк сосед, записанный как `mail:0.1`, выглядел
+        бы сидящим на ДРУГОЙ панели, панель сочлась бы свободной, и перезапуск
+        снёс бы живого агента. Ровно та же поломка, что и с собственной панелью
+        сверхвизора, только последствия здесь хуже.
+        """
+        self.write_state(writer="agy", round=3, roles={
+            "agy": {"last_seen": ago(600), "pid": self.DEAD_PID, "pane": "%7"},
+            "claude": {"last_seen": ago(30), "pid": os.getpid(), "pane": "mail:0.1"},
+        })
+        pilot = self.pilot_with_launch()
+        # Настоящий ключ группировки, а не сравнение строк: здесь и проверяется
+        # именно то, что оба формата приводятся к одному ключу.
+        pilot.pane_key = lambda pane: {"%7": "mail:0.0", "mail:0.1": "mail:0.0"}.get(pane, pane)
+        pilot.tick()
+        self.assertEqual([], self.calls, "панель, где сидит живой сосед, не трогаем")
+        self.assertNotIn("pilot_restart", self.transcript_kinds())
+        impossible = [json.loads(line) for line in
+                      (self.state_dir / "transcript.jsonl").read_text(encoding="utf-8").splitlines()
+                      if line.strip() and json.loads(line).get("kind") == "pilot_restart_impossible"]
+        self.assertIn("claude", impossible[-1]["why"],
+                      "отказ должен называть живого соседа, а не отсутствие панели")
+
     def test_failed_respawn_is_recorded_not_hidden(self) -> None:
         self.dead_writer_state()
         pilot = self.pilot_with_launch()
@@ -888,6 +914,29 @@ class TestOperatorSafety(PilotCase):
         pilot.own_pane = "%19"
         pilot.tick()
         self.assertTrue(pilot.pending("agy"), "чужая панель — наша работа")
+
+    def test_own_pane_recorded_as_a_session_address_is_still_own(self) -> None:
+        """Панель человека может быть записана адресом сессии, а не `%N`.
+
+        Сверхвизор знает свою панель из TMUX_PANE, то есть числом, а в ростере
+        она лежит адресом `mail:0.0`. Сравнение строк на этом расходится, и
+        сверхвизор начинает вбивать напоминания в панель оператора — то есть
+        съедать его ввод. Это не гипотеза: адреса сессий уже пишутся в `_register`,
+        а пилот читает то, что там написано.
+        """
+        self.inbox("opencode", 4)
+        self.write_state(writer="opencode", seen={"opencode": 0},
+                         roles={"opencode": {"last_seen": ago(9999), "pane": "mail:0.0"}})
+        pilot = self.pilot()
+        pilot.own_pane = "%19"
+        # Настоящий ключ группировки вместо заглушки: здесь важно проверить
+        # сравнение, а не то, что tmux выключен.
+        pilot.pane_key = lambda pane: {
+            "mail:0.0": "mail:0.0", "%19": "mail:0.0", "%20": "mail:0.1",
+        }.get(pane, pane)
+        pilot.tick()
+        self.assertEqual("", pilot.pending("opencode"), "в свою панель не кладём")
+        self.assertIn("pilot_own_pane", self.transcript_kinds())
 
 
 class TestVisibleWork(PilotCase):

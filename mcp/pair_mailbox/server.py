@@ -786,32 +786,45 @@ def is_pid_alive(pid: Any) -> bool:
         return err.errno == errno.EPERM
 
 
-def pane_exists(pane: str) -> bool:
-    """True if tmux still has this pane id.
+def same_pane(left, right) -> bool:
+    """`composer.same_pane` с найденным tmux. Логика — в composer, рядом с
+    `pane_identity`: сравнение панелей это часть разбора панели, а не протокола.
+    Обёртка нужна потому, что зовут её три места протокола, а composer
+    импортируется лениво."""
+    tmux = shutil.which("tmux")
+    if not tmux:
+        return False
+    from composer import same_pane as _same
+    return _same(tmux, left, right)
 
-    A pane id alone proves nothing across a reboot or a session change: %1 is a
-    short-lived name that a fresh session reuses for an unrelated window. That is
+
+def pane_exists(pane: str) -> bool:
+    """True if tmux still has this pane.
+
+    A pane reference alone proves nothing across a reboot or a session change: %1
+    is a short-lived name that a fresh session reuses for an unrelated window, and
+    `<session>:<window>.<pane>` points at whatever now sits at that index. That is
     why clearing a stale pane needs this check and not just a dead pid.
+
+    Both reference formats are accepted. The regex used to allow only `%N`, which
+    silently broke the moment addresses were recorded: `pane_exists("mail:0.0")`
+    answered False for a live pane, so `roster --prune` would have deleted a role
+    that was sitting right there, and `_register` would have cleared its pane.
 
     False whenever tmux is absent — the honest answer is "cannot vouch for it",
     and the caller is deciding whether to drop a record, so failing closed keeps
     the record rather than guessing.
+
+    The verdict lives in composer.pane_alive: these two answer one question and
+    were once two implementations, so a fix to one left the other wrong while
+    `pairpilot` called the composer's copy. One implementation, two names kept
+    for their existing callers.
     """
-    if not pane or not re.fullmatch(r"%[0-9]+", str(pane)):
+    tmux = shutil.which("tmux")
+    if not tmux:
         return False
-    try:
-        tmux = shutil.which("tmux")
-        if not tmux:
-            return False
-        result = subprocess.run([tmux, "display-message", "-p", "-t", str(pane), "#{pane_dead}"],
-                                capture_output=True, text=True, timeout=5)
-    except (OSError, subprocess.SubprocessError):
-        return False
-    # Несуществующая панель — это НЕ «жива». tmux на такой запрос отвечает
-    # кодом 0 и ПУСТЫМ выводом, так что проверка только на код успеха и на
-    # "не 1" объявляла бы живой любую фантомную панель — ровно тот случай, от
-    # которого мы чистим запись.
-    return result.returncode == 0 and result.stdout.strip() in ("0", "false")
+    from composer import pane_alive
+    return pane_alive(tmux, pane)
 
 
 class PairSession:
@@ -853,7 +866,7 @@ class PairSession:
         # window now owns that id.
         if pane:
             for other_name, other_info in list(roles.items()):
-                if other_name != self.role and other_info.get("pane") == pane:
+                if other_name != self.role and same_pane(pane, other_info.get("pane")):
                     other_pid = other_info.get("pid")
                     if other_pid and not is_pid_alive(other_pid) and not pane_exists(other_info["pane"]):
                         other_info.pop("pane", None)
@@ -880,16 +893,34 @@ class PairSession:
             # нет. Обратная совместимость не выбирается: pane_exists, deliver и
             # pane_is_foreign принимают оба формата, иначе обновление сломало бы
             # доставку у всех живых ролей сразу.
+            #
+            # В транскрипт пишется не «адрес изменился», а «адрес ИМЕНЯЕТСЯ»:
+            # запись повторяется на каждом вызове любого инструмента, и при
+            # буквальном сравнении она шла бы в транскрипт десятки раз за сессию
+            # и съедала бы ровно тот потолок, который здесь и чинится.
             tmux = shutil.which("tmux")
             address = ""
             if tmux:
-                from composer import canonical_pane
-                address = canonical_pane(tmux, pane)
-                if address != pane:
-                    self.store.append_transcript(
-                        "pane_address_canonical", self.role,
-                        previous=pane, canonical=address,
-                        why="%N перенумеровывается и протухает; сессия стабильна")
+                # Именно session_address, а не canonical_pane: тот на отказе
+                # возвращает исходный вход, то есть неотличим от успеха, и
+                # «адрес не получился» было бы нечем заметить.
+                from composer import session_address
+                address = session_address(tmux, pane)
+            previous = entry.get("pane")
+            if address and address != previous:
+                self.store.append_transcript(
+                    "pane_address_canonical", self.role,
+                    previous=previous or pane, canonical=address,
+                    why="%N перенумеровывается и протухает; сессия стабильна")
+            # Адрес не получился — молча продолжать на %N нельзя: тогда причина
+            # неустойчивой адресации навсегда остаётся невидимой. Запись в
+            # транскрипт — это тот случай, когда отсутствие факта само по себе
+            # является фактом.
+            elif not address and previous != pane:
+                self.store.append_transcript(
+                    "pane_address_unavailable", self.role,
+                    pane=pane,
+                    why="имя сессии получить не удалось, адресация на %N неустойчива")
             entry["pane"] = address or pane
 
     def _require_not_writer(self, action: str) -> None:
@@ -1277,7 +1308,10 @@ class PairSession:
         pane = (state.get("roles", {}).get(target) or {}).get("pane")
         if not pane:
             return {"rung": False, "why": "нет панели, сосед вне tmux"}
-        if pane == os.environ.get("TMUX_PANE"):
+        # Сравнение строк здесь не годится: своя панель из окружения приходит как
+        # `%1`, а в состоянии лежит `mail:0.1`. Такое равенство просто перестаёт
+        # быть верным, и звонок уходит в собственную панель.
+        if same_pane(pane, os.environ.get("TMUX_PANE")):
             return {"rung": False, "why": "не звоним в собственную панель"}
         tmux = shutil.which("tmux")
         if not tmux:
@@ -2977,17 +3011,21 @@ def run_ctl(args: argparse.Namespace, state_dir: Path) -> int:
         roles_now = current.get("roles") or {}
         # Кто живой и на какой панели. Нужно, чтобы отличить «панели нет» от
         # «панель есть, но она не эта».
-        living = {role: info.get("pane") for role, info in roles_now.items()
+        living = [role for role, info in roles_now.items()
                   if isinstance(info.get("pid"), int) and info["pid"] > 0
-                  and is_pid_alive(info["pid"])}
+                  and is_pid_alive(info["pid"])]
         entries = []
         for role, info in roles_now.items():
             pid = info.get("pid")
             pane = info.get("pane")
             pid_dead = isinstance(pid, int) and pid > 0 and not is_pid_alive(pid)
             pane_gone = bool(pane) and not pane_exists(pane)
-            holder = next((other for other, other_pane in living.items()
-                           if other != role and other_pane == pane), None)
+            # Разные форматы одной панели не должны выглядеть как разные панели,
+            # иначе `--prune` удалил бы запись, просто потому что сосед записан
+            # адресом сессии, а этот — номером.
+            holder = next((other for other in living
+                           if other != role
+                           and same_pane(roles_now[other].get("pane"), pane)), None)
             entries.append((role, info, pid_dead, pane_gone or holder is not None, holder))
         if not args.prune:
             if not entries:

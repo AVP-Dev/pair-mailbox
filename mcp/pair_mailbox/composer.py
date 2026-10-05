@@ -78,7 +78,13 @@ def _tmux() -> str:
 
 
 def pane_alive(tmux: str, pane: str) -> bool:
-    """Жива ли панель tmux.
+    """Жива ли панель tmux, и является ли она вообще панелью.
+
+    Строка, которая не похожа на панель, не панель: без этой проверки tmux на
+    `-t opencode` (имя процесса, а не ссылка) отвечал кодом 0 и ПУСТЫМ выводом,
+    а вердикт «жива» выводился из поля `alive`, которое для такого ответа
+    оказывалось правдой. Проверка формы стоит ДО разговора с tmux именно поэтому:
+    нельзя отвечать за то, о чём не спросили.
 
     Правило ровно то же, что в server.pane_exists, и это не совпадение: tmux на
     запрос несуществующей панели отвечает кодом 0 и ПУСТЫМ выводом, поэтому
@@ -86,18 +92,55 @@ def pane_alive(tmux: str, pane: str) -> bool:
     правка живла только в server.pane_exists, а pairpilot зовёт эту функцию — и
     фантом %999999 считался живым, из-за чего pilot_pane_dead не писался
     никогда. Расхождение двух одинаково названных функций и было дырой.
+
+    Поэтому обе функции зовут pane_identity, а не читают tmux сами: одна мысль —
+    одно место, иначе правка одной из них роняет ту самую проверку согласия.
     """
-    r = subprocess.run([tmux, "display-message", "-p", "-t", pane, "#{pane_dead}"],
-                       capture_output=True, text=True, timeout=5)
-    return r.returncode == 0 and r.stdout.strip() in ("0", "false")
+    if not pane_ref_format(pane):
+        return False
+    try:
+        ident = pane_identity(tmux, pane)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return bool(ident["exists"] and ident["alive"])
+
+
+# Два формата ссылки на панель, оба принимаются всегда: `%N` и
+# `<сессия>:<окно>.<панель>`. Второй устойчивее: номер сквозной внутри одного
+# tmux-сервера, он перенумеровывается при пересоздании панелей и протухает в
+# окружении процесса, а имя сессии с окном и панелью такой срок службы не имеет.
+#
+# Обратная совместимость не из вежливости: у живых ролей в состоянии лежат `%N`,
+# и если бы запись перестала их принимать, обновление сломало бы доставку у всех
+# сразу. Поэтому пишется предпочтительный формат, а читаются оба.
+PANE_ID_FORMAT = "id"
+PANE_ADDRESS_FORMAT = "address"
+PANE_ID_RE = re.compile(r"%\d+\Z")
+# Имя сессии в tmux не может содержать `:` (проверено: `new-session -s 'a:b'`
+# отказывает), а `.` в нём заменяется на `_`. Поэтому двоеточие однозначно
+# отделяет имя сессии, а `\d+\.\d+` в хвосте — окно и панель.
+PANE_ADDRESS_RE = re.compile(r"(?P<session>[^:]+):(?P<window>\d+)\.(?P<pane>\d+)\Z")
+
+
+def pane_ref_format(pane: str) -> str:
+    """Какой это формат ссылки: `id`, `address` или "" (не панель вовсе).
+
+    Отдельная функция, потому что её результат решает судьбу вызова, а не
+    сообщает о факте: `_ring` отказывается звонить в собственную панель по
+    сравнению строк, а `pairpilot` отказывается трогать панель, занятую другой
+    ролью. Обе проверки обязаны понимать оба формата, иначе после перехода на
+    адреса сессий они молча перестают срабатывать.
+    """
+    text = str(pane or "")
+    if PANE_ID_RE.fullmatch(text):
+        return PANE_ID_FORMAT
+    if PANE_ADDRESS_RE.fullmatch(text):
+        return PANE_ADDRESS_FORMAT
+    return ""
 
 
 def session_address(tmux: str, pane: str) -> str:
     """Устойчивый адрес панели: `<сессия>:<окно>.<панель>`, либо "" если не вышло.
-
-    Номер `%N` — сквозной внутри одного tmux-сервера, он перенумеровывается при
-    пересоздании панелей и протухает в окружении процесса. Имя сессии с окном и
-    панелью такой срок службы не имеет.
 
     Ограничение, важное и измеренное: имя сессии изолирует проекты ТОЛЬКО если у
     каждого проекта своя сессия. При общей сессии `mail:0.0` может принадлежать
@@ -110,6 +153,17 @@ def session_address(tmux: str, pane: str) -> str:
         capture_output=True, text=True, timeout=5)
     out = r.stdout.strip()
     if r.returncode != 0 or not out or out.startswith(":"):
+        return ""
+    # ЗАМЕРЕНО, и это ломает наивную реализацию: на несуществующую панель tmux
+    # отвечает кодом 0, а не ошибкой, и ПЕРЕИМЕНОВЫВАЕТ запрос на соседнюю живую
+    # панель того же окна. Сессия из двух панелей, панель `.1` умерла, и
+    # `display-message -t S:0.1` спокойно отдаёт адрес `S:0.0`. На `%N` такого
+    # нет: `display-message -t %499999` даёт пустой вывод.
+    #
+    # Значит адрес нельзя ни принять, ни записать, не сверив его с тем, о чём
+    # спрашивали: иначе протухший адрес молча указывает на чужую панель, и
+    # недоставленное сообщение уходит соседу вместо отказа.
+    if pane_ref_format(pane) == PANE_ADDRESS_FORMAT and out != str(pane):
         return ""
     return out
 
@@ -126,6 +180,54 @@ def canonical_pane(tmux: str, pane: str) -> str:
     return address or pane
 
 
+def same_pane(tmux: str, left, right) -> bool:
+    """Одна и та же панель, записанная двумя форматами. Fail-closed.
+
+    Сравнение строк здесь было тихой поломкой: своя панель из окружения приходит
+    как `%1`, а в состоянии лежит `mail:0.1`, и `pane == TMUX_PANE` переставал
+    быть верным. Проверки, построенные на этом равенстве, не падали — они просто
+    переставали срабатывать: `_ring` начинал звонить в собственную панель, а
+    `pairpilot` — считать чужую панель занятой и не трогать её, пока реальный
+    сосед в ней сидел.
+
+    Обе ссылки приводятся к адресу сессии: это единственное имя, которое даёт
+    tmux обоим форматам. Если адрес не разрешился, остаётся точное сравнение
+    строк — два одинаковых адреса сессии всё же одна панель, и отказ здесь
+    сломал бы доставку соседу, который сидит рядом.
+    """
+    if not left or not right:
+        return False
+    if str(left) == str(right):
+        return True
+    if not (pane_ref_format(left) and pane_ref_format(right)):
+        return False
+    left_addr = pane_identity(tmux, left).get("address")
+    right_addr = pane_identity(tmux, right).get("address")
+    # Пустой адрес означает «панели нет», и две такие ссылки разными панелями не
+    # считаются: иначе фантом совпал бы с фантомом.
+    return bool(left_addr) and left_addr == right_addr
+
+
+def pane_key(tmux, pane) -> str:
+    """Ключ группировки панелей, одинаковый для обоих форматов ссылки.
+
+    Нужен там, где панели сравниваются попарно или группируются в таблицу: после
+    перехода на адреса сессий `%1` и `mail:0.1` — одна панель, а сравнение строк
+    видело две. Дальше это ломало `ambiguous()` у сверхвизора, и тот, не увидев
+    двух ролей на одной панели, считал её свободной и бил в чужой композер.
+
+    tmux недоступен или панели нет — исходная строка: ключ группировки, а не
+    приговор, и хуже, чем было, от этого не станет.
+    """
+    if not pane or not tmux:
+        return str(pane or "")
+    try:
+        address = pane_identity(tmux, pane).get("address")
+    except (OSError, subprocess.SubprocessError):
+        return str(pane)
+    return address or str(pane)
+
+
 def pane_identity(tmux: str, pane: str) -> dict:
     """Кто именно сидит в панели: не «жива ли», а «наша ли».
 
@@ -134,23 +236,42 @@ def pane_identity(tmux: str, pane: str) -> dict:
     принадлежит уже другому проекту. На этой машине несколько проектов на
     pair-mailbox, поэтому звонок по записанному в состоянии номеру попадал в
     чужой композер, и один проект вбивал свои сообщения в агента другого.
+
+    Один запрос tmux отвечает сразу на всё, и это не экономия ради экономии:
+    `#{pane_dead}` и `#{session_name}` берутся из одного снимка панели. Два
+    отдельных вызова означали бы два разных момента времени, между которыми
+    панель могла умереть, и вердикт «жива, наша» собрался бы из двух снимков
+    разных панелей.
     """
     r = subprocess.run(
         [tmux, "display-message", "-p", "-t", pane,
-         "#{pane_dead}\t#{pane_current_path}"],
+         "#{pane_dead}\t#{pane_current_path}\t#{session_name}:#{window_index}.#{pane_index}"],
         capture_output=True, text=True, timeout=5)
     # tmux на НЕСУЩЕСТВУЮЩУЮ панель отвечает кодом 0 и пустым выводом — это
     # ровно тот же факт, из-за которого фантомная панель когда-то считалась
     # живой. Поэтому одного кода возврата мало: пустой вывод тоже означает,
     # что панели нет. Раньше exists выводился только из returncode и врал:
     # итог был безопасным случайно, а не по замыслу.
-    parts = r.stdout.strip().split("\t") if r.stdout.strip() else []
+    #
+    # Пустое ПЛАТОЕ поле cwd остаётся непустым ответом: `pane_current_path` может
+    # быть пустым у живой панели, и это «не доказано», а не «отсутствует» —
+    # разные отказы с разными причинами, и путать их нельзя.
+    parts = r.stdout.strip("\n").split("\t")
     dead = parts[0].strip() if parts else ""
     if r.returncode != 0 or not dead:
         return {"exists": False, "alive": False, "path": "", "address": ""}
     path = parts[1].strip() if len(parts) > 1 else ""
+    address = parts[2].strip() if len(parts) > 2 else ""
+    # Тот же обман, что в session_address, только теперь он бьёт по линии
+    # «наша ли панель»: протухший адрес сессии отдаёт cwd и alive СОСЕДНЕЙ панели,
+    # и проверка пути прошла бы, печать пошла бы в чужой композер. Сверяем адрес
+    # с тем, о чём спрашивали, и при расхождении панели просто нет.
+    if address and pane_ref_format(pane) == PANE_ADDRESS_FORMAT and address != str(pane):
+        return {"exists": False, "alive": False, "path": "", "address": ""}
+    if not address:
+        address = session_address(tmux, pane)
     return {"exists": True, "alive": dead in ("0", "false"), "path": path,
-            "address": session_address(tmux, pane)}
+            "address": address}
 
 
 def pane_is_foreign(tmux: str, pane: str, project_root) -> tuple:

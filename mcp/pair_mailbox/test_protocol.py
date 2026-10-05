@@ -2722,6 +2722,216 @@ class TestStalePaneSurvives(PairTestCase):
                          f"{pane} после смерти сессии — фантом, а не панель")
 
 
+class TestSessionAddressing(PairTestCase):
+    """Адресация панелей по имени сессии вместо сквозного номера `%N`.
+
+    Причина правки измерена: номер `%N` сквозной внутри одного tmux-сервера, он
+    перенумеровывается при пересоздании панелей и протухает в окружении процесса,
+    а `<сессия>:<окно>.<панель>` переживает и то и другое.
+
+    Цена этого перехода измерена тоже, и она неочевидна: tmux на НЕСУЩЕСТВУЮЩУЮ
+    панель отвечает кодом 0 и не ошибкой, а СОСЕДНЕЙ ЖИВОЙ панелью того же окна.
+    На `%N` такого нет. Поэтому адрес сессии без сверки с запросом хуже, а не
+    лучше: протухший адрес молча указывает на чужую панель, и вместо отказа
+    сообщение уходит соседу.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        import server
+        self.server = server
+
+    def live_pane(self) -> str:
+        """Панель этого набора, возвращённая в окружение.
+
+        Базовый setUp убирает `TMUX_PANE`, чтобы роли в наборе не слали спам в
+        окно оператора. Здесь это неуместно: адресация проверяется на живой
+        панели, а агент узнаёт свою панель именно из этой переменной. Без
+        возврата переменной тесты проходили бы, ничего не проверив.
+        """
+        pane = self._pane_at_startup
+        if not pane:
+            self.skipTest("набор запущен вне tmux")
+        os.environ["TMUX_PANE"] = pane
+        self.addCleanup(os.environ.__setitem__, "TMUX_PANE", pane)
+        return pane
+
+    def test_a_session_address_is_recognised_as_a_pane(self) -> None:
+        """Синтаксис адреса отличается от номера, и обе формы обязаны проходить.
+
+        Правая часть — про сервер, а не про composer: `server.pane_exists` и
+        `composer.pane_alive` обязаны понимать одинаковый набор ссылок, иначе
+        ростер удалит запись о живом соседе как о фантоме.
+        """
+        import composer
+        self.assertEqual("address", composer.pane_ref_format("mail:0.1"))
+        self.assertEqual("id", composer.pane_ref_format("%1"))
+        self.assertEqual("", composer.pane_ref_format("opencode"),
+                         "имя процесса не панель")
+        self.assertEqual("", composer.pane_ref_format("mail"), "сессия без окна и панели")
+        self.assertEqual("", composer.pane_ref_format("mail:x.y"), "окно и панель — числа")
+        self.assertEqual("", composer.pane_ref_format("a:b:0.0"), "имя сессии без двоеточия")
+
+    def test_a_live_session_address_is_alive(self) -> None:
+        """Регрессия на баг, который правка внесла бы в тот же шаг.
+
+        `pane_exists` проверял форму строки регуляркой `%[0-9]+`, поэтому
+        `mail:0.0` — живая панель — отвечала False. Дальше это значит ровно
+        одно: `roster --prune` удалил бы роль, которая сидит прямо сейчас.
+        """
+        import server
+        pane = self.live_pane()
+        if not shutil_which("tmux"):
+            self.skipTest("tmux не установлен")
+        from composer import session_address
+        resolved = session_address(shutil_which("tmux"), pane)
+        self.assertTrue(resolved, f"адрес живой панели {pane} обязан получаться")
+        self.assertTrue(server.pane_exists(resolved),
+                        f"живая панель по адресу {resolved} — живая, а не фантом")
+        self.assertTrue(server.pane_exists(pane), "номер той же панели тоже остаётся живым")
+
+    def test_a_stale_session_address_is_not_the_neighbour_pane(self) -> None:
+        """Главный риск перехода, проверенный на живом tmux, а не на моке.
+
+        Сессия из двух панелей; `.1` умирает. Адрес `<сессия>:0.1` указывает на
+        панель, которой больше нет, и tmux молча отвечает про `.0` — соседнюю
+        живую. Без сверки адреса с запросом доставка уходит в чужой композер, и
+        отказа не происходит вовсе.
+        """
+        import composer
+        tmux = shutil_which("tmux")
+        if not tmux:
+            self.skipTest("tmux не установлен")
+        session = f"pairtest-{os.getpid()}-{os.urandom(4).hex()}"
+        self.addCleanup(subprocess.run, [tmux, "kill-session", "-t", session],
+                        capture_output=True, timeout=10)
+        made = subprocess.run([tmux, "new-session", "-d", "-s", session],
+                              capture_output=True, text=True, timeout=10)
+        if made.returncode != 0:
+            self.skipTest(f"tmux не даёт создать сессию: {made.stderr.strip()[:80]}")
+        subprocess.run([tmux, "split-window", "-t", session],
+                       capture_output=True, timeout=10)
+        stale = f"{session}:0.1"
+        survivor = f"{session}:0.0"
+
+        # До смерти адрес настоящий: обе проверки обязаны его подтвердить.
+        self.assertTrue(composer.pane_identity(tmux, stale)["exists"])
+        self.assertTrue(composer.pane_identity(tmux, survivor)["exists"])
+
+        subprocess.run([tmux, "kill-pane", "-t", stale], capture_output=True, timeout=10)
+
+        ghost = composer.pane_identity(tmux, stale)
+        self.assertFalse(ghost["exists"],
+                         "протухший адрес сессии — это не панель, даже когда tmux "
+                         "отвечает про соседнюю живую")
+        self.assertFalse(ghost["alive"])
+        self.assertEqual("", ghost["path"],
+                         "cwd соседней панели не выдаётся за cwd протухшей: иначе "
+                         "pane_is_foreign признал бы чужую панель своей")
+        self.assertFalse(composer.pane_alive(tmux, stale))
+        self.assertFalse(self.server.pane_exists(stale))
+        # Сосед при этом жив, и он обязан остаться различимым с фантомом.
+        self.assertTrue(composer.pane_identity(tmux, survivor)["exists"])
+        self.assertTrue(self.server.pane_exists(survivor))
+
+    def test_the_same_pane_is_recognised_across_both_formats(self) -> None:
+        """Своя панель приходит из окружения как `%N`, а в состоянии лежит адресом.
+
+        Равенство строк на этом расходится, и проверки, построенные на нём,
+        перестают срабатывать молча: `_ring` начинает звонить в собственную панель,
+        а ростер считает две разные панели там, где одна. Сверка обязана быть
+        сделана через tmux — только он знает, что это одна и та же панель.
+        """
+        import server
+        pane = self.live_pane()
+        if not shutil_which("tmux"):
+            self.skipTest("tmux не установлен")
+        from composer import session_address
+        address = session_address(shutil_which("tmux"), pane)
+        if not address:
+            self.skipTest("адрес сессии получить не удалось")
+        self.assertTrue(server.same_pane(pane, address),
+                        f"{pane} и {address} — одна панель")
+        self.assertTrue(server.same_pane(address, pane), "порядок не важен")
+        self.assertFalse(server.same_pane(address, "%999999"),
+                         "фантом не совпадает с живой панелью")
+        self.assertFalse(server.same_pane("", address), "пустая ссылка — не панель")
+        self.assertFalse(server.same_pane(address, None))
+
+    def test_a_registered_role_is_recorded_by_session_address(self) -> None:
+        """Что именно меняется в состоянии: в `%N` больше не пишется.
+
+        Адрес берётся из окружения (`TMUX_PANE`), потому что так агент знает свою
+        панель; в состояние уходит устойчивая форма. Проверка на живом tmux: с
+        моком любая реализация прошла бы, а именно тут пришлось бы чинить
+        расхождение форматов.
+        """
+        pane = self.live_pane()
+        session = PairSession("agy", self.store)
+        session.tool_pair_state()
+        recorded = self.store.read()["roles"]["agy"].get("pane")
+        self.assertTrue(recorded, "панель записана")
+        self.assertNotEqual(pane, recorded,
+                            f"ожидался адрес сессии, а записан номер {pane}")
+        self.assertTrue(self.server.pane_exists(recorded),
+                        "то, что записано, обязано быть живой панелью — иначе "
+                        "следующий же _register сотрёт его как протухшее")
+
+    def test_the_old_number_format_still_works_after_the_switch(self) -> None:
+        """Обратная совместимость проверяется на живых записях, а не на словах.
+
+        В состоянии лежат `%N` от прежних запусков. Если бы чтение перестало их
+        принимать, обновление сломало бы доставку у всех живых ролей сразу и
+        одним шагом — то есть обновление, которым мы чиним протухание, само
+        стало бы причиной недоставки.
+        """
+        pane = self.live_pane()
+        self.store.mutate(lambda s: s.setdefault("roles", {}).setdefault("agy", {}).update(
+            {"pane": pane, "pid": 999999}))
+        newcomer = PairSession("claude", self.store)
+        newcomer.tool_pair_state()
+        self.assertEqual(pane, self.store.read()["roles"]["agy"].get("pane"),
+                         "старая запись в формате %N обязана остаться принятой")
+
+    def test_a_failed_address_lookup_is_visible_in_the_transcript(self) -> None:
+        """Молчаливый откат на `%N` — это неявное решение за человека.
+
+        Если имя сессии получить не удалось, адресация остаётся неустойчивой, и
+        человек должен это видеть. Иначе причина протухания панелей навсегда
+        остаётся невидимой, а в транскрипте нет ни слова о ней.
+        """
+        self.live_pane()
+        import composer
+        real = composer.session_address
+        composer.session_address = lambda tmux, pane: ""   # адрес не получается
+        self.addCleanup(setattr, composer, "session_address", real)
+        session = PairSession("agy", self.store)
+        session.tool_pair_state()
+        pane = self.store.read()["roles"]["agy"].get("pane")
+        self.assertTrue(pane, "запись не теряется: работать надо и на %N")
+        kinds = [e["kind"] for e in self.store.read_transcript()]
+        self.assertIn("pane_address_unavailable", kinds)
+
+    def test_a_successful_address_switch_is_recorded_once(self) -> None:
+        """Запись в транскрипт не должна повторяться на каждом вызове.
+
+        `_register` вызывается перед каждым инструментом, и при буквальном
+        сравнении запись падала бы в транскрипт десятки раз за сессию — то есть
+        ровно тот потолок роста, который эта же задача чинит.
+        """
+        self.live_pane()
+        session = PairSession("agy", self.store)
+        session.tool_pair_state()
+        recorded = self.store.read()["roles"]["agy"].get("pane")
+        self.assertTrue(recorded)
+        for _ in range(3):
+            session.tool_pair_state()
+        switches = [e for e in self.store.read_transcript()
+                    if e["kind"] == "pane_address_canonical"]
+        self.assertEqual(1, len(switches),
+                         "смена формата адреса — событие один раз, а не на каждом вызове")
+
+
 class TestDeliveryRollback(PairTestCase):
     """Откат доставки не должен быть разрушительным на непроверенном выводе.
 
