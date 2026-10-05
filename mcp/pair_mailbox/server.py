@@ -31,7 +31,6 @@ Human control surface: ``server.py ctl <command>``.
 
 from __future__ import annotations
 
-import argparse
 import errno
 import fcntl
 import hashlib
@@ -1244,33 +1243,6 @@ def pane_exists(pane: str) -> bool:
     return pane_alive(tmux, pane)
 
 
-def pin_verdict(tmux, pin: str, project_root: Path) -> tuple:
-    """Годится ли закреплённая панель, и если нет — почему.
-
-    Переопределение человеком («эта роль сидит вот здесь») обязано проходить ту же
-    проверку, что и адрес, снятый с панели автоматически. Иначе `pairctl pane`
-    стал бы дырой в изоляции, ради которой он и затевался: один неверный адрес,
-    и письмо роли уходит в чужой проект — ровно то, что чинили пункты 1 и 2.
-
-    Два независимых отказа, и они не взаимозаменяемы:
-    - панели нет (`pane_alive`) — ссылка протухла;
-    - панель чужая (`pane_is_foreign`) — ссылка живая, но ведёт не сюда.
-
-    Без tmux ответ «не годится»: подтвердить нечем, а подтверждать на слово —
-    значит вернуть поломку, которую переопределение как раз и лечит.
-    """
-    if not pin:
-        return False, "адрес не задан"
-    if not tmux:
-        return False, "tmux недоступен, проверить нечем"
-    from composer import pane_alive, pane_is_foreign
-    if not pane_alive(tmux, pin):
-        return False, "панели по этому адресу больше нет"
-    foreign, why_foreign = pane_is_foreign(tmux, pin, project_root)
-    if foreign:
-        return False, f"панель чужая: {why_foreign}"
-    return True, "панель жива и наша"
-
 
 class PairSession:
     """One agent's view of the shared state, bound to a role at construction."""
@@ -1295,12 +1267,27 @@ class PairSession:
         # «панель занята другой ролью» ниже обязана видеть именно ту панель,
         # которая будет записана, иначе переопределение молча создаст двух
         # претендентов на один композер.
+        # Проверка закрепления живёт в `pairctl_panes` рядом с командой, которая им
+        # пользуется, и импортируется лениво по той же причине, что и `composer`:
+        # модуль импортирует `server`, и на верхнем уровне был бы цикл.
+        from pairctl_panes import PIN_OK, PIN_UNKNOWN, pin_verdict
+
         pin = entry.get("pane_pin")
         pin_why = ""
+        pin_unverified = False
         if pin:
-            pin_ok, pin_why = pin_verdict(tmux, pin, self.store.project_root)
-            if pin_ok:
+            verdict, pin_why = pin_verdict(tmux, pin, self.store.project_root)
+            if verdict == PIN_OK:
                 pane = pin
+            elif verdict == PIN_UNKNOWN:
+                # Проверить нечем — не значит «адрес мёртв». Закрепление остаётся в
+                # силе, но печатать в эту панель нельзя, поэтому `pane` остаётся
+                # пустым и адрес не выводится никуда. Событие попадает в транскрипт,
+                # иначе молчаливое «не напечатал» выглядело бы как доставленное.
+                pin_unverified = True
+                pane = ""
+                self.store.append_transcript("pane_pin_unverified", self.role,
+                                             pin=pin, why=pin_why)
             else:
                 # Закрепление с протухшим адресом снимается, но не молча: молча
                 # снятое переопределение неотличимо от того, которого не было
@@ -1356,7 +1343,7 @@ class PairSession:
         entry = roles.setdefault(self.role, {"first_seen": utcnow(), "reads": 0, "sends": 0})
         entry["last_seen"] = utcnow()
         entry["pid"] = current_pid
-        if pin:
+        if pin and not pin_unverified:
             # Переопределение выигрывает у окружения. Именно это и было сломано:
             # ручная правка state.json не чинила ничего, потому что `_register`
             # перезаписывал `pane` на каждом вызове любого инструмента. Такая
@@ -1371,6 +1358,15 @@ class PairSession:
                                              why="переопределение человека")
             entry["pane"] = pin
             entry["pane_pin_why"] = pin_why
+        elif pin_unverified:
+            # Закрепление сохраняется, но адрес НЕ остаётся `pane`. Иначе
+            # непроверенный адрес поехал бы в доставку, а весь смысл fail-closed
+            # в том, чтобы туда ничего не отправлялось: прошлая запись `pane` —
+            # это тот же самый адрес, просто из прошлого успешного подтверждения,
+            # и оставить её значило бы печатать в непроверенную панель.
+            # Причина записывается, чтобы человек видел, почему панель пропала.
+            entry.pop("pane", None)
+            entry["pane_pin_why"] = f"{pin_why}; не подтверждено, панель не используется"
         elif pane:
             # Пишем устойчивый адрес `<сессия>:<окно>.<панель>`, а не %N: номер
             # перенумеровывается и протухает в окружении процесса, имя с окном —
@@ -1777,13 +1773,21 @@ class PairSession:
             ),
         }
 
-    def _ring(self, target: str, kind: str, detail: str) -> dict[str, Any]:
+    def _ring(self, target: str, kind: str, detail: str = "") -> dict[str, Any]:
         """Knock on the peer's tmux pane so a sleeping agent wakes itself.
 
         An idle process cannot be woken any other way: it has to be handed the keys.
         That is the whole reason this exists. The body is already in the mailbox or in
         a note, so what gets typed is a short trigger, which is safe to push into a
         composer where a whole paragraph would be mangled.
+
+        `detail` is NOT a place for the text of the message. Директива человека:
+        терминал — дисплей, а не шина между агентами (задача #9). `pair_deliver`
+        переписан на «данные в ящик, в TUI указатель», а этот путь остался вторым и
+        нёс в композер соседа 50 символов письма — ровно то, что директива запретила.
+        Не видно было потому, что в наборе стоит `PAIR_DISABLE_RING=1`, то есть
+        ни один тест этого кода не касался. Что именно лежит в ящике, сосед узнает
+        из `pair_read`, а отсюда уходит только название повода.
         """
         if os.environ.get("PAIR_DISABLE_RING") == "1":
             return {"rung": False, "why": "ring disabled by PAIR_DISABLE_RING"}
@@ -1831,9 +1835,12 @@ class PairSession:
                     else "композер соседа занят, не перебиваем"
                 return {"rung": False, "why": reason}
             time.sleep(0.3)
-        prompt = f"pair: {kind} от {self.role} — {detail}. Прочитай pair_read."
-        if len(prompt) > 150:
-            prompt = prompt[:147] + "..."
+        prompt = f"pair: {kind} от {self.role}. Прочитай pair_read."
+        if detail:
+            # Повод без текста письма. Обрезанный текст здесь был бы «шиной по
+            # частям»: длиннее строки он всё равно не влезает, а читается как
+            # обрывок, из которого нельзя понять, что произошло.
+            prompt += f" ({detail})"
         subprocess.run([tmux, "send-keys", "-t", pane, "-l", prompt],
                        capture_output=True, text=True, timeout=5)
         subprocess.run(["tmux", "send-keys", "-t", pane, "Enter"],
@@ -2103,7 +2110,7 @@ class PairSession:
         if expects_reply:
             obligation = self._open_obligation(self.role, to, seq=result["seq"],
                                                subject=subject or text.strip()[:60])
-        ring = self._ring(to, "сообщение", subject or text.strip()[:50])
+        ring = self._ring(to, "сообщение")
         return {
             "delivered": True,
             "woke_peer": ring["rung"],
@@ -2846,7 +2853,7 @@ class PairSession:
         for other in self.store.read().get("roles", {}):
             if other == self.role:
                 continue
-            r = self._ring(other, f"заметка/{kind}", text.strip()[:50])
+            r = self._ring(other, f"заметка/{kind}")
             if r["rung"]:
                 woke[other] = r["pane"]
         return {"kind": kind, "path": str(target), "woke_peers": woke}
@@ -3416,806 +3423,22 @@ class MCPServer:
         self.reply(request_id, {})
 
 
-# ------------------------------------------------------------------ pairctl
-
-
-def run_ctl(args: argparse.Namespace, state_dir: Path) -> int:
-    store = Store(state_dir)
-    command = args.ctl_command
-
-    if command == "status":
-        state = store.read()
-        session = PairSession("pairctl", store)
-        print(json.dumps(
-            {
-                "state_dir": str(store.root),
-                "task": state.get("task", ""),
-                "mode": state.get("mode", "fix"),
-                "autonomy": autonomy_of(state),
-                "writer": state.get("writer"),
-                "policy": state.get("policy"),
-                "phase": state.get("phase"),
-                "round": state.get("round"),
-                "human_ok": session.human_ok_for_round(state),
-                "evidence_this_round": len(session.round_evidence(state)),
-                "unresolved_patches": [item["path"] for item in session.unresolved_patches(state)],
-                "closing_blocked_by": session._done_blockers(state),
-                "permission_allowlist": str(permissions_path(store.root)),
-                "roles": {name: info.get("last_seen") for name, info in state.get("roles", {}).items()},
-            },
-            indent=2,
-            ensure_ascii=False,
-        ))
-        return 0
-
-    if command == "assign":
-        role = args.role
-        known = set(store.read().get("roles", {}))
-        if known and role not in known:
-            print(f"warning: {role!r} has never connected; registered roles: {', '.join(sorted(known))}")
-        def apply(state):
-            state["writer"] = role
-            # решение человека — повод поставить метку «выбрано человеком», чтобы
-            # в переписке было видно, что это не гонка
-            state["writer_reason"] = "назначено человеком"
-            if state.get("closed_at") or state.get("phase") == "done":
-                state.pop("closed_at", None)
-                state["phase"] = "implement"
-                state["round"] = int(state.get("round", 0)) + 1
-            elif state.get("phase") == "scoping" and not state.get("task"):
-                state["round"] = int(state.get("round", 0)) + 1
-        store.mutate(apply)
-        store.append_transcript("assign", "human", writer=role,
-                                reason="назначено человеком")
-        print(f"write authority assigned to {role}")
-        return 0
-
-    if command == "roles":
-        # Постоянная расстановка: кто всегда пишет, кто всегда ревьюит.
-        # Гонка остаётся как запасной вариант, но по умолчанию роли известны
-        # заранее, и раунд начинается с работы, а не с торговли правами.
-        policy_path = global_roles_path()
-        state = store.read()
-        current = state.get("policy") if isinstance(state.get("policy"), dict) else {}
-        wanted = dict(current)
-
-        if args.clear:
-            wanted = {}
-        else:
-            if args.writer:
-                wanted["writer"] = args.writer
-            if args.critic:
-                wanted["critic"] = args.critic
-            if args.swap:
-                was_writer, was_critic = wanted.get("writer"), wanted.get("critic")
-                if was_writer or was_critic:
-                    wanted["writer"] = was_critic
-                    wanted["critic"] = was_writer
-
-        if not wanted:
-            store.mutate(lambda st: st.pop("policy", None))
-            store.append_transcript("roles", "human", policy=None)
-            print("постоянная расстановка снята, роли снова определяются гонкой")
-            return 0
-
-        if wanted.get("writer") == wanted.get("critic"):
-            print("error: писатель и критик не могут быть одной ролью", file=sys.stderr)
-            return 2
-
-        store.mutate(lambda st: st.__setitem__("policy", wanted))
-        store.append_transcript("roles", "human", policy=wanted, source=str(policy_path))
-
-        # Расстановка сразу применяется к текущему раунду: назначенный писатель
-        # получает право, иначе право остаётся у прошлого держателя и работа
-        # стоит до вмешательства человека.
-        holder = state.get("writer")
-        if wanted.get("writer") and holder != wanted["writer"]:
-            def apply(st):
-                st["writer"] = wanted["writer"]
-                st["writer_reason"] = "назначено человеком постоянной расстановкой"
-            store.mutate(apply)
-
-        if args.global_:
-            policy_path.parent.mkdir(parents=True, exist_ok=True)
-            policy_path.write_text(json.dumps(wanted, ensure_ascii=False, indent=2), encoding="utf-8")
-            print(f"сохранено для любых проектов: {policy_path}")
-        print(f"расстановка: писатель {wanted.get('writer') or '—'}, критик {wanted.get('critic') or '—'}")
-        return 0
-
-    if command == "digest":
-        # Тот же текст, что отдаёт `pair_digest`, из одного места: две реализации
-        # дайджеста разъедутся, и человек увидит не то, что видит агент.
-        text = build_digest(store, args.role, args.budget)
-        sys.stdout.write(text)
-        used = estimate_tokens(text)
-        if used > args.budget:
-            # Потолок нарушен — это поломка дайджеста, а не повод сделать вид, что
-            # всё в порядке. Пишем в stderr и возвращаем ненулевой код.
-            print(f"digest: {used} токенов при потолке {args.budget}", file=sys.stderr)
-            return 1
-        return 0
-
-    if command == "pane":
-        # Переопределение привязки панели рукой человека.
-        #
-        # Зачем оно, если адрес и так снимается с панели: `_register` берёт адрес из
-        # `TMUX_PANE` окружения процесса, и у сервера, который сам себя перерегистри-
-        # стрирует после рестарта, это окружение бывает чужим или протухшим. Правка
-        # state.json вручную тут не помогает: `_register` перезаписывает `pane` на
-        # каждом вызове, и «починка» живёт до следующего звонка. Ключ `pane_pin`
-        # читается раньше окружения, поэтому выигрывает.
-        #
-        # Адрес проверяется той же мерой, что и снятый автоматически, иначе
-        # переопределение стало бы дырой в изоляции между проектами.
-        tmux = shutil.which("tmux")
-        role = args.role
-        state = store.read()
-        roles_now = state.setdefault("roles", {})
-        if role not in roles_now:
-            print(f"warning: {role!r} has never connected; registered roles: "
-                  f"{', '.join(sorted(roles_now)) or '—'}")
-
-        if args.clear:
-            if not roles_now.get(role, {}).get("pane_pin"):
-                print(f"у роли {role} и так нет переопределения панели")
-                return 0
-            store.mutate(lambda st: (st["roles"][role].pop("pane_pin", None),
-                                     st["roles"][role].pop("pane_pin_why", None)))
-            store.append_transcript("pane_pin_cleared", role, by="human")
-            print(f"переопределение панели роли {role} снято, снова берётся из tmux")
-            return 0
-
-        if not args.address:
-            info = roles_now.get(role, {})
-            if not info:
-                print(f"роль {role} не подключалась; панель неизвестна")
-                return 1
-            pin = info.get("pane_pin")
-            if pin:
-                print(f"{role} закреплена за {pin}")
-                print(f"  {info.get('pane_pin_why') or 'причина не записана'}")
-                print(f"  записано в ростер: {info.get('pane')}")
-            else:
-                print(f"{role} переопределения не имеет, панель из tmux: "
-                      f"{info.get('pane') or '—'}")
-            return 0
-
-        ok, why = pin_verdict(tmux, args.address, store.project_root)
-        if not ok:
-            # Отказ здесь обязателен: записать негодный адрес — значит на следующем
-            # же вызове `pair_deliver` уйти в чужой проект или в никуда.
-            print(f"error: {args.address!r} не годится: {why}", file=sys.stderr)
-            return 1
-
-        def apply_pin(st):
-            entry = st.setdefault("roles", {}).setdefault(
-                role, {"first_seen": utcnow(), "reads": 0, "sends": 0})
-            previous = entry.get("pane")
-            entry["pane_pin"] = args.address
-            entry["pane_pin_why"] = f"закреплено человеком: {why}"
-            # Сразу записываем в `pane`, чтобы переопределение начало действовать
-            # без ожидания следующего вызова инструмента, а не только после него.
-            entry["pane"] = args.address
-            entry["last_seen"] = entry.get("last_seen") or utcnow()
-            return previous
-
-        previous = store.mutate(apply_pin)
-        store.append_transcript("pane_pin_set", role, by="human",
-                                pane=args.address, was=previous, why=why)
-        print(f"{role} закреплена за {args.address} ({why})")
-        if previous and previous != args.address:
-            print(f"  было: {previous}")
-        return 0
-
-    if command == "roster":
-        # Что записан в ростере, кто из этого ещё существует.
-        #
-        # `roster` без флагов только показывает. `--prune` удаляет, и удаляет по
-        # двум независимым фактам сразу: процесс мёртв И панели больше нет. Одного
-        # факта мало — умерший агент мог оставить после себя живую панель, а живой
-        # pid с чужой панелью означает, что запись указывает не туда.
-        #
-        # Удалять молча нельзя: ростер это общая память пары, и человек должен
-        # видеть, что именно убрали и почему.
-        current = store.read()
-        roles_now = current.get("roles") or {}
-        # Кто живой и на какой панели. Нужно, чтобы отличить «панели нет» от
-        # «панель есть, но она не эта».
-        living = [role for role, info in roles_now.items()
-                  if isinstance(info.get("pid"), int) and info["pid"] > 0
-                  and is_pid_alive(info["pid"])]
-        entries = []
-        for role, info in roles_now.items():
-            pid = info.get("pid")
-            pane = info.get("pane")
-            pid_dead = isinstance(pid, int) and pid > 0 and not is_pid_alive(pid)
-            pane_gone = bool(pane) and not pane_exists(pane)
-            # Разные форматы одной панели не должны выглядеть как разные панели,
-            # иначе `--prune` удалил бы запись, просто потому что сосед записан
-            # адресом сессии, а этот — номером.
-            holder = next((other for other in living
-                           if other != role
-                           and same_pane(roles_now[other].get("pane"), pane)), None)
-            entries.append((role, info, pid_dead, pane_gone or holder is not None, holder))
-        if not args.prune:
-            if not entries:
-                print("ростер пуст")
-                return 0
-            for role, info, pid_dead, wrong, holder in sorted(entries):
-                mark = "жив" if not pid_dead else "мёртв"
-                extra = ", панели нет" if wrong and not holder else ""
-                if holder:
-                    extra = f", панель занята живой ролью {holder}"
-                print(f"{role:18} pid={info.get('pid')} pane={info.get('pane') or '—'}  {mark}{extra}")
-            print("\n--prune удалит записи с мёртвым pid, у которых панели нет "
-                  "или панель принадлежит другой живой роли")
-            return 0
-
-        doomed = {role: True for role, _, pid_dead, wrong, _ in entries
-                  if pid_dead and wrong}
-        if not doomed:
-            print("нечего чистить: нет записей одновременно с мёртвым pid и без панели")
-            return 0
-        if current.get("writer") in doomed:
-            print(f"refusing to prune {current['writer']!r}: it still holds write authority. "
-                  f"Move it with `pairctl assign` or `pairctl release` first.",
-                  file=sys.stderr)
-            return 2
-
-        def prune(state):
-            roles = state.get("roles") or {}
-            for role in doomed:
-                roles.pop(role, None)
-            state["roles"] = roles
-
-        store.mutate(prune)
-        store.append_transcript("roster_pruned", "human", removed=sorted(doomed))
-        for role in sorted(doomed):
-            print(f"удалён {role}")
-        return 0
-
-    if command == "release":
-        def apply(state):
-            state["writer"] = None
-            state["writer_reason"] = ""
-        store.mutate(apply)
-        store.append_transcript("release", "human")
-        print("write authority cleared; nobody holds it")
-        return 0
-
-    if command == "mode":
-        mode = args.mode
-        if mode not in MODES:
-            print(f"error: unknown mode {mode!r}; expected one of {', '.join(MODES)}", file=sys.stderr)
-            return 2
-        previous = store.read().get("mode", "fix")
-        store.mutate(lambda state: state.__setitem__("mode", mode))
-        store.append_transcript("mode", "human", mode=mode, previous=previous)
-        print(f"round mode is now {mode!r}")
-        return 0
-
-    if command == "autonomy":
-        level = args.level
-        if level not in AUTONOMIES:
-            print(f"error: unknown autonomy {level!r}; expected one of {', '.join(AUTONOMIES)}",
-                  file=sys.stderr)
-            return 2
-        previous = autonomy_of(store.read())
-        store.mutate(lambda state: state.__setitem__("autonomy", level))
-        store.append_transcript("autonomy", "human", autonomy=level, previous=previous)
-        notes = {
-            "observe": "сверхвизор только сообщает: упавшего не перезапускает, разрешения не подтверждает",
-            "semi": "работа идёт сама, но закрыть раунд без доказательств и без 'pairctl ok' нельзя",
-            "auto": "работа идёт сама до закрытия раунда, нужен только записанный факт",
-        }
-        print(f"autonomy is now {level!r}: {notes[level]}")
-        return 0
-
-    if command == "launch-autonomy":
-        # Выбор режима при старте, ровно один раз и до того, как агенты получили
-        # инструкции. Логика здесь, а не в pair-duo, потому что у bash-обёртки нет
-        # тестов: правило, которое нечем проверить, мы уже находили.
-        level, source = resolve_autonomy(
-            store.root, task=args.task or "", flag=args.flag,
-        )
-        previous = autonomy_of(store.read())
-        store.mutate(lambda state: state.__setitem__("autonomy", level))
-        store.append_transcript(
-            "autonomy", "launcher", autonomy=level, previous=previous, via=source,
-        )
-        print(f"autonomy {level!r} (via {source}): "
-              f"{'pair works to the end' if level == 'auto' else level}")
-        return 0
-
-    if command == "ok":
-        # Одно слово человека на чекпоинте. Именно это делает semi «полуавтоматом»:
-        # пара работает сама, но закрыть раунд без него не может.
-        #
-        # --revoke отзывает сказанное. Отзыв нужен не для удобства: человек
-        # смотрит на правки, говорит «ок» и видит, что после этого изменилось ещё
-        # что-то. Без отзыва единственный выход — сменить настройку или reset.
-        state = store.read()
-        round_number = int(state.get("round", 0))
-        revoke = bool(getattr(args, "revoke", False))
-
-        def apply(st):
-            entries = st.setdefault("human_ok", [])
-            same_round = [e for e in entries if int(e.get("round", -1)) == round_number]
-            if same_round and bool(same_round[-1].get("revoke")) == revoke:
-                return False
-            entries.append({"round": round_number, "at": utcnow(), "phase": st.get("phase"),
-                            "revoke": revoke})
-            del entries[:-20]
-            return True
-
-        fresh = store.mutate(apply)
-        store.append_transcript("human_ok_revoke" if revoke else "human_ok", "human",
-                                round=round_number, phase=state.get("phase"), changed=fresh)
-        if not fresh:
-            print(f"round {round_number}: {'already revoked' if revoke else 'already marked'}; "
-                  f"nothing changed")
-        elif revoke:
-            print(f"ok revoked for round {round_number}; it cannot close until you say ok again")
-        else:
-            print(f"ok: round {round_number} marked at phase {state.get('phase')!r}")
-            if state.get("phase") not in OK_PHASES:
-                print(f"  note: ok counts only at {', '.join(OK_PHASES)}; "
-                      f"this one will not close the round from {state.get('phase')!r}")
-        return 0
-
-    if command == "why":
-        # Почему сейчас пишет тот, кто пишет. Короткий вопрос, на который агент
-        # обязан уметь ответить фактом, а не «ща посмотрю».
-        rows = [project_row(root) for root in discover_projects(args.paths)]
-        if args.json:
-            print(json.dumps([{"project": row["project"], "writer": row["writer"],
-                               "reason": row.get("reason", "")} for row in rows],
-                             ensure_ascii=False, indent=2))
-            return 0
-        if not rows:
-            print("ни одного проекта с состоянием пары не найдено")
-            return 1
-        for row in rows:
-            print(f"{row['project']}: {row['writer'] or '—'} — {row.get('reason') or 'причина не сказана'}")
-        return 0
-
-    if command == "task":
-        # Список, а не одна строка. Новая задача дописывается: старая не исчезает,
-        # и раунд не закроется, пока что-то не помечено сделанным или брошенным с
-        # причиной.
-        if args.done or args.drop:
-            target = int(args.done or args.drop)
-            want = "done" if args.done else "dropped"
-
-            def close(st):
-                match = next((i for i in st.get("tasks") or []
-                              if int(i.get("id", 0)) == target), None)
-                if not match:
-                    raise ProtocolError(f"no task #{target}")
-                if want == "dropped" and not str(args.reason or "").strip():
-                    raise ProtocolError("--drop needs --reason")
-                match["status"] = want
-                match["reason"] = str(args.reason or "").strip()
-                match["closed_at"] = utcnow()
-                match["closed_by"] = "human"
-                return match
-
-            item = store.mutate(close)
-            store.append_transcript("task_closed", "human", task_id=item["id"], status=want)
-            print(f"task #{item['id']} is {want}")
-        else:
-            body = " ".join(str(args.text or "").split())
-            if not body:
-                print("task needs text", file=sys.stderr)
-                return 2
-
-            def apply(state):
-                item = {"id": next_task_id(state), "text": body, "status": OPEN_TASK,
-                        "added_at": utcnow(), "added_by": "human",
-                        "round": int(state.get("round", 0)), "reason": "",
-                        "closed_at": None, "closed_by": None}
-                state.setdefault("tasks", []).append(item)
-                state["task"] = body  # для старых читателей и отчёта
-                return item
-
-            item = store.mutate(apply)
-            store.append_transcript("task_added", "human", task_id=item["id"], text=body[:200])
-            print(f"task #{item['id']} added: {body}")
-            still = [i["id"] for i in open_tasks(store.read())]
-            if len(still) > 1:
-                print(f"  open tasks now: {', '.join(str(i) for i in still)}")
-        return 0
-
-    if command == "tasks":
-        current = store.read()
-        path = write_tasks_md(store.root, current)
-        print(f"# Журнал сессии -> {path}\n")
-        print(render_tasks_md(current))
-        return 0
-
-    if command == "inbox":
-        role = args.role
-        inbox = store.mailbox_root / role
-        if not inbox.is_dir():
-            print(f"no inbox for {role!r} (they may not have started yet)")
-            return 0
-        files = sorted(inbox.glob("*.json"))
-        print(f"{len(files)} message(s) waiting for {role}")
-        for path in files:
-            body = json.loads(path.read_text(encoding="utf-8"))
-            print(f"\n--- #{body['seq']} {body['ts']} from {body['from']} ---")
-            print(body["text"])
-        return 0
-
-    if command == "log":
-        # Дефолтный лимит вместо «всего». Замер: без него команда вываливала в
-        # терминал весь активный журнал, а это пол-мегабайта и ~50k токенов на
-        # раунд, в том числе у человека, который просто посмотрел, что происходило.
-        # Те, кому нужен весь файл, просят об этом явно.
-        limit = 0 if args.all else args.limit
-        shown = store.read_transcript(limit)
-        for entry in shown:
-            print(json.dumps(entry, ensure_ascii=False))
-        if args.all:
-            return 0
-        total = store.transcript_entry_count()
-        if total > len(shown):
-            # Молча выдать 50 строк вместо 900 — это выглядеть как полный журнал.
-            print(f"# показаны последние {len(shown)} из {total}; остальное: "
-                  f"--all или --limit N", file=sys.stderr)
-        return 0
-
-    if command == "all":
-        # Deliberately ignores --state: "all" is exactly the command where one
-        # state directory would defeat the point.
-        rows = [project_row(root, args.stuck_min) for root in discover_projects(args.paths)]
-        if args.json:
-            print(json.dumps(rows, ensure_ascii=False, indent=2))
-            return 0
-        if not rows:
-            print("ни одного проекта с состоянием пары не найдено")
-            print("укажите путь:  pairctl all ~/work/foo")
-            print("или скажите где искать:  PAIR_SCAN='~/work/*/.pair'")
-            return 1
-        print(render_table(rows))
-        stuck = [row for row in rows if row["stuck"]]
-        live = [row for row in rows if not row["closed"]]
-        untouched = [row for row in rows if row["silence_seconds"] is None]
-        print()
-        print(f"{len(rows)} проект(ов), в работе {len(live)}, не начато {len(untouched)}")
-        if stuck:
-            names = ", ".join(row["project"] for row in stuck)
-            print(f"молчат дольше {args.stuck_min} мин: {names}")
-            print("  посмотреть:  PAIR_STATE=<путь> bin/pairchat --once")
-            return 3
-        return 0
-
-    if command == "notes":
-        for path in sorted(store.notes_root.glob("*.md")):
-            print(f"\n===== {path.name} =====")
-            print(path.read_text(encoding="utf-8"))
-        return 0
-
-    if command == "reset":
-        if not args.yes:
-            print("refusing to reset without --yes", file=sys.stderr)
-            return 2
-
-        for path in (store.mailbox_root, store.notes_root, store.patches_root):
-            shutil.rmtree(path, ignore_errors=True)
-        store.state_path.unlink(missing_ok=True)
-        store.transcript_path.unlink(missing_ok=True)
-        fresh = Store(store.root)
-        # Стирание состояния не должно повышать права — но права измеряются
-        # относительно дефолта, а дефолт теперь auto, то есть ровно то, что человек
-        # задал как норму. Ставить здесь observe было бы противоречием: wipe
-        # остановил бы пару вопреки «работайте сами, вернитесь с выводом» и
-        # заставил бы человека это заметить. §12 вне оси, поэтому auto не значит
-        # «разрешено разрушительное».
-        fresh.mutate(lambda st: st.__setitem__("autonomy", "auto"))
-        store.append_transcript("reset", "human", autonomy="auto")
-        print("state reset; autonomy is now 'auto' — the pair works to the end and "
-              "comes back with the result. Narrow it with `pairctl autonomy semi` "
-              "or `pairctl autonomy observe`.")
-        return 0
-
-    print(f"unknown command {command!r}", file=sys.stderr)
-    return 2
-
-
-def extract_state(argv: list[str]) -> tuple[Path, list[str]]:
-    """Pull --state out of argv wherever it appears and resolve it.
-
-    Subparser defaults silently overwrite same-named top-level options in
-    argparse, so the option is removed from the grammar entirely and handled
-    here instead. Both `server.py --state X ctl status` and
-    `server.py ctl status --state X` work.
-    """
-    raw = ".pair"
-    rest: list[str] = []
-    index = 0
-    while index < len(argv):
-        item = argv[index]
-        if item == "--state" and index + 1 < len(argv):
-            raw = argv[index + 1]
-            index += 2
-            continue
-        if item.startswith("--state="):
-            raw = item.split("=", 1)[1]
-            index += 1
-            continue
-        rest.append(item)
-        index += 1
-    return Path(raw).expanduser().resolve(), rest
-
-
-# Where discover_projects looks when the human did not say. PAIR_SCAN overrides it
-# with a colon-separated list of globs, so "where should I look" is always something
-# the human can answer rather than something we guess at.
-DEFAULT_SCAN_GLOBS = ("~/work/*/.pair",)
-
-
-def discover_projects(extra: list[str] | None = None) -> list[Path]:
-    """Every project that actually has pair state, sorted by path.
-
-    A directory only counts when state.json is really inside it. An empty or
-    half-created .pair is not a project, and listing it would put a phantom row
-    in the human's overview of what is running.
-
-    Naming projects replaces the built-in search. Otherwise `pairchat --all
-    ~/work/blog` would show the five projects the scan always finds plus blog,
-    and the human who named one project would get six.
-    """
-    import glob as _glob
-
-    raw = os.environ.get("PAIR_SCAN", "").strip()
-    if raw:
-        patterns = [p.strip() for p in raw.split(os.pathsep) if p.strip()]
-    elif extra:
-        patterns = []
-    else:
-        patterns = list(DEFAULT_SCAN_GLOBS)
-
-    found: dict[str, Path] = {}
-
-    def offer(candidate: Path) -> None:
-        candidate = candidate.expanduser()
-        # Accept either the .pair directory or the project that contains it, because
-        # "pairctl all ~/work/test" is what a human will type.
-        if candidate.is_dir() and not (candidate / "state.json").is_file():
-            candidate = candidate / ".pair"
-        if (candidate / "state.json").is_file():
-            resolved = candidate.resolve()
-            found[str(resolved)] = resolved
-
-    for pattern in patterns:
-        expanded = str(Path(pattern).expanduser()) if pattern.startswith("~") else pattern
-        for hit in _glob.glob(expanded, recursive=True):
-            offer(Path(hit))
-    for given in extra or []:
-        offer(Path(given))
-    # Never lose the project the human is standing in, whatever PAIR_SCAN says.
-    offer(Path.cwd() / ".pair")
-
-    return [found[key] for key in sorted(found)]
-
-
-def silence_seconds(root: Path) -> float | None:
-    """Seconds since the last recorded event, or None when nothing was recorded.
-
-    Taken from the transcript, not from state.json's updated_at: a state write that
-    changed nothing would otherwise dress up a stalled pair as busy.
-    """
-    last: dict | None = None
-    try:
-        text = (root / "transcript.jsonl").read_text(errors="replace")
-    except OSError:
-        return None
-    for raw in text.splitlines():
-        if not raw.strip():
-            continue
-        try:
-            last = json.loads(raw)
-        except Exception:
-            continue
-    if not last or not last.get("ts"):
-        return None
-    try:
-        stamp = datetime.fromisoformat(str(last["ts"]))
-    except ValueError:
-        return None
-    if stamp.tzinfo is None:
-        stamp = stamp.replace(tzinfo=timezone.utc)
-    return max(0.0, (datetime.now(timezone.utc) - stamp).total_seconds())
-
-
-def human_age(seconds: float | None) -> str:
-    if seconds is None:
-        return "—"
-    if seconds < 90:
-        return f"{int(seconds)} с"
-    if seconds < 5400:
-        return f"{int(seconds // 60)} мин"
-    if seconds < 172800:
-        return f"{int(seconds // 3600)} ч"
-    return f"{int(seconds // 86400)} д"
-
-
-def project_row(root: Path, stuck_min: int = 30) -> dict:
-    """One project's row for the human's overview. Never raises on a broken file."""
-    try:
-        state = json.loads((root / "state.json").read_text(encoding="utf-8"))
-    except Exception:
-        state = {}
-    roles = state.get("roles") or {}
-    writer = state.get("writer")
-    age = silence_seconds(root)
-    phase = state.get("phase") or "?"
-    closed = bool(state.get("closed_at")) or phase == "done"
-    return {
-        "path": str(root),
-        "project": root.parent.name or str(root),
-        "task": (state.get("task") or "").strip(),
-        "phase": phase,
-        "writer": writer,
-        "reason": (state.get("writer_reason") or "").strip(),
-        "mode": state.get("mode", "fix"),
-        "peers": sorted(name for name in roles if name != writer),
-        "roles": sorted(roles),
-        "silence_seconds": age,
-        "silence": human_age(age),
-        "closed": closed,
-        "stuck": age is not None and not closed and age > stuck_min * 60,
-    }
-
-
-def render_table(rows: list[dict]) -> str:
-    """Aligned plain text. Column widths come from the data, never from a guess."""
-    header = ("проект", "фаза", "режим", "писатель", "критик", "тишина", "почему он", "задача")
-    table = [
-        (
-            row["project"],
-            row["phase"],
-            "AUDIT" if row.get("mode") == "audit" else "fix",
-            row["writer"] or "—",
-            ", ".join(row["peers"]) or "—",
-            "не начат" if row["silence_seconds"] is None
-            else row["silence"] + ("  ЗАВИС" if row["stuck"] else ""),
-            (row["reason"] or "—")[:40],
-            (row["task"] or "—")[:36],
-        )
-        for row in rows
-    ]
-    widths = [
-        max([len(header[i])] + [len(record[i]) for record in table]) for i in range(len(header))
-    ]
-    lines = ["  ".join(header[i].ljust(widths[i]) for i in range(len(header))).rstrip()]
-    lines.append("  ".join("-" * w for w in widths))
-    lines.extend(
-        "  ".join(record[i].ljust(widths[i]) for i in range(len(record))).rstrip()
-        for record in table
-    )
-    return "\n".join(lines)
-
-
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        prog="pair-mailbox",
-        description="MCP server and control tool for a two-agent collaboration.",
-    )
-    parser.add_argument("--role", help="This agent's role name. Fixed at configuration time.")
-
-    sub = parser.add_subparsers(dest="ctl_command")
-    sub.add_parser("status", help="show shared state")
-
-    assign = sub.add_parser("assign", help="human: give write authority to a role")
-    assign.add_argument("role")
-
-    sub.add_parser("release", help="human: clear write authority")
-
-    digest = sub.add_parser(
-        "digest",
-        help="human: the same bounded slice the agents get, in under 500 tokens",
-    )
-    digest.add_argument("--budget", type=int, default=DIGEST_TOKEN_BUDGET,
-                        help=f"token ceiling for the whole answer, {DIGEST_TOKEN_BUDGET} by default")
-    digest.add_argument("--role", default="",
-                        help="say 'you are the writer' when it is this role, saves a lookup")
-
-    pane = sub.add_parser(
-        "pane",
-        help="human: bind a role to a pane by hand, or --clear to go back to what tmux says",
-    )
-    pane.add_argument("--role", required=True, help="role whose binding to set")
-    pane.add_argument("address", nargs="?",
-                      help="pane to bind it to: %%N or <session>:<window>.<pane>")
-    pane.add_argument("--clear", action="store_true",
-                      help="drop the override; the pane goes back to what the process reports")
-
-    roster = sub.add_parser("roster", help="human: show who is registered, --prune to clean")
-    roster.add_argument("--prune", action="store_true",
-                        help="remove roles whose process is dead AND whose pane is gone")
-
-    roles = sub.add_parser(
-        "roles",
-        help="human: pin who always writes and who always reviews, instead of racing each round",
-    )
-    roles.add_argument("--writer", help="role that always holds write authority")
-    roles.add_argument("--critic", help="role that always reviews")
-    roles.add_argument("--swap", action="store_true", help="exchange writer and critic")
-    roles.add_argument("--clear", action="store_true", help="drop the pinning, go back to the race")
-    roles.add_argument("--global", dest="global_", action="store_true",
-                       help="also remember it for every project (PAIR_ROLES, default ~/.config/pair-mailbox/roles.json)")
-
-    round_mode = sub.add_parser(
-        "mode",
-        help="human: choose what a round is for — 'fix' changes code, 'audit' does not",
-    )
-    round_mode.add_argument("mode", choices=list(MODES))
-
-    autonomy = sub.add_parser(
-        "autonomy",
-        help="human: how far the pair may go without you — 'observe', 'semi' or 'auto'",
-    )
-    autonomy.add_argument("level", choices=list(AUTONOMIES))
-
-    launch = sub.add_parser(
-        "launch-autonomy",
-        help="choose the level once at launch, from a flag, a task line, .pair/autonomy, "
-             "or the default 'auto' — strongest source first",
-    )
-    launch.add_argument("--flag", default=None, choices=list(AUTONOMIES),
-                        help="what bin/pair-duo was given")
-    launch.add_argument("--task", default="", help="the task text, may start with 'autonomy: semi'")
-
-    ok = sub.add_parser(
-        "ok",
-        help="human: say yes at the verify checkpoint, so the pair may close the round",
-    )
-    ok.add_argument("--revoke", action="store_true",
-                    help="human: take the yes back, e.g. after looking at what changed since")
-
-    task = sub.add_parser("task", help="human: add a task to the shared list")
-    task.add_argument("text", nargs="?")
-    task.add_argument("--drop", metavar="ID", default=None,
-                      help="close task ID as dropped, with the reason below")
-    task.add_argument("--done", metavar="ID", default=None,
-                      help="close task ID as done")
-    task.add_argument("--reason", default="",
-                      help="why a task is dropped; required, an empty reason is refused")
-
-    sub.add_parser("tasks", help="human: print the shared task list with statuses")
-
-    inbox = sub.add_parser("inbox", help="show a role's pending messages")
-    inbox.add_argument("role")
-
-    log = sub.add_parser("log", help="print the audit trail")
-    log.add_argument("--limit", type=int, default=LOG_DEFAULT_LIMIT,
-                     help=f"how many of the newest entries to print, {LOG_DEFAULT_LIMIT} by default")
-    log.add_argument("--all", action="store_true",
-                     help="print the whole active file; rotated-away entries live "
-                          "in .pair/transcript-archive/ and are not included")
-
-    sub.add_parser("notes", help="print shared notes")
-
-    everywhere = sub.add_parser(
-        "all", help="one row per project, across every project with a .pair"
-    )
-    everywhere.add_argument("paths", nargs="*", help="extra project or .pair directories")
-    everywhere.add_argument("--stuck-min", type=int, default=30)
-    everywhere.add_argument("--json", action="store_true")
-
-    why = sub.add_parser("why", help="who writes, and the reason they gave")
-    why.add_argument("paths", nargs="*", help="extra project or .pair directories")
-    why.add_argument("--json", action="store_true")
-
-    reset = sub.add_parser("reset", help="wipe shared state")
-    reset.add_argument("--yes", action="store_true")
-
-    return parser
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Единственная точка входа: MCP-сервер или команда `pairctl`.
+
+    Имя и путь этого файла менять нельзя: от них зависят `serve.sh`,
+    `install.sh` и конфигурация MCP у всех четырёх ролей. Поэтому сам `pairctl`
+    вынесен в `pairctl_cli.py` и зовётся отсюда, а не наоборот.
+
+    `run_ctl` импортируется лениво: модули `pairctl_*` импортируют `server`, и
+    на верхнем уровне получился бы цикл импорта. Внутри функции цикла нет,
+    потому что к этому моменту `server` уже загружен.
+    """
+    from pairctl_cli import build_parser, run_ctl
+    from pairctl_read import extract_state
+
     state_dir, rest = extract_state(list(sys.argv[1:] if argv is None else argv))
     args = build_parser().parse_args(rest)
     if args.ctl_command:

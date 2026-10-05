@@ -25,7 +25,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "mcp" / "pair_mailbox"))
 
-from server import discover_projects, project_row  # noqa: E402
+from pairctl_read import discover_projects, project_row  # noqa: E402
 
 BOLD, DIM, RED, YELLOW, CYAN, MAGENTA, OFF = (
     "\033[1m", "\033[2m", "\033[31m", "\033[33m", "\033[36m", "\033[35m", "\033[0m",
