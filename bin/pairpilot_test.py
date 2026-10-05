@@ -187,6 +187,80 @@ class TestPaneAmbiguity(PilotCase):
         self.assertIn("pilot_pane_shared", self.transcript_kinds())
 
 
+class TestOutboxStaleness(PilotCase):
+    """Отложенное напоминание не должно переживать вопрос.
+
+    Наблюдалось вживую: напоминание про обязательство, закрытое почти за три
+    часа до составления, лежало в очереди ещё 22 минуты и было доставлено как
+    свежее — человек получил вопрос, который уже не имел отношения к делу.
+    Причина в коде: `flush_outbox` при ComposerBusy делал `continue` и повторял
+    вечно, а файл удалялся только при успешной доставке. Срока жизни не было
+    вовсе, и «переживающая доставка» незаметно стала доставкой протухшего.
+    """
+
+    def _queue(self, pilot, role: str, text: str, age_seconds: float = 0.0) -> Path:
+        pilot.enqueue(role, text)
+        path = pilot.outbox / f"{role}.txt"
+        when = time.time() - age_seconds
+        os.utime(path, (when, when))
+        return path
+
+    def test_fresh_nudge_is_delivered(self) -> None:
+        p = self.pilot()
+        path = self._queue(p, "agy", "свежее напоминание")
+        state = self.write_state(roles={"agy": {"pane": "%1", "pid": os.getpid()}})
+        orig_alive, orig_deliver = pairpilot.pane_alive, pairpilot.deliver
+        pairpilot.pane_alive = lambda tmux, pane: True
+        pairpilot.deliver = lambda pane, text, wait_for_empty=0.0: {"delivered": True}
+        try:
+            p.tmux = "tmux"
+            p.flush_outbox(state)
+        finally:
+            pairpilot.pane_alive, pairpilot.deliver = orig_alive, orig_deliver
+        self.assertFalse(path.exists(), "свежее напоминание доставляется и убирается")
+
+    def test_stale_nudge_is_dropped_and_never_delivered(self) -> None:
+        """Вопрос устарел — доставить его хуже, чем не доставить."""
+        p = self.pilot()
+        p.outbox_ttl = 600.0
+        path = self._queue(p, "agy", "вопрос двухчасовой давности", age_seconds=7200)
+        state = self.write_state(roles={"agy": {"pane": "%1", "pid": os.getpid()}})
+        calls = []
+        orig_alive, orig_deliver = pairpilot.pane_alive, pairpilot.deliver
+        pairpilot.pane_alive = lambda tmux, pane: True
+        pairpilot.deliver = lambda pane, text, wait_for_empty=0.0: calls.append(text) or {"delivered": True}
+        try:
+            p.tmux = "tmux"
+            p.flush_outbox(state)
+        finally:
+            pairpilot.pane_alive, pairpilot.deliver = orig_alive, orig_deliver
+        self.assertEqual(calls, [], "протухшее не доставляется даже при свободном композере")
+        self.assertFalse(path.exists(), "протухшее убирается из очереди")
+        kinds = [e.get("kind") for e in p.store.read_transcript(limit=0)]
+        self.assertIn("pilot_nudge_expired", kinds,
+                      "выброшенное должно быть видно в транскрипте, иначе выглядит как доставленное")
+
+    def test_a_busy_composer_does_not_expire_a_fresh_nudge(self) -> None:
+        """Переживающая доставка остаётся: пока композер занят, ждать уместно."""
+        p = self.pilot()
+        p.outbox_ttl = 600.0
+        path = self._queue(p, "agy", "подождём", age_seconds=60)
+        state = self.write_state(roles={"agy": {"pane": "%1", "pid": os.getpid()}})
+
+        def busy(pane, text, wait_for_empty=0.0):
+            raise pairpilot.ComposerBusy("занято")
+
+        orig_alive, orig_deliver = pairpilot.pane_alive, pairpilot.deliver
+        pairpilot.pane_alive = lambda tmux, pane: True
+        pairpilot.deliver = busy
+        try:
+            p.tmux = "tmux"
+            p.flush_outbox(state)
+        finally:
+            pairpilot.pane_alive, pairpilot.deliver = orig_alive, orig_deliver
+        self.assertTrue(path.exists(), "свежее напоминание переживает занятый композер")
+
+
 class TestReport(PilotCase):
     def test_closed_round_produces_a_report(self) -> None:
         self.write_state(phase="done", closed_at=ago(60), round=3, writer="agy",

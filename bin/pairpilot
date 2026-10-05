@@ -80,6 +80,11 @@ DEFAULT_SILENCE = 600.0
 # Сколько ждать ответа на запрос, прежде чем дёрнуть получателя, и сколько —
 # прежде чем сказать об этом автору запроса.
 DEFAULT_REPLY_GRACE = 900.0
+# Срок жизни отложенного напоминания. Переживающая доставка полезна, пока
+# вопрос жив: пока композер занят, минута-другая ожидания уместна. Но вопрос,
+# провисевший дольше, уже не помогает — он только отвлекает. Наблюдалось
+# вживую: напоминание ждало композер 22 минуты и было доставлено как свежее.
+DEFAULT_OUTBOX_TTL = 600.0
 DEFAULT_REPLY_HARD = 2400.0
 # Сколько провисает sealed-патч, прежде чем это станет дефектом, а не делом,
 # которое писатель возьмёт через минуту.
@@ -150,7 +155,8 @@ class Pilot:
                  launch: dict[str, str] | None = None,
                  allow: list[str] | None = None,
                  restart_limit: int = DEFAULT_RESTART_LIMIT,
-                 restart_window: float = DEFAULT_RESTART_WINDOW) -> None:
+                 restart_window: float = DEFAULT_RESTART_WINDOW,
+                 outbox_ttl: float = DEFAULT_OUTBOX_TTL) -> None:
         self.state_dir = state_dir
         self.silence = silence
         self.interval = interval
@@ -160,6 +166,7 @@ class Pilot:
         self.allow = allow
         self.restart_limit = max(1, int(restart_limit))
         self.restart_window = max(1.0, float(restart_window))
+        self.outbox_ttl = max(1.0, float(outbox_ttl))
         # Store умеет root — это сам каталог состояния: server.py делает ровно
         # то же. Со state_dir.parent мы бы читали несуществующий state.json.
         self.store = Store(state_dir)
@@ -370,12 +377,36 @@ class Pilot:
 
     def flush_outbox(self, state: dict) -> None:
         """Доставить отложенное. Пока композер занят, текст остаётся на месте —
-        следующий проход попробует снова. Это и есть переживающая доставка."""
+        следующий проход попробует снова. Это и есть переживающая доставка.
+
+        Но переживающая доставка без срока жизни становится доставкой
+        протухшего: очередь переживала сессию, и человек получал вопрос, который
+        уже не имел отношения к делу. Наблюдалось вживую — напоминание про
+        обязательство, закрытое почти за три часа до того, как было составлено,
+        лежало в очереди ещё 22 минуты и было доставлено как свежее.
+
+        Поэтому у отложенного есть срок. Молчаливую выброску не делаем: она
+        записывается в транскрипт, иначе выброшенное выглядит как «доставлено».
+        """
         if self.tmux is None:
             return
+        now = time.time()
         for role, info in state.get("roles", {}).items():
             text = self.pending(role)
             if not text or role in self.skip:
+                continue
+            path = self.outbox / f"{role}.txt"
+            try:
+                age = now - path.stat().st_mtime
+            except OSError:
+                continue
+            if age > self.outbox_ttl:
+                path.unlink(missing_ok=True)
+                self.store.append_transcript(
+                    "pilot_nudge_expired", "pairpilot", to=role,
+                    age_seconds=int(age), text=text[:120])
+                log(f"отложенное для {role} выброшено: ждало композер "
+                    f"{int(age // 60)} мин, вопрос устарел")
                 continue
             pane = info.get("pane")
             if not pane or not pane_alive(self.tmux, pane):
@@ -385,7 +416,7 @@ class Pilot:
             except ComposerBusy:
                 continue
             if result.get("delivered"):
-                (self.outbox / f"{role}.txt").unlink(missing_ok=True)
+                path.unlink(missing_ok=True)
                 self.store.append_transcript("pilot_deliver", "pairpilot", to=role, text=text[:120])
                 log(f"доставил отложенное для {role}")
 
@@ -1005,6 +1036,8 @@ def main() -> int:
     parser.add_argument("--state", default=os.environ.get("PAIR_STATE", ".pair"))
     parser.add_argument("--interval", type=float, default=DEFAULT_INTERVAL)
     parser.add_argument("--silence", type=float, default=DEFAULT_SILENCE)
+    parser.add_argument("--outbox-ttl", type=float, default=DEFAULT_OUTBOX_TTL,
+                        help="сколько секунд отложенное напоминание может ждать композер")
     parser.add_argument("--reply-grace", type=float, default=DEFAULT_REPLY_GRACE,
                         help="seconds before the recipient of a request is poked")
     parser.add_argument("--reply-hard", type=float, default=DEFAULT_REPLY_HARD,
@@ -1039,7 +1072,8 @@ def main() -> int:
     pilot = Pilot(state_dir, silence=args.silence, interval=args.interval,
                   reply_grace=args.reply_grace, reply_hard=args.reply_hard,
                   patch_grace=args.patch_grace, launch=launch, allow=allow,
-                  restart_limit=args.restart_limit, restart_window=args.restart_window)
+                  restart_limit=args.restart_limit, restart_window=args.restart_window,
+                  outbox_ttl=args.outbox_ttl)
 
     if args.once:
         state = pilot.tick()
