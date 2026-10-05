@@ -1,0 +1,86 @@
+"""Общая база для наборов тестов pair-mailbox.
+
+Это НЕ тест-файл, а приспособление: его нет соответствия исходнику, и называть его
+третьим тест-файлом было бы неверно. Живёт отдельно от `test_protocol.py` потому,
+что после разбора `server.py` наборов стало несколько, а база у них одна: поднятое
+состояние пары в временном каталоге, две роли поверх него и несколько помощников,
+которые повторялись бы в каждом файле построчно.
+
+Правило «один тест-файл на один исходник» здесь не нарушено: база не проверяет
+поведение, она только готовит почву. Проверки живут в файлах, названных по
+исходникам, которые они проверяют.
+"""
+from __future__ import annotations
+
+import os
+import tempfile
+import unittest
+from pathlib import Path
+
+from server import PairSession, ProtocolError, Store
+
+REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+SERVER = Path(__file__).resolve().parent / "server.py"
+PAIRCHAT = REPO_ROOT / "bin" / "pairchat"
+
+
+class PairTestCase(unittest.TestCase):
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name) / "state"
+        self.store = Store(self.root)
+        self.writer = PairSession("writer-agent", self.store)
+        self.peer = PairSession("reviewer-agent", self.store)
+        self._orig_tmux_pane = os.environ.pop("TMUX_PANE", None)
+        # Запоминаем ДО того, как среда очищена: тесты ниже проверяют pane_exists
+        # против настоящей панели, а setUp убирает переменную, чтобы роли в наборе
+        # не слали спам в окно оператора (F-08). Без этого запоминания такая
+        # проверка пропускалась бы всегда, то есть никогда.
+        self._pane_at_startup = self._orig_tmux_pane
+        self._orig_disable_ring = os.environ.get("PAIR_DISABLE_RING")
+        os.environ["PAIR_DISABLE_RING"] = "1"
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+        if self._orig_tmux_pane is not None:
+            os.environ["TMUX_PANE"] = self._orig_tmux_pane
+        else:
+            os.environ.pop("TMUX_PANE", None)
+        if self._orig_disable_ring is not None:
+            os.environ["PAIR_DISABLE_RING"] = self._orig_disable_ring
+        else:
+            os.environ.pop("PAIR_DISABLE_RING", None)
+
+    def assertRefused(self, callable_, *args, contains: str = "", **kwargs):
+        with self.assertRaises(ProtocolError) as caught:
+            callable_(*args, **kwargs)
+        if contains:
+            self.assertIn(contains, str(caught.exception).lower())
+        return caught.exception
+
+    def record_test_evidence(self, value: str = "117 passed in 6.2s (exit 0)", ok: bool = True,
+                             task: int | None = None) -> None:
+        """Record what a closing round needs: a machine-produced fact for THIS round."""
+        self.writer.tool_pair_evidence(kind="test", value=value, ok=ok, task=task)
+
+    def human_ok(self) -> None:
+        """The one word a human says at a semi checkpoint, without leaving Python."""
+        self.store.mutate(lambda state: state.setdefault("human_ok", []).append(
+            {"round": int(state.get("round", 0)), "at": "now", "phase": state.get("phase")}))
+
+    def close_round(self, value: str = "117 passed in 6.2s (exit 0)") -> dict:
+        """Walk the phases and close, satisfying the gate the way a real pair would."""
+        for phase in ("plan", "implement", "verify"):
+            self.writer.tool_pair_advance(phase)
+        self.record_test_evidence(value)
+        self.human_ok()
+        return self.writer.tool_pair_advance(phase="done")
+
+    def set_autonomy(self, level: str) -> None:
+        """Объявить уровень явно.
+
+        Жил этот помощник внутри одного класса, и шесть тестов в других полагались на
+        дефолт молча — то есть контракт уровней не был закреплён ни одним из них, и
+        смена дефолта ломала тесты, к дефолту отношения не имеющие.
+        """
+        self.store.mutate(lambda state: state.__setitem__("autonomy", level))

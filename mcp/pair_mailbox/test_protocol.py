@@ -27,6 +27,8 @@ from shutil import which as shutil_which
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from pair_test_base import PAIRCHAT, SERVER, PairTestCase  # noqa: E402
+from pairctl_read import project_row, render_table  # noqa: E402
 from server import (  # noqa: E402
     AUTONOMIES,
     MAX_READ_WAIT_SECONDS,
@@ -36,79 +38,10 @@ from server import (  # noqa: E402
     ProtocolError,
     Store,
     done_blockers,
-    discover_projects,
     is_pid_alive,
     main,
-    project_row,
-    render_table,
     resolve_autonomy,
-    silence_seconds,
 )
-
-SERVER = Path(__file__).resolve().parent / "server.py"
-PAIRCHAT = Path(__file__).resolve().parent.parent.parent / "bin" / "pairchat"
-
-
-class PairTestCase(unittest.TestCase):
-    def setUp(self) -> None:
-        self._tmp = tempfile.TemporaryDirectory()
-        self.root = Path(self._tmp.name) / "state"
-        self.store = Store(self.root)
-        self.writer = PairSession("writer-agent", self.store)
-        self.peer = PairSession("reviewer-agent", self.store)
-        self._orig_tmux_pane = os.environ.pop("TMUX_PANE", None)
-        # Запоминаем ДО того, как среда очищена: тесты ниже проверяют pane_exists
-        # против настоящей панели, а setUp убирает переменную, чтобы роли в наборе
-        # не слали спам в окно оператора (F-08). Без этого запоминания такая
-        # проверка пропускалась бы всегда, то есть никогда.
-        self._pane_at_startup = self._orig_tmux_pane
-        self._orig_disable_ring = os.environ.get("PAIR_DISABLE_RING")
-        os.environ["PAIR_DISABLE_RING"] = "1"
-
-    def tearDown(self) -> None:
-        self._tmp.cleanup()
-        if self._orig_tmux_pane is not None:
-            os.environ["TMUX_PANE"] = self._orig_tmux_pane
-        else:
-            os.environ.pop("TMUX_PANE", None)
-        if self._orig_disable_ring is not None:
-            os.environ["PAIR_DISABLE_RING"] = self._orig_disable_ring
-        else:
-            os.environ.pop("PAIR_DISABLE_RING", None)
-
-    def assertRefused(self, callable_, *args, contains: str = "", **kwargs):
-        with self.assertRaises(ProtocolError) as caught:
-            callable_(*args, **kwargs)
-        if contains:
-            self.assertIn(contains, str(caught.exception).lower())
-        return caught.exception
-
-    def record_test_evidence(self, value: str = "117 passed in 6.2s (exit 0)", ok: bool = True,
-                             task: int | None = None) -> None:
-        """Record what a closing round needs: a machine-produced fact for THIS round."""
-        self.writer.tool_pair_evidence(kind="test", value=value, ok=ok, task=task)
-
-    def human_ok(self) -> None:
-        """The one word a human says at a semi checkpoint, without leaving Python."""
-        self.store.mutate(lambda state: state.setdefault("human_ok", []).append(
-            {"round": int(state.get("round", 0)), "at": "now", "phase": state.get("phase")}))
-
-    def close_round(self, value: str = "117 passed in 6.2s (exit 0)") -> dict:
-        """Walk the phases and close, satisfying the gate the way a real pair would."""
-        for phase in ("plan", "implement", "verify"):
-            self.writer.tool_pair_advance(phase)
-        self.record_test_evidence(value)
-        self.human_ok()
-        return self.writer.tool_pair_advance(phase="done")
-
-    def set_autonomy(self, level: str) -> None:
-        """Объявить уровень явно.
-
-        Жил этот помощник внутри одного класса, и шесть тестов в других полагались на
-        дефолт молча — то есть контракт уровней не был закреплён ни одним из них, и
-        смена дефолта ломала тесты, к дефолту отношения не имеющие.
-        """
-        self.store.mutate(lambda state: state.__setitem__("autonomy", level))
 
 
 class TestWriteAuthority(PairTestCase):
@@ -236,6 +169,7 @@ class TestWriteAuthority(PairTestCase):
         self.assertIn("разобрался в потоке ретраев", out.getvalue())
 
 
+
 class TestPersistentRoles(PairTestCase):
     """Постоянная расстановка: человек один раз говорит, кто всегда пишет, и
     гонка за право записи исчезает. Без неё каждый раунд тратит ход на спор,
@@ -318,61 +252,6 @@ class TestPersistentRoles(PairTestCase):
         self.assertNotIn("policy", self.store.read())
 
 
-class TestGlobalRoles(PairTestCase):
-    """Расстановка, заданная разом для всех проектов, должна реально действовать,
-    а не просто лежать в файле."""
-
-    def setUp(self) -> None:
-        super().setUp()
-        self._orig_roles = os.environ.get("PAIR_ROLES")
-        self._roles_file = Path(self._tmp.name) / "roles.json"
-        os.environ["PAIR_ROLES"] = str(self._roles_file)
-
-    def tearDown(self) -> None:
-        if self._orig_roles is not None:
-            os.environ["PAIR_ROLES"] = self._orig_roles
-        else:
-            os.environ.pop("PAIR_ROLES", None)
-        super().tearDown()
-
-    def test_global_policy_applies_to_a_project_without_one(self) -> None:
-        self._roles_file.write_text(
-            json.dumps({"writer": "writer-agent", "critic": "reviewer-agent"}), encoding="utf-8")
-        self.writer.tool_pair_state()  # обе роли должны появиться в ростере
-        self.peer.tool_pair_state()
-        self.assertEqual(self.peer.tool_pair_state()["my_standing"],
-                         "критик по постоянной расстановке")
-
-    def test_global_policy_is_ignored_when_its_roles_never_show_up(self) -> None:
-        """Ролизация «opencode пишет» в проекте, где opencode не запускают, не
-        должна оставлять проект без писателя: это тихая остановка работы."""
-        self._roles_file.write_text(
-            json.dumps({"writer": "opencode", "critic": "agy"}), encoding="utf-8")
-        self.writer.tool_pair_state()
-        self.peer.tool_pair_state()
-        self.assertIn("гонк", self.writer.tool_pair_state()["my_standing"])
-        self.assertNotIn("policy", self.store.read())
-
-    def test_project_policy_wins_over_the_global_one(self) -> None:
-        self._roles_file.write_text(
-            json.dumps({"writer": "writer-agent", "critic": "reviewer-agent"}), encoding="utf-8")
-        self.writer.tool_pair_state()
-        self.peer.tool_pair_state()
-        self.store.mutate(lambda st: st.__setitem__("policy", {"writer": "reviewer-agent"}))
-        self.assertEqual(self.peer.tool_pair_state()["my_standing"],
-                         "writer по постоянной расстановке")
-
-    def test_missing_or_broken_global_file_leaves_the_race(self) -> None:
-        self.assertIn("гонк", self.writer.tool_pair_state()["my_standing"])
-        self._roles_file.write_text("{не json", encoding="utf-8")
-        self.assertIn("гонк", self.writer.tool_pair_state()["my_standing"])
-
-    def test_global_file_without_a_writer_is_ignored(self) -> None:
-        self._roles_file.write_text(json.dumps({"critic": "reviewer-agent"}), encoding="utf-8")
-        self.writer.tool_pair_state()
-        self.peer.tool_pair_state()
-        self.assertIn("гонк", self.writer.tool_pair_state()["my_standing"])
-
 
 class TestObligations(PairTestCase):
     """Запрос, на который ждут ответа, должен быть виден как обязательство. Иначе
@@ -418,6 +297,7 @@ class TestObligations(PairTestCase):
         self.peer.tool_pair_send(to="writer-agent", text="первый ответ")
         self.peer.tool_pair_send(to="writer-agent", text="и ещё уточнение")
         self.assertEqual([], list(self.store.obligations_root.glob("*.json")))
+
 
 
 class TestPatchFlow(PairTestCase):
@@ -499,6 +379,7 @@ class TestPatchFlow(PairTestCase):
         path = self.peer.tool_pair_patch_reserve()["path"]
         Path(path).write_text("x\n", encoding="utf-8")
         self.assertRefused(self.writer.tool_pair_patch_verify, path, contains="never sealed")
+
 
 
 class TestTaskList(PairTestCase):
@@ -596,6 +477,7 @@ class TestTaskList(PairTestCase):
         self.assertIn("190 passed, exit 0", text)   # доказательство приписано к #1
 
 
+
 class TestHumanCheckpoint(PairTestCase):
     """`pairctl ok` значил «одобрен план» и закрывал раунд на verify."""
 
@@ -628,6 +510,7 @@ class TestHumanCheckpoint(PairTestCase):
         self.store.mutate(lambda st: st.setdefault("human_ok", []).append(
             {"round": int(st.get("round", 0)), "at": "now", "phase": "verify", "revoke": True}))
         self.assertRefused(self.writer.tool_pair_advance, "done", contains="pairctl ok")
+
 
 
 class TestEvidenceGate(PairTestCase):
@@ -822,6 +705,7 @@ class TestEvidenceGate(PairTestCase):
         self.assertEqual(self.writer.tool_pair_advance("done")["phase"], "done")
 
 
+
 class TestAutonomyDefault(PairTestCase):
     """Дефолт — auto, и это ровно то, что задал человек: он даёт задачу, пара
     отрабатывает её сама и приходит с одним выводом.
@@ -855,6 +739,7 @@ class TestAutonomyDefault(PairTestCase):
         просил человек: неизвестное — это observe, даже если дефолт теперь auto."""
         self.store.mutate(lambda state: state.__setitem__("autonomy", "turbo"))
         self.assertEqual(self.writer.tool_pair_state()["autonomy"], "observe")
+
 
 
 class TestAutonomyTriggers(PairTestCase):
@@ -918,70 +803,6 @@ class TestAutonomyTriggers(PairTestCase):
         entry = [e for e in self.store.read_transcript(20) if e.get("kind") == "autonomy"][-1]
         self.assertEqual(entry["via"], "default")
 
-
-class TestRosterPrune(PairTestCase):
-    """`pairctl roster --prune`.
-
-    Ростер — общая память пары, и в нём годами лежат записи умерших сессий: на
-    живой панели agy числились ещё claude, codex и обе роли duo. Мёртвая запись
-    занимает место, путает отчёт и портит skip. Удалять можно не молча и не по
-    одному признаку, а по двум независимым фактам."""
-
-    def ctl(self, *argv: str) -> int:
-        return main(["--state", str(self.root), *argv])
-
-    def dead_role(self, role: str, pane: str, pid: int = 999999) -> None:
-        self.store.mutate(lambda st: st.setdefault("roles", {}).update(
-            {role: {"pane": pane, "pid": pid, "last_seen": "then", "first_seen": "then"}}))
-
-    def test_prune_removes_a_dead_role_whose_pane_is_gone(self) -> None:
-        self.dead_role("ghost", "%999999")
-        self.assertEqual(0, self.ctl("roster", "--prune"))
-        self.assertNotIn("ghost", self.store.read()["roles"])
-
-    def test_prune_keeps_a_dead_role_whose_pane_still_exists(self) -> None:
-        """Одного мёртвого pid мало: после смерти агента могла остаться живая
-        панель, и удалять запись рано."""
-        self.dead_role("leftover", "%20")
-        with mock.patch("server.pane_exists", return_value=True):
-            self.assertEqual(0, self.ctl("roster", "--prune"))
-        self.assertIn("leftover", self.store.read()["roles"])
-
-    def test_prune_removes_a_dead_role_whose_pane_belongs_to_someone_living(self) -> None:
-        """Третий случай, который и ждал в бою: панель жива, но принадлежит другой
-        живой роли. Запись не просто устарела — она указывает не туда."""
-        self.dead_role("claude", "%20")
-        self.store.mutate(lambda st: st.setdefault("roles", {}).update(
-            {"agy": {"pane": "%20", "pid": os.getpid()}}))
-        with mock.patch("server.pane_exists", return_value=True):
-            self.assertEqual(0, self.ctl("roster", "--prune"))
-        roles = self.store.read()["roles"]
-        self.assertNotIn("claude", roles)
-        self.assertIn("agy", roles, "живую роль трогать нельзя")
-
-    def test_prune_never_touches_a_living_role(self) -> None:
-        self.store.mutate(lambda st: st.setdefault("roles", {}).update(
-            {"agy": {"pane": "%20", "pid": os.getpid()}}))
-        self.assertEqual(0, self.ctl("roster", "--prune"))
-        self.assertIn("agy", self.store.read()["roles"])
-
-    def test_prune_refuses_to_remove_the_writer(self) -> None:
-        """Иначе можно было бы очистить ростер и вместе с ним держателя права,
-        не сказав ни слова."""
-        self.writer.tool_pair_claim(reason="writer")
-        self.dead_role("writer-agent", "%999999")
-        self.assertEqual(2, self.ctl("roster", "--prune"))
-        self.assertIn("writer-agent", self.store.read()["roles"])
-
-    def test_roster_without_prune_only_looks(self) -> None:
-        self.dead_role("ghost", "%999999")
-        self.assertEqual(0, self.ctl("roster"))
-        self.assertIn("ghost", self.store.read()["roles"])
-
-    def test_pruning_is_in_the_audit_trail(self) -> None:
-        self.dead_role("ghost", "%999999")
-        self.ctl("roster", "--prune")
-        self.assertIn("roster_pruned", [e["kind"] for e in self.store.read_transcript()])
 
 
 class TestDefaultAllowlist(PairTestCase):
@@ -1080,6 +901,7 @@ class TestDefaultAllowlist(PairTestCase):
         self.assertTrue(patterns)
 
 
+
 class TestReadWaitBudget(PairTestCase):
     """pair_read не должен обещать больше, чем клиент способен дождаться.
 
@@ -1137,38 +959,6 @@ class TestReadWaitBudget(PairTestCase):
                     timeout / 1000.0, srv.MAX_READ_WAIT_SECONDS,
                     f"{name}: клиент рвёт вызов раньше, чем сервер может проснуться")
 
-
-class TestAutonomyCommand(PairTestCase):
-    """pairctl autonomy и pairctl ok: две команды человека, которыми он рулит."""
-
-    def ctl(self, *argv: str) -> int:
-        return main(["--state", str(self.root), *argv])
-
-    def test_autonomy_is_set_and_logged(self) -> None:
-        self.assertEqual(self.ctl("autonomy", "auto"), 0)
-        self.assertEqual(self.store.read()["autonomy"], "auto")
-        kinds = [entry["kind"] for entry in self.store.read_transcript()]
-        self.assertIn("autonomy", kinds)
-
-    def test_unknown_autonomy_is_refused(self) -> None:
-        # argparse печатает usage и выходит с 2 — так же, как у `pairctl mode`.
-        with self.assertRaises(SystemExit) as caught:
-            self.ctl("autonomy", "ludicrous")
-        self.assertEqual(caught.exception.code, 2)
-
-    def test_ok_is_one_word_and_repeatable(self) -> None:
-        self.writer.tool_pair_claim(reason="writer")
-        self.assertEqual(self.ctl("ok"), 0)
-        entries = self.store.read()["human_ok"]
-        self.assertEqual(len(entries), 1)
-        self.assertEqual(self.ctl("ok"), 0)
-        self.assertEqual(len(self.store.read()["human_ok"]), 1, "повторное «да» не плодит записи")
-
-    def test_ok_is_scoped_to_the_round(self) -> None:
-        self.writer.tool_pair_claim(reason="writer")
-        self.ctl("ok")
-        self.store.mutate(lambda state: state.__setitem__("round", 99))
-        self.assertFalse(self.writer.human_ok_for_round(self.store.read()))
 
 
 class TestPatchAccounting(PairTestCase):
@@ -1316,6 +1106,7 @@ class TestPatchAccounting(PairTestCase):
         self.assertEqual(self.writer.unresolved_patches(self.store.read()), [])
 
 
+
 class TestOverflowedComposer(PairTestCase):
     """Свёрнутый длинный ввод — это присутствие, а не отсутствие.
 
@@ -1428,6 +1219,7 @@ class TestOverflowedComposer(PairTestCase):
                          "пустой композер — это не доставка")
 
 
+
 class TestInputBoxCornerVsSideFrame(PairTestCase):
     """Поле ввода отличается от боковой рамки геометрией угла.
 
@@ -1465,6 +1257,7 @@ class TestInputBoxCornerVsSideFrame(PairTestCase):
         panel = ["  ┃  Build · something", "  ┃", "  ┃", ""]
         self.assertIsNone(composer_line(panel),
                           "панель из рамок печатать некуда: это «занято», а не «свободно»")
+
 
 
 class TestNoteTailReads(PairTestCase):
@@ -1549,6 +1342,7 @@ class TestNoteTailReads(PairTestCase):
         self.assertRefused(lambda: self.writer.tool_pair_note_read(kind="нет-такой"))
 
 
+
 class TestNoteRotation(PairTestCase):
     """Потолок роста: файл заметки не должен расти бесконечно.
 
@@ -1613,6 +1407,7 @@ class TestNoteRotation(PairTestCase):
         before = path.read_text()
         self.writer._rotate_note("plain", path)
         self.assertEqual(path.read_text(), before, "файл без разметки записей не режется")
+
 
 
 class TestPermissionAllowlist(PairTestCase):
@@ -1801,6 +1596,7 @@ class TestPermissionAllowlist(PairTestCase):
         self.assertIn("unblock_refused", kinds)
 
 
+
 class TestClosingRuleIsSingleSourced(PairTestCase):
     """Правило закрытия раунда живёт в одном месте — в сервере.
 
@@ -1817,6 +1613,7 @@ class TestClosingRuleIsSingleSourced(PairTestCase):
              module.__dict__)
         self.assertIs(module._done_blockers.__globals__["done_blockers"], done_blockers,
                       "сверхвизор должен звать правило сервера, а не свою копию")
+
 
 
 class TestMessaging(PairTestCase):
@@ -1900,6 +1697,7 @@ class TestMessaging(PairTestCase):
         self.assertRefused(self.peer.tool_pair_read, wait_seconds=-1, contains="negative")
 
 
+
 class TestPhasesAndNotes(PairTestCase):
     def setUp(self) -> None:
         super().setUp()
@@ -1936,6 +1734,7 @@ class TestPhasesAndNotes(PairTestCase):
     def test_note_kind_must_be_a_slug(self) -> None:
         self.assertRefused(self.writer.tool_pair_note, kind="../escape", text="x", contains="slug")
         self.assertRefused(self.writer.tool_pair_note, kind="plan", text="", contains="required")
+
 
 
 class TestAuditTrail(PairTestCase):
@@ -1978,196 +1777,8 @@ class TestAuditTrail(PairTestCase):
         self.assertGreaterEqual(len(reopened.read_transcript()), before)
 
 
-class TestControlSurface(PairTestCase):
-    """pairctl is the human's side of the authority boundary."""
-
-    def _ctl(self, *args: str) -> int:
-        return main(["--state", str(self.root), *args])
-
-    def test_human_assigns_and_releases(self) -> None:
-        self.writer.tool_pair_state()
-        self.peer.tool_pair_state()
-
-        self._ctl("assign", "reviewer-agent")
-        self.assertEqual(self.store.read()["writer"], "reviewer-agent")
-
-        # authority moved: the new holder edits directly, the old writer proposes
-        self.assertRefused(self.peer.tool_pair_patch_reserve, contains="write authority")
-        self.assertIn("path", self.writer.tool_pair_patch_reserve())
-
-        self._ctl("release")
-        self.assertIsNone(self.store.read()["writer"])
-
-    def test_human_can_assign_over_a_live_writer(self) -> None:
-        self.writer.tool_pair_state()
-        self.peer.tool_pair_state()
-        self.writer.tool_pair_claim()
-        self._ctl("assign", "reviewer-agent")
-        self.assertEqual(self.store.read()["writer"], "reviewer-agent")
-
-    def test_task_and_reset(self) -> None:
-        self._ctl("task", "fix the retry storm")
-        self.assertEqual(self.store.read()["task"], "fix the retry storm")
-
-        self.assertEqual(self._ctl("reset"), 2, "reset must refuse without --yes")
-        self.assertEqual(self.store.read()["task"], "fix the retry storm")
-
-        self.assertEqual(self._ctl("reset", "--yes"), 0)
-        self.assertEqual(self.store.read()["task"], "")
 
 
-class TestRoundMode(PairTestCase):
-    """`mode` decides what a round is for, so it has to survive both agents.
-
-    The failure this guards against is an agent working from standing instructions that
-    say "you are the writer, edit project files" while the round was opened precisely to
-    change nothing. The mode lives in state so both sides read the same answer.
-    """
-
-    def _ctl(self, *args: str) -> int:
-        """Run pairctl, turning argparse's SystemExit into the exit code it would give.
-
-        argparse calls sys.exit itself, so an unknown subcommand argument raises rather
-        than returning. A real shell sees an exit code; the test should see the same.
-        """
-        try:
-            return main(["--state", str(self.root), *args])
-        except SystemExit as exit_:
-            return int(exit_.code or 0)
-
-    def test_fix_is_the_default_and_both_agents_see_it(self) -> None:
-        self.assertEqual(self.store.read()["mode"], "fix")
-
-        for session in (self.writer, self.peer):
-            state = session.tool_pair_state()
-            self.assertEqual(state["mode"], "fix")
-            self.assertIn("edits project files", state["mode_meaning"])
-
-    def test_audit_mode_is_visible_to_both_roles(self) -> None:
-        self._ctl("mode", "audit")
-
-        for session in (self.writer, self.peer):
-            state = session.tool_pair_state()
-            self.assertEqual(state["mode"], "audit")
-            # the point of the flag: the answer contradicts the default instruction
-            self.assertIn("not edit", state["mode_meaning"].lower().replace("do not", "not"))
-
-    def test_audit_refuses_a_patch_and_records_the_refusal(self) -> None:
-        self._ctl("mode", "audit")
-        # nobody holds authority, so the non-writer is the one who would propose a patch
-        self.assertRefused(self.peer.tool_pair_patch_reserve, contains="audit round")
-
-        # via invoke(), the way a real client calls it, the refusal lands on the trail
-        self.assertRefused(
-            lambda: self.peer.invoke("pair_patch_reserve", {}), contains="audit round"
-        )
-        refusals = [e for e in self.store.read_transcript() if e["kind"] == "refusal"]
-        self.assertTrue(refusals, "a refusal nobody can see is not enforced")
-        self.assertIn("audit round", refusals[0]["reason"].lower())
-
-    def test_audit_does_not_release_authority_it_never_had(self) -> None:
-        self._ctl("mode", "audit")
-        self.writer.tool_pair_claim()
-
-        # the mode changes the job, not who holds authority: phases still need a writer
-        state = self.writer.tool_pair_state()
-        self.assertTrue(state["you_are_writer"])
-        self.assertEqual(state["writer"], "writer-agent")
-
-    def test_mode_can_go_back_to_fix_and_patches_work_again(self) -> None:
-        self._ctl("mode", "audit")
-        self.assertRefused(self.peer.tool_pair_patch_reserve, contains="audit round")
-
-        self._ctl("mode", "fix")
-        self.assertEqual(self.store.read()["mode"], "fix")
-        path = self.peer.tool_pair_patch_reserve()["path"]
-        self.addCleanup(Path(path).unlink, missing_ok=True)
-        self.assertTrue(Path(path).exists())
-
-    def test_unknown_mode_is_refused(self) -> None:
-        # argparse rejects it before the server sees it, so this exits 2 rather than
-        # raising: an unknown mode must not be written into shared state
-        with contextlib.redirect_stderr(io.StringIO()):
-            self.assertEqual(self._ctl("mode", "review"), 2)
-        self.assertEqual(self.store.read()["mode"], "fix")
-
-    def test_unknown_mode_written_straight_into_state_is_reported_as_fix(self) -> None:
-        # `_load` merges over the defaults, so a hand-edited or newer-server state keeps
-        # whatever it had. An unrecognised mode must not be read as permission to edit:
-        # only the literal "audit" changes the rules, everything else is a fix round.
-        self.store.mutate(lambda state: state.__setitem__("mode", "review"))
-        self.assertEqual(self.peer.tool_pair_state()["mode"], "fix")
-        self.assertEqual(self.writer.tool_pair_claim()["already_held"], False)
-        self.assertIn("path", self.peer.tool_pair_patch_reserve())
-
-    def test_mode_change_is_on_the_audit_trail(self) -> None:
-        self._ctl("mode", "audit")
-        entries = [e for e in self.store.read_transcript() if e["kind"] == "mode"]
-        self.assertEqual(len(entries), 1)
-        self.assertEqual(entries[0]["mode"], "audit")
-        self.assertEqual(entries[0]["previous"], "fix")
-        self.assertEqual(entries[0]["role"], "human")
-
-    def test_every_permission_tool_consults_the_mode(self) -> None:
-        # A test above only proves one tool checks. The risk in a feature this size is a
-        # second permission tool that never heard of `mode`, and the omission reads as
-        # correct behaviour until somebody runs an audit round for real. So: every tool
-        # that carries a permission rule is named here, and each one is checked.
-        self._ctl("mode", "audit")
-
-        # the writer, who is refused patches by authority — the mode must refuse first,
-        # otherwise the reason an agent gets is "you hold authority", which is not why
-        self.writer.tool_pair_claim()
-        self.assertRefused(self.writer.tool_pair_patch_reserve, contains="audit")
-
-        # and the non-writer, refused by mode alone
-        self.assertRefused(self.peer.tool_pair_patch_reserve, contains="audit")
-
-    def test_audit_mode_does_not_block_notes_or_messaging(self) -> None:
-        # The other half of the same risk: a mode that refuses too much is just as broken
-        # as one that refuses too little. In an audit round the notes ARE the deliverable.
-        self._ctl("mode", "audit")
-
-        note = self.writer.tool_pair_note(kind="finding-F-01", text="store.py:1 — гонка")
-        self.assertTrue(Path(note["path"]).exists())
-
-        self.writer.tool_pair_send(to="reviewer-agent", text="находка F-01")
-        self.assertEqual(len(self.peer.tool_pair_read()["messages"]), 1)
-
-    def test_claim_note_does_not_tell_a_writer_to_edit_in_an_audit_round(self) -> None:
-        # `pair_claim` is the first call a writer makes and its return value is the one
-        # thing it reads about what it just became. "Edit project files directly" there
-        # contradicts the mode, and pair-guard cannot fix it: it only rewrites the
-        # standing brief, not a tool result.
-        self._ctl("mode", "audit")
-        note = self.writer.tool_pair_claim()["note"]
-        self.assertNotIn("edit project files directly", note.lower())
-        self.assertIn("audit", note.lower())
-
-    def test_mode_is_visible_in_the_overview_tables(self) -> None:
-        # `pairctl all` is where a human looks when they have forgotten which kind of
-        # round a project is in. A mode nobody can see is a mode somebody forgets and
-        # then wonders why the server refused a patch.
-        store = Store(self.root)
-        store.mutate(lambda state: state.update({"phase": "implement", "writer": "opencode"}))
-        self.assertEqual(project_row(self.root)["mode"], "fix")
-
-        self._ctl("mode", "audit")
-        self.assertEqual(project_row(self.root)["mode"], "audit")
-        self.assertIn("AUDIT", render_table([project_row(self.root)]))
-
-    def test_control_surface_reports_the_mode(self) -> None:
-        # redirect stderr too: argparse writes its usage message there, and a test that
-        # leaks it into the test output is noise that hides a real failure
-        self._ctl("mode", "audit")
-
-        # `mode` prints a human line and `status` prints JSON, so the buffer holds both;
-        # take the JSON object rather than the whole thing
-        buffer, errors = io.StringIO(), io.StringIO()
-        with contextlib.redirect_stdout(buffer), contextlib.redirect_stderr(errors):
-            self._ctl("status")
-        payload = json.loads(buffer.getvalue()[buffer.getvalue().index("{") :])
-        self.assertEqual(payload["mode"], "audit")
 
 
 class TestMCPStdio(PairTestCase):
@@ -2292,328 +1903,6 @@ class TestMCPStdio(PairTestCase):
                 process.stdin.close()
                 process.wait(timeout=10)
 
-
-class TestStateFlagPlacement(PairTestCase):
-    def test_state_accepted_before_and_after_the_subcommand(self) -> None:
-        self.assertEqual(main(["--state", str(self.root), "status"]), 0)
-        self.assertEqual(main(["status", "--state", str(self.root)]), 0)
-        self.assertEqual(main(["status", f"--state={self.root}"]), 0)
-
-    def test_ctl_writes_land_in_the_requested_directory(self) -> None:
-        main(["--state", str(self.root), "task", "resolve the retry storm"])
-        self.assertEqual(Store(self.root).read()["task"], "resolve the retry storm")
-        other = Path(self._tmp.name) / "elsewhere"
-        main(["--state", str(other), "task", "unrelated"])
-        self.assertEqual(Store(other).read()["task"], "unrelated")
-        self.assertEqual(Store(self.root).read()["task"], "resolve the retry storm")
-
-
-class TestMultiProject(PairTestCase):
-    """Видеть все проекты сразу, а не переключаться между окнами.
-
-    Здесь же регрессия на `pairchat --once`: флага не было, а я всё равно советовал
-    его набирать. Тест запускает скрипт как подпроцесс и требует, чтобы он сам
-    завершился — иначе это снова ложь в документации.
-    """
-
-    def _project(self, name: str, *, phase: str = "scoping", writer=None, events: int = 0):
-        root = Path(self._tmp.name) / name / ".pair"
-        store = Store(root)
-        store.mutate(lambda state: state.update({"phase": phase, "writer": writer,
-                                                 "task": f"задача {name}"}))
-        for _ in range(events):
-            store.append_transcript("claim", writer or "opencode", writer=writer or "opencode")
-        return root
-
-    def setUp(self) -> None:
-        super().setUp()
-        # discover_projects по замыслу не теряет проект, в котором стоишь, — а мы стоим
-        # в репозитории, где .pair есть. Без chdir каждый тест видел бы ещё и umputum.
-        self._cwd = os.getcwd()
-        os.chdir(self._tmp.name)
-
-    def tearDown(self) -> None:
-        os.chdir(self._cwd)
-        os.environ.pop("PAIR_SCAN", None)
-        super().tearDown()
-
-    def test_discovers_only_directories_that_actually_have_state(self) -> None:
-        good = self._project("good", events=1)
-        # каталог без state.json — не проект, и в таблице у него быть не должно
-        (Path(self._tmp.name) / "empty" / ".pair").mkdir(parents=True)
-        os.environ["PAIR_SCAN"] = str(Path(self._tmp.name) / "*" / ".pair")
-        try:
-            found = discover_projects()
-        finally:
-            del os.environ["PAIR_SCAN"]
-        self.assertIn(good.resolve(), found)
-        self.assertNotIn((Path(self._tmp.name) / "empty" / ".pair").resolve(), found)
-
-    def test_pair_scan_replaces_the_default_globs(self) -> None:
-        inside = self._project("inside", events=1)
-        os.environ["PAIR_SCAN"] = str(Path(self._tmp.name) / "inside" / ".pair")
-        try:
-            found = discover_projects()
-        finally:
-            del os.environ["PAIR_SCAN"]
-        self.assertEqual(found, [inside.resolve()])
-
-    def test_accepts_a_project_directory_not_only_the_pair_directory(self) -> None:
-        self._project("proj", events=1)
-        found = discover_projects([str(Path(self._tmp.name) / "proj")])
-        self.assertEqual(found, [(Path(self._tmp.name) / "proj" / ".pair").resolve()])
-
-    def test_same_project_given_twice_appears_once(self) -> None:
-        root = self._project("twice", events=1)
-        found = discover_projects([str(root), str(root), str(root)])
-        self.assertEqual(found, [root.resolve()])
-
-    def test_cwd_project_survives_an_empty_pair_scan(self) -> None:
-        # где бы человек ни стоял, его собственный проект не должен пропасть из вида
-        root = self._project("here", events=1)
-        cwd = os.getcwd()
-        os.chdir(root.parent)
-        os.environ["PAIR_SCAN"] = str(Path(self._tmp.name) / "nothing-matches")
-        try:
-            found = discover_projects()
-        finally:
-            del os.environ["PAIR_SCAN"]
-            os.chdir(cwd)
-        self.assertIn(root.resolve(), found)
-
-    def test_silence_is_none_when_nothing_was_ever_recorded(self) -> None:
-        self.assertIsNone(silence_seconds(self._project("quiet")))
-
-    def test_silence_counts_from_the_last_event(self) -> None:
-        root = self._project("noisy", events=3)
-        age = silence_seconds(root)
-        self.assertIsNotNone(age)
-        self.assertGreaterEqual(age, 0.0)
-        self.assertLess(age, 60.0)
-
-    def test_silence_ignores_state_writes_that_changed_nothing(self) -> None:
-        # пишем state.json без единого события: пара не двигалась, значит и молчание
-        # не должно выглядеть как свежая активность
-        root = self._project("idle", events=1)
-        Store(root).mutate(lambda state: state.update({"task": "трогаем state"}))
-        self.assertLess(silence_seconds(root), 60.0)
-
-    def test_a_finished_project_is_never_reported_as_stuck(self) -> None:
-        root = self._project("finished", phase="done", writer="opencode", events=1)
-        row = project_row(root, stuck_min=0)
-        self.assertTrue(row["closed"])
-        self.assertFalse(row["stuck"], "a done project is not stalled, however long it has been quiet")
-
-    def test_an_unfinished_project_that_went_quiet_is_stuck(self) -> None:
-        root = self._project("stalled", phase="verify", writer="opencode", events=1)
-        row = project_row(root, stuck_min=0)
-        self.assertFalse(row["closed"])
-        self.assertTrue(row["stuck"])
-
-    def test_table_columns_line_up_for_long_project_names(self) -> None:
-        self._project("a-very-long-project-name-here", events=1)
-        self._project("tiny", events=1)
-        os.environ["PAIR_SCAN"] = str(Path(self._tmp.name) / "*" / ".pair")
-        try:
-            rows = [project_row(root) for root in discover_projects()]
-        finally:
-            del os.environ["PAIR_SCAN"]
-        lines = render_table(rows).splitlines()
-        self.assertGreaterEqual(len(lines), 4)
-
-        def columns(line: str, count: int = 5) -> list:
-            # последний столбец может содержать пробелы, поэтому сравниваем только
-            # начала первых пяти: именно они должны совпадать на всех строках
-            return [match.start() for match in re.finditer(r"\S+", line)][:count]
-
-        reference = columns(lines[0])
-        self.assertEqual(len(reference), 5)
-        for line in lines[2:]:
-            if line.strip():
-                self.assertEqual(columns(line), reference,
-                                 "столбцы разъехались:\n" + "\n".join(lines))
-
-    def test_ctl_all_gives_one_row_per_project(self) -> None:
-        self._project("alpha", events=1)
-        self._project("beta", phase="done", writer="agy", events=1)
-        os.environ["PAIR_SCAN"] = str(Path(self._tmp.name) / "*" / ".pair")
-        out = io.StringIO()
-        with contextlib.redirect_stdout(out):
-            code = main(["all"])
-        self.assertEqual(code, 0)
-        text = out.getvalue()
-        self.assertIn("alpha", text)
-        self.assertIn("beta", text)
-        # ровно наши два проекта, ничего лишнего из глобов по умолчанию
-        table = text.split("\n\n")[0].splitlines()
-        names = [line.split()[0] for line in table[2:] if line.strip()]
-        self.assertEqual(sorted(names), ["alpha", "beta"])
-
-    def test_ctl_all_json_is_machine_readable(self) -> None:
-        self._project("gamma", events=1)
-        os.environ["PAIR_SCAN"] = str(Path(self._tmp.name) / "*" / ".pair")
-        out = io.StringIO()
-        with contextlib.redirect_stdout(out):
-            main(["all", "--json"])
-        rows = json.loads(out.getvalue())
-        self.assertEqual([row["project"] for row in rows], ["gamma"])
-        for row in rows:
-            for key in ("project", "phase", "writer", "silence", "stuck", "closed", "path"):
-                self.assertIn(key, row)
-
-    def test_ctl_all_signals_stall_with_a_distinct_exit_code(self) -> None:
-        # 3 — чтобы скрипт мог отличить «всё живо» от «кто-то встал»
-        self._project("dead", phase="verify", writer="opencode", events=1)
-        os.environ["PAIR_SCAN"] = str(Path(self._tmp.name) / "*" / ".pair")
-        try:
-            code = main(["all", "--stuck-min", "0"])
-        finally:
-            del os.environ["PAIR_SCAN"]
-        self.assertEqual(code, 3)
-
-    def test_ctl_all_says_where_to_look_when_there_is_nothing(self) -> None:
-        os.environ["PAIR_SCAN"] = str(Path(self._tmp.name) / "nothing-matches")
-        cwd = os.getcwd()
-        os.chdir(self._tmp.name)
-        try:
-            out = io.StringIO()
-            with contextlib.redirect_stdout(out):
-                code = main(["all"])
-        finally:
-            del os.environ["PAIR_SCAN"]
-            os.chdir(cwd)
-        self.assertEqual(code, 1)
-        self.assertIn("PAIR_SCAN", out.getvalue())
-
-    def test_pairchat_once_exits_on_its_own(self) -> None:
-        # ровно то, в чём я ошибался: флага не было, скрипт висел до Ctrl-C
-        self.store.mutate(lambda state: state.update({"phase": "done", "writer": "writer-agent"}))
-        self.store.append_transcript("claim", "writer-agent", writer="writer-agent")
-        (self.root / "notes").mkdir(parents=True, exist_ok=True)
-        (self.root / "notes" / "plan.md").write_text("план на две строки\n", encoding="utf-8")
-        env = dict(os.environ, PAIR_STATE=str(self.root))
-        try:
-            done = subprocess.run([sys.executable, str(PAIRCHAT), "--once"],
-                                  capture_output=True, text=True, timeout=30, env=env)
-        except subprocess.TimeoutExpired:
-            self.fail("--once не завершился сам: скрипт висит, как и до флага")
-        self.assertEqual(done.returncode, 0, done.stderr)
-        self.assertIn("ПИСАТЕЛЬ: writer-agent", done.stdout)
-        self.assertIn("план на две строки", done.stdout)
-
-    def test_naming_a_project_replaces_the_built_in_search(self) -> None:
-        # иначе «посмотри ~/work/blog» показал бы пять проектов из глобов плюс blog
-        named = self._project("named", events=1)
-        self.assertEqual(discover_projects([str(named)]), [named.resolve()])
-
-    def test_pairchat_all_prints_a_header_and_labels_every_project(self) -> None:
-        for name in ("proj-one", "proj-two"):
-            self._project(name, events=1)
-        done = subprocess.run(
-            [sys.executable, str(PAIRCHAT), "--all", "--once"],
-            capture_output=True, text=True, timeout=30,
-            env=dict(os.environ, PAIR_SCAN=str(Path(self._tmp.name) / "*" / ".pair")),
-        )
-        self.assertEqual(done.returncode, 0, done.stderr)
-        plain = re.sub(r"\x1b\[[0-9;]*m", "", done.stdout)
-        self.assertIn("proj-one", plain)
-        self.assertIn("proj-two", plain)
-        self.assertIn("фаза", plain.splitlines()[0])
-        for line in plain.splitlines():
-            if "CLAIM" in line or "ADVANCE" in line:
-                head = line.split("CLAIM")[0].split("ADVANCE")[0].strip()
-                self.assertRegex(head, r"^(proj-one|proj-two)\s+\[\d\d:\d\d:\d\d\]$",
-                                 "у блока нет метки проекта: " + line)
-
-    def test_pairchat_shows_only_the_project_you_are_in(self) -> None:
-        # Пользователь попросил именно этого: в папке проекта — диалог этого
-        # проекта, без чужих. Смешанная выдача здесь вредна.
-        mine = self._project("mine", events=1)
-        self._project("theirs", events=1)
-        os.environ["PAIR_SCAN"] = str(Path(self._tmp.name) / "*" / ".pair")
-        cwd = os.getcwd()
-        os.chdir(mine.parent)
-        try:
-            done = subprocess.run([sys.executable, str(PAIRCHAT), "--once"],
-                                  capture_output=True, text=True, timeout=30)
-        finally:
-            del os.environ["PAIR_SCAN"]
-            os.chdir(cwd)
-        self.assertEqual(done.returncode, 0, done.stderr)
-        plain = re.sub(r"\x1b\[[0-9;]*m", "", done.stdout)
-        self.assertIn("mine", plain)
-        self.assertNotIn("theirs", plain, "показан чужой проект без --all")
-
-    def test_pairchat_outside_a_project_points_back_at_the_project(self) -> None:
-        self._project("somewhere-else", events=1)
-        cwd = os.getcwd()
-        os.chdir(self._tmp.name)  # тут .pair нет
-        try:
-            done = subprocess.run([sys.executable, str(PAIRCHAT), "--once"],
-                                  capture_output=True, text=True, timeout=30)
-        finally:
-            os.chdir(cwd)
-        self.assertEqual(done.returncode, 1)
-        text = done.stdout + done.stderr
-        self.assertIn("--all", text, "не сказано, что делать, чтобы увидеть всё")
-        self.assertIn("cd", text, "не сказано, что надо зайти в папку проекта")
-
-    def test_agent_notes_are_shown_by_default_and_work_notes_are_not(self) -> None:
-        # Заметки агентов (plan, finding...) — часть работы, их видно.
-        # Мои рабочие заметки о самом pair-mailbox — нет, их сотни строк кода.
-        for kind in ("plan", "finding", "verdict", "z-scratch"):
-            path = self.root / "notes" / f"{kind}.md"
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(f"содержимое заметки {kind}\n", encoding="utf-8")
-        self.store.mutate(lambda state: state.update({"phase": "plan"}))
-        self.store.append_transcript("note", "writer-agent", note_kind="plan", chars=10)
-        env = dict(os.environ, PAIR_STATE=str(self.root))
-        cwd = os.getcwd()
-        os.chdir(self.root.parent)
-        try:
-            done = subprocess.run([sys.executable, str(PAIRCHAT), "--once"],
-                                  capture_output=True, text=True, timeout=30, env=env)
-            loud = subprocess.run([sys.executable, str(PAIRCHAT), "--all-notes", "--once"],
-                                  capture_output=True, text=True, timeout=30, env=env)
-        finally:
-            os.chdir(cwd)
-        self.assertEqual(done.returncode, 0, done.stderr)
-        self.assertIn("содержимое заметки plan", done.stdout)
-        self.assertIn("содержимое заметки verdict", done.stdout)
-        self.assertNotIn("z-scratch", done.stdout, "рабочая заметка попала в выдачу")
-        self.assertIn("содержимое заметки z-scratch", loud.stdout,
-                      "--all-notes должен показывать и рабочие заметки")
-
-    def test_long_lines_are_wrapped_to_a_readable_width(self) -> None:
-        # Агенты пишут абзацами по 300+ символов; без переноса терминал рвёт
-        # их посреди слова.
-        self.store.mutate(lambda state: state.update({"phase": "plan"}))
-        (self.root / "mailbox" / "peer").mkdir(parents=True, exist_ok=True)
-        payload = " ".join(["слово%02d" % i for i in range(60)])
-        (self.root / "mailbox" / "peer" / "000001-t.json").write_text(
-            json.dumps({"seq": 1, "ts": "2026-10-02T20:00:00+00:00",
-                        "from": "peer", "to": "writer-agent", "subject": "длинная тема " + payload,
-                        "text": payload, "label": "Chat from peer: "}),
-            encoding="utf-8")
-        env = dict(os.environ, PAIR_STATE=str(self.root))
-        done = subprocess.run([sys.executable, str(PAIRCHAT), "--once"],
-                              capture_output=True, text=True, timeout=30, env=env)
-        self.assertEqual(done.returncode, 0, done.stderr)
-        plain = re.sub(r"\x1b\[[0-9;]*m", "", done.stdout)
-        for line in plain.splitlines():
-            self.assertLessEqual(len(line), 105,
-                                 "строка не перенесена: " + repr(line[:120]))
-
-    def test_refuses_when_there_is_no_state(self) -> None:
-        empty = Path(self._tmp.name) / "no-project"
-        empty.mkdir()
-        done = subprocess.run(
-            [sys.executable, str(PAIRCHAT), "--once"],
-            capture_output=True, text=True, timeout=30,
-            env=dict(os.environ, PAIR_STATE=str(empty / ".pair")),
-        )
-        self.assertEqual(done.returncode, 1)
-        self.assertIn("нет", done.stdout + done.stderr)
 
 
 class TestStalePaneSurvives(PairTestCase):
@@ -2769,6 +2058,7 @@ class TestStalePaneSurvives(PairTestCase):
         subprocess.run([tmux, "kill-session", "-t", session], capture_output=True, timeout=10)
         self.assertFalse(self.server.pane_exists(pane),
                          f"{pane} после смерти сессии — фантом, а не панель")
+
 
 
 class TestDigest(PairTestCase):
@@ -3020,7 +2310,10 @@ class TestDigest(PairTestCase):
         Молчаливый выход с кодом 0 дал бы человеку текст, который он принял за
         дайджест, и он бы на него опирался.
         """
-        with mock.patch.object(self.server, "build_digest", return_value="х" * 4000):
+        # Подменяется модуль-потребитель: `cmd_digest` живёт в `pairctl_read` и
+        # берёт `build_digest` оттуда, а не из `server`. Подмена `server` после
+        # разбора ничего бы не изменила, и тест проверял бы не тот код.
+        with mock.patch("pairctl_read.build_digest", return_value="х" * 4000):
             err = io.StringIO()
             with contextlib.redirect_stderr(err):
                 code = self.ctl("digest", "--budget", "100")
@@ -3036,6 +2329,7 @@ class TestDigest(PairTestCase):
         self.with_state(writer="opencode")
         self.assertIn("(ты)", self.digest(role="opencode"))
         self.assertNotIn("(ты)", self.digest(role="agy"))
+
 
 
 class TestTranscriptWindow(PairTestCase):
@@ -3221,209 +2515,6 @@ class TestTranscriptWindow(PairTestCase):
                 self.ctl("log")
         self.assertEqual("", err.getvalue().strip())
 
-
-class TestPaneOverride(PairTestCase):
-    """Переопределение привязки панели рукой человека (`pairctl pane`).
-
-    Причина появления — измерена, а не предположена: `_register` берёт адрес из
-    `TMUX_PANE` окружения процесса и перезаписывает `pane` на каждом вызове
-    любого инструмента. Поэтому ручная правка `state.json` не чинила ничего —
-    «починка» жила ровно до следующего звонка. Ключ `pane_pin` читается раньше
-    окружения и потому переживает перерегистрацию.
-
-    Цена такого ключа — риск стать дырой в изоляции между проектами, поэтому
-    закрепляемый адрес обязан проходить ту же проверку, что и снятый
-    автоматически: панель жива И панель наша.
-    """
-
-    def setUp(self) -> None:
-        super().setUp()
-        import server
-        self.server = server
-
-    def ctl(self, *argv: str) -> int:
-        return main(["--state", str(self.root), *argv])
-
-    def pinned(self) -> dict:
-        return (self.store.read().get("roles") or {}).get("opencode", {})
-
-    def with_pane(self, pane: str | None) -> None:
-        """Окружение процесса: либо живая панель набора, либо её отсутствие.
-
-        Восстанавливается та панель, с которой набор стартовал, а не то, что лежало
-        в переменной в момент вызова: базовый `setUp` переменную уже вычистил, и
-        cleanup, возвращающий «прежнее», стирал бы то, что `tearDown` уже
-        восстановил. Порядок unittest — `tearDown`, потом cleanup, — и из-за этого
-        все следующие тесты набора начинали молча пропускаться, а набор оставался
-        зелёным. Проверено: пять тестов превратились в skip, и ни один не упал.
-        """
-        before = self._pane_at_startup
-        if pane is None:
-            os.environ.pop("TMUX_PANE", None)
-        else:
-            os.environ["TMUX_PANE"] = pane
-
-        def restore() -> None:
-            if before is None:
-                os.environ.pop("TMUX_PANE", None)
-            else:
-                os.environ["TMUX_PANE"] = before
-
-        self.addCleanup(restore)
-
-    def live_pane(self) -> str:
-        pane = self._pane_at_startup
-        if not pane:
-            self.skipTest("набор запущен вне tmux")
-        return pane
-
-    def as_ours(self):
-        """Считать панель набора своей, без подмены результата проверки.
-
-        Набор работает в состоянии во временном каталоге, а панель — в реальном
-        проекте, поэтому подлинность панели здесь всегда «чужая». Подменять её на
-        «своя» надо явно: иначе тест проверял бы только отказ, а не принятие.
-        """
-        return mock.patch("composer.pane_is_foreign", return_value=(False, ""))
-
-    def bind(self, role: str, pane: str, pid: int) -> None:
-        self.store.mutate(lambda st: st.setdefault("roles", {}).update(
-            {role: {"pane": pane, "pid": pid, "first_seen": "then",
-                    "last_seen": "then", "reads": 0, "sends": 0}}))
-
-    def register(self, role: str) -> None:
-        """Прогнать регистрацию роли — то, что делает сервер при каждом вызове.
-
-        Через `mutate`, а не на чтении: `_register` правит состояние на месте, и
-        набор, скормивший ему копию, проверял бы копию, а не то, что сервер
-        сохранил бы в следующий раз.
-        """
-        session = self.server.PairSession(role, self.store)
-        self.store.mutate(session._register)
-
-    def test_the_override_survives_a_reregistration(self) -> None:
-        """Главное свойство, ради которого всё затевалось.
-
-        Без него переопределение — запись в state.json руками, которая протухает
-        через один вызов, то есть ровно та поломка, которую человек и чинит.
-        """
-        pane = self.live_pane()
-        self.with_pane(pane)
-        self.bind("opencode", pane, 999999)
-        with self.as_ours():
-            self.assertEqual(0, self.ctl("pane", "--role", "opencode", pane))
-
-        # Записанная панель уезжает, а панели в окружении нет. Так выглядит
-        # перерегистрация сервера, который запустили не из той панели.
-        #
-        # Увод в сторону сделан явно: `pairctl pane` сам пишет `pane` при
-        # установке, поэтому без этого тест проходил бы и при полностью
-        # отключённом переопределении — проверить было нечего.
-        self.store.mutate(lambda st: st["roles"]["opencode"].update(
-            {"pane": "%12345"}))
-        self.with_pane(None)
-        with self.as_ours():
-            self.register("opencode")
-        self.assertEqual(pane, self.pinned().get("pane"),
-                         "переопределение должно переживать потерю TMUX_PANE")
-        self.assertEqual(pane, self.pinned().get("pane_pin"),
-                         "закрепление обязано остаться, а не сработать один раз")
-
-    def test_a_stale_override_is_dropped_and_says_why(self) -> None:
-        """Закрепление протухшей панели не может висеть вечно.
-
-        Иначе доставка уходила бы в никуда молча, и человек считал бы, что роль
-        привязана. Снятие обязано быть замечено в транскрипте: молча снятое
-        переопределение неотличимо от того, которого не было никогда.
-        """
-        self.with_pane(self.live_pane())
-        self.bind("opencode", self._pane_at_startup, 999999)
-        # Адрес несуществующей панели отвергается на входе, а не «на всякий случай».
-        #
-        # Проверяется ИМЕННО «панели нет», а не просто «отказано»: панель, которой
-        # нет, отвергается ещё и проверкой на чужую, потому что tmux не сообщает
-        # для неё cwd. Утверждение «отказано» проходило бы и при выкинутой
-        # проверке живости — проверено мутацией.
-        stderr = io.StringIO()
-        with contextlib.redirect_stderr(stderr):
-            self.assertEqual(1, self.ctl("pane", "--role", "opencode", "%987654"))
-        self.assertIn("больше нет", stderr.getvalue())
-        self.assertNotIn("pane_pin", self.pinned())
-
-        # Теперь подложим протухшее закрепление напрямую — так оно выглядит после
-        # того, как человек закрыл окно, а состояние осталось.
-        self.store.mutate(lambda st: st["roles"]["opencode"].update(
-            {"pane_pin": "%987654", "pane_pin_why": "закреплено человеком"}))
-        self.register("opencode")
-        self.assertNotIn("pane_pin", self.pinned(),
-                         "адрес мёртвой панели обязан быть снят")
-        kinds = [row["kind"] for row in self.store.read_transcript()]
-        self.assertIn("pane_pin_dropped", kinds)
-
-    def test_a_foreign_pane_is_refused(self) -> None:
-        """Переопределение не должно стать дырой в изоляции между проектами.
-
-        Именно для этого адрес проверяется. Если бы проверки не было, человек мог
-        бы одним вводом направить письма роли в чужой проект — и сломал бы то,
-        что чинили пункты 1 и 2.
-        """
-        self.with_pane(self.live_pane())
-        self.bind("opencode", self._pane_at_startup, 999999)
-        with mock.patch("composer.pane_is_foreign",
-                        return_value=(True, "другой прокт: /somewhere/else")):
-            self.assertEqual(1, self.ctl("pane", "--role", "opencode", "%1"))
-        self.assertNotIn("pane_pin", self.pinned())
-
-    def test_without_an_override_the_pane_still_comes_from_tmux(self) -> None:
-        """Переопределение обязано быть узким: без него поведение прежнее.
-
-        Иначе это не «переопределение», а новое правило, и агент, который и так
-        работает, вдруг окажется не на той панели.
-        """
-        pane = self.live_pane()
-        self.with_pane(pane)
-        self.bind("opencode", "старое", 999999)
-        self.register("opencode")
-        from composer import _tmux, session_address
-        expected = session_address(_tmux(), pane) or pane
-        self.assertEqual(expected, self.pinned().get("pane"))
-
-    def test_clearing_returns_the_pane_to_tmux(self) -> None:
-        """Снятие переопределения обязано вернуть управление окружению.
-
-        Иначе единственный способ вернуть роль на её панель — править state.json,
-        что и было исходной поломкой.
-        """
-        pane = self.live_pane()
-        self.with_pane(pane)
-        self.bind("opencode", pane, 999999)
-        with self.as_ours():
-            self.assertEqual(0, self.ctl("pane", "--role", "opencode", pane))
-        self.assertEqual(0, self.ctl("pane", "--role", "opencode", "--clear"))
-        self.assertNotIn("pane_pin", self.pinned())
-        self.register("opencode")
-        from composer import _tmux, session_address
-        self.assertEqual(session_address(_tmux(), pane) or pane,
-                         self.pinned().get("pane"))
-
-    def test_the_override_is_not_logged_on_every_call(self) -> None:
-        """Журнал не должен наполняться одинаковыми строками.
-
-        Регистрация идёт на каждом вызове любого инструмента. Запись на каждом
-        вызове съедала бы ровно тот потолок транскрипта, который этот раунд и
-        чинит, то есть переопределение стало бы новым источником шума.
-        """
-        pane = self.live_pane()
-        self.with_pane(None)
-        self.bind("opencode", pane, 999999)
-        with self.as_ours():
-            self.assertEqual(0, self.ctl("pane", "--role", "opencode", pane))
-        for _ in range(3):
-            self.register("opencode")
-        kinds = [row["kind"] for row in self.store.read_transcript()]
-        self.assertLessEqual(
-            kinds.count("pane_pin_honoured"), 1,
-            "запись должна появляться на изменении, а не на каждом вызове")
 
 
 class TestSessionAddressing(PairTestCase):
@@ -3636,6 +2727,7 @@ class TestSessionAddressing(PairTestCase):
                          "смена формата адреса — событие один раз, а не на каждом вызове")
 
 
+
 class TestDeliveryRollback(PairTestCase):
     """Откат доставки не должен быть разрушительным на непроверенном выводе.
 
@@ -3717,6 +2809,7 @@ class TestDeliveryRollback(PairTestCase):
             f"откат по непрочитанному кадру стёр {state['erased']} символов "
             f"в панели, где может лежать чужой ввод: {result}",
         )
+
 
 
 class TestPermissionMenu(PairTestCase):
@@ -3805,6 +2898,7 @@ class TestPermissionMenu(PairTestCase):
         return self.resolve(lines)[0]
 
 
+
 class TestStatusLineIsNotAComposer(PairTestCase):
     """`$0.00` в строке статуса TUI — это цена, а не шелл-промпт.
 
@@ -3852,6 +2946,7 @@ class TestStatusLineIsNotAComposer(PairTestCase):
         self.assertFalse(looks_like_status_line("user@host:~$"))
         self.assertFalse(looks_like_status_line("> "))
         self.assertFalse(looks_like_status_line("a line with no dollar at all"))
+
 
 
 class TestPermissionContext(PairTestCase):
@@ -3909,6 +3004,7 @@ class TestPermissionContext(PairTestCase):
             result = composer.resolve_permission_prompt("/usr/bin/tmux", "%7")
         sent = [c.args[0] for c in run.call_args_list if c.args and isinstance(c.args[0], list)]
         return result, [[cmd[-1]] for cmd in sent if "send-keys" in cmd]
+
 
 
 class TestRingAndUnblock(PairTestCase):
@@ -4006,6 +3102,7 @@ class TestRingAndUnblock(PairTestCase):
         self.assertFalse(res["unblocked"])
         self.assertIn("нет панели tmux", res["why"])
         self.assertEqual(res["prompt"], "")
+
 
 
 class TestMailboxInvariants(PairTestCase):
@@ -4297,6 +3394,7 @@ class TestMailboxInvariants(PairTestCase):
             composer.pane_is_foreign = orig_foreign
 
 
+
 class TestPaneIdentityIsNotLiveness(PairTestCase):
     """Живость панели — не её идентичность.
 
@@ -4503,6 +3601,7 @@ class TestPaneIdentityIsNotLiveness(PairTestCase):
         self.assertIn("payload worth keeping", read["messages"][0]["text"])
 
 
+
 class TestTuiIsNotABus(PairTestCase):
     """Директива человека: терминал — дисплей, а не шина между агентами.
 
@@ -4585,6 +3684,7 @@ class TestTuiIsNotABus(PairTestCase):
         self.assertEqual(read["count"], 1)
         self.assertIn("не потерять", read["messages"][0]["text"])
         self.assertTrue(res["delivered"])
+
 
 
 class TestComposerOfAnOpencodePane(PairTestCase):
