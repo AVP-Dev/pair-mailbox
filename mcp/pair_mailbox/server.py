@@ -216,9 +216,66 @@ def autonomy_of(state: dict[str, Any]) -> str:
     An unknown value is treated as `observe`, the level that does the least: a
     state written by a newer build must never hand this build more authority than
     the human asked for.
+
+    A MISSING value reads as `auto`, because that is the level the operator set as
+    the default: he asked for the pair to run the round end to end and to come back
+    with nothing but the result. An absent key is not "the human asked for caution",
+    it is an older state file, and reading it as `semi` meant the supervisor stopped
+    at `verify` to ask for a word nobody intended to withhold.
     """
-    value = state.get("autonomy", "semi")
+    value = state.get("autonomy", "auto")
     return value if value in AUTONOMIES else "observe"
+
+
+def autonomy_file_path(state_dir: Path) -> Path:
+    """Where a project keeps its standing autonomy, one word, no punctuation."""
+    return state_dir / "autonomy"
+
+
+# A task may carry its own level on its first line: `autonomy: semi`. Anchored to the
+# start so a word inside the prose cannot change how much authority the pair takes.
+AUTONOMY_TASK_RE = re.compile(
+    r"\A\s*autonomy\s*[:=]\s*(observe|semi|auto)\b", re.IGNORECASE,
+)
+
+
+def resolve_autonomy(
+    state_dir: Path,
+    task: str = "",
+    flag: str | None = None,
+) -> tuple[str, str]:
+    """Decide the autonomy level and say where the decision came from.
+
+    Four sources, strongest first: an explicit flag from the launcher, a line in the
+    task, a file in the project, and the default. The source travels with the value
+    into the transcript, because a level nobody can account for is a level that will
+    be disputed later — "why was this round allowed to close itself?" is a question
+    with no answer unless the reason was written down when it was decided.
+
+    A malformed file or flag falls through to the next source instead of failing the
+    launch. Refusing to start is a worse answer than starting with a level the
+    operator can see in `pairctl status`.
+    """
+    if flag:
+        level = flag.strip().lower()
+        if level in AUTONOMIES:
+            return level, "flag"
+
+    match = AUTONOMY_TASK_RE.match(task or "")
+    if match:
+        return match.group(1).lower(), "task"
+
+    try:
+        if autonomy_file_path(state_dir).is_file():
+            declared = autonomy_file_path(state_dir).read_text(
+                encoding="utf-8", errors="replace"
+            ).strip().strip(":=").strip().lower()
+            if declared in AUTONOMIES:
+                return declared, "file"
+    except OSError:
+        pass  # an unreadable file is a fall-through, not a launch failure
+
+    return "auto", "default"
 
 
 # The three helpers below are plain functions of the state, not methods, because
@@ -545,7 +602,11 @@ class Store:
         return {
             "task": "",
             "mode": "fix",
-            "autonomy": "semi",
+            # Дефолт — auto, и это ровно то, что задал человек: он даёт задачу,
+            # пара отрабатывает её сама и приходит с одним выводом. Раньше здесь был
+            # semi, и свежий проект начинал с вопроса о `ok` на фазе verify, которого
+            # никто не ждал.
+            "autonomy": "auto",
             "writer": None,
             "phase": "scoping",
             "round": 0,
@@ -2738,6 +2799,22 @@ def run_ctl(args: argparse.Namespace, state_dir: Path) -> int:
         print(f"autonomy is now {level!r}: {notes[level]}")
         return 0
 
+    if command == "launch-autonomy":
+        # Выбор режима при старте, ровно один раз и до того, как агенты получили
+        # инструкции. Логика здесь, а не в pair-duo, потому что у bash-обёртки нет
+        # тестов: правило, которое нечем проверить, мы уже находили.
+        level, source = resolve_autonomy(
+            store.root, task=args.task or "", flag=args.flag,
+        )
+        previous = autonomy_of(store.read())
+        store.mutate(lambda state: state.__setitem__("autonomy", level))
+        store.append_transcript(
+            "autonomy", "launcher", autonomy=level, previous=previous, via=source,
+        )
+        print(f"autonomy {level!r} (via {source}): "
+              f"{'pair works to the end' if level == 'auto' else level}")
+        return 0
+
     if command == "ok":
         # Одно слово человека на чекпоинте. Именно это делает semi «полуавтоматом»:
         # пара работает сама, но закрыть раунд без него не может.
@@ -2905,14 +2982,17 @@ def run_ctl(args: argparse.Namespace, state_dir: Path) -> int:
         store.state_path.unlink(missing_ok=True)
         store.transcript_path.unlink(missing_ok=True)
         fresh = Store(store.root)
-        # Стирание состояния не должно повышать права. Fresh state по умолчанию
-        # semi, то есть после wipe пара получала больше полномочий, чем до него, и
-        # никто этого не просил. observe — тот уровень, который делает меньше
-        # всего; повысить автономность оператор может явно.
-        fresh.mutate(lambda st: st.__setitem__("autonomy", "observe"))
-        store.append_transcript("reset", "human", autonomy="observe")
-        print("state reset; autonomy is now 'observe' — raise it with "
-              "`pairctl autonomy semi` if you want the pair to work on its own")
+        # Стирание состояния не должно повышать права — но права измеряются
+        # относительно дефолта, а дефолт теперь auto, то есть ровно то, что человек
+        # задал как норму. Ставить здесь observe было бы противоречием: wipe
+        # остановил бы пару вопреки «работайте сами, вернитесь с выводом» и
+        # заставил бы человека это заметить. §12 вне оси, поэтому auto не значит
+        # «разрешено разрушительное».
+        fresh.mutate(lambda st: st.__setitem__("autonomy", "auto"))
+        store.append_transcript("reset", "human", autonomy="auto")
+        print("state reset; autonomy is now 'auto' — the pair works to the end and "
+              "comes back with the result. Narrow it with `pairctl autonomy semi` "
+              "or `pairctl autonomy observe`.")
         return 0
 
     print(f"unknown command {command!r}", file=sys.stderr)
@@ -3135,6 +3215,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="human: how far the pair may go without you — 'observe', 'semi' or 'auto'",
     )
     autonomy.add_argument("level", choices=list(AUTONOMIES))
+
+    launch = sub.add_parser(
+        "launch-autonomy",
+        help="choose the level once at launch, from a flag, a task line, .pair/autonomy, "
+             "or the default 'auto' — strongest source first",
+    )
+    launch.add_argument("--flag", default=None, choices=list(AUTONOMIES),
+                        help="what bin/pair-duo was given")
+    launch.add_argument("--task", default="", help="the task text, may start with 'autonomy: semi'")
 
     ok = sub.add_parser(
         "ok",

@@ -122,14 +122,23 @@ bin/pairpilot --launch agy=agy   # how to raise a role whose process died
 How far the pair goes without you:
 
 ```bash
+bin/pairctl autonomy auto      # default: works alone, closes the round given proof
+bin/pairctl autonomy semi      # works alone, but closes only on your word
 bin/pairctl autonomy observe   # only reports; the human is at the wheel
-bin/pairctl autonomy semi      # default: works alone, closes on your word
-bin/pairctl autonomy auto      # closes the round itself, given proof
 ```
 
 Note that `observe` is not "gates off": proof is still required to close a round in
 every mode. `observe` only means it will not restart agents and does not need your
 word. See PROTOCOL §10b.
+
+The level is picked when the pair starts, and by default you are not asked at all:
+
+```bash
+bin/pair-duo --semi opencode "task"     # or --auto, --observe
+```
+
+With no flag: `autonomy: semi` on the first line of the task, then `.pair/autonomy`,
+then `auto`. The source is written to the transcript as `via=flag|task|file|default`.
 
 ### 5. Work
 

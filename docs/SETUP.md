@@ -12,7 +12,7 @@ Check the server runs before wiring anything to it:
 
 ```sh
 python3 mcp/pair_mailbox/server.py ctl status
-python3 mcp/pair_mailbox/test_protocol.py     # 35 tests, ~3s
+python3 mcp/pair_mailbox/test_protocol.py     # 247 tests, ~27s (327 in the full suite)
 ```
 
 ## 1. Initialise the pairing
@@ -64,7 +64,7 @@ approval. Allow the whole server once:
 and add `mcp(pair/*)`. Without this, the pairing technically works and practically does not.
 
 Antigravity picks up `.agents/mcp_config.json` from the workspace. Verify with `/mcp` that `pair`
-is connected, and that its twelve tools are listed.
+is connected, and that its seventeen tools are listed.
 
 The three agents — `pair-writer`, `pair-critic`, `pair-explorer` — appear under `/agents`.
 
@@ -121,7 +121,7 @@ Normal collaboration from here. The things worth doing deliberately:
 
 ```
 mcp/pair_mailbox/server.py       the protocol, enforced
-mcp/pair_mailbox/test_protocol.py 35 tests
+mcp/pair_mailbox/test_protocol.py 247 tests (327 with pilot + installer)
 bin/pairctl                      the human's authority surface
 .opencode/                       OpenCode: config, writer + verifier agents, plugin, commands, skill
 .agents/                         Antigravity: mcp_config, writer/critic/explorer, skill

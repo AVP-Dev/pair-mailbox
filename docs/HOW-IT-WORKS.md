@@ -46,11 +46,18 @@ so one writes and one breaks. Which is which is decided by the standing arrangem
 ## What is inside
 
 ```sh
+bin/pairctl           # the human's authority surface: task, mode, autonomy, ok, status
+bin/pair-duo          # starts a pair inside one CLI, two panes
+bin/pairpilot         # the supervisor: restarts a dead agent, confirms allowlisted
+                      # prompts, nudges a role with unread mail, writes the report
 bin/pairchat          # the conversation of this pair, live
 bin/pairctl all       # every project at once: who writes, who is silent
 bin/pairwatch         # catches a stuck agent
 bin/pairdoctor        # checks that everything is in place
 ```
+
+`bin/pairpilot` cannot move phases, grant or revoke write authority, commit, or touch
+project files. It watches, and it reports.
 
 The pair's state lives in `.pair/` in the project folder: who writes, the task, the
 phase, every message and every refusal. It is a file, not a database — you can read it
@@ -68,10 +75,22 @@ are separate, and merging them would be wrong.
 bin/pairctl mode fix          # default: code changes
 bin/pairctl mode audit        # code does not change, only findings
 
+bin/pairctl autonomy auto     # default: works alone, closes the round given proof
+bin/pairctl autonomy semi     # works alone, but closes only on your word
 bin/pairctl autonomy observe  # only reports; the human is at the wheel
-bin/pairctl autonomy semi     # default: works alone, closes on your word
-bin/pairctl autonomy auto     # closes the round itself, given proof
 ```
+
+You are asked **at most once**, and by default not at all: the level is chosen when the
+pair starts, not renegotiated mid-round.
+
+```sh
+bin/pair-duo --semi opencode "task"     # or --auto, --observe
+```
+
+With no flag the launcher resolves in this order, strongest first: the flag, then
+`autonomy: semi` on the first line of the task, then `.pair/autonomy`, then `auto`. The
+source is written to the transcript as `via=flag|task|file|default`, so a level nobody
+can account for never becomes a mystery later.
 
 Agents read the mode themselves on the first `pair_state`. They do **not** know you
 changed it, so after the command **say one line in their panes**.

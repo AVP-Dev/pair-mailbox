@@ -19,7 +19,7 @@
 </p>
 
 <p align="center">
-  <em>Turn any two autonomous AI coding agents (OpenCode, Claude Code, Antigravity, OpenAI Codex) into a disciplined, self-orchestrating pair: one writes code while the other adversarial-reviews, tests, and proposes cryptographically sealed patches — with zero manual message relaying between them. The human still gives the task and accepts the PR, still says one word at the verify checkpoint in <code>semi</code>, and still stops the pair for secrets, deploys, migrations and irreversible deletions.</em>
+  <em>Turn any two autonomous AI coding agents (OpenCode, Claude Code, Antigravity, OpenAI Codex) into a disciplined, self-orchestrating pair: one writes code while the other adversarial-reviews, tests, and proposes cryptographically sealed patches — with zero manual message relaying between them. Give the task and accept the PR: by default the pair works the round to a finished PR under <code>auto</code>, with no word asked of you in between. <code>semi</code> is there when you want one word at the verify checkpoint. Secrets, deploys, migrations and irreversible deletions stop the pair in every mode.</em>
 </p>
 
 </div>
@@ -34,7 +34,7 @@ An AI agent working alone is susceptible to its own assumptions: it gladly accep
 
 1. **Strict Single Writer Protocol Invariant**: Exactly one agent holds write authority (`pair_claim`). The MCP server strictly enforces the protocol boundaries: it refuses patch reservations from the writer (who edits directly), forbids the critic from verifying patches or advancing phases, and logs all refused attempts to the audit transcript. Agents' instructions and dynamic runtime guards (`pair-guard`) ensure the reviewer remains read-only and submits changes exclusively via sealed patches.
 2. **Cryptographically Sealed Patches**: The reviewer proposes changes through isolated patch files (`0600`), sealed with SHA-256 hashes that the writer verifies immediately before applying.
-3. **Active Terminal Injection (`pair_deliver`) — No "Human Pigeon"**: When agents run in `tmux` panes, they actively wake each other by typing directly into their peer's composer and pressing Enter. The human user never acts as an RFC 1149 messenger copying text between windows.
+3. **The Mailbox Is the Guarantee, Delivery Is the Accelerator**: **A turn ends with a bounded `pair_read`** — `pair_read(wait_seconds=N)`. Nothing in any MCP implementation can inject a turn into another agent's client: MCP is client-driven, the server answers requests and cannot push the host. So the only universal wake-up is the agent reading its own mailbox, and an agent that ends its turn this way is never idle with unread mail — it is either reading or it already has the message. `pair_deliver` types into the peer's pane and presses Enter, which is faster where the composer is visible, but a full-screen TUI hides it, so delivery is best-effort and the mailbox always works. The human user never acts as an RFC 1149 messenger copying text between windows.
 4. **Autonomous CLI Permission Unblocking (`pair_unblock`)**: Interactive prompts like `[y/N]` or `Allow command execution?` inside tmux are automatically detected and approved by the peer or background watchdog (`pairwatch --unblock`), eliminating unattended stalls.
 5. **Atomic, Crash-Resilient State & File Locking**: Monotonic message sequencing (`seq-000001-...` with random tokens), atomic file writes (`replace`), and advisory `fcntl.flock` locks preventing race conditions between concurrent CLI processes. Full append-only audit trail logging every message, claim, phase change, and rejection.
 6. **Zero Dependencies**: Pure Python 3 standard library. Runs on Linux and POSIX systems with `tmux` and `python3` (10+) with zero pip packages to install.
@@ -173,14 +173,44 @@ bin/pair-duo --worktree claude # Launch with isolated git worktree for the criti
 
 ### 🧭 How far the pair runs without you
 
-`bin/pairctl autonomy <level>` (default `semi`). This axis is separate from the round
+`bin/pairctl autonomy <level>` (default `auto`). This axis is separate from the round
 mode above, because one asks *what the round is for* and the other *how far it goes alone*:
 
 | Autonomy | Restarts a dead agent | Confirms permission prompts | Closing a round |
 |---|---|---|---|
-| **`observe`** | no | no | human is driving; the evidence gate is off |
-| **`semi`** *(Default)* | yes | only from the permission allowlist | needs recorded evidence **and** one word: `bin/pairctl ok` |
-| **`auto`** | yes | only from the permission allowlist | needs recorded evidence; no word needed |
+| **`auto`** *(Default)* | yes | only from the permission allowlist | needs recorded evidence; no word needed — the round closes itself |
+| **`semi`** | yes | only from the permission allowlist | needs recorded evidence **and** one word: `bin/pairctl ok` |
+| **`observe`** | no | no | human is driving; proof is still required |
+
+Evidence is required in **every** level. An earlier version let `observe` close a round
+with nothing recorded, which made the most cautious setting the only one where a round
+could end on nothing at all — a side effect dressed up as a decision. `observe` means
+"do less", not "do not count".
+
+#### Picked once, at launch
+
+The level is chosen when the pair starts and not renegotiated mid-round, so you are
+asked **at most once** — and in `auto`, not at all.
+
+```bash
+bin/pair-duo --semi opencode "task"   # or --auto, --observe
+```
+
+With no flag, the launcher resolves in this order, strongest first:
+
+| Source | What it looks like |
+|---|---|
+| `flag` | `bin/pair-duo --semi` |
+| `task` | `autonomy: semi` on the **first line** of the task |
+| `file` | `.pair/autonomy`, one word |
+| `default` | `auto` |
+
+The source is written into the transcript as `via=flag|task|file|default`, so a level
+nobody can account for never becomes a mystery later. A malformed flag or file falls
+through to the next source rather than refusing to start.
+
+Secrets, ports, deploys, migrations, data deletion and git history stop the pair at
+any level, `auto` included ([PROTOCOL.md §12](./docs/PROTOCOL.md)).
 
 `bin/pairpilot` is the process that watches the pair while both agents are idle. It delivers
 deferred messages, nudges a silent agent, confirms blocked permission prompts **from an
@@ -237,7 +267,7 @@ Switch modes at runtime with a single command (`bin/pairctl mode <mode>`):
 
 ## 🧰 MCP Tool Reference
 
-`pair-mailbox` exposes 16 specialized MCP tools:
+`pair-mailbox` exposes 17 specialized MCP tools:
 
 | Category | Tool | Authorized Roles | Description |
 |---|---|---|---|
@@ -249,6 +279,7 @@ Switch modes at runtime with a single command (`bin/pairctl mode <mode>`):
 | | `pair_send` | Both | **Passive delivery**: Sends a message to the peer's atomic mailbox. |
 | | `pair_read` | Both | Reads unread messages with optional blocking wait (`wait_seconds=45`). |
 | | `pair_note` | Both | Leaves persistent notes (`plan`, `decision`, `finding`, `verdict`, `handoff`). |
+| | `pair_task` | Both | Adds to the shared task list, marks done, or drops with a required reason. The list is append-only: only the writer closes a task, and an open task blocks the round. |
 | **Safety & Patches** | `pair_patch_reserve` | Critic Only | Prepares a dedicated, mode `0600` patch file. Refused for writers and audit mode. |
 | | `pair_patch_seal` | Critic Only | Computes and securely records SHA-256 digest of the unified diff. |
 | | `pair_patch_verify` | Writer Only | Re-computes and verifies SHA-256 before applying. Halts immediately on mismatch. |
@@ -290,11 +321,15 @@ To maintain absolute technical honesty, the pair-mailbox architecture explicitly
 The test suite validates security boundaries, race conditions, and invariant enforcement:
 
 ```bash
-python3 mcp/pair_mailbox/test_protocol.py   # protocol invariants
-python3 bin/pairpilot_test.py               # supervisor behaviour
+python3 mcp/pair_mailbox/test_protocol.py   # 247 protocol invariants
+python3 bin/pairpilot_test.py               #  67 supervisor behaviour
+python3 install_test.py                     #  13 installer
 ```
 
-Highlights covered by the test suite (152 protocol + 56 supervisor tests green):
+**327 green** (247 protocol + 67 supervisor + 13 installer), zero external
+dependencies.
+
+Highlights covered by the test suite:
 - Strict single writer enforcement and refusal of illegitimate claim attempts.
 - Cryptographic patch tampering detection (`HASH MISMATCH` triggers immediate abort).
 - Path traversal and glob expansion rejection.
@@ -305,6 +340,11 @@ Highlights covered by the test suite (152 protocol + 56 supervisor tests green):
   human `ok` in `semi` each block `done` with a message naming the fix.
 - Supervisor restart safety: a live process is never respawned, an unknown launch command
   is never guessed, `observe` never restarts, and write authority is never touched.
+- Autonomy resolution: a fresh state and a reset both land on `auto`, a flag beats a task
+  line, a task line beats a file, a file beats the default, and the source is recorded.
+- The unread nudge is sent once and appears in the transcript — otherwise a repeating
+  stream would have been invisible.
+- Permission context is not permission consent: a frame containing "allow" is not a grant.
 
 ---
 
