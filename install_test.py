@@ -14,6 +14,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -142,6 +143,193 @@ class TestMcpRegistration(InstallCase):
     def test_the_suite_runs_as_part_of_the_install(self) -> None:
         result = run_install(self.home, "opencode")
         self.assertNotIn("ТЕСТЫ НЕ ПРОШЛИ", result.stdout)
+
+
+class TestVerifyDoesNotTouchTheRoster(InstallCase):
+    """Проверка транспорта не имеет права менять состояние живой пары.
+
+    Найдено вживую, а не в чтении кода: `verify()` поднимал `serve.sh <role>` с
+    унаследованным окружением и без явного состояния, то есть писал в НАСТОЯЩИЙ
+    `.pair/state.json` того проекта, из которого запущен install.sh, и наследовал
+    `TMUX_PANE`. Прогон шёл из окна agy, и панель `opencode` в ростере
+    перезаписалась адресом панели `agy`.
+
+    До перехода на адреса сессий это была порча одного запуска. После — порча
+    прочная: роль получала ЧУЖУЮ панель каноническим адресом, то есть адрес,
+    который не перенумеровывается, и следующий же `pair_deliver` печатал бы в
+    чужой композер. Плюс в ростер попадал pid проверочного процесса, который
+    сразу умирает, и роль выглядела «мёртвой при живом окне».
+
+    Тест ставит те же условия: запускает install из под панели и смотрит, что
+    настоящий `.pair/state.json` не тронут. Панель берётся НАСТОЯЩАЯ, а не
+    выдуманная, по двум причинам. Баг проявился именно с живой панелью в
+    окружении, и выдуманная панель воспроизвела бы не его. И, что важнее,
+    установщик прогоняет ещё и набор тестов с тем же окружением, а часть тестов
+    работает с живой панелью набора: подставь несуществующую — упадут они, и
+    красный результат сказал бы про подмену, а не про баг.
+
+    Мок здесь не годится: нужен настоящий запуск того же кода.
+    """
+
+    def live_pane(self) -> str:
+        """Настоящая панель, из которой запущен набор, или пропуск."""
+        pane = os.environ.get("TMUX_PANE")
+        if not pane:
+            self.skipTest("набор запущен вне tmux")
+        tmux = shutil.which("tmux")
+        if not tmux:
+            self.skipTest("tmux не установлен")
+        probe = subprocess.run([tmux, "display-message", "-p", "-t", pane, "#{pane_id}"],
+                               capture_output=True, text=True, timeout=10)
+        if probe.returncode != 0 or not probe.stdout.strip():
+            self.skipTest(f"панель набора {pane} не отвечает")
+        return pane
+
+    def test_install_from_a_pane_does_not_touch_the_real_roster(self) -> None:
+        pane = self.live_pane()
+        state = ROOT / ".pair" / "state.json"
+        before = state.read_text(encoding="utf-8") if state.exists() else None
+        env = dict(os.environ, HOME=str(self.home), TMUX_PANE=pane)
+        subprocess.run([sys.executable, str(INSTALL), "opencode"],
+                       capture_output=True, text=True, env=env,
+                       cwd=str(ROOT), timeout=300)
+        after = state.read_text(encoding="utf-8") if state.exists() else None
+        self.assertEqual(before, after,
+                         "install.sh не имеет права менять ростер живого проекта: "
+                         "проверка транспорта писала в настоящий .pair/state.json")
+        if before is not None:
+            self.assertNotIn(pane, after,
+                             "панель запускающего процесса не должна попасть "
+                             "в ростер как панель другой роли")
+
+    def test_the_role_in_the_install_still_gets_registered(self) -> None:
+        """Изоляция проверки не превратилась в «сервер не запускается».
+
+        Проверка транспорта существует ради одного ответа: сервер отвечает как
+        pair-mailbox. Если изоляция состояния её сломала, установщик тихо
+        перестал бы что-либо проверять, и это выглядело бы как успех.
+        """
+        result = run_install(self.home, "opencode")
+        self.assertIn("проверка: ОК, pair-mailbox", result.stdout)
+
+
+class TestPaneRoleLookup(InstallCase):
+    """`pane_role_pid` ищет сервер роли, а не процесс панели.
+
+    Эта поломка прошла мой собственный пункт 2 незамеченной: тесты мокали
+    `pane_pid` живым значением, то есть проверяли не то. На живых панелях
+    `#{pane_pid}` отдаёт bash, а агент живёт его ребёнком, поэтому «в панели
+    кто-то есть» всегда истинно — и падавшая роль объявлялась вечно живой, то
+    есть перезапуск отменялся целиком.
+
+    Здесь настоящий `/proc` и настоящие процессы этого набора, потому что подмена
+    тут и была причиной, по которой баг не видели.
+    """
+
+    def test_a_role_server_is_found_among_the_descendants(self) -> None:
+        # «Панель» — это процесс набора, а его потомки — то, что в ней живёт.
+        # Проверка без decoy была бы пустой: при единственном потомке «первый
+        # потомок» и «сервер роли» совпадают, и замена одного другим проходила
+        # незаметно. Поэтому сначала запускается посторонний процесс, и ответ
+        # обязан быть НЕ им.
+        decoy = subprocess.Popen(["sleep", "30"])
+        self.addCleanup(decoy.kill)
+        # Второй посторонний процесс, и он содержит имя роли в своих аргументах —
+        # так выглядит запуск агента. Искать просто подстроку нельзя: такой процесс
+        # удовлетворяет подстрокке и не является сервером роли, а ошибка стоила бы
+        # чужого pid в чужой записи.
+        namesake = subprocess.Popen(["sleep", "30", "probe-role"])
+        self.addCleanup(namesake.kill)
+        child = subprocess.Popen(
+            [sys.executable, str(ROOT / "mcp/pair_mailbox/server.py"),
+             "--role", "probe-role", "--state", str(Path(tempfile.mkdtemp()) / ".pair")],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        self.addCleanup(child.kill)
+        # Поиск получает фиксированный порядок потомков. Порядок обхода настоящего
+        # `/proc` произволен, а на произвольном порядке эти проверки моргали: то
+        # ловили замену «найди сервер роли» на «верни первого потомка», то нет.
+        # Тест, результат которого зависит от порядка каталога, проверяет не код,
+        # а удачу. Порядок здесь задан явно, поэтому и падение детерминировано.
+        real_descendants = composer_module()._descendants
+        composer_module()._descendants = lambda root: [decoy.pid, namesake.pid, child.pid]
+        try:
+            found = 0
+            for _ in range(50):
+                found = composer_module().find_role_pid(os.getpid(), "probe-role")
+                if found:
+                    break
+                time.sleep(0.05)
+        finally:
+            composer_module()._descendants = real_descendants
+        self.assertEqual(child.pid, found,
+                         "найден должен быть сервер роли, а не первый попавшийся "
+                         "процесс и не тот, у кого имя роли есть в аргументах")
+
+    def test_a_process_with_the_role_name_in_its_args_is_not_the_role(self) -> None:
+        """Сверка роли строгая: имя файла и соседние аргументы, не подстрока.
+
+        Детерминированная проверка вместо «среди потомков нашёлся не тот»: порядок
+        `/proc` произволен, и на нём замена точного совпадения на подстроку
+        ловилась через раз. Здесь всё наоборот — один конкретный процесс, и
+        вопрос к нему один.
+        """
+        namesake = subprocess.Popen(["sleep", "30", "probe-role"])
+        self.addCleanup(namesake.kill)
+        time.sleep(0.1)
+        composer = composer_module()
+        self.assertFalse(composer._is_role_server(namesake.pid, "probe-role"),
+                         "процесс с именем роли в аргументах — не сервер роли")
+
+    def test_a_foreign_role_is_not_claimed(self) -> None:
+        """Роль в панели одна, и чужая роль не должна находиться как своя.
+
+        Ошибка в одну сторону — всегда. Найти чужой процесс и записать его в
+        чужую же запись значит стереть различие между двумя ролями.
+        """
+        found = _find_in_tree(os.getpid(), "definitely-not-a-real-role")
+        self.assertEqual(0, found, "несуществующая роль не должна находиться")
+
+    def test_an_empty_role_never_matches(self) -> None:
+        self.assertEqual(0, _find_in_tree(os.getpid(), ""),
+                         "пустая роль не должна совпасть ни с чем")
+
+    def test_the_lookup_needs_no_tmux_at_all(self) -> None:
+        """Поиск идёт по `/proc`, а не по tmux.
+
+        Замечание критика было про второй вызов к tmux ради pid. После этой
+        правки его не осталось: сведения о панели берутся из `pane_identity`
+        одним запросом, а сам поиск процесса идёт по `/proc`. Проверяется не
+        числом вызовов, а тем, что подмена tmux не может помешать найти роль —
+        иначе утверждение «запрос не нужен» осталось бы словами.
+        """
+        real_run = subprocess.run
+
+        def refuse_tmux(argv, **kwargs):
+            if isinstance(argv, (list, tuple)) and "tmux" in " ".join(map(str, argv)):
+                raise AssertionError("поиск роли не должен ходить в tmux")
+            return real_run(argv, **kwargs)
+
+        subprocess.run = refuse_tmux
+        try:
+            self.assertEqual(0, _find_in_tree(os.getpid(), "definitely-not-a-real-role"))
+        finally:
+            subprocess.run = real_run
+
+
+def composer_module():
+    """Настоящий модуль composer, а не его копия в тесте.
+
+    Раньше поиск был продублирован прямо здесь, и тест проверял копию: правка
+    прода на «вернуть первого потомка» оставляла набор зелёным. Тест, который не
+    может увидеть правку прода, ничего не проверяет.
+    """
+    sys.path.insert(0, str(ROOT / "mcp" / "pair_mailbox"))
+    import composer  # noqa: PLC0415
+    return composer
+
+
+def _find_in_tree(root: int, role: str) -> int:
+    return composer_module().find_role_pid(root, role)
 
 
 class TestPilotLaunchMap(InstallCase):

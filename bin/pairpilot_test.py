@@ -423,14 +423,14 @@ class TestRestart(PilotCase):
         # подмена не вернулась после утечки. Тест, зависящий от порядка запуска,
         # проверяет не своё поведение.
         self._real_pane_alive = pairpilot.pane_alive
-        self._real_pane_pid = getattr(pairpilot, "pane_pid", None)
+        self._real_pane_role_pid = getattr(pairpilot, "pane_role_pid", None)
         super().setUp()
 
     def tearDown(self) -> None:
         pairpilot.subprocess = self._real_subprocess
         pairpilot.pane_alive = self._real_pane_alive
-        if self._real_pane_pid is not None:
-            pairpilot.pane_pid = self._real_pane_pid
+        if self._real_pane_role_pid is not None:
+            pairpilot.pane_role_pid = self._real_pane_role_pid
         super().tearDown()
 
     def dead_writer_state(self, **extra) -> None:
@@ -611,7 +611,7 @@ class TestRestart(PilotCase):
         # Живой pid, и НЕ наш собственный: сам сверхвизор, запущенный из панели
         # роли, pid в её запись не пишет, и подмена os.getpid() проверяла бы не то.
         live = os.getppid()
-        pairpilot.pane_pid = lambda tmux, pane: live
+        pairpilot.pane_role_pid = lambda tmux, pane, role: live
         pilot.tick()
         self.assertNoRestart("в панели живой процесс — перезапуск его бы убил")
         self.assertEqual(live, self.read_state()["roles"]["agy"]["pid"],
@@ -633,7 +633,7 @@ class TestRestart(PilotCase):
         """
         self.dead_writer_state()
         pilot = self.pilot_with_launch()
-        pairpilot.pane_pid = lambda tmux, pane: self.DEAD_PID
+        pairpilot.pane_role_pid = lambda tmux, pane, role: self.DEAD_PID
         pilot.tick()
         self.assertEqual([["/usr/bin/tmux", "respawn-pane", "-t", "%7", "agy --resume"]],
                          self.respawns(),
@@ -649,7 +649,7 @@ class TestRestart(PilotCase):
         """
         self.dead_writer_state()
         pilot = self.pilot_with_launch()
-        pairpilot.pane_pid = lambda tmux, pane: 0
+        pairpilot.pane_role_pid = lambda tmux, pane, role: 0
         pilot.tick()
         self.assertEqual(1, len(self.respawns()),
                          "не доказано, что в панели кто-то есть, — перезапуск не запрещён")
@@ -674,7 +674,7 @@ class TestRestart(PilotCase):
         pilot = self.pilot_with_launch()
         pilot.pane_key = lambda pane: "%7"
         # В панели действительно кто-то жив — иначе проверка была бы пустой.
-        pairpilot.pane_pid = lambda tmux, pane: os.getppid()
+        pairpilot.pane_role_pid = lambda tmux, pane, role: os.getppid()
         pilot.tick()
         self.assertNoRestart("панель, занятая живой ролью, не трогаем")
         self.assertEqual(self.DEAD_PID, self.read_state()["roles"]["agy"]["pid"],
@@ -683,11 +683,36 @@ class TestRestart(PilotCase):
                          "занятая панель — это отказ, а не обновление pid")
         self.assertIn("pilot_restart_impossible", self.transcript_kinds())
 
+    def test_a_live_shell_in_a_dead_roles_pane_is_not_mistaken_for_the_role(self) -> None:
+        """Поломка, которую пропустили мои же тесты.
+
+        Упавший агент оставляет в панели ЖИВОЙ шелл — так устроен терминал. Если
+        «роль жива» выводить из «в панели есть процесс», то падавшая роль выглядит
+        живой всегда, и перезапуск отменяется целиком. Это ровно тот случай, ради
+        которого `restart_agent` написан, то есть правка живости по панели чинила
+        перезапуск и ломала его.
+
+        Измерено на этой машине: `#{pane_pid}` в панели с работающим агентом — это
+        bash, а не агент. Поэтому спрашивать надо сервер роли, а не процесс панели.
+
+        Здесь подменён сам источник pid так, как он ведёт себя в бою: панель занята
+        живым шеллом, а процесса роли в ней нет. Ожидается перезапуск.
+        """
+        self.dead_writer_state()
+        pilot = self.pilot_with_launch()
+        # Живой посторонний процесс в панели — ровно то, что остаётся от агента.
+        pairpilot.pane_role_pid = lambda tmux, pane, role: 0
+        pilot.own_pane = None
+        pilot.tick()
+        self.assertEqual(1, len(self.respawns()),
+                         "живой шелл в панели не доказывает, что роль жива — "
+                         "иначе упавшая роль не перезапускалась бы никогда")
+
     def test_a_stale_pid_is_refreshed_once_not_every_tick(self) -> None:
         """Обновление — событие один раз, а не строчка в транскрипте каждые 15с."""
         self.dead_writer_state()
         pilot = self.pilot_with_launch()
-        pairpilot.pane_pid = lambda tmux, pane: os.getppid()
+        pairpilot.pane_role_pid = lambda tmux, pane, role: os.getppid()
         pilot.tick()
         pilot.tick()
         pilot.tick()

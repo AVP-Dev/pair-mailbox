@@ -9,7 +9,7 @@ MCP действительно поднимается. Писать конфиг
   ./install.sh --check      только проверить, ничего не менять
   ./install.sh --list       показать профили
 """
-import json, os, re, shutil, subprocess, sys
+import json, os, re, shutil, subprocess, sys, tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
@@ -214,15 +214,43 @@ def write_instructions(profile):
 
 
 def verify(argv):
-    """Поднимаем сервер ровно так, как это сделает CLI, и жмём руку."""
+    """Поднимаем сервер ровно так, как это сделает CLI, и жмём руку.
+
+    Проверка изолирована от настоящего ростера, и это не аккуратность, а
+    требование. Найдено вживую: `verify` поднимал `serve.sh <role>` с
+    унаследованным окружением и без явного состояния, то есть писал в НАСТОЯЩИЙ
+    `.pair/state.json` того проекта, из которого запущен install.sh, и наследовал
+    `TMUX_PANE` запускающего процесса.
+
+    Дальше это ударило дважды. Панель `opencode` перезаписалась адресом панели
+    `agy` — прогон тестов шёл из его окна, — и после перехода на адреса сессий
+    перезапись стала ещё и канонической: роль получала чужую панель не на один
+    запуск, а прочно. Плюс в ростер попадал pid проверочного процесса, который
+    сразу умирает, то есть роль выглядела «мёртвой при живом окне».
+
+    Проверка транспорта не имеет права менять состояние. Поэтому состояние
+    временное, а из окружения вычищено всё, что делает процесс агентом.
+    """
     req = json.dumps({
         "jsonrpc": "2.0", "id": 1, "method": "initialize",
         "params": {"protocolVersion": "2024-11-05", "clientInfo": {"name": "pair-install"}},
     }) + "\n"
+    scratch = tempfile.mkdtemp(prefix="pair-verify-")
     try:
-        proc = subprocess.run(argv, input=req, capture_output=True, text=True, timeout=15)
+        env = {k: v for k, v in os.environ.items()
+               if k not in ("PAIR_STATE", "PAIR_ROLE", "PAIR_DISABLE_RING")}
+        env["PAIR_STATE"] = scratch
+        # TMUX_PANE — это «кто я», и проверке знать о ней незачем: без неё сервер
+        # честно не считает себя живущим в панели. TMUX убираем вместе с ней,
+        # иначе сервер решит, что он внутри tmux, по одним переменным окружения.
+        for name in ("TMUX_PANE", "TMUX"):
+            env.pop(name, None)
+        proc = subprocess.run(argv, input=req, capture_output=True, text=True,
+                              timeout=15, env=env)
     except Exception as exc:
         return False, "запуск не удался: " + str(exc)
+    finally:
+        shutil.rmtree(scratch, ignore_errors=True)
     for line in proc.stdout.splitlines():
         line = line.strip()
         if not line:

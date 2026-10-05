@@ -335,6 +335,129 @@ def pane_pid(tmux: str, pane: str) -> int:
     return pid if pid > 0 else 0
 
 
+def pane_pid(tmux: str, pane: str) -> int:
+    """pid ПРОЦЕССА ПАНЕЛИ — обычно это шелл, а не агент. Не «pid роли».
+
+    Возвращать его и называть «pid процесса, который занимает панель» было бы
+    верно только формально. Измерено на живых панелях: `#{pane_pid}` в панели с
+    работающим агентом отдаёт bash, потому что агент живёт ребёнком шелла.
+    Отсюда две беды, и обе приходят от того, что поле называли не тем, чем оно
+    являлось:
+
+    - в ростер, где лежит pid сервера роли, попадал pid шелла, и значения
+      начинали флипать каждый тик, потому что `_register` перезаписывал своё;
+    - хуже: упавший агент оставляет после себя ЖИВОЙ шелл, поэтому «в панели
+      кто-то есть» всегда истинно, и роль, которая упала, никогда не
+      перезапускалась бы.
+
+    Для вопроса «жива ли роль» есть `pane_role_pid`. Эта функция остаётся как
+    нижний слой: её честное имя — процесс панели, и больше она ничего не значит.
+    """
+    ident = pane_identity(tmux, pane)
+    if not (ident["exists"] and ident["alive"]):
+        return 0
+    r = subprocess.run(
+        [tmux, "display-message", "-p", "-t", pane, "#{pane_pid}"],
+        capture_output=True, text=True, timeout=5)
+    out = r.stdout.strip()
+    if r.returncode != 0 or not out.isdigit():
+        return 0
+    pid = int(out)
+    return pid if pid > 0 else 0
+
+
+def _cmdline(pid: int) -> list:
+    try:
+        raw = Path(f"/proc/{pid}/cmdline").read_bytes()
+    except OSError:
+        return []
+    return [part.decode("utf-8", "replace") for part in raw.split(b"\0") if part]
+
+
+def _is_role_server(pid: int, role: str) -> bool:
+    """Процесс это `server.py --role <role>`, или нет.
+
+    Сверяются и имя файла, и соседние аргументы. Искать просто подстроку роли
+    нельзя: ошибка здесь стоила бы чужого pid в чужой записи, а это ровно тот тип
+    поломки, который проверка пути уже ловила между проектами.
+    """
+    args = _cmdline(pid)
+    if not any(part.endswith("server.py") for part in args):
+        return False
+    for index, part in enumerate(args[:-1]):
+        if part == "--role" and args[index + 1] == role:
+            return True
+    return False
+
+
+def _descendants(root: int) -> list:
+    """Все потомки процесса по `/proc`, в ширину.
+
+    Порядок важен: ближайший предок идёт первым, и при нескольких кандидатах
+    выигрывает тот, кто ближе к панели, а не тот, у кого pid больше.
+    """
+    children: dict = {}
+    try:
+        entries = os.listdir("/proc")
+    except OSError:
+        return []
+    for entry in entries:
+        if not entry.isdigit():
+            continue
+        try:
+            stat = Path(f"/proc/{entry}/stat").read_text()
+            ppid = int(stat.rsplit(")", 1)[1].split()[1])
+        except (OSError, IndexError, ValueError):
+            continue
+        children.setdefault(ppid, []).append(int(entry))
+    out, frontier = [], [root]
+    while frontier:
+        current = frontier.pop(0)
+        for child in children.get(current, []):
+            out.append(child)
+            frontier.append(child)
+    return out
+
+
+def find_role_pid(root: int, role: str) -> int:
+    """Сервер роли среди потомков `root`, или 0.
+
+    Отделено от `pane_role_pid` намеренно: tmux здесь нужен только чтобы узнать
+    pid панели, а весь вопрос «кто в панели» решается по `/proc`. Разделение
+    сделано ради проверяемости — сращивать их было бы ровно тем, из-за чего баг
+    прожил: функция проверялась подменой, которая не влияла на код под ней.
+    """
+    if not root or not role:
+        return 0
+    for candidate in _descendants(root):
+        if _is_role_server(candidate, role):
+            return candidate
+    return 0
+
+
+def pane_role_pid(tmux: str, pane: str, role: str) -> int:
+    """pid сервера РОЛИ, если её процесс живёт в этой панели, иначе 0.
+
+    Это тот вопрос, который на самом деле нужен сверхвизору, и он не равен
+    `pane_pid`: в панели всегда есть шелл, даже когда агент упал, поэтому «в
+    панели кто-то есть» не доказывает «роль жива».
+
+    Искать надо сервер роли, потому что именно его pid пишет `_register`
+    (`os.getpid()` сервера) и именно его ждёт `is_pid_alive` в ростере. Отсюда
+    смысл: обновление записи возвращает в неё значение того же рода, иначе pid
+    двух разных процессов дрались бы за одно поле.
+
+    Один запрос к tmux на всё: сведения о панели берутся из `pane_identity`, а не
+    из второго `display-message`. Панель могла умереть между двумя вызовами, и
+    тогда вердикт собрался бы из снимков разных панелей.
+
+    Ноль означает «не нашёл», и это не ошибка: вызывающий обязан трактовать это
+    как «не знаю», а не как «панели нет». Вне Linux дерева процессов нет, и
+    честный ответ здесь 0.
+    """
+    return find_role_pid(pane_pid(tmux, pane), role)
+
+
 def capture(tmux: str, pane: str) -> list:
     r = subprocess.run([tmux, "capture-pane", "-p", "-t", pane],
                        capture_output=True, text=True, timeout=5)

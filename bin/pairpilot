@@ -59,7 +59,7 @@ try:
         load_allow_patterns,
         pane_alive,
         pane_key,
-        pane_pid,
+        pane_role_pid,
         resolve_permission_prompt,
     )
 except Exception as error:  # noqa: BLE001 - причина должна быть видна сразу
@@ -367,7 +367,7 @@ class Pilot:
         """
         if self.tmux is None or not pane:
             return 0
-        occupant = pane_pid(self.tmux, pane)
+        occupant = pane_role_pid(self.tmux, pane, role)
         if not occupant or occupant == os.getpid():
             return 0
         return occupant if is_pid_alive(occupant) else 0
@@ -654,10 +654,10 @@ class Pilot:
             # respawn без -k всё равно откажет, но лишний шум в журнале хуже.
             #
             # Проверка идёт ПЕРЕД обновлением pid, и порядок здесь не вкус: если
-            # спросить `pane_pid` раньше, то у чужой роли в панели вернётся её живой
-            # pid, и мы запишем его в запись ЭТОЙ роли. Две записи об одном
-            # процессе — это ровно то состояние, из которого ростер потом не
-            # разберётся, кто где сидит.
+            # спросить про панель раньше, то у чужой роли найдётся её живой pid,
+            # и мы запишем его в запись ЭТОЙ роли. Две записи об одном процессе —
+            # это ровно то состояние, из которого ростер потом не разберётся, кто
+            # где сидит.
             squatter = self.pane_occupied_by_other(state, role, pane)
             if squatter:
                 if self.remember(f"restart-squat-{role}-{pane}"):
