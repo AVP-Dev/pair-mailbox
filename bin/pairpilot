@@ -59,6 +59,7 @@ try:
         load_allow_patterns,
         pane_alive,
         pane_key,
+        pane_pid,
         resolve_permission_prompt,
     )
 except Exception as error:  # noqa: BLE001 - причина должна быть видна сразу
@@ -350,6 +351,27 @@ class Pilot:
                 return other
         return None
 
+    def pane_occupant(self, role: str, pane: str) -> int:
+        """pid, который реально сидит в панели этой роли, или 0.
+
+        Роль жива, если жив pid ИЛИ панель с процессом, но эти два факта могут
+        расходиться, и важно в каком направлении. Мёртвый pid при живой панели —
+        это не падение: pid в ростере протух, а агент на месте. Обратное, живой
+        pid при отсутствующей панели, — уже настоящая беда, и она ловится в
+        `dead_pane`.
+
+        Панель, занятую чужой живой ролью, сюда не доходит: `restart_agent`
+        проверяет `pane_occupied_by_other` ДО этого вызова, иначе мы записали бы
+        pid соседа в запись этой роли. Проверять здесь ещё раз было бы вторым
+        мнением об одном факте, а не страховкой.
+        """
+        if self.tmux is None or not pane:
+            return 0
+        occupant = pane_pid(self.tmux, pane)
+        if not occupant or occupant == os.getpid():
+            return 0
+        return occupant if is_pid_alive(occupant) else 0
+
     def gone_roles(self, state: dict) -> None:
         """Роли, чей процесс умер, но запись в ростере осталась.
 
@@ -627,17 +649,15 @@ class Pilot:
                                                  target=role, pid=pid, why="нет живой панели")
                     log(f"{role}: процесс мёртв (pid {pid}), но окна нет — нужен человек")
                 continue
-            command = self.launch_command(role)
-            if not command:
-                if self.remember(f"restart-nocmd-{role}"):
-                    self.store.append_transcript("pilot_restart_impossible", "pairpilot",
-                                                 target=role, pid=pid, why="не знаю команды запуска")
-                    log(f"{role}: процесс мёртв, а команды запуска я не знаю — скажи "
-                        f"pairpilot --launch {role}='команда' или допиши в .pair/restart.json")
-                continue
             # Панель могла достаться роли по наследству: запись агента осталась, а
             # сидит там уже кто-то живой. Стучаться в чужое окно бессмысленно —
             # respawn без -k всё равно откажет, но лишний шум в журнале хуже.
+            #
+            # Проверка идёт ПЕРЕД обновлением pid, и порядок здесь не вкус: если
+            # спросить `pane_pid` раньше, то у чужой роли в панели вернётся её живой
+            # pid, и мы запишем его в запись ЭТОЙ роли. Две записи об одном
+            # процессе — это ровно то состояние, из которого ростер потом не
+            # разберётся, кто где сидит.
             squatter = self.pane_occupied_by_other(state, role, pane)
             if squatter:
                 if self.remember(f"restart-squat-{role}-{pane}"):
@@ -645,6 +665,39 @@ class Pilot:
                                                  target=role, pid=pid, pane=pane,
                                                  why=f"панель занята живой ролью {squatter}")
                     log(f"{role}: панель {pane} занята живой ролью {squatter} — не трогаю")
+                continue
+            # Панель жива, а роль в записи мертва — но это ещё не значит, что роль
+            # упала. Номер `%N` и вообще адрес панели переживают смерть процесса,
+            # который её занимал, а роль могла перезапуститься сама: тогда в панели
+            # есть живой агент, а pid в ростере устарел. Пытаться в этом состоянии
+            # поднять роль — значит убить живого агента вместе с его контекстом.
+            #
+            # Здесь была причина 21 попытки перезапуска живой панели за ночь: pid
+            # протух, панель жива, а роль цела. Лечится не перезапуском, а
+            # обновлением pid из панели — это и есть «живость по панели».
+            #
+            # Обновление идемпотентно и по гонке тоже: если роль перезапустилась
+            # между чтением состояния и записью, `remember` уже отработал по старому
+            # pid, а следующий тик увидит живой pid и ничего не сделает.
+            occupant = self.pane_occupant(role, pane)
+            if occupant:
+                if self.remember(f"refresh-{role}-{pid}"):
+                    self.store.append_transcript("pilot_pid_stale_pane_alive", "pairpilot",
+                                                 target=role, pane=pane, pid=pid,
+                                                 live_pid=occupant,
+                                                 why="pid в ростере протух, в панели живой процесс")
+                    self.store.mutate(lambda s, r=role, p=occupant: s.setdefault("roles", {})
+                                      .setdefault(r, {}).update({"pid": p}))
+                    log(f"{role}: pid {pid} протух, в панели {pane} живёт {occupant} — "
+                        f"обновил запись, перезапуск не нужен")
+                continue
+            command = self.launch_command(role)
+            if not command:
+                if self.remember(f"restart-nocmd-{role}"):
+                    self.store.append_transcript("pilot_restart_impossible", "pairpilot",
+                                                 target=role, pid=pid, why="не знаю команды запуска")
+                    log(f"{role}: процесс мёртв, а команды запуска я не знаю — скажи "
+                        f"pairpilot --launch {role}='команда' или допиши в .pair/restart.json")
                 continue
             # Два ограничения, и оба нужны. Отметка по pid не даёт трогать один
             # и тот же упавший процесс снова. Но её одной НЕ хватает: если

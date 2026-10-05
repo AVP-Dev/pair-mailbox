@@ -89,6 +89,14 @@ class PilotCase(unittest.TestCase):
             return []
         return [json.loads(line)["kind"] for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
 
+    def read_state(self) -> dict:
+        """Состояние с диска, а не из памяти пилота.
+
+        Проверять надо, что записано в ростер, а не что вернул последний mutate:
+        иначе утверждение про обновление pid проверяло бы сам же тест.
+        """
+        return json.loads((self.state_dir / "state.json").read_text(encoding="utf-8"))
+
     def transcript_entries(self) -> list[dict]:
         path = self.state_dir / "transcript.jsonl"
         if not path.exists():
@@ -409,10 +417,20 @@ class TestRestart(PilotCase):
         self._real_subprocess = getattr(pairpilot, "subprocess", None)
         self.calls: list[list[str]] = []
         pairpilot.subprocess = _FakeSubprocess(self.calls)
+        # Модульные подмены восстанавливаются здесь, а не в каждом тесте.
+        # Проверено, что это не теория: подмена pane_pid из одного теста доживала
+        # до следующих и делала их результат случайным — два теста падали, пока
+        # подмена не вернулась после утечки. Тест, зависящий от порядка запуска,
+        # проверяет не своё поведение.
+        self._real_pane_alive = pairpilot.pane_alive
+        self._real_pane_pid = getattr(pairpilot, "pane_pid", None)
         super().setUp()
 
     def tearDown(self) -> None:
         pairpilot.subprocess = self._real_subprocess
+        pairpilot.pane_alive = self._real_pane_alive
+        if self._real_pane_pid is not None:
+            pairpilot.pane_pid = self._real_pane_pid
         super().tearDown()
 
     def dead_writer_state(self, **extra) -> None:
@@ -575,6 +593,106 @@ class TestRestart(PilotCase):
         pilot.tick()
         self.assertNoRestart("живой процесс не перезапускается никогда")
         self.assertNotIn("pilot_restart", self.transcript_kinds())
+
+    def test_a_live_process_in_the_pane_is_not_respawned(self) -> None:
+        """Главный инцидент ночи: 21 попытка перезапустить панель, в которой
+        агент ЖИВ.
+
+        Роль перезапустилась сама, или просто сменился pid, а запись в ростере
+        осталась с протухшим. Панель жива, в ней сидит агент — и `respawn-pane`
+        с `-k` его убивал бы вместе со всем контекстом раунда.
+
+        Проверяется ровно то, о чём был инцидент: перезапуска НЕТ, а pid в
+        записи обновлён на тот, что реально жив. Порядок обращений к tmux здесь
+        не утверждается никак.
+        """
+        self.dead_writer_state()
+        pilot = self.pilot_with_launch()
+        # Живой pid, и НЕ наш собственный: сам сверхвизор, запущенный из панели
+        # роли, pid в её запись не пишет, и подмена os.getpid() проверяла бы не то.
+        live = os.getppid()
+        pairpilot.pane_pid = lambda tmux, pane: live
+        pilot.tick()
+        self.assertNoRestart("в панели живой процесс — перезапуск его бы убил")
+        self.assertEqual(live, self.read_state()["roles"]["agy"]["pid"],
+                         "pid в записи обязан стать тем, что реально жив")
+        self.assertIn("pilot_pid_stale_pane_alive", self.transcript_kinds())
+        entry = [e for e in self.transcript_entries()
+                 if e["kind"] == "pilot_pid_stale_pane_alive"][-1]
+        self.assertEqual(live, entry["live_pid"])
+        self.assertEqual(self.DEAD_PID, entry["pid"],
+                         "причина обязана называть протухший pid, а не текущий")
+
+    def test_a_dead_process_in_the_pane_is_still_respawned(self) -> None:
+        """Обратная сторона: живая ПАНЕЛЬ не значит живой АГЕНТ.
+
+        Если бы `pane_pid` вёлся на «панель занята — значит всё в порядке», то
+        падение агента при живом окне осталось бы незамеченным, а это ровно тот
+        случай, ради которого перезапуск и написан. Поэтому проверка симметрична
+        предыдущей и обязана существовать вместе с ней.
+        """
+        self.dead_writer_state()
+        pilot = self.pilot_with_launch()
+        pairpilot.pane_pid = lambda tmux, pane: self.DEAD_PID
+        pilot.tick()
+        self.assertEqual([["/usr/bin/tmux", "respawn-pane", "-t", "%7", "agy --resume"]],
+                         self.respawns(),
+                         "в панели мёртвый pid — роль поднимается")
+        self.assertNotIn("pilot_pid_stale_pane_alive", self.transcript_kinds())
+
+    def test_an_unprovable_pane_pid_does_not_block_the_restart(self) -> None:
+        """«Не знаю» не должно читаться как «занято».
+
+        Если бы ноль от `pane_pid` трактовался как «панель занята», то после
+        любой ошибки tmux сверхвизор навсегда перестал бы перезапускать упавших
+        ролей — молча, без единой записи. Отказ должен быть громким и полезным.
+        """
+        self.dead_writer_state()
+        pilot = self.pilot_with_launch()
+        pairpilot.pane_pid = lambda tmux, pane: 0
+        pilot.tick()
+        self.assertEqual(1, len(self.respawns()),
+                         "не доказано, что в панели кто-то есть, — перезапуск не запрещён")
+        self.assertEqual(self.DEAD_PID, self.read_state()["roles"]["agy"]["pid"],
+                         "запись без живого pid не выдумывается")
+
+    def test_a_squatters_pid_never_lands_in_the_role_record(self) -> None:
+        """Панель занята ЧУЖОЙ ролью — и в ней есть живой процесс.
+
+        Это проверка ПОРЯДКА, а не наличия защиты. Если спросить `pane_pid` до
+        проверки «панель занята другой ролью», вернётся живой pid СОСЕДА, и мы
+        запишем его в запись этой роли. Две записи об одном процессе — и ростер
+        больше не разберётся, кто где сидит.
+
+        Мутация этого кода: вернуть `pane_occupant` перед `pane_occupied_by_other`
+        — и тест краснеет. Это и было написано, чтобы поймать именно это.
+        """
+        self.write_state(writer="agy", round=3, roles={
+            "agy": {"last_seen": ago(600), "pid": self.DEAD_PID, "pane": "%7"},
+            "claude": {"last_seen": ago(30), "pid": os.getpid(), "pane": "%7"},
+        })
+        pilot = self.pilot_with_launch()
+        pilot.pane_key = lambda pane: "%7"
+        # В панели действительно кто-то жив — иначе проверка была бы пустой.
+        pairpilot.pane_pid = lambda tmux, pane: os.getppid()
+        pilot.tick()
+        self.assertNoRestart("панель, занятая живой ролью, не трогаем")
+        self.assertEqual(self.DEAD_PID, self.read_state()["roles"]["agy"]["pid"],
+                         "pid соседа не должен оказаться в записи этой роли")
+        self.assertNotIn("pilot_pid_stale_pane_alive", self.transcript_kinds(),
+                         "занятая панель — это отказ, а не обновление pid")
+        self.assertIn("pilot_restart_impossible", self.transcript_kinds())
+
+    def test_a_stale_pid_is_refreshed_once_not_every_tick(self) -> None:
+        """Обновление — событие один раз, а не строчка в транскрипте каждые 15с."""
+        self.dead_writer_state()
+        pilot = self.pilot_with_launch()
+        pairpilot.pane_pid = lambda tmux, pane: os.getppid()
+        pilot.tick()
+        pilot.tick()
+        pilot.tick()
+        stale = [k for k in self.transcript_kinds() if k == "pilot_pid_stale_pane_alive"]
+        self.assertEqual(1, len(stale), "об устаревшем pid говорим один раз")
 
     def test_restart_needs_a_known_command(self) -> None:
         """Нет команды — нет перезапуска и громкая запись об этом. Выдуманная
