@@ -49,6 +49,30 @@ SNAPSHOT_RE = re.compile(
 SCRIPT_END_RE = re.compile(r"</script(?=[\t\n\f />])", re.I)
 
 
+def _role_line(tree: str, role: str) -> str:
+    """Строка роли в распечатанном дереве.
+
+    Дерево печатается построчно с отступом, и закрывающих тегов в нём нет: конец
+    строки роли — это первая следующая строка с отступом не глубже, чем у самой
+    строки роли. Ищется по имени роли внутри блока, а не «первым вхождением
+    буквы»: буква встречается и в заголовке панели, и в слове writer на другой
+    строке, и такой разбор проверял бы не то место, о котором думает.
+    """
+    lines = tree.splitlines()
+    for position, line in enumerate(lines):
+        if f'class=role-name "{role}"' not in line:
+            continue
+        indent = len(line) - len(line.lstrip())
+        collected = []
+        for follow in lines[position:]:
+            depth = len(follow) - len(follow.lstrip())
+            if follow.strip() and depth < indent:
+                break
+            collected.append(follow)
+        return "\n".join(collected)
+    raise AssertionError(f"роль {role!r} не найдена в дереве:\n{tree}")
+
+
 def _script_blocks_per_html5(page: str) -> list[str]:
     """Содержимое блоков `<script>` так, как их увидит браузер.
 
@@ -421,6 +445,41 @@ class ClientBehaviourTest(unittest.TestCase):
         # нет вовсе», и это проверяется фактом, а не договорённостью.
         _, meta = self._run_client(self.snapshot, "0")
         self.assertIn('--- refresh meta: []', " ".join(meta))
+
+    def test_role_tags_are_mutually_exclusive(self):
+        """Писатель получает тег writer, остальные — critic, но не оба сразу.
+
+        Регрессия, найденная на живом экране и приехавшая патчем agy: строка роли
+        печатала `writer` и `critic` рядом, то есть утверждала, что один агент
+        одновременно пишет и критикует. Формально это ложь, которую читает человек,
+        а не дефект отрисовки: слово «critic» на строке писателя отвечает на
+        вопрос «кто сейчас проверяет», и два ответа на один вопрос — это уже не
+        ответ.
+        """
+        snapshot = _stub_snapshot()
+        snapshot["roles"] = [
+            {"role": "writer-agent", "is_writer": True, "pane": "%0", "pane_alive": True,
+             "pane_note": "", "pid": 1, "pid_alive": True, "silence": "1 с",
+             "silence_seconds": 1, "restored_by": ""},
+            {"role": "peer-agent", "is_writer": False, "pane": "%1", "pane_alive": True,
+             "pane_note": "", "pid": 2, "pid_alive": True, "silence": "1 с",
+             "silence_seconds": 1, "restored_by": ""},
+        ]
+        tree, _ = self._run_client(snapshot)
+        writer_line = _role_line(tree, "writer-agent")
+        peer_line = _role_line(tree, "peer-agent")
+        self.assertIn('class=tag writer "writer"', writer_line)
+        self.assertNotIn("critic", writer_line)
+        self.assertIn('class=tag critic "critic"', peer_line)
+        self.assertNotIn('"writer"', peer_line)
+
+    def test_writer_role_is_labelled_even_without_other_roles(self):
+        # Роль одна, критик ещё не зарегистрировался: тег critic на строке
+        # писателя всё равно не должен появляться — это всё тот же вопрос.
+        tree, _ = self._run_client(_stub_snapshot())
+        role_line = _role_line(tree, "a")
+        self.assertIn("writer", role_line)
+        self.assertNotIn("critic", role_line)
 
     def test_unreadable_snapshot_shows_a_banner_instead_of_a_blank_page(self):
         broken = _stub_snapshot()

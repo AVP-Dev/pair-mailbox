@@ -1,14 +1,7 @@
 /* Оформление дашборда пары. Контракт токенов — docs/theme-tokens.md.
  *
- * Инвариант, который этот файл обязан держать: Zero Hardcoded Colors. Ни одного
- * #hex/rgb()/hsl() вне блоков объявления токенов. Всё остальное — hsl(var(--x) / a).
- * Проверяется тестом: если сюда попадёт голый цвет, тест упадёт.
- *
- * Токены заданы в пространстве HSL без hsl(), потому что контракт требует именно
- * такого формата (`--background: 240 10% 3.9%`) и именно так их умеет Tailwind
- * из docs/theme-tokens.md §3. Писать `hsl(var(--background))` можно, писать
- * `--background: #0a0a0b` — нельзя: это разные контракты, и через полгода никто
- * не вспомнит, какой из них имелся в виду.
+ * Инвариант: Zero Hardcoded Colors. Ни одного #hex/rgb()/hsl() вне блоков токенов.
+ * Всё остальное — hsl(var(--x) / a).
  */
 
 :root {
@@ -33,21 +26,13 @@
   --destructive-foreground: 0 0% 98%;
   --radius: 0.5rem;
 
-  /* Токены состояния. Не из контракта: контракт описывает поверхности и
-   * акценты, а «зелёный = жив» в контракте не значится, и без явного токена
-   * статус-индикаторы пришлось бы красить голыми цветами, то есть сломать
-   * инвариант, который выше объявлен. Ссылка на источник зелёного/жёлтого/
-   * красного: те же HSL-координаты, что у статусных цветов Tailwind, чтобы
-   * дашборд совпадал с остальным интерфейсом проекта. */
   --ok: 142 71% 35%;
   --warn: 32 95% 30%;
   --bad: 0 72% 45%;
   --unknown: 240 3.8% 46.1%;
 
-  /* Плотность. Дашборд смотрят, пока думают о чём-то ещё, поэтому панели
-   * компактные: много строк на панель — это прокрутка вместо взгляда. */
-  --gap: 0.5rem;
-  --pad: 0.6rem 0.7rem;
+  --gap: 0.75rem;
+  --pad: 1rem 1.15rem;
   --row: 1.4rem;
 }
 
@@ -83,136 +68,339 @@ body {
   margin: 0;
   background: hsl(var(--background));
   color: hsl(var(--foreground));
-  font: 13px/1.45 ui-monospace, "SFMono-Regular", "JetBrains Mono", Menlo, monospace;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  font-size: 13px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
 }
 
-/* Шапка: что это и когда собрано. Метка времени важнее названия проекта —
- * человек возвращается к вкладке через час и первым делом спрашивает «свежее ли». */
+/* Шапка */
 .bar {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   justify-content: space-between;
   gap: var(--gap);
-  padding: 0.5rem 0.7rem;
+  padding: 0.75rem 1.25rem;
   border-bottom: 1px solid hsl(var(--border));
   background: hsl(var(--card));
   position: sticky;
   top: 0;
-  z-index: 2;
+  z-index: 10;
 }
 
-.bar h1 { font-size: 13px; margin: 0; font-weight: 600; }
-.bar-right { display: flex; align-items: baseline; gap: var(--gap); }
+.bar h1 {
+  font-size: 14px;
+  margin: 0;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+.bar-right {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
 
 .btn {
-  font: inherit;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 500;
   color: hsl(var(--secondary-foreground));
   background: hsl(var(--secondary));
   border: 1px solid hsl(var(--border));
   border-radius: var(--radius);
-  padding: 0.15rem 0.45rem;
+  padding: 0.35rem 0.75rem;
   cursor: pointer;
+  transition: all 0.15s ease;
 }
-.btn:hover { background: hsl(var(--accent)); }
-.btn:focus-visible { outline: 2px solid hsl(var(--ring)); outline-offset: 1px; }
-.btn[aria-pressed="true"] { background: hsl(var(--primary)); color: hsl(var(--primary-foreground)); }
+.btn:hover {
+  background: hsl(var(--accent));
+  color: hsl(var(--accent-foreground));
+}
+.btn:focus-visible {
+  outline: 2px solid hsl(var(--ring));
+  outline-offset: 1px;
+}
+.btn[aria-pressed="true"] {
+  background: hsl(var(--primary));
+  color: hsl(var(--primary-foreground));
+}
 
 .muted { color: hsl(var(--muted-foreground)); }
 .ok { color: hsl(var(--ok)); }
 .warn { color: hsl(var(--warn)); }
 .bad { color: hsl(var(--bad)); }
 
-main { padding: var(--gap); display: flex; flex-direction: column; gap: var(--gap); }
+main {
+  max-width: 1400px;
+  margin: 0 auto;
+  padding: 1.25rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+}
 
 .panel {
   background: hsl(var(--card));
   color: hsl(var(--card-foreground));
   border: 1px solid hsl(var(--border));
-  border-radius: var(--radius);
+  border-radius: calc(var(--radius) * 1.5);
   padding: var(--pad);
+  box-shadow: 0 1px 3px hsl(var(--border) / 0.2);
 }
+
 .panel > h2 {
-  font-size: 12px;
-  margin: 0 0 0.35rem;
+  font-size: 11px;
+  margin: 0 0 0.75rem;
   color: hsl(var(--muted-foreground));
   text-transform: uppercase;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.08em;
+  font-weight: 700;
 }
-.grid { display: grid; gap: var(--gap); grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr)); }
 
-/* Фаза раунда: дорожка из пяти шагов. Завершённый шаг приглушён, текущий —
- * основной цвет, и только он привлекает внимание, потому что остальные четыре
- * интересуют человека ровно настолько, чтобы увидеть «дальше». */
-.phases { display: flex; gap: 0.25rem; margin: 0.3rem 0 0.45rem; }
+/* Лейаут: сетка сводки и 2-колоночный рабочий дашборд */
+.grid {
+  display: grid;
+  gap: var(--gap);
+  grid-template-columns: repeat(auto-fit, minmax(18rem, 1fr));
+}
+
+.kpi-grid {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+}
+
+.dashboard-grid {
+  display: grid;
+  gap: 1.25rem;
+  grid-template-columns: minmax(320px, 380px) 1fr;
+  align-items: start;
+}
+
+@media (max-width: 960px) {
+  .dashboard-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.col-left, .col-right {
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+}
+
+/* Дорожка фаз раунда */
+.phases {
+  display: flex;
+  gap: 0.35rem;
+  margin: 0.5rem 0 0.85rem;
+}
+
 .phase {
   flex: 1;
   text-align: center;
-  padding: 0.15rem 0.2rem;
-  border-radius: calc(var(--radius) / 2);
-  background: hsl(var(--muted));
+  padding: 0.3rem 0.4rem;
+  border-radius: var(--radius);
+  background: hsl(var(--secondary));
   color: hsl(var(--muted-foreground));
-  border: 1px solid transparent;
+  border: 1px solid hsl(var(--border));
   font-size: 11px;
+  font-weight: 500;
+  font-family: ui-monospace, monospace;
+  transition: all 0.15s ease;
 }
-.phase.done { color: hsl(var(--foreground)); }
+
+.phase.done {
+  background: hsl(var(--muted));
+  color: hsl(var(--foreground));
+  font-weight: 600;
+}
+
 .phase.now {
   background: hsl(var(--primary));
   color: hsl(var(--primary-foreground));
   border-color: hsl(var(--ring));
-  font-weight: 600;
+  font-weight: 700;
+  box-shadow: 0 0 10px hsl(var(--ring) / 0.3);
 }
 
-.kv { display: grid; grid-template-columns: auto 1fr; gap: 0.1rem 0.6rem; }
-.kv dt { color: hsl(var(--muted-foreground)); }
-.kv dd { margin: 0; overflow-wrap: anywhere; }
+.kv {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0.35rem 0.85rem;
+  font-size: 12px;
+}
 
-/* Строка агента. Точка статуса — единственный цветной элемент строки, поэтому
- * взгляд сразу находит «кто сейчас в порядке», а остальное читается текстом. */
-.role { display: flex; align-items: baseline; gap: 0.4rem; padding: 0.15rem 0; }
-.role + .role { border-top: 1px solid hsl(var(--border)); }
+.kv dt {
+  color: hsl(var(--muted-foreground));
+  font-weight: 500;
+}
+
+.kv dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+  font-family: ui-monospace, monospace;
+}
+
+/* Карточки агентов */
+.role {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 0.65rem;
+  padding: 0.65rem 0;
+}
+
+.role + .role {
+  border-top: 1px solid hsl(var(--border));
+}
+
 .dot {
-  width: 0.5rem; height: 0.5rem;
+  width: 0.6rem;
+  height: 0.6rem;
   border-radius: 50%;
   flex: none;
   background: hsl(var(--unknown));
-  transform: translateY(0.05rem);
+  box-shadow: 0 0 4px hsl(var(--unknown));
 }
-.dot.ok { background: hsl(var(--ok)); }
-.dot.warn { background: hsl(var(--warn)); }
-.dot.bad { background: hsl(var(--bad)); }
-.role-name { font-weight: 600; }
+
+.dot.ok {
+  background: hsl(var(--ok));
+  box-shadow: 0 0 6px hsl(var(--ok));
+}
+
+.dot.warn {
+  background: hsl(var(--warn));
+  box-shadow: 0 0 6px hsl(var(--warn));
+}
+
+.dot.bad {
+  background: hsl(var(--bad));
+  box-shadow: 0 0 6px hsl(var(--bad));
+}
+
+.role-name {
+  font-size: 13px;
+  font-weight: 700;
+  color: hsl(var(--foreground));
+}
+
 .tag {
+  display: inline-flex;
+  align-items: center;
   border: 1px solid hsl(var(--border));
-  border-radius: var(--radius);
-  padding: 0 0.3rem;
+  border-radius: 9999px;
+  padding: 0.1rem 0.5rem;
   font-size: 11px;
+  font-weight: 600;
+  font-family: ui-monospace, monospace;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  background: hsl(var(--secondary));
+  color: hsl(var(--secondary-foreground));
+}
+
+.tag.writer {
+  background: hsl(var(--primary));
+  color: hsl(var(--primary-foreground));
+  border-color: hsl(var(--ring));
+  box-shadow: 0 0 8px hsl(var(--ring) / 0.25);
+}
+
+.tag.critic {
+  background: hsl(var(--muted));
   color: hsl(var(--muted-foreground));
 }
-.tag.writer { border-color: hsl(var(--ring)); color: hsl(var(--foreground)); }
 
-/* Лента событий: одна строка на событие, время слева фиксированной ширины,
- * чтобы колонка времени не «прыгала» при обновлении страницы. */
-.events { display: flex; flex-direction: column; }
+/* Лента событий */
+.events {
+  display: flex;
+  flex-direction: column;
+  max-height: 600px;
+  overflow-y: auto;
+  padding-right: 0.25rem;
+}
+
 .event {
   display: grid;
-  grid-template-columns: 4.6rem 8.5rem auto;
-  gap: 0.4rem;
-  padding: 0.1rem 0;
+  grid-template-columns: 4.8rem auto 1fr;
+  gap: 0.6rem;
+  padding: 0.35rem 0.5rem;
+  border-radius: calc(var(--radius) / 2);
   align-items: baseline;
+  font-size: 12px;
+  transition: background 0.1s ease;
 }
-.event .kind { color: hsl(var(--muted-foreground)); }
-.event .sum { overflow-wrap: anywhere; }
-.event.alarm .kind { color: hsl(var(--bad)); font-weight: 600; }
 
-.task { padding: 0.15rem 0; }
-.task + .task { border-top: 1px solid hsl(var(--border)); }
-.task.open .text { font-weight: 600; }
-.task.done .text { color: hsl(var(--muted-foreground)); text-decoration: line-through; }
+.event:hover {
+  background: hsl(var(--accent));
+}
+
+.event .kind {
+  font-family: ui-monospace, monospace;
+  font-size: 11px;
+  font-weight: 500;
+  color: hsl(var(--muted-foreground));
+  padding: 0.1rem 0.35rem;
+  border-radius: calc(var(--radius) / 2);
+  background: hsl(var(--secondary));
+  white-space: nowrap;
+}
+
+.event .sum {
+  overflow-wrap: anywhere;
+  line-height: 1.45;
+}
+
+.event.alarm {
+  background: hsl(var(--destructive) / 0.08);
+}
+
+.event.alarm .kind {
+  color: hsl(var(--bad));
+  font-weight: 700;
+  background: hsl(var(--bad) / 0.15);
+  border: 1px solid hsl(var(--bad) / 0.3);
+}
+
+/* Задачи */
+.task {
+  padding: 0.6rem 0.75rem;
+  border: 1px solid hsl(var(--border));
+  border-radius: var(--radius);
+  background: hsl(var(--card));
+  margin-bottom: 0.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.task.open {
+  border-left: 3px solid hsl(var(--primary));
+}
+
+.task.done {
+  border-left: 3px solid hsl(var(--muted));
+  opacity: 0.75;
+}
+
+.task .text {
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.task.done .text {
+  color: hsl(var(--muted-foreground));
+  text-decoration: line-through;
+}
 
 .banner {
-  border-left: 3px solid hsl(var(--bad));
+  border-left: 4px solid hsl(var(--bad));
   background: hsl(var(--muted));
   color: hsl(var(--foreground));
-  padding: 0.4rem 0.6rem;
+  padding: 0.65rem 0.85rem;
   border-radius: var(--radius);
+  font-size: 13px;
 }

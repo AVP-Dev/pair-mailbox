@@ -1,43 +1,19 @@
 /* Клиент дашборда. Рисует снимок, вложенный в страницу, и НИЧЕГО не запрашивает.
- *
- * Почему здесь нет fetch: страница открыта с `file://`, где браузер запрещает
- * чтение локальных файлов. Единственный источник данных — JSON в соседнем
- * теге script с id="snapshot". Свежесть обеспечивает meta http-equiv=refresh,
- * который ставит генератор: одно место отвечает за данные, одно — за их
- * обновление, и обе части заменяемы по отдельности.
- *
- * Весь текст из снимка вставляется через textContent. innerHTML здесь был бы не
- * «неаккуратностью», а дырой: в снимке лежит то, что писали агенты и человек
- * (текст задач, письма, причины отказов), и закрывающий тег script или img с
- * обработчиком onerror в письме выполнились бы на машине человека. API,
- * разбирающий HTML, не используется ни разу, и это проверяется тестом.
- *
- * Именно поэтому в этом файле нельзя писать закрывающий тег script буквально,
- * даже в комментарии: ассет инлайнится внутрь script, и парсер HTML5 закрывает
- * тег на такой строке независимо от того, комментарий это или код. Проверка
- * есть в test_board_render, а правило держит ещё и load_asset. */
+ * Весь текст из снимка вставляется через textContent.
+ * Инвариант: Zero HTML Injection.
+ */
 (function () {
   "use strict";
 
   var THEME_KEY = "pairboard.theme";
   var WATCH_KEY = "pairboard.watch";
 
-  /* Словарь видов событий приходит отдельным ассетом (assets/labels.js): это данные,
-   * а не поведение. Пустой словарь — повод показать машинные имена, а не ронять страницу. */
   var LABELS = window.PAIRBOARD_LABELS || {};
-
-  /* Виды, после которых человек идёт смотреть. Подсвечивается строка, а не вся
-   * лента: иначе красный перестаёт значить что-то ровно тогда, когда сломалось. */
   var ALARM = /(pane_dead|pane_missing|collision|restart_failed|restart_impossible|refused|release)/;
-
-  /* Порог «молчит» тот же, что у pairpilot: молчащая, но живая роль и умершая
-   * роль — разные вещи, и подсвечивать надо только вторую. */
   var SILENCE_WARN = 300;
   var SILENCE_BAD = 1800;
 
   function readSnapshot() {
-    /* Отсутствующий узел и нечитаемый JSON дают одно и то же — null, который
-     * render() показывает баннером: JSON.parse(null) вернул бы null и сам. */
     try {
       return JSON.parse(document.getElementById("snapshot").textContent);
     } catch (error) {
@@ -48,7 +24,6 @@
   function el(tag, className, text) {
     var node = document.createElement(tag);
     if (className) node.className = className;
-    /* textContent, а не innerHTML: содержимое снимка написано людьми и агентами. */
     if (text !== undefined && text !== null) node.textContent = String(text);
     return node;
   }
@@ -68,10 +43,6 @@
     return list;
   }
 
-  /* Вердикт по трём фактам сразу. Порядок = убывание уверенности: «плохо»
-   * выигрывает у «не знаю», потому что доказанная поломка должна быть видна
-   * даже там, где часть фактов недоступна. Рисовать «не знаю» как «нет» нельзя:
-   * человек пойдёт перезапускать то, что не сломано. */
   function roleStatus(role, closed) {
     if (role.pane_alive === false || role.pid_alive === false) return "bad";
     if (closed) return "unknown";
@@ -89,22 +60,12 @@
     return moment.toISOString().slice(11, 19);
   }
 
-  /* localStorage недоступен в приватном режиме и на части `file://`: выбор темы
-   * или паузы не переживёт перезагрузку — потеря удобства, а не поломка. */
   function remember(key, value) {
-    try {
-      localStorage.setItem(key, value);
-    } catch (error) {
-      /* см. выше */
-    }
+    try { localStorage.setItem(key, value); } catch (e) {}
   }
 
   function recall(key) {
-    try {
-      return localStorage.getItem(key);
-    } catch (error) {
-      return null;
-    }
+    try { return localStorage.getItem(key); } catch (e) { return null; }
   }
 
   function applyTheme(theme) {
@@ -159,8 +120,11 @@
       var line = el("div", "role");
       line.appendChild(el("span", "dot " + roleStatus(role, closed)));
       line.appendChild(el("span", "role-name", role.role));
-      if (role.is_writer) line.appendChild(el("span", "tag writer", "writer"));
-      line.appendChild(el("span", "tag", "critic"));
+      if (role.is_writer) {
+        line.appendChild(el("span", "tag writer", "writer"));
+      } else {
+        line.appendChild(el("span", "tag critic", "critic"));
+      }
       line.appendChild(el("span", "muted", "панель " + (role.pane || "—") +
         " · pid " + (role.pid == null ? "—" : role.pid) +
         (role.pid == null ? "" : (role.pid_alive ? " жив" : " мёртв")) +
@@ -179,8 +143,8 @@
       ["процесс", pilot.running ? "жив, pid " + pilot.pid : "не найден",
         pilot.running ? "ok" : "warn"],
       ["лог", (pilot.log_size || 0) + " б, изменён " + pilot.log_age + " назад"],
-      ["отчёт", pilot.report_exists ? "есть, обновлён " + pilot.report_age + " назад"
-        : "нет", pilot.report_exists ? "" : "warn"],
+      ["отчёт", pilot.report_exists ? "есть, обновлён " + pilot.report_age + " назад" : "нет",
+        pilot.report_exists ? "" : "warn"],
       ["отказов в показанных событиях", String(pilot.refusals === undefined ? 0 : pilot.refusals),
         pilot.refusals ? "warn" : ""],
       ["последнее действие", pilot.last || "—"]
@@ -243,9 +207,22 @@
     document.getElementById("stamp").textContent = stamp === "—" ? "время сборки неизвестно"
       : "собрано " + stamp + " UTC" + (snap.watch ? " · авто" : " · статично");
 
-    [renderRound, renderRoles, renderPilot, renderTasks, renderEvents].forEach(function (draw) {
-      app.appendChild(draw(snap));
-    });
+    var topGrid = el("div", "grid kpi-grid");
+    topGrid.appendChild(renderRound(snap));
+    topGrid.appendChild(renderPilot(snap));
+    app.appendChild(topGrid);
+
+    var mainGrid = el("div", "dashboard-grid");
+    var colLeft = el("div", "col-left");
+    colLeft.appendChild(renderRoles(snap));
+    colLeft.appendChild(renderTasks(snap));
+    mainGrid.appendChild(colLeft);
+
+    var colRight = el("div", "col-right");
+    colRight.appendChild(renderEvents(snap));
+    mainGrid.appendChild(colRight);
+
+    app.appendChild(mainGrid);
   }
 
   function watchEnabled() {
@@ -265,14 +242,8 @@
     }
     var existing = document.querySelector('meta[http-equiv="refresh"]');
     if (existing) existing.remove();
-    /* Тег refresh снимается всегда и создаётся заново: включить обновление иначе
-     * нечем, сервер его уже отдал. Пауза действует сразу, а не после перезагрузки. */
     if (paused) return;
     var seconds = parseInt(document.body.getAttribute("data-watch-seconds"), 10);
-    /* Нулевой период не превращается в тег: `content="0"` — это немедленная
-     * перезагрузка по кругу, и страница без автообновления превратилась бы в
-     * мигающий кадр вместо фотографии. Разовый запуск — это снимок, и вести себя
-     * он должен как снимок. */
     if (!(seconds > 0)) return;
     var fresh = document.createElement("meta");
     fresh.setAttribute("http-equiv", "refresh");
@@ -288,8 +259,6 @@
         applyTheme(current === "dark" ? "light" : "dark");
       });
     }
-    /* Пауза автообновления — отдельная кнопка, а не второй эффект у кнопки темы:
-     * каждая меняет одно своё свойство, и по нажатию видно что именно. */
     var watchButton = document.getElementById("watch-toggle");
     if (watchButton) {
       watchButton.addEventListener("click", function () {
