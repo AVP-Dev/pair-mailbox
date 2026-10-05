@@ -15,7 +15,8 @@ import sys
 import unittest
 from pathlib import Path
 
-from board_hosts import clean_pid, mtime_age, pane_status, pilot_pids, pilot_section
+from board_hosts import (clean_pid, mtime_age, pane_status, pilot_pids, pilot_section,
+                        resolve_pane_title)
 from pair_test_base import PairTestCase
 
 
@@ -37,6 +38,51 @@ class MtimeAgeTest(unittest.TestCase):
 
     def test_fresh_file_is_small(self):
         self.assertIsNotNone(mtime_age(Path(__file__)))
+
+
+class ResolvePaneTitleTest(PairTestCase):
+    """Имя панели не имеет права выдумываться.
+
+    Регрессия, найденная при применении патча agy: собственный запрос
+    `display-message` возвращал для несуществующей панели код 0 и `":."` — то
+    есть НЕПУСТОЙ вывод, и проверка «код успеха и вывод не пуст» проходила. На
+    экране появлялось `панель %999999 [.:]`, и фантом выглядел как панель с
+    именем. Тот же класс обмана уже стоил проекту дыры между
+    `server.pane_exists` и `composer.pane_alive`.
+    """
+
+    def test_phantom_pane_is_not_given_a_fabricated_name(self):
+        self.assertEqual(resolve_pane_title("%999999"), "%999999")
+
+    def test_pane_that_is_not_an_id_is_returned_unchanged(self):
+        for value in ("mail:0.1", "", "не панель"):
+            self.assertEqual(resolve_pane_title(value), value)
+
+    def test_live_pane_resolves_to_a_readable_address(self):
+        """На настоящей tmux-панели: функция обязана что-то отдавать и на живом
+        `%N`, иначе проверка выше проходила бы на одной лишь защите."""
+        live = _first_live_pane()
+        if live is None:
+            self.skipTest("нет живых панелей tmux в этом окружении")
+        resolved = resolve_pane_title(live)
+        self.assertNotEqual(resolved, live, "живая панель должна разрешаться в имя")
+        self.assertRegex(resolved, r"^.+:\d+\.\d+$",
+                         f"ожидался адрес вида mail:0.0, получено {resolved!r}")
+
+
+def _first_live_pane() -> str | None:
+    import subprocess
+
+    from composer import _tmux, pane_identity
+    listed = subprocess.run(["tmux", "list-panes", "-a", "-F", "#{pane_id}"],
+                            capture_output=True, text=True)
+    for entry in listed.stdout.split():
+        try:
+            if pane_identity(_tmux(), entry).get("exists"):
+                return entry
+        except Exception:
+            continue
+    return None
 
 
 class PaneStatusTest(unittest.TestCase):

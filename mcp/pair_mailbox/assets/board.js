@@ -87,6 +87,12 @@
   function renderRound(snap) {
     var info = snap.round || {};
     var box = panel("раунд " + (info.number === undefined ? "?" : info.number));
+    if (info.task) {
+      var goal = el("div", "hero-goal");
+      goal.appendChild(el("span", "hero-badge", "ЦЕЛЬ"));
+      goal.appendChild(el("span", "hero-text", info.task));
+      box.appendChild(goal);
+    }
     var track = el("div", "phases");
     (info.phases || []).forEach(function (name, index) {
       var step = el("div", "phase", name);
@@ -125,7 +131,11 @@
       } else {
         line.appendChild(el("span", "tag critic", "critic"));
       }
-      line.appendChild(el("span", "muted", "панель " + (role.pane || "—") +
+      var paneText = "панель " + (role.pane || "—");
+      if (role.pane_human && role.pane_human !== role.pane) {
+        paneText += " [" + role.pane_human + "]";
+      }
+      line.appendChild(el("span", "muted", paneText +
         " · pid " + (role.pid == null ? "—" : role.pid) +
         (role.pid == null ? "" : (role.pid_alive ? " жив" : " мёртв")) +
         " · молчит " + (role.silence || "—")));
@@ -152,23 +162,29 @@
     return box;
   }
 
+  function taskNode(task) {
+    var line = el("div", "task " + task.status);
+    line.appendChild(el("div", "text", "#" + task.id + " " + task.text));
+    line.appendChild(el("div", "muted", task.status + " · раунд " + (task.round === null ? "?" : task.round) +
+      (task.added_by ? " · " + task.added_by : "") + (task.closed_by ? " · закрыл " + task.closed_by : "")));
+    if (task.reason) line.appendChild(el("div", "muted", "причина: " + task.reason));
+    return line;
+  }
+
   function renderTasks(snap) {
     var box = panel("задачи");
     var tasks = snap.tasks || [];
-    if (!tasks.length) {
-      box.appendChild(el("p", "muted", "задач нет"));
-      return box;
+    if (!tasks.length) return box.appendChild(el("p", "muted", "задач нет")), box;
+    var open = [], done = [];
+    tasks.forEach(function (t) { (t.status === "open" ? open : done).push(t); });
+    if (!open.length) box.appendChild(el("p", "tasks-clean", "Все текущие задачи выполнены"));
+    else open.forEach(function (t) { box.appendChild(taskNode(t)); });
+    if (done.length) {
+      var det = el("details", "task-archive");
+      det.appendChild(el("summary", "muted", "Архив задач (" + done.length + ")"));
+      done.forEach(function (t) { det.appendChild(taskNode(t)); });
+      box.appendChild(det);
     }
-    tasks.forEach(function (task) {
-      var line = el("div", "task " + task.status);
-      line.appendChild(el("div", "text", "#" + task.id + " " + task.text));
-      var meta = el("div", "muted", task.status + " · раунд " + (task.round === null ? "?" : task.round) +
-        (task.added_by ? " · " + task.added_by : "") +
-        (task.closed_by ? " · закрыл " + task.closed_by : ""));
-      line.appendChild(meta);
-      if (task.reason) line.appendChild(el("div", "muted", "причина: " + task.reason));
-      box.appendChild(line);
-    });
     return box;
   }
 
@@ -180,6 +196,7 @@
     events.forEach(function (event) {
       var line = el("div", "event");
       if (ALARM.test(event.kind)) line.classList.add("alarm");
+      if (event.kind === "send") line.classList.add("chat-msg");
       line.appendChild(el("span", "muted", clock(event.ts)));
       line.appendChild(el("span", "kind", LABELS[event.kind] || event.kind));
       line.appendChild(el("span", "sum", (event.role ? event.role + " " : "") +

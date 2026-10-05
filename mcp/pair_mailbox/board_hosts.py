@@ -60,6 +60,34 @@ def pane_status(pane: Any) -> tuple[bool | None, str]:
         return None, str(error)
 
 
+def resolve_pane_title(pane: Any) -> str:
+    """Человеческое имя панели по её id: `%0` -> `mail:0.0`.
+
+    Переиспользует `composer.pane_identity`, а не спрашивает tmux отдельно, и это
+    не экономия на один вызов, а требование корректности. Свой запрос того же
+    `display-message` возвращал для НЕСУЩЕСТВУЮЩЕЙ панели код 0 и `":."` — то
+    есть непустой, а значит «похожий на ответ» мусор, и дашборд показывал
+    фантомную панель как `панель %999999 [.:]`. Ровно этот класс обмана уже
+    стоил проекту двух функций с одинаковым именем и разными правилами, см.
+    `server.pane_exists` против `composer.pane_alive`.
+    """
+    text = str(pane or "").strip()
+    if not text.startswith("%"):
+        return text
+    try:
+        from composer import _tmux, pane_identity
+    except Exception as error:  # noqa: BLE001 - имя панели украшение, а не факт
+        return text
+    try:
+        identity = pane_identity(_tmux(), text)
+    except Exception:  # noqa: BLE001 - лучше показать %0, чем уронить сборку
+        return text
+    if not identity.get("exists"):
+        return text
+    address = str(identity.get("address") or "").strip()
+    return address or text
+
+
 def clean_pid(value: Any) -> int | None:
     """Настоящий pid или None. Ноль и мусор — это «не записано», а не «мёртв».
 

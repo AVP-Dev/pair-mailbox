@@ -62,6 +62,24 @@ class SnapshotFactsTest(PairTestCase):
         self.assertFalse(roles[1]["is_writer"])
         self.assertEqual(roles[0]["sends"], 7)
 
+    def test_role_with_a_recorded_pane_carries_its_human_name(self):
+        """Роль с непустой панелью обязана собираться, а не падать.
+
+        Пробел в покрытии, который пропустил сломанный импорт: до этой правки ни
+        один тест не ставил роли поле `pane`, а ветка `resolve_pane_title(...) if
+        pane_str else ""` вызывается только при непустой панели. То есть набор из
+        92 тестов был зелёным на снимке, который падал с NameError на любой
+        паре, у которой панель записана, — то есть на почти любой.
+        """
+        self.store.mutate(lambda state: state.__setitem__("roles", {
+            "agy": {"pid": 1, "pane": "%999999", "last_seen": _iso(5)},
+        }))
+        row = build_snapshot(self.root)["roles"][0]
+        self.assertEqual(row["pane"], "%999999")
+        # Фантомной панели имя не выдумывается: об этом test_phantom_pane_*
+        # в test_board_hosts, здесь важен сам факт, что строка собралась.
+        self.assertIsInstance(row["pane_human"], str)
+
     def test_tasks_open_first_then_by_descending_id(self):
         self.store.mutate(lambda state: state.__setitem__("tasks", [
             {"id": 1, "text": "старая", "status": "done", "round": 2},

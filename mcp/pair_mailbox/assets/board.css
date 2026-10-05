@@ -404,3 +404,63 @@ main {
   border-radius: var(--radius);
   font-size: 13px;
 }
+
+/* Выделение цели раунда в верхней карточке */
+.hero-goal {
+  background: hsl(var(--secondary));
+  border: 1px solid hsl(var(--border));
+  border-radius: var(--radius);
+  padding: 0.5rem 0.75rem;
+  margin-bottom: 0.65rem;
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+}
+.hero-badge {
+  background: hsl(var(--primary));
+  color: hsl(var(--primary-foreground));
+  font-weight: 700;
+  font-size: 10px;
+  padding: 0.15rem 0.45rem;
+  border-radius: calc(var(--radius) / 2);
+  letter-spacing: 0.05em;
+  flex: none;
+}
+.hero-text {
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.4;
+  color: hsl(var(--foreground));
+}
+
+/* Архив выполненных задач */
+.tasks-clean {
+  margin: 0.35rem 0 0.65rem;
+  color: hsl(var(--muted-foreground));
+  font-size: 12px;
+}
+.task-archive {
+  margin-top: 0.5rem;
+  border-top: 1px solid hsl(var(--border));
+  padding-top: 0.4rem;
+}
+.task-archive > summary {
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 600;
+  user-select: none;
+  padding: 0.2rem 0;
+}
+.task-archive[open] > summary {
+  margin-bottom: 0.4rem;
+}
+
+/* Сообщения диалога пары */
+.event.chat-msg {
+  background: hsl(var(--accent) / 0.4);
+  border-left: 2px solid hsl(var(--ring));
+}
+.event.chat-msg .sum {
+  font-weight: 500;
+  color: hsl(var(--foreground));
+}

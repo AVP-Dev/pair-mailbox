@@ -23,7 +23,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from board_hosts import clean_pid, mtime_age, pane_status, pilot_section
+from board_hosts import (clean_pid, mtime_age, pane_status, pilot_section,
+                         resolve_pane_title)
 from pairctl_read import human_age
 from server import PHASES, Store, is_pid_alive, utcnow
 
@@ -86,10 +87,13 @@ def _role_rows(state: dict[str, Any]) -> list[dict[str, Any]]:
         pid_alive = is_pid_alive(pid) if pid else False
         alive, why = pane_status(info.get("pane"))
         silence = _age(info.get("last_seen"))
+        pane_str = str(info.get("pane") or "")
+        pane_human = resolve_pane_title(pane_str) if pane_str else ""
         rows.append({
             "role": name,
             "is_writer": name == writer,
-            "pane": str(info.get("pane") or ""),
+            "pane": pane_str,
+            "pane_human": pane_human,
             "pane_alive": alive,
             "pane_note": why,
             "pid": pid,
