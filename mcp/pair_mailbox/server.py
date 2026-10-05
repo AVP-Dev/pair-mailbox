@@ -154,6 +154,17 @@ EVIDENCE_KINDS = ("test", "lint", "typecheck", "build", "diff", "commit", "pr", 
 
 EVIDENCE_KEEP = 50
 
+# Заметки пишутся только в append, и без потолка они растут, пока прочтение
+# целиком перестаёт быть разумным. Замерено вживую: verdict.md дорос до 630
+# строк, то есть примерно до 19 тысяч токенов на ОДНО чтение. Критик читает
+# заметки файловым инструментом, потому что у `pair_note` не было второй
+# стороны — чтения, и bounded-варианта не существовало вовсе.
+# Ротация уносит старое в archive и оставляет в файле указатель, то есть
+# ничего не теряется, а файл перестаёт расти без предела.
+NOTE_LINE_CAP = 600
+NOTE_READ_DEFAULT = 120
+NOTE_READ_MAX = 400
+
 # Фазы, на которых слово человека «ок» что-то значит. Раньше проверялся только
 # номер раунда, и одобрение плана закрывало раунд на verify.
 OK_PHASES = ("verify", "done")
@@ -749,6 +760,19 @@ def atomic_write_json(path: Path, payload: Any) -> None:
     except BaseException:
         tmp.unlink(missing_ok=True)
         raise
+
+
+def _next_entry(lines: list[str]) -> int:
+    """Индекс следующей целой записи в списке строк заметки.
+
+    Записи начинаются с `## `. Возврат len(lines), когда следующей записи нет,
+    означает «резать дальше нечего» — вызывающий обязан это учесть, иначе он
+    унесёт в архив всё.
+    """
+    for index, line in enumerate(lines):
+        if line.startswith("## "):
+            return index
+    return len(lines)
 
 
 def is_pid_alive(pid: Any) -> bool:
@@ -2128,6 +2152,142 @@ class PairSession:
         self.store.append_transcript("patch_release", self.role, path=path, existed=existed, deleted=deleted)
         return {"path": path, "deleted": deleted, "known_to_server": existed}
 
+    @staticmethod
+    def _note_body_lines(lines: list[str]) -> list[str]:
+        """Строки после шапки, с обрезкой по границе записи.
+
+        Заметка состоит из блоков `## <время> — <роль>`. Обрезать по строкам
+        нельзя: половина записи хуже отсутствия записи, потому что читающий
+        примет её за полную. Поэтому хвост начинается с первой целой записи.
+        """
+        start = 0
+        for index, line in enumerate(lines):
+            if line.startswith("## "):
+                start = index
+                break
+        return lines[start:] if start else lines
+
+    def _rotate_note(self, kind: str, path: Path) -> None:
+        """Унести старые записи в archive, оставив в файле хвост и указатель.
+
+        Точка отсчёта считается сразу, а НЕ подбирается итеративно. Итеративный
+        вариант был написан первым и зависал навсегда: после обрезки по границе
+        записи следующая запись всегда оказывалась в индексе 0, поэтому счётчик
+        не рос и цикл не заканчивался. Отсчёт назад от длины файла тривиален и
+        не может зациклиться.
+        """
+        lines = path.read_text(encoding="utf-8").splitlines()
+        if len(lines) <= NOTE_LINE_CAP:
+            return
+        body = self._note_body_lines(lines)
+        if not any(line.startswith("## ") for line in body):
+            return
+        body_start = lines.index(body[0])
+        head = lines[:body_start]
+        # Первая позиция, с которой хвост влезает в потолок, округлённая
+        # вперёд до границы записи, чтобы не разорвать запись пополам.
+        target = max(body_start, len(lines) - NOTE_LINE_CAP)
+        while target < len(lines) and not lines[target].startswith("## "):
+            target += 1
+        archived = lines[body_start:target]
+        if not archived:
+            return
+        stamp = utcnow().replace(":", "").replace("-", "")
+        archive_dir = self.store.notes_root / "archive"
+        archive_dir.mkdir(parents=True, exist_ok=True)
+        archive = archive_dir / f"{kind}-{stamp}.md"
+        archive.write_text("\n".join(archived) + "\n", encoding="utf-8")
+        pointer = [
+            f"**{len(archived)} записей унесены в "
+            f"[archive/{archive.name}](archive/{archive.name}).** Файл растёт только "
+            f"в хвост, и это осознанно: читать его целиком перестаёт быть разумным, "
+            f"читайте хвост через `pair_note_read`.",
+            "",
+        ]
+        path.write_text("\n".join(pointer + lines[target:]) + "\n", encoding="utf-8")
+        self.store.append_transcript(
+            "note_rotated", self.role, note_kind=kind,
+            archived_lines=len(archived), kept_lines=len(lines) - target)
+
+    def tool_pair_note_index(self) -> dict[str, Any]:
+        """Список заметок с размером и свежестью — чтобы увидеть кучу, не читая её.
+
+        Заметок накапливаются десятки, и самая большая стоит около 19 тысяч
+        токенов. Этот список позволяет решить, что читать, не тратя на это
+        ни одного токена содержимого.
+        """
+        root = self.store.notes_root
+        out: list[dict[str, Any]] = []
+        if root.is_dir():
+            for path in sorted(root.glob("*.md")):
+                try:
+                    text = path.read_text(encoding="utf-8")
+                except OSError:
+                    continue
+                out.append({
+                    "kind": path.stem,
+                    "lines": text.count("\n") + 1,
+                    "entries": text.count("\n## "),
+                    "bytes": len(text.encode("utf-8")),
+                    "archived": (root / "archive" / f"{path.stem}-").exists()
+                    or any((root / "archive").glob(f"{path.stem}-*.md"))
+                    if (root / "archive").is_dir() else False,
+                })
+        out.sort(key=lambda item: item["bytes"], reverse=True)
+        return {"count": len(out), "total_bytes": sum(i["bytes"] for i in out),
+                "notes": out}
+
+    def tool_pair_note_read(self, kind: str, tail_lines: int = NOTE_READ_DEFAULT) -> dict[str, Any]:
+        """Прочитать ХВОСТ заметки, а не её целиком.
+
+        Заметка растёт только в хвост, и читать её целиком не нужно почти
+        никогда: актуально последнее, а не всё накопленное за всю историю.
+        `tail_lines` ограничен сверху, ответ всегда обрезан по границе записи,
+        и в ответе прямо сказано, было ли обрезание — иначе читающий примет
+        хвост за полным текстом.
+        """
+        kind = (kind or "").strip()
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}", kind):
+            raise ProtocolError("`kind` must be a short slug: letters, digits, dot, dash, underscore.")
+        if not isinstance(tail_lines, int) or tail_lines < 1:
+            raise ProtocolError("`tail_lines` must be a positive integer.")
+        tail_lines = min(tail_lines, NOTE_READ_MAX)
+        path = self.store.notes_root / f"{kind}.md"
+        if not path.is_file():
+            raise ProtocolError(f"нет заметки `{kind}`")
+        lines = path.read_text(encoding="utf-8").splitlines()
+        body = self._note_body_lines(lines)
+        # Считаем ДО обрезки: иначе total_lines стал бы равен returned_lines,
+        # и признак обрезания стал бы бесполезным.
+        available = len(body)
+        truncated = available > tail_lines
+        if truncated:
+            cut = len(body) - tail_lines
+            while cut < len(body) and not body[cut].startswith("## "):
+                cut += 1
+            body = body[cut:]
+            if not any(line.startswith("## ") for line in body):
+                # Хвост не влез даже в одну запись: возвращать пустой текст нельзя,
+                # вызывающий не отличит «заметка пуста» от «хвост слишком мал».
+                # Отдаём последнюю ЗАПИСЬ целиком — она и есть самое свежее. Именно
+                # запись, а не последнюю строку: последняя строка это тело записи,
+                # то есть ровно та половина, которой нельзя показывать.
+                everything = self._note_body_lines(lines)
+                starts = [i for i, line in enumerate(everything) if line.startswith("## ")]
+                if not starts:
+                    body = []
+                else:
+                    body = everything[starts[-1]:]
+                cut = available - len(body)
+        # total_lines — это размер ЧИТАЕМОГО хвоста, а не файла: иначе при
+        # отсутствии обрезания returned_lines не совпадал бы с total_lines
+        # из-за служебной пустой строки, и «обрезано» выглядело бы ложно.
+        # Размер файла на диске — отдельное поле, чтобы его тоже было видно.
+        return {"kind": kind, "total_lines": available, "returned_lines": len(body),
+                "truncated": truncated, "tail_lines": tail_lines,
+                "file_lines": len(lines),
+                "text": "\n".join(body)}
+
     def tool_pair_note(self, kind: str, text: str) -> dict[str, Any]:
         """Append a durable note: a plan, a decision, a finding, a verdict.
 
@@ -2144,6 +2304,7 @@ class PairSession:
         with self.store.lock():
             with target.open("a", encoding="utf-8") as stream:
                 stream.write(f"\n## {utcnow()} — {self.role}\n\n{text.strip()}\n")
+            self._rotate_note(kind, target)
         self.store.append_transcript("note", self.role, note_kind=kind, chars=len(text))
         woke = {}
         for other in self.store.read().get("roles", {}):
@@ -2454,6 +2615,38 @@ def tool_definitions() -> list[dict[str, Any]]:
             },
         },
         {
+            "name": "pair_note_index",
+            "description": (
+                "List every note with its size, entry count and freshness, largest first. Use this "
+                "before deciding what to read: a single note can cost ~19000 tokens in full, and this "
+                "listing costs none of the content. Read notes with pair_note_read, not with a file read."
+            ),
+            "inputSchema": {"type": "object", "properties": {}, "required": []},
+        },
+        {
+            "name": "pair_note_read",
+            "description": (
+                "Read the TAIL of a note, never the whole file. Notes only ever grow at the tail, so "
+                "the recent entries are what matter. The answer is cut at an entry boundary and says "
+                "whether it was truncated, so a truncated tail is never mistaken for the full note."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "kind": {"type": "string", "description": "Note slug, for example verdict or plan."},
+                    "tail_lines": {
+                        "type": "integer",
+                        "description": (
+                            f"Approximate tail size to return. Default {NOTE_READ_DEFAULT}, "
+                            f"capped at {NOTE_READ_MAX}."
+                        ),
+                        "minimum": 1,
+                    },
+                },
+                "required": ["kind"],
+            },
+        },
+        {
             "name": "pair_transcript",
             "description": (
                 "Read the append-only audit trail: every message, claim, phase change, patch seal and "
@@ -2505,6 +2698,8 @@ HANDLERS = {
     "pair_task": lambda session, args: session.tool_pair_task(**args),
     "pair_evidence": lambda session, args: session.tool_pair_evidence(**args),
     "pair_note": lambda session, args: session.tool_pair_note(**args),
+    "pair_note_index": lambda session, args: session.tool_pair_note_index(),
+    "pair_note_read": lambda session, args: session.tool_pair_note_read(**args),
     "pair_transcript": lambda session, args: session.tool_pair_transcript(**args),
     "pair_unblock": lambda session, args: session.tool_pair_unblock(**args),
 }

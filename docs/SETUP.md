@@ -64,7 +64,7 @@ approval. Allow the whole server once:
 and add `mcp(pair/*)`. Without this, the pairing technically works and practically does not.
 
 Antigravity picks up `.agents/mcp_config.json` from the workspace. Verify with `/mcp` that `pair`
-is connected, and that its seventeen tools are listed.
+is connected, and that its nineteen tools are listed.
 
 The three agents — `pair-writer`, `pair-critic`, `pair-explorer` — appear under `/agents`.
 

@@ -279,6 +279,8 @@ Switch modes at runtime with a single command (`bin/pairctl mode <mode>`):
 | | `pair_send` | Both | **Passive delivery**: Sends a message to the peer's atomic mailbox. |
 | | `pair_read` | Both | Reads unread messages with optional blocking wait (`wait_seconds=45`). |
 | | `pair_note` | Both | Leaves persistent notes (`plan`, `decision`, `finding`, `verdict`, `handoff`). |
+| | `pair_note_index` | Both | Lists every note with its size and entry count, largest first, so an agent can decide what to read without spending tokens on content. |
+| | `pair_note_read` | Both | Reads the TAIL of a note, cut at an entry boundary and capped at 400 lines. Full-note reads are how a 19k-token verdict used to be paid for on every round. |
 | | `pair_task` | Both | Adds to the shared task list, marks done, or drops with a required reason. The list is append-only: only the writer closes a task, and an open task blocks the round. |
 | **Safety & Patches** | `pair_patch_reserve` | Critic Only | Prepares a dedicated, mode `0600` patch file. Refused for writers and audit mode. |
 | | `pair_patch_seal` | Critic Only | Computes and securely records SHA-256 digest of the unified diff. |

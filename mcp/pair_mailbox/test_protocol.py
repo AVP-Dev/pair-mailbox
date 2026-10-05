@@ -30,6 +30,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from server import (  # noqa: E402
     AUTONOMIES,
     MAX_READ_WAIT_SECONDS,
+    NOTE_LINE_CAP,
+    NOTE_READ_MAX,
     PairSession,
     ProtocolError,
     Store,
@@ -1312,6 +1314,154 @@ class TestPatchAccounting(PairTestCase):
     def test_audit_round_does_not_chase_patches(self) -> None:
         self.store.mutate(lambda state: state.__setitem__("mode", "audit"))
         self.assertEqual(self.writer.unresolved_patches(self.store.read()), [])
+
+
+class TestNoteTailReads(PairTestCase):
+    """Заметки не читаются целиком: ни файловым инструментом, ни подавно.
+
+    Замерено вживую: `verdict.md` дорос до 630 строк, около 19 тысяч токенов на
+    ОДНО чтение. У `pair_note` не было второй стороны — чтения, и bounded-варианта
+    не существовало, поэтому единственный способ узнать, что в заметке, был
+    прочитать её целиком. Цена одного нового инструмента — около 143 токенов на
+    запрос, то есть окупается за ~100 запросов и предотвращает одно такое чтение.
+    """
+
+    def _seed(self, kind: str, entries: int = 5, body: str = "строка содержания") -> Path:
+        path = self.store.notes_root / f"{kind}.md"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as fh:
+            for i in range(entries):
+                fh.write(f"\n## 2026-10-05T10:{i:02d}:00+00:00 — agy\n\n{i} {body}\n")
+        return path
+
+    def test_index_lists_notes_by_size_without_reading_them(self) -> None:
+        self._seed("small", entries=2)
+        self._seed("big", entries=40, body="т" * 200)
+        idx = self.writer.tool_pair_note_index()
+        kinds = [n["kind"] for n in idx["notes"]]
+        self.assertIn("big", kinds)
+        self.assertIn("small", kinds)
+        self.assertEqual([n["bytes"] for n in idx["notes"]],
+                         sorted((n["bytes"] for n in idx["notes"]), reverse=True),
+                         "индекс отсортирован по размеру: самый дорогой виден первым")
+        big = [n for n in idx["notes"] if n["kind"] == "big"][0]
+        self.assertEqual(big["entries"], 40)
+
+    def test_read_returns_the_tail_and_says_it_was_truncated(self) -> None:
+        self._seed("verdict", entries=30)
+        res = self.writer.tool_pair_note_read(kind="verdict", tail_lines=10)
+        self.assertTrue(res["truncated"])
+        self.assertLessEqual(res["returned_lines"], 12)
+        # 120 строк в файле минус служебная пустая перед первой записью.
+        self.assertEqual(res["total_lines"], 119)
+        self.assertEqual(res["file_lines"], 120)
+
+    def test_a_short_note_is_not_truncated(self) -> None:
+        self._seed("short", entries=3)
+        res = self.writer.tool_pair_note_read(kind="short", tail_lines=100)
+        self.assertFalse(res["truncated"])
+        self.assertEqual(res["returned_lines"], res["total_lines"])
+
+    def test_tail_starts_on_an_entry_boundary(self) -> None:
+        """Половина записи хуже отсутствия записи: её примут за полную.
+
+        Проверяется не «каждая строка заголовок» — тело записи законно, — а то,
+        что реально гарантировано: при ЛЮБОМ размере хвост начинается с границы
+        записи и является точным суффиксом файла. Именно это доказывает, что отсчёт
+        идёт по границам записей, а не по номеру строки.
+
+        Сама запись при разных размерах разная — при мелком размере срабатывает
+        откат на последнюю запись целиком, — и это правильно: лучше одна целая
+        запись, чем пустой текст или её половина.
+        """
+        self._seed("verdict", entries=30)
+        whole = (self.store.notes_root / "verdict.md").read_text(encoding="utf-8")
+        for size in (1, 2, 5, 7, 15, 40, 500):
+            res = self.writer.tool_pair_note_read(kind="verdict", tail_lines=size)
+            lines = res["text"].splitlines()
+            self.assertTrue(lines, f"хвост при размере {size} пуст")
+            self.assertTrue(lines[0].startswith("## "),
+                            f"размер {size}: хвост начался с {lines[0]!r}")
+            self.assertIn(res["text"], whole,
+                          f"размер {size}: хвост не является суффиксом файла")
+
+    def test_tail_lines_is_capped(self) -> None:
+        """Потолок обязателен, иначе аргумент сам становится талмудом."""
+        self._seed("verdict", entries=400)
+        res = self.writer.tool_pair_note_read(kind="verdict", tail_lines=10 ** 6)
+        self.assertLessEqual(res["returned_lines"], NOTE_READ_MAX + 3)
+
+    def test_bad_arguments_are_refused(self) -> None:
+        self._seed("verdict", entries=2)
+        self.assertRefused(lambda: self.writer.tool_pair_note_read(kind="../escape"))
+        self.assertRefused(lambda: self.writer.tool_pair_note_read(kind="verdict", tail_lines=0))
+        self.assertRefused(lambda: self.writer.tool_pair_note_read(kind="нет-такой"))
+
+
+class TestNoteRotation(PairTestCase):
+    """Потолок роста: файл заметки не должен расти бесконечно.
+
+    Историческая правка: первая версия подбирала точку отсчёта итеративно и
+    зависала навсегда — после обрезки по границе записи следующая запись всегда
+    была в индексе 0, счётчик не рос. Нашёл это тест на большой заметке, не
+    ревью: на 200 записях цикл не завершался. Теперь отсчёт назад от длины
+    файла, и на такой размер он занимает единицы миллисекунд.
+    """
+
+    def _seed(self, entries: int) -> Path:
+        path = self.store.notes_root / "verdict.md"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as fh:
+            for i in range(entries):
+                fh.write(f"\n## 2026-10-05T10:{i % 60:02d}:00+00:00 — agy\n\nвердикт {i}\n")
+        return path
+
+    def test_rotation_keeps_the_file_under_the_cap(self) -> None:
+        path = self._seed(200)
+        self.assertGreater(len(path.read_text().splitlines()), NOTE_LINE_CAP)
+        self.writer._rotate_note("verdict", path)
+        lines = path.read_text().splitlines()
+        self.assertLessEqual(len(lines), NOTE_LINE_CAP + 3,
+                             "хвост не должен перерастать потолок из-за шапки")
+
+    def test_rotation_loses_no_entries(self) -> None:
+        path = self._seed(200)
+        before = path.read_text()
+        self.writer._rotate_note("verdict", path)
+        archives = sorted((self.store.notes_root / "archive").glob("verdict-*.md"))
+        self.assertTrue(archives, "старые записи обязаны куда-то уйти, а не исчезнуть")
+        combined = before + "".join(a.read_text() for a in archives)
+        for i in range(200):
+            self.assertIn(f"вердикт {i}", combined, f"запись {i} потеряна")
+
+    def test_rotation_leaves_a_pointer_to_the_archive(self) -> None:
+        path = self._seed(200)
+        self.writer._rotate_note("verdict", path)
+        head = path.read_text().splitlines()[0]
+        self.assertIn("archive/", head, "указатель на архив обязателен, иначе пропажа молчит")
+
+    def test_rotation_is_recorded_in_the_transcript(self) -> None:
+        path = self._seed(200)
+        self.writer._rotate_note("verdict", path)
+        kinds = [e.get("kind") for e in self.store.read_transcript(limit=0)]
+        self.assertIn("note_rotated", kinds)
+
+    def test_a_second_rotation_terminates_and_is_idempotent(self) -> None:
+        """Регрессия на зависание: два прохода подряд обязаны завершиться."""
+        path = self._seed(200)
+        self.writer._rotate_note("verdict", path)
+        first = len(path.read_text().splitlines())
+        self.writer._rotate_note("verdict", path)
+        self.assertEqual(len(path.read_text().splitlines()), first,
+                         "повторная ротация без новых записей не должна двигать файл")
+
+    def test_rotation_needs_real_entries(self) -> None:
+        path = self.store.notes_root / "plain.md"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("\n".join(f"строка {i}" for i in range(700)) + "\n", encoding="utf-8")
+        before = path.read_text()
+        self.writer._rotate_note("plain", path)
+        self.assertEqual(path.read_text(), before, "файл без разметки записей не режется")
 
 
 class TestPermissionAllowlist(PairTestCase):
