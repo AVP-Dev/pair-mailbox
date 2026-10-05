@@ -427,6 +427,26 @@ class TestRestart(PilotCase):
         pilot.launch = {"agy": command} if command else {}
         return pilot
 
+    def respawns(self, role: str | None = None) -> list[list[str]]:
+        """Вызовы `respawn-pane`, и только они.
+
+        Тесты ниже утверждают смысл — «роль перезапущена» или «роль НЕ
+        перезапущена», — а не список команд. Разница не вкусовая: `pane_alive` и
+        `pane_identity` ходят в tmux сами, поэтому сверхвизоку обоснованно
+        понадобится ещё один `display-message` там, где раньше не было ни одного.
+        Тест, требующий `self.calls == []`, падал бы на любой такой зов, и чинить
+        это можно было только одним способом — не делать проверку. Поэтому здесь
+        отсеиваются именно перезапуски, а количество и порядок прочих вызовов не
+        утверждаются вовсе.
+        """
+        out = [call for call in self.calls if "respawn-pane" in call]
+        if role is not None:
+            out = [call for call in out if role in " ".join(call)]
+        return out
+
+    def assertNoRestart(self, why: str) -> None:
+        self.assertEqual([], self.respawns(), why)
+
     def test_the_restart_never_kills_whats_in_the_pane(self) -> None:
         """`-k` был единственным, что разрешало убить процесс человека.
 
@@ -436,7 +456,7 @@ class TestRestart(PilotCase):
         self.dead_writer_state()
         pilot = self.pilot_with_launch()
         pilot.tick()
-        sent = [call for call in self.calls if "respawn-pane" in call]
+        sent = self.respawns()
         self.assertTrue(sent)
         for call in sent:
             self.assertNotIn("-k", call, "перезапуск не должен убивать содержимое панели")
@@ -472,8 +492,12 @@ class TestRestart(PilotCase):
         self.dead_writer_state()
         pilot = self.pilot_with_launch()
         pilot.tick()
-        self.assertEqual(["/usr/bin/tmux", "respawn-pane", "-t", "%7", "agy --resume"],
-                         self.calls[0])
+        # Утверждается факт перезапуска в нужной панели с нужной командой, а не
+        # то, каким по счёту был вызов: `self.calls[0]` — это утверждение о
+        # порядке, и оно ломается от любой правки в соседнем коде.
+        self.assertEqual([["/usr/bin/tmux", "respawn-pane", "-t", "%7", "agy --resume"]],
+                         self.respawns(),
+                         "упавший писатель перезапускается в своей панели")
         self.assertIn("pilot_restart", self.transcript_kinds())
 
     def test_restart_happens_once_per_dead_pid(self) -> None:
@@ -481,9 +505,8 @@ class TestRestart(PilotCase):
         pilot = self.pilot_with_launch()
         pilot.tick()
         pilot.tick()
-        self.assertEqual(1, self.calls.count(
-            ["/usr/bin/tmux", "respawn-pane", "-t", "%7", "agy --resume"]),
-            "один умерший процесс — один перезапуск, а не каждые 15 секунд")
+        self.assertEqual(1, len(self.respawns()),
+                         "один умерший процесс — один перезапуск, а не каждые 15 секунд")
 
     def test_dying_on_start_stops_being_restarted_forever(self) -> None:
         """Дыра, найденная на ревью.
@@ -500,7 +523,7 @@ class TestRestart(PilotCase):
                              roles={"agy": {"last_seen": ago(600), "pid": 999000 + attempt,
                                             "pane": "%7"}})
             pilot.tick()
-        respawns = [call for call in self.calls if "respawn-pane" in call]
+        respawns = self.respawns()
         self.assertEqual(pilot.restart_limit, len(respawns),
                          f"перезапусков должно быть не больше {pilot.restart_limit}, "
                          f"а их {len(respawns)}")
@@ -516,7 +539,7 @@ class TestRestart(PilotCase):
                              roles={"agy": {"last_seen": ago(600), "pid": 998000 + attempt,
                                             "pane": "%7"}})
             pilot.tick()
-        self.assertEqual(pilot.restart_limit, len([c for c in self.calls if "respawn-pane" in c]))
+        self.assertEqual(pilot.restart_limit, len(self.respawns()))
         # Окно истекло: попытки вне окна не должны считаться.
         pilot.restarts_file("agy").write_text(
             " ".join(str(int(time.time() - 3600)) for _ in range(pilot.restart_limit)),
@@ -525,7 +548,7 @@ class TestRestart(PilotCase):
                          roles={"agy": {"last_seen": ago(600), "pid": 998111, "pane": "%7"}})
         pilot.tick()
         self.assertEqual(pilot.restart_limit + 1,
-                         len([c for c in self.calls if "respawn-pane" in c]))
+                         len(self.respawns()))
 
     def test_budget_is_per_role_not_global(self) -> None:
         """Исчерпание попыток у agy не должно запрещать перезапуск claude."""
@@ -540,7 +563,7 @@ class TestRestart(PilotCase):
                          roles={"agy": {"last_seen": ago(600), "pid": self.DEAD_PID, "pane": "%7"},
                                 "claude": {"last_seen": ago(600), "pid": self.DEAD_PID, "pane": "%8"}})
         pilot.tick()
-        self.assertTrue(any("claude" in str(call) for call in self.calls),
+        self.assertTrue(self.respawns("claude"),
                         "у другого агента свой бюджет")
 
     def test_live_process_is_never_respawned(self) -> None:
@@ -550,7 +573,7 @@ class TestRestart(PilotCase):
                          roles={"agy": {"last_seen": ago(10), "pid": os.getpid(), "pane": "%7"}})
         pilot = self.pilot_with_launch()
         pilot.tick()
-        self.assertEqual([], self.calls)
+        self.assertNoRestart("живой процесс не перезапускается никогда")
         self.assertNotIn("pilot_restart", self.transcript_kinds())
 
     def test_restart_needs_a_known_command(self) -> None:
@@ -559,7 +582,7 @@ class TestRestart(PilotCase):
         self.dead_writer_state()
         pilot = self.pilot_with_launch(command="")
         pilot.tick()
-        self.assertEqual([], self.calls)
+        self.assertNoRestart("нет команды запуска — нет перезапуска")
         self.assertIn("pilot_restart_impossible", self.transcript_kinds())
 
     def test_dead_process_without_a_pane_is_left_to_the_human(self) -> None:
@@ -570,14 +593,14 @@ class TestRestart(PilotCase):
         pilot = self.pilot_with_launch()
         pairpilot.pane_alive = lambda tmux, pane: False
         pilot.tick()
-        self.assertEqual([], self.calls)
+        self.assertNoRestart("окно, закрытое человеком, не поднимается молча")
         self.assertIn("pilot_restart_impossible", self.transcript_kinds())
 
     def test_observe_mode_does_not_restart(self) -> None:
         self.dead_writer_state(autonomy="observe")
         pilot = self.pilot_with_launch()
         pilot.tick()
-        self.assertEqual([], self.calls, "в observe перезапуск — это действие, а не сообщение")
+        self.assertNoRestart("в observe перезапуск — это действие, а не сообщение")
 
     def test_own_pane_is_never_respawned(self) -> None:
         """Пятый тормоз перезапуска: панель самого сверхвизора.
@@ -592,7 +615,7 @@ class TestRestart(PilotCase):
         pilot = self.pilot_with_launch()
         pilot.own_pane = "%7"
         pilot.tick()
-        self.assertEqual([], self.calls, "свою панель не перезапускаем никогда")
+        self.assertNoRestart("свою панель не перезапускаем никогда")
         self.assertNotIn("pilot_restart", self.transcript_kinds())
         self.assertIn("pilot_own_pane", self.transcript_kinds())
 
@@ -605,7 +628,7 @@ class TestRestart(PilotCase):
         })
         pilot = self.pilot_with_launch()
         pilot.tick()
-        self.assertEqual([], self.calls, "панель, где сидит живой сосед, не трогаем")
+        self.assertNoRestart("панель, где сидит живой сосед, не трогаем")
         self.assertNotIn("pilot_restart", self.transcript_kinds())
         # Панель больше не «общая»: одна из двух записей принадлежит мёртвому
         # процессу, а мёртвая запись не делает окно занятым. Сообщается о
@@ -635,7 +658,7 @@ class TestRestart(PilotCase):
         # именно то, что оба формата приводятся к одному ключу.
         pilot.pane_key = lambda pane: {"%7": "mail:0.0", "mail:0.1": "mail:0.0"}.get(pane, pane)
         pilot.tick()
-        self.assertEqual([], self.calls, "панель, где сидит живой сосед, не трогаем")
+        self.assertNoRestart("панель, где сидит живой сосед, не трогаем")
         self.assertNotIn("pilot_restart", self.transcript_kinds())
         impossible = [json.loads(line) for line in
                       (self.state_dir / "transcript.jsonl").read_text(encoding="utf-8").splitlines()
