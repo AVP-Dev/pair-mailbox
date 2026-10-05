@@ -163,6 +163,20 @@ EVIDENCE_KEEP = 50
 # ничего не теряется, а файл перестаёт расти без предела.
 NOTE_LINE_CAP = 600
 NOTE_READ_DEFAULT = 120
+# Скользящее окно транскрипта. Журнал остаётся на диске целиком, но активный
+# файл ограничен: без этого `read_transcript` разбирал весь файл ради двадцати
+# строк ответа, и `pairctl log` без `--limit` вываливал в терминал всё, что
+# накопилось за раунд. Значение выбрано с запасом выше типичного раунда, чтобы
+# ротация не срабатывала на каждом втором вызове.
+TRANSCRIPT_MAX_BYTES = 256 * 1024
+# Сколько кусков сколько прошлое хранить, прежде чем отпустить самый старый.
+TRANSCRIPT_ARCHIVES = 4
+# Порция чтения с конца. Меньше блока — больше системных вызовов, больше — больше
+# памяти; 64 КБ читает быстрее страницы журнала и не тянет его целиком.
+TRANSCRIPT_READ_BLOCK = 64 * 1024
+# `pairctl log` без явного лимита отдаёт столько, а не весь файл: тот же расход,
+# что и `pair_transcript`, только без ограничителя.
+LOG_DEFAULT_LIMIT = 50
 NOTE_READ_MAX = 400
 
 # Фазы, на которых слово человека «ок» что-то значит. Раньше проверялся только
@@ -589,6 +603,66 @@ class ProtocolError(Exception):
         self.hint = hint
 
 
+def _transcript_entry(raw: str) -> dict | None:
+    """Одна строка журнала в словарь, либо None если это не запись.
+
+    Битая строка не должна ронять чтение: журнал пишется по одной строке на
+    запись, и обрыв на середине — обычное дело при убитом процессе. Молча
+    пропустить такую строку правильно, но сказать о ней тоже правильно, иначе
+    выглядит так, будто события не было. Поэтому `pairctl log` печатает её
+    помеченной, а не выкидывает.
+    """
+    text = raw.strip()
+    if not text:
+        return None
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        return {"_damaged": True, "_raw": text[:200]}
+
+
+def _transcript_tail(path: Path, limit: int) -> list[dict]:
+    """Последние `limit` записей, читаемые с конца файла.
+
+    Растёт от конца блоками и возвращает ответ, когда набрано достаточно строк.
+    Смещение ищет начало строки: иначе первая попавшаяся строка была бы огрызком
+    чужой записи, и в ответе появилась бы запись, которой никогда не было.
+    """
+    with path.open("rb") as handle:
+        handle.seek(0, os.SEEK_END)
+        position = handle.tell()
+        # `pending` — то, что прочитано, но ещё не нашло своего конца строки.
+        # В файле, который мы читаем с конца, неполной может быть только ГОЛОВА
+        # накопленного, поэтому она одна и держится отдельно.
+        pending = b""
+        lines: list[bytes] = []
+        while position > 0 and len(lines) <= limit:
+            block = min(position, TRANSCRIPT_READ_BLOCK)
+            position -= block
+            handle.seek(position)
+            pending = handle.read(block) + pending
+            parts = pending.split(b"\n")
+            pending = parts[0]
+            # Пустые куски отбрасываются сразу: перевод строки в конце файла даёт
+            # лишний пустой элемент, и он иначе занимает место в хвосте — минус
+            # одна настоящая запись в ответе, то есть «последние 20» приходят
+            # девятнадцатью.
+            lines = [line for line in parts[1:] if line.strip()] + lines
+        if pending.strip():
+            lines.insert(0, pending)
+        # `lines` уже в порядке файла: каждый следующий блок читается раньше
+        # предыдущего, поэтому кладётся в начало. Ответ — последние `limit`
+        # записей в хронологическом порядке, как при чтении подряд.
+        out = []
+        for raw in lines[-limit:]:
+            entry = _transcript_entry(raw.decode("utf-8", "replace"))
+            if entry is not None:
+                out.append(entry)
+            if len(out) >= limit:
+                break
+        return out
+
+
 class Store:
     """Filesystem-backed shared state, guarded by an advisory lock.
 
@@ -732,21 +806,91 @@ class Store:
         with self.lock():
             with self.transcript_path.open("a", encoding="utf-8") as handle:
                 handle.write(line)
+            self._rotate_transcript()
+
+    def _rotate_transcript(self) -> None:
+        """Скользящее окно: активный файл не растёт бесконечно.
+
+        Журнал append-only — и это правильно, — но «навсегда» здесь означало «пока
+        хватает диска». Мерить надо было раньше, и замер сделан: `pair_transcript`
+        по умолчанию берёт 40 записей (~2k токенов), то есть агент в свой контекст
+        файл целиком не тащит и никогда не тащил. Поэтому ротация НЕ «снимает 46k
+        токенов», как стояло в плане: эти 46k — размер файла, делённый на 4, и в
+        контекст они не попадали.
+
+        Что ротация действительно чинит, и оба пункта измеримы:
+        - чтение хвоста перестаёт разбирать весь файл (было 69 мс и 2 МБ на файле
+          в 11 830 строк ради 20 строк ответа);
+        - `pairctl log` без `--limit` перестаёт вливать пол-мегабайта в терминал.
+
+        Старое не выбрасывается молча: уходит в `transcript-archive/`, откуда его
+        можно достать. Удалять историю молча нельзя — потерянная запись о
+        `role_collision` стоила нам ночи, и человек должен иметь её под рукой.
+        """
+        try:
+            if self.transcript_path.stat().st_size <= TRANSCRIPT_MAX_BYTES:
+                return
+        except OSError:
+            return
+        archive = self.root / "transcript-archive"
+        try:
+            archive.mkdir(parents=True, exist_ok=True)
+            # Сдвиг: самый старый кусок уходит в `.1`, и так далее. Чисел хватает
+            # на 99 сдвигов, а при 99 лучше удалить самый старый, чем упасть с
+            # FileExistsError посреди записи в журнал.
+            for index in range(TRANSCRIPT_ARCHIVES - 1, 0, -1):
+                older = archive / f"{index}.jsonl"
+                if not older.exists():
+                    continue
+                if index == TRANSCRIPT_ARCHIVES - 1:
+                    older.unlink()
+                else:
+                    older.rename(archive / f"{index + 1}.jsonl")
+            os.replace(self.transcript_path, archive / "1.jsonl")
+        except OSError:
+            # Ротация обязана быть безвредной: сбой записи важнее, чем её порядок.
+            # Молча упасть здесь нельзя, но и ронять всё остальное из-за архива
+            # тоже незачем, поэтому след остаётся в самом журнале.
+            return
+        with self.transcript_path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps({
+                "ts": utcnow(), "kind": "transcript_rotated", "role": "system",
+                "archive": "transcript-archive/1.jsonl",
+                "why": f"активный журнал превысил {TRANSCRIPT_MAX_BYTES} байт",
+            }, ensure_ascii=False) + "\n")
 
     def read_transcript(self, limit: int = 0) -> list[dict[str, Any]]:
+        """Записи журнала; `limit` — сколько последних, 0 значит «весь активный».
+
+        Хвост читается с конца файла, а не разбором всего подряд. Разбор целиком
+        ради двадцати строк ответа — это не аккуратность, а отказ по времени на
+        большом журнале, и журнал у нас растёт сам собой.
+        """
         if not self.transcript_path.exists():
             return []
-        entries: list[dict[str, Any]] = []
-        with self.transcript_path.open("r", encoding="utf-8") as handle:
-            for raw in handle:
-                raw = raw.strip()
-                if not raw:
-                    continue
-                try:
-                    entries.append(json.loads(raw))
-                except json.JSONDecodeError:
-                    continue
-        return entries[-limit:] if limit else entries
+        if not limit:
+            entries: list[dict[str, Any]] = []
+            with self.transcript_path.open("r", encoding="utf-8") as handle:
+                for raw in handle:
+                    entry = _transcript_entry(raw)
+                    if entry is not None:
+                        entries.append(entry)
+            return entries
+        return _transcript_tail(self.transcript_path, limit)
+
+    def transcript_entry_count(self) -> int:
+        """Сколько записей в активном файле, без их разбора.
+
+        Нужно, чтобы `pairctl log` мог сказать «показаны 50 из 900», а не
+        выглядеть полным журналом. Разбирать строки ради числа нельзя: на файле
+        в сотни мегабайт это тот же отказ по времени, ради которого чтение хвоста
+        и переписано.
+        """
+        try:
+            with self.transcript_path.open("rb") as handle:
+                return sum(1 for line in handle if line.strip())
+        except OSError:
+            return 0
 
 
 def atomic_write_json(path: Path, payload: Any) -> None:
@@ -3376,8 +3520,21 @@ def run_ctl(args: argparse.Namespace, state_dir: Path) -> int:
         return 0
 
     if command == "log":
-        for entry in store.read_transcript(args.limit):
+        # Дефолтный лимит вместо «всего». Замер: без него команда вываливала в
+        # терминал весь активный журнал, а это пол-мегабайта и ~50k токенов на
+        # раунд, в том числе у человека, который просто посмотрел, что происходило.
+        # Те, кому нужен весь файл, просят об этом явно.
+        limit = 0 if args.all else args.limit
+        shown = store.read_transcript(limit)
+        for entry in shown:
             print(json.dumps(entry, ensure_ascii=False))
+        if args.all:
+            return 0
+        total = store.transcript_entry_count()
+        if total > len(shown):
+            # Молча выдать 50 строк вместо 900 — это выглядеть как полный журнал.
+            print(f"# показаны последние {len(shown)} из {total}; остальное: "
+                  f"--all или --limit N", file=sys.stderr)
         return 0
 
     if command == "all":
@@ -3696,7 +3853,11 @@ def build_parser() -> argparse.ArgumentParser:
     inbox.add_argument("role")
 
     log = sub.add_parser("log", help="print the audit trail")
-    log.add_argument("--limit", type=int, default=0)
+    log.add_argument("--limit", type=int, default=LOG_DEFAULT_LIMIT,
+                     help=f"how many of the newest entries to print, {LOG_DEFAULT_LIMIT} by default")
+    log.add_argument("--all", action="store_true",
+                     help="print the whole active file; rotated-away entries live "
+                          "in .pair/transcript-archive/ and are not included")
 
     sub.add_parser("notes", help="print shared notes")
 

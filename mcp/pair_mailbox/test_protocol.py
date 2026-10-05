@@ -2722,6 +2722,190 @@ class TestStalePaneSurvives(PairTestCase):
                          f"{pane} после смерти сессии — фантом, а не панель")
 
 
+class TestTranscriptWindow(PairTestCase):
+    """Скользящее окно транскрипта: чтение хвоста и ротация (пункт 4).
+
+    Что чинится, измерено, а не предположено. Цифра «46 тысяч токенов» стояла в
+    плане в трёх местах и оказалась размером ФАЙЛА, делённым на 4: в контекст
+    агента она не попадала никогда, потому что `pair_transcript` по умолчанию
+    берёт 40 записей (~2k). Ротация потому и не «снимет 46k», а решает другое:
+    чтение хвоста не разбирает весь файл, и `pairctl log` без `--limit` больше не
+    вываливает весь журнал в терминал.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        import server
+        self.server = server
+
+    def fill(self, count: int, **fields: object) -> None:
+        for index in range(count):
+            self.store.append_transcript("test", "writer", i=index, **fields)
+
+    def indexes(self, entries: list) -> list:
+        return [e["i"] for e in entries if "i" in e]
+
+    def ctl(self, *argv: str) -> int:
+        return main(["--state", str(self.root), *argv])
+
+    # ------------------------------------------------------------- чтение хвоста
+
+    def test_the_tail_equals_the_last_entries(self) -> None:
+        """Хвост — это хвост, а не «что-то похожее на хвост».
+
+        Порядок тоже проверяется: чтение с конца файла обязано вернуть записи в
+        том же порядке, что и чтение подряд, иначе журнал читается задом наперёд,
+        и по нему невозможно понять, что было до чего.
+        """
+        self.fill(500)
+        whole = self.store.read_transcript(0)
+        for limit in (1, 7, 20, 40, 499, 500):
+            with self.subTest(limit=limit):
+                self.assertEqual(self.indexes(whole[-limit:]),
+                                 self.indexes(self.store.read_transcript(limit)),
+                                 "хвост обязан совпадать с концом полного чтения")
+
+    def test_a_limit_beyond_the_file_returns_everything(self) -> None:
+        """Просят больше, чем есть, — отдают всё, а не пустоту и не ошибку."""
+        self.fill(10)
+        self.assertEqual(10, len(self.store.read_transcript(999)))
+
+    def test_a_line_longer_than_the_read_block_is_not_torn(self) -> None:
+        """Запись длиннее порции чтения обязана выйти целой.
+
+        Нарезка по байтам режет и перенос строки, и строку пополам. Склеивание
+        неполной головы — единственное, что спасает здесь, а потерянная запись
+        в журнале аудита не восстанавливается.
+        """
+        big = "z" * 400_000
+        with self.store.transcript_path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps({"kind": "small", "i": 1}, ensure_ascii=False) + "\n")
+            handle.write(json.dumps({"kind": "huge", "blob": big}, ensure_ascii=False) + "\n")
+            handle.write(json.dumps({"kind": "last", "i": 2}, ensure_ascii=False) + "\n")
+        got = self.store.read_transcript(3)
+        self.assertEqual(["small", "huge", "last"], [e["kind"] for e in got])
+        self.assertEqual(big, got[1]["blob"], "длинная запись обязана прийти целой")
+
+    def test_a_damaged_line_is_marked_and_does_not_stop_the_read(self) -> None:
+        """Обрыв на середине строки — обычное дело при убитом процессе.
+
+        Молча пропустить такую строку можно, молча выкинуть — нельзя: событие
+        выглядит как не бывшее. Поэтому запись помечается, а чтение продолжается.
+        """
+        with self.store.transcript_path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps({"kind": "first", "i": 1}, ensure_ascii=False) + "\n")
+            handle.write("{это не json вовсе\n")
+            handle.write(json.dumps({"kind": "after", "i": 2}, ensure_ascii=False) + "\n")
+        got = self.store.read_transcript(3)
+        self.assertEqual(1, sum(1 for e in got if e.get("_damaged")),
+                         "битая строка обязана быть видна, а не исчезнуть")
+        self.assertEqual(["first", "after"],
+                         [e["kind"] for e in got if not e.get("_damaged")],
+                         "записи по обе стороны обрыва обязаны читаться")
+
+    def test_reading_a_missing_transcript_is_not_an_error(self) -> None:
+        """Журнала ещё нет — это пусто, а не падение."""
+        self.assertEqual([], self.store.read_transcript(20))
+
+    # ----------------------------------------------------------------- ротация
+
+    def test_rotation_moves_old_entries_out_and_keeps_them(self) -> None:
+        """Старое уходит из активного файла, но не исчезает.
+
+        Удалять историю молча нельзя: потерянная запись о `role_collision` стоила
+        нам ночи. Ротация обязана быть перемещением, а не утилизацией.
+        """
+        with mock.patch.object(self.server, "TRANSCRIPT_MAX_BYTES", 20_000):
+            self.fill(400, payload="y" * 40)
+        active = self.store.read_transcript(0)
+        self.assertLess(len(active), 400, "активный файл обязан уменьшиться")
+        archive = sorted((self.store.root / "transcript-archive").glob("*.jsonl"))
+        self.assertTrue(archive, "ротация обязана что-то куда-то унести")
+        archived = [e for piece in archive
+                    for e in (json.loads(line) for line in
+                              piece.read_text(encoding="utf-8").splitlines() if line.strip())]
+        seen = {e.get("i") for e in active + archived if "i" in e}
+        self.assertEqual(set(range(400)), seen, "ни одна запись не должна пропасть")
+
+    def test_rotation_says_that_it_happened(self) -> None:
+        """Ротация записывается в журнал, а не проходит молча.
+
+        Иначе журнал однажды окажется короче без видимой причины, и «куда делись
+        события» станет неразрешимым вопросом.
+        """
+        with mock.patch.object(self.server, "TRANSCRIPT_MAX_BYTES", 20_000):
+            self.fill(400, payload="y" * 40)
+        kinds = [e.get("kind") for e in self.store.read_transcript(0)]
+        self.assertIn("transcript_rotated", kinds)
+
+    def test_rotation_does_not_happen_on_a_small_file(self) -> None:
+        """Обычный раунд не должен вызывать ротацию на каждом втором вызове."""
+        self.fill(20)
+        self.assertFalse((self.store.root / "transcript-archive").exists(),
+                         "маленький журнал ротации не подлежит")
+
+    def test_a_failed_rotation_does_not_lose_the_entry(self) -> None:
+        """Сбой архива не должен ронять запись в журнал.
+
+        Порядок журнала важен, целостность записи — важнее. Поэтому сбой
+        ротации переживается, а не превращается в потерю события.
+        """
+        with mock.patch.object(self.server, "TRANSCRIPT_MAX_BYTES", 10):
+            with mock.patch("os.replace", side_effect=OSError("диск полон")):
+                self.store.append_transcript("test", "writer", i=7)
+        self.assertIn("i", self.store.read_transcript(1)[0],
+                      "запись обязана пережить сбой ротации")
+
+    # --------------------------------------------------------- `pairctl log`
+
+    def test_log_prints_a_tail_by_default(self) -> None:
+        """Дефолтный лимит вместо «всего».
+
+        Замер: без лимита команда вываливала в терминал весь активный журнал —
+        ~50k токенов на раунд, в том числе у человека, который просто посмотрел,
+        что происходит. Те, кому нужен весь файл, просят об этом явно.
+        """
+        self.fill(200)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.assertEqual(0, self.ctl("log"))
+        lines = [l for l in out.getvalue().splitlines() if l.strip()]
+        self.assertEqual(self.server.LOG_DEFAULT_LIMIT, len(lines))
+
+    def test_log_says_that_it_truncated(self) -> None:
+        """Молча отдать 50 строк вместо 200 — это выглядит как полный журнал.
+
+        Человек, который читает журнал, чтобы разобраться в случившемся, обязан
+        знать, что видит не всё.
+        """
+        self.fill(200)
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.ctl("log")
+        self.assertIn("200", err.getvalue())
+        self.assertIn("--all", err.getvalue())
+
+    def test_log_all_prints_everything_and_says_nothing_about_truncation(self) -> None:
+        """`--all` — это явное «покажи всё», и оно не жалуется."""
+        self.fill(200)
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            self.assertEqual(0, self.ctl("log", "--all"))
+        lines = [l for l in out.getvalue().splitlines() if l.strip()]
+        self.assertEqual(200, len(lines))
+        self.assertEqual("", err.getvalue().strip())
+
+    def test_log_does_not_warn_when_it_showed_everything(self) -> None:
+        """Предупреждение о обрезании при отсутствии обрезания — шум."""
+        self.fill(3)
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.ctl("log")
+        self.assertEqual("", err.getvalue().strip())
+
+
 class TestPaneOverride(PairTestCase):
     """Переопределение привязки панели рукой человека (`pairctl pane`).
 
