@@ -47,10 +47,10 @@
 
 | Файл | Строк | Ответственность | Статус |
 |---|---|---|---|
-| `mcp/pair_mailbox/server.py` | 3315 | протокол целиком: хелперы, `Store`, `PairSession`, MCP-слой, `pairctl` | заморожен, план ниже |
-| `mcp/pair_mailbox/test_protocol.py` | 3314 | 260 инвариантов протокола | заморожен, следует за server.py |
+| `mcp/pair_mailbox/server.py` | 3321 | протокол целиком: хелперы, `Store`, `PairSession`, MCP-слой, `pairctl` | заморожен, план ниже |
+| `mcp/pair_mailbox/test_protocol.py` | 3332 | 261 инвариант протокола | заморожен, следует за server.py |
 | `bin/pairpilot` | 1060 | сверхвизор: панели, запуск ролей, троттлинг | заморожен |
-| `mcp/pair_mailbox/composer.py` | 783 | композер и permission-меню | заморожен |
+| `mcp/pair_mailbox/composer.py` | 788 | композер и permission-меню | заморожен |
 | `bin/pairpilot_test.py` | 931 | тесты сверхвизора | заморожен |
 | `bin/pairchat` | 433 | CLI поверх `pair_send` | заморожен |
 | `install.sh` | 309 | инсталлер | заморожен |
@@ -66,7 +66,7 @@
 | 776–2125 | 1350 | `class PairSession` — весь tool surface в одном классе |
 | 2135–2459 | 324 | `tool_definitions()`, `HANDLERS` |
 | 2462–2596 | 134 | `MCPServer` |
-| 2596–3315 | 719 | `pairctl`: отдельный CLI |
+| 2596–3321 | 725 | `pairctl`: отдельный CLI |
 
 Первый кандидат на вынос — **`pairctl`**, потому что он не зависит от MCP-слоя
 и является отдельной точкой входа. Второй — `class PairSession`: одна ответственность
