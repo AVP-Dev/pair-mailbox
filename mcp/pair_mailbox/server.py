@@ -1911,14 +1911,27 @@ class PairSession:
         }
 
     def tool_pair_deliver(self, to: str, text: str, wait_for_empty: float = 0.0, submit: bool = True) -> dict[str, Any]:
-        """Type a message straight into the peer's composer, as if the user typed it.
+        """Отдать сообщение соседу: данные в ящик, в TUI только указатель.
 
-        The mailbox is passive: a message sits there until the peer thinks to look.
-        This is the active path — the text appears in its prompt, so it wakes on its own
-        and the exchange reads like two people talking.
+        Директива человека: терминал — дисплей для человека, а не шина между
+        агентами. Прежняя версия печатала в композер соседа ПОЛНЫЙ текст и сама
+        себя называла «active path». Это было неправильно и стоило не только
+        эстетики: при сорянной сверке Enter не нажимался, текст оставался в чужом
+        окне, а сообщение дублировалось в ящик — человек видел одно и то же дважды.
+        Наблюдалось вживую дважды.
 
-        Refuses when the composer is busy rather than overtyping what is being written.
-        Chunks the text, verifies the tail landed, and backspaces it out if not.
+        Порядок единственно честный такой:
+        1. текст ложится в `.pair/mailbox` — контейнер, не зависящий ни от tmux,
+           ни от чьего-то внимания;
+        2. в композер печатается короткий УКАЗАТЕЛЬ, откуда сосед сам возьмёт
+           сообщение или дайджест.
+
+        Указатель идёт вторым, потому что указатель без сообщения — враньё: сосед
+        послушается, сходит в ящик и не найдёт ничего.
+
+        Цена решения, которую надо назвать: сосед может не пойти в ящик по
+        короткому указателю, тогда как простыня в его композере читалась бы сама.
+        Это осознанный размен доставки текста на доставку по требованию.
         """
         from composer import ComposerBusy, deliver
 
@@ -1930,59 +1943,50 @@ class PairSession:
         if not isinstance(text, str) or not text.strip():
             raise ProtocolError("`text` is required.")
 
+        # 1. Данные — в контейнер. Всегда, независимо от tmux и от панели.
+        sent = self.tool_pair_send(to=to, text=text, subject="")
+        seq = sent.get("seq")
+
         state = self.store.read()
         pane = (state.get("roles", {}).get(to) or {}).get("pane")
+        result: dict[str, Any] = {"delivered": True, "seq": seq,
+                                  "in_pane": False, "chars": len(text)}
         if not pane:
-            return {"delivered": False, "why": f"у {to} нет панели tmux, он вне tmux"}
-        # Та же проверка, что и в _ring: печатать в панель, которая доказуемо
-        # принадлежит другому проекту, нельзя. Сообщение уходит в ящик.
+            result["why"] = f"у {to} нет панели tmux — сообщение в ящике"
+            return result
+
         from composer import _tmux, pane_is_foreign
         try:
             foreign, why_foreign = pane_is_foreign(_tmux(), pane, self.store.project_root)
         except ComposerBusy as exc:
             foreign, why_foreign = True, f"tmux недоступен: {exc}"
         if foreign:
+            # Панель чужая — в неё не печатаем. Сообщение уже в ящике, терять
+            # нечего, и причина отказа остаётся в транскрипте.
             self.store.append_transcript(
-                "deliver_refused_foreign_pane", self.role, to=to,
-                pane=pane, reason=why_foreign,
+                "deliver_pointer_refused_foreign_pane", self.role, to=to,
+                pane=pane, reason=why_foreign, seq=seq,
             )
-            # Причина отказа — в теме сообщения, а не только в транскрипте.
-            # У защиты три разных отказа (панели нет, панель мертва, панель
-            # чужого проекта), и одна общая тема «панель чужого проекта» вводила
-            # соседа в заблуждение: agy получил отказ «панель отсутствует» с
-            # темой про чужой проект и пошёл искать несуществующий конфликт.
-            send_res = self.tool_pair_send(
-                to=to, text=text,
-                subject=f"[mailbox fallback: {why_foreign}]")
-            return {
-                "delivered": False,
-                "why": why_foreign,
-                "fallback_sent": True,
-                "seq": send_res.get("seq"),
-            }
+            result["why"] = why_foreign
+            return result
+
+        # 2. Указатель. Короткий намеренно: это строка в чужом TUI, а не текст.
+        pointer = f"[pair] {self.role}: новое сообщение в ящике, прочитай pair_read"
         try:
-            result = deliver(pane, text, wait_for_empty=wait_for_empty, submit=submit)
+            pointed = deliver(pane, pointer, wait_for_empty=wait_for_empty, submit=submit)
         except ComposerBusy as exc:
-            self.store.append_transcript("deliver_busy", self.role, to=to, reason=str(exc))
-            send_res = self.tool_pair_send(to=to, text=text, subject="[mailbox fallback: composer busy]")
-            return {
-                "delivered": False,
-                "why": str(exc),
-                "fallback_sent": True,
-                "seq": send_res.get("seq"),
-            }
-        self.store.append_transcript("deliver", self.role, to=to, **result)
+            self.store.append_transcript("deliver_pointer_busy", self.role, to=to,
+                                         reason=str(exc), seq=seq)
+            result["why"] = f"композер занят ({exc}); сообщение в ящике"
+            return result
+        self.store.append_transcript("deliver", self.role, to=to, seq=seq, **pointed)
+        result["in_pane"] = bool(pointed.get("delivered"))
         result["delivered_to_pane"] = pane
-        if result.get("unverified"):
-            # Панель не подтвердила вставку, и композер при этом мог остаться с
-            # текстом. Убирать его откатом нельзя — это чужой ввод, — поэтому
-            # сообщение уходит в ящик тем же путём, что и при занятом композере.
-            # Дубликат дешевле потери: сосед прочитает лишнее, а не пропустит.
-            send_res = self.tool_pair_send(
-                to=to, text=text, subject="[mailbox fallback: вставка не подтвердилась]")
-            result["fallback_sent"] = True
-            result["fallback_seq"] = send_res.get("seq")
-            result["why"] = result["why"] + "; сообщение продублировано в ящик"
+        if pointed.get("unverified"):
+            # Указатель может остаться в композере — это ОДНА строка, а не абзац,
+            # и вычистить её сосед может сам. Дублировать в ящик нечего: он и так
+            # единственный носитель текста.
+            result["why"] = "указатель не подтверждён; сообщение в ящике"
         return result
 
     def _obligations_where(self, side: str, role: str | None) -> list[dict[str, Any]]:

@@ -4217,11 +4217,13 @@ class TestMailboxInvariants(PairTestCase):
         self.assertIn("dead", ghost["hint"].lower())
 
     def test_unverified_delivery_still_reaches_the_mailbox(self) -> None:
-        """Неподтверждённая вставка не должна оборачиваться тишиной.
+        """Неподтверждённый УКАЗАТЕЛЬ не должен оборачиваться тишиной.
 
-        Откат по непрочитанному экрану убран, а значит сообщение может остаться
-        лежать в композере соседа, который его не прочитает. Значит сервер обязан
-        продублировать его в ящик — тем же путём, что и при занятом композере.
+        Раньше здесь была простыня текста в композере, и при сорванной сверке её
+        приходилось дублировать в ящик — отсюда двойной след у человека. Теперь в
+        композер уходит одна строка-указатель, а текст лежит в ящике всегда и до
+        печати. Поэтому проверять тут нечего: письмо в ящике и есть доставка, а
+        исход указателя на неё не влияет.
         """
         def seed(state):
             state.setdefault("roles", {})["reviewer-agent"] = {
@@ -4244,9 +4246,9 @@ class TestMailboxInvariants(PairTestCase):
         composer.deliver = mock_deliver
         try:
             res = self.writer.tool_pair_deliver(to="reviewer-agent", text="payload worth keeping")
-            self.assertFalse(res["delivered"])
-            self.assertTrue(res.get("unverified"))
-            self.assertTrue(res.get("fallback_sent"), "сообщение не должно потеряться")
+            self.assertTrue(res["delivered"], "ящик — основной путь, он не зависит от панели")
+            self.assertFalse(res["in_pane"], "указатель не подтвердился")
+            self.assertIn("ящике", res["why"])
             read = self.peer.tool_pair_read(wait_seconds=0)
             self.assertEqual(read["count"], 1)
             self.assertIn("payload worth keeping", read["messages"][0]["text"])
@@ -4277,9 +4279,14 @@ class TestMailboxInvariants(PairTestCase):
         composer.deliver = mock_deliver
         try:
             res = self.writer.tool_pair_deliver(to="reviewer-agent", text="important payload")
-            self.assertFalse(res["delivered"])
-            self.assertTrue(res.get("fallback_sent"))
-            self.assertIn("typing", res["why"])
+            # Доставка УСПЕШНА, хотя в композер ничего не ушло: по директиве
+            # человека ящик и есть носитель, а занятый композер — это «указатель
+            # не доставлен», а не «сообщение потеряно». Прежняя проверка требовала
+            # `delivered: False` и `fallback_sent`, то есть проверяла старый порядок,
+            # в котором ящик был запасным путём, а не основным.
+            self.assertTrue(res["delivered"])
+            self.assertFalse(res["in_pane"], "занятый композер — печатать нельзя")
+            self.assertIn("занят", res["why"])
 
             # Verify message landed in reviewer's mailbox
             read = self.peer.tool_pair_read(wait_seconds=0)
@@ -4483,12 +4490,101 @@ class TestPaneIdentityIsNotLiveness(PairTestCase):
             composer.deliver = orig_deliver
             composer.shutil.which = orig_which
             composer.pane_is_foreign = orig_foreign
-        self.assertFalse(res["delivered"])
+        # Изоляция между проектами держится: в чужую панель не напечатано НИЧЕГО,
+        # даже указателя. Сообщение при этом доставлено — ящик не зависит от tmux,
+        # и отказ печати не должен отменять доставку. Прежде здесь требовалось
+        # `delivered: False` и `fallback_sent`, то есть проверялся старый порядок,
+        # где ящик был запасным путём.
+        self.assertTrue(res["delivered"])
+        self.assertFalse(res["in_pane"])
         self.assertEqual(called, [], "в чужую панель ничего не печатаем")
-        self.assertTrue(res.get("fallback_sent"))
         read = self.peer.tool_pair_read(wait_seconds=0)
         self.assertEqual(read["count"], 1)
         self.assertIn("payload worth keeping", read["messages"][0]["text"])
+
+
+class TestTuiIsNotABus(PairTestCase):
+    """Директива человека: терминал — дисплей, а не шина между агентами.
+
+    «Никаких простыней текста через send-keys». Проверяется не отсутствие
+    определённых слов, а главное свойство: сколько символов уходит в композер
+    соседа. Указатель обязан быть коротким и не содержать текста письма, даже
+    если письмо длинное на два экрана.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        import composer
+        self.composer = composer
+        self.printed: list[str] = []
+        self.store.mutate(lambda state: state.setdefault("roles", {}).update(
+            {"reviewer-agent": {"first_seen": "then", "last_seen": "then",
+                                "pid": os.getpid(), "pane": "%55"}}))
+
+    def _capture_pointer(self, text: str) -> str:
+        """Прогнать доставку, подменив печать, и вернуть то, что ушло в композер."""
+        orig_deliver = self.composer.deliver
+        orig_foreign = self.composer.pane_is_foreign
+        self.composer.pane_is_foreign = lambda tmux, pane, root: (False, "")
+
+        def fake_deliver(pane, body, wait_for_empty=0.0, submit=True):
+            self.printed.append(body)
+            return {"delivered": True, "chars": len(body), "pane": pane,
+                    "submitted": submit}
+
+        self.composer.deliver = fake_deliver
+        try:
+            self.writer.tool_pair_deliver(to="reviewer-agent", text=text)
+        finally:
+            self.composer.deliver = orig_deliver
+            self.composer.pane_is_foreign = orig_foreign
+        return self.printed[0] if self.printed else ""
+
+    def test_the_composer_gets_a_pointer_and_not_the_message(self) -> None:
+        """В TUI уходит строка, а не письмо.
+
+        Проверка на длину, а не на отсутствие отдельных слов: текст письма может
+        содержать любое слово, и запрет по списку слов обходится тривиально.
+        Настоящее требование — в композере не лежит текст сообщения.
+        """
+        payload = "ОЧЕНЬ-ДЛИННЫЙ-ТЕКСТ-ПИСЬМА " + ("подробности " * 300)
+        printed = self._capture_pointer(payload)
+        self.assertTrue(printed, "указатель должен быть напечатан, иначе сосед не проснётся")
+        self.assertNotIn("ОЧЕНЬ-ДЛИННЫЙ", printed, "текст письма не должен попадать в TUI")
+        self.assertIn("pair_read", printed, "указатель обязан говорить, куда идти за текстом")
+
+    def test_the_pointer_is_short_whatever_the_message_length(self) -> None:
+        """Указатель не растёт вместе с письмом.
+
+        Иначе «указатель» незаметно снова станет простынёй — просто потому, что
+        письмо оказалось длинным.
+        """
+        short = self._capture_pointer("короткое")
+        self.printed.clear()
+        long_pointer = self._capture_pointer("длинное " * 500)
+        self.assertLessEqual(len(long_pointer), len(short) + 5,
+                             "указатель обязан быть одной и той же длины")
+
+    def test_the_message_is_in_the_mailbox_even_if_the_pointer_never_lands(self) -> None:
+        """Письмо в ящике не зависит от того, дошёл ли указатель.
+
+        Это и есть смысл нового порядка: контейнер не может потеряться из-за
+        чужого TUI. Прежняя схема теряла сообщение, если композер был занят.
+        """
+        orig_deliver = self.composer.deliver
+        orig_foreign = self.composer.pane_is_foreign
+        self.composer.pane_is_foreign = lambda tmux, pane, root: (False, "")
+        self.composer.deliver = lambda *a, **kw: (_ for _ in ()).throw(
+            self.composer.ComposerBusy("занято"))
+        try:
+            res = self.writer.tool_pair_deliver(to="reviewer-agent", text="не потерять")
+        finally:
+            self.composer.deliver = orig_deliver
+            self.composer.pane_is_foreign = orig_foreign
+        read = self.peer.tool_pair_read(wait_seconds=0)
+        self.assertEqual(read["count"], 1)
+        self.assertIn("не потерять", read["messages"][0]["text"])
+        self.assertTrue(res["delivered"])
 
 
 class TestComposerOfAnOpencodePane(PairTestCase):
