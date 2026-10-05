@@ -92,6 +92,40 @@ def pane_alive(tmux: str, pane: str) -> bool:
     return r.returncode == 0 and r.stdout.strip() in ("0", "false")
 
 
+def session_address(tmux: str, pane: str) -> str:
+    """Устойчивый адрес панели: `<сессия>:<окно>.<панель>`, либо "" если не вышло.
+
+    Номер `%N` — сквозной внутри одного tmux-сервера, он перенумеровывается при
+    пересоздании панелей и протухает в окружении процесса. Имя сессии с окном и
+    панелью такой срок службы не имеет.
+
+    Ограничение, важное и измеренное: имя сессии изолирует проекты ТОЛЬКО если у
+    каждого проекта своя сессия. При общей сессии `mail:0.0` может принадлежать
+    чужому проекту, и ловится это только проверкой `pane_current_path`. Поэтому
+    адрес сессии и проверка пути — две независимые линии, а не замена одна другой.
+    """
+    r = subprocess.run(
+        [tmux, "display-message", "-p", "-t", pane,
+         "#{session_name}:#{window_index}.#{pane_index}"],
+        capture_output=True, text=True, timeout=5)
+    out = r.stdout.strip()
+    if r.returncode != 0 or not out or out.startswith(":"):
+        return ""
+    return out
+
+
+def canonical_pane(tmux: str, pane: str) -> str:
+    """Что записывать в состояние: адрес сессии, если он есть, иначе исходный вход.
+
+    Обратная совместимость здесь обязательна не из вежливости: у живых ролей в
+    состоянии лежат `%N`, и если бы запись перестала их принимать, обновление
+    сломало бы доставку у всех сразу. Поэтому оба формата принимаются при
+    обращении, а пишется предпочтительный.
+    """
+    address = session_address(tmux, pane)
+    return address or pane
+
+
 def pane_identity(tmux: str, pane: str) -> dict:
     """Кто именно сидит в панели: не «жива ли», а «наша ли».
 
@@ -113,9 +147,10 @@ def pane_identity(tmux: str, pane: str) -> dict:
     parts = r.stdout.strip().split("\t") if r.stdout.strip() else []
     dead = parts[0].strip() if parts else ""
     if r.returncode != 0 or not dead:
-        return {"exists": False, "alive": False, "path": ""}
+        return {"exists": False, "alive": False, "path": "", "address": ""}
     path = parts[1].strip() if len(parts) > 1 else ""
-    return {"exists": True, "alive": dead in ("0", "false"), "path": path}
+    return {"exists": True, "alive": dead in ("0", "false"), "path": path,
+            "address": session_address(tmux, pane)}
 
 
 def pane_is_foreign(tmux: str, pane: str, project_root) -> tuple:

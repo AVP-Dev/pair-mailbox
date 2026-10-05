@@ -875,7 +875,22 @@ class PairSession:
         entry["last_seen"] = utcnow()
         entry["pid"] = current_pid
         if pane:
-            entry["pane"] = pane
+            # Пишем устойчивый адрес `<сессия>:<окно>.<панель>`, а не %N: номер
+            # перенумеровывается и протухает в окружении процесса, имя с окном —
+            # нет. Обратная совместимость не выбирается: pane_exists, deliver и
+            # pane_is_foreign принимают оба формата, иначе обновление сломало бы
+            # доставку у всех живых ролей сразу.
+            tmux = shutil.which("tmux")
+            address = ""
+            if tmux:
+                from composer import canonical_pane
+                address = canonical_pane(tmux, pane)
+                if address != pane:
+                    self.store.append_transcript(
+                        "pane_address_canonical", self.role,
+                        previous=pane, canonical=address,
+                        why="%N перенумеровывается и протухает; сессия стабильна")
+            entry["pane"] = address or pane
 
     def _require_not_writer(self, action: str) -> None:
         state = self.store.read()
