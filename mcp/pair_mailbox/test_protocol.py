@@ -28,6 +28,7 @@ from shutil import which as shutil_which
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from server import (  # noqa: E402
+    AUTONOMIES,
     MAX_READ_WAIT_SECONDS,
     PairSession,
     ProtocolError,
@@ -38,6 +39,7 @@ from server import (  # noqa: E402
     main,
     project_row,
     render_table,
+    resolve_autonomy,
     silence_seconds,
 )
 
@@ -96,6 +98,15 @@ class PairTestCase(unittest.TestCase):
         self.record_test_evidence(value)
         self.human_ok()
         return self.writer.tool_pair_advance(phase="done")
+
+    def set_autonomy(self, level: str) -> None:
+        """Объявить уровень явно.
+
+        Жил этот помощник внутри одного класса, и шесть тестов в других полагались на
+        дефолт молча — то есть контракт уровней не был закреплён ни одним из них, и
+        смена дефолта ломала тесты, к дефолту отношения не имеющие.
+        """
+        self.store.mutate(lambda state: state.__setitem__("autonomy", level))
 
 
 class TestWriteAuthority(PairTestCase):
@@ -587,6 +598,7 @@ class TestHumanCheckpoint(PairTestCase):
     """`pairctl ok` значил «одобрен план» и закрывал раунд на verify."""
 
     def test_ok_given_on_plan_does_not_close_on_verify(self) -> None:
+        self.set_autonomy("semi")
         self.writer.tool_pair_claim(reason="writer")
         for phase in ("plan", "implement", "verify"):
             if phase == "plan":
@@ -605,6 +617,7 @@ class TestHumanCheckpoint(PairTestCase):
         self.assertEqual("done", self.writer.tool_pair_advance("done")["phase"])
 
     def test_a_revoke_takes_the_ok_back(self) -> None:
+        self.set_autonomy("semi")
         self.writer.tool_pair_claim(reason="writer")
         for phase in ("plan", "implement", "verify"):
             self.writer.tool_pair_advance(phase)
@@ -627,9 +640,6 @@ class TestEvidenceGate(PairTestCase):
         self.writer.tool_pair_claim(reason="writer")
         for phase in ("plan", "implement", "verify"):
             self.writer.tool_pair_advance(phase)
-
-    def set_autonomy(self, level: str) -> None:
-        self.store.mutate(lambda state: state.__setitem__("autonomy", level))
 
     def test_done_is_refused_without_evidence(self) -> None:
         self.human_ok()
@@ -724,6 +734,9 @@ class TestEvidenceGate(PairTestCase):
                            contains="no passing evidence")
         # The human's word does not carry either: it was said about that round.
         self.record_test_evidence("117 passed", ok=True)
+        # Уровень объявляется явно: раньше эти тесты опирались на дефолт и падали
+        # от его смены, то есть контракт semi не был закреплён ни одним из них.
+        self.set_autonomy("semi")
         self.assertRefused(self.writer.tool_pair_advance, "done",
                            contains="pairctl ok")
 
@@ -741,6 +754,7 @@ class TestEvidenceGate(PairTestCase):
         self.assertEqual(self.writer.tool_pair_advance("done")["phase"], "done")
 
     def test_semi_needs_the_human_word(self) -> None:
+        self.set_autonomy("semi")
         self.record_test_evidence()
         error = self.assertRefused(self.writer.tool_pair_advance, "done",
                                    contains="pairctl ok")
@@ -767,6 +781,7 @@ class TestEvidenceGate(PairTestCase):
     def test_state_says_what_blocks_closing(self) -> None:
         """Агент должен видеть причину заранее, а не тратить ход на заведомый
         отказ."""
+        self.set_autonomy("semi")
         state = self.writer.tool_pair_state()
         self.assertTrue(state["closing_blocked_by"])
         self.assertTrue(state["awaiting_human_ok"])
@@ -776,10 +791,26 @@ class TestEvidenceGate(PairTestCase):
         self.assertEqual(state["evidence_this_round"][0]["kind"], "test")
         self.assertEqual(len(state["closing_blocked_by"]), 1, "осталось только слово человека")
 
-    def test_state_reports_autonomy_and_its_meaning(self) -> None:
+    def test_state_says_nothing_is_awaited_from_the_human_in_auto(self) -> None:
+        """Обратная сторона дефолта: в auto никто не должен ждать слова человека,
+        и агент обязан это видеть в состоянии, а не знать по памяти."""
         state = self.writer.tool_pair_state()
-        self.assertEqual(state["autonomy"], "semi")
-        self.assertIn("pairctl ok", state["autonomy_meaning"])
+        self.assertEqual(state["autonomy"], "auto")
+        self.assertFalse(state["awaiting_human_ok"])
+        self.record_test_evidence()
+        self.assertEqual(self.writer.tool_pair_advance("done")["phase"], "done")
+
+    def test_state_reports_autonomy_and_its_meaning(self) -> None:
+        """Дефолт закреплён: это ровно то, что задал человек, и раньше оно не было
+        закреплено ни одним тестом — шесть тестов молча опирались на него."""
+        state = self.writer.tool_pair_state()
+        self.assertEqual(state["autonomy"], "auto")
+        self.assertIn("close itself", state["autonomy_meaning"])
+        for level in AUTONOMIES:
+            self.store.mutate(lambda st, lv=level: st.__setitem__("autonomy", lv))
+            meaning = self.writer.tool_pair_state()["autonomy_meaning"]
+            self.assertTrue(meaning and "unattended" in meaning.lower() or "driving" in meaning.lower(),
+                            f"{level}: смысл уровня должен объяснять, а не молчать")
 
     def test_unknown_autonomy_reads_as_observe(self) -> None:
         """Состояние от более новой сборки не должно выдать больше прав."""
@@ -787,6 +818,103 @@ class TestEvidenceGate(PairTestCase):
         self.assertEqual(self.writer.tool_pair_state()["autonomy"], "observe")
         self.record_test_evidence()
         self.assertEqual(self.writer.tool_pair_advance("done")["phase"], "done")
+
+
+class TestAutonomyDefault(PairTestCase):
+    """Дефолт — auto, и это ровно то, что задал человек: он даёт задачу, пара
+    отрабатывает её сама и приходит с одним выводом.
+
+    Раньше дефолтом был semi, и свежий проект начинал с вопроса о `ok` на фазе
+    verify, которого никто не ждал. Тесты, которые на это опирались, теперь
+    объявляют уровень явно — иначе смена дефолта ломает тесты, к дефолту
+    отношения не имеющие."""
+
+    def test_a_fresh_project_starts_in_auto(self) -> None:
+        self.assertEqual(self.store.read()["autonomy"], "auto")
+        self.assertEqual(self.writer.tool_pair_state()["autonomy"], "auto")
+
+    def test_reset_leaves_auto_and_not_observe(self) -> None:
+        """Раньше wipe оставлял observe — «стирание не должно повышать права». Но
+        права измеряются относительно дефолта, а дефолтом человек назначил auto.
+        Поэтому observe после wipe останавливал пару вопреки «работайте сами» и
+        заставлял человека это заметить."""
+        self.set_autonomy("observe")
+        self.assertEqual(main(["--state", str(self.root), "reset", "--yes"]), 0)
+        self.assertEqual(self.store.read()["autonomy"], "auto")
+
+    def test_a_missing_autonomy_key_reads_as_auto_not_semi(self) -> None:
+        """Отсутствующий ключ — это старый файл состояния, а не просьба осторожничать.
+        Читать его как semi значило остановиться там, где человек не просил."""
+        self.store.mutate(lambda state: state.pop("autonomy", None))
+        self.assertEqual(self.writer.tool_pair_state()["autonomy"], "auto")
+
+    def test_an_unknown_autonomy_key_still_reads_as_observe(self) -> None:
+        """Новый уровень от более новой сборки не должен выдать больше прав, чем
+        просил человек: неизвестное — это observe, даже если дефолт теперь auto."""
+        self.store.mutate(lambda state: state.__setitem__("autonomy", "turbo"))
+        self.assertEqual(self.writer.tool_pair_state()["autonomy"], "observe")
+
+
+class TestAutonomyTriggers(PairTestCase):
+    """Режим выбирается один раз при старте, и место выбора должно быть видно:
+    уровень без источника через месяц становится предметом спора «почему этот раунд
+    закрыл себя сам»."""
+
+    def resolve(self, flag: str | None = None, task: str = "") -> tuple[str, str]:
+        return resolve_autonomy(self.root, task=task, flag=flag)
+
+    def declare(self, text: str) -> None:
+        (self.root / "autonomy").write_text(text, encoding="utf-8")
+
+    def test_no_signal_at_all_means_auto(self) -> None:
+        self.assertEqual(self.resolve(), ("auto", "default"))
+
+    def test_a_file_sets_the_level(self) -> None:
+        self.declare("semi")
+        self.assertEqual(self.resolve(), ("semi", "file"))
+
+    def test_a_flag_beats_the_file(self) -> None:
+        self.declare("semi")
+        self.assertEqual(self.resolve(flag="observe"), ("observe", "flag"))
+
+    def test_a_task_line_beats_the_file(self) -> None:
+        self.declare("observe")
+        self.assertEqual(self.resolve(task="autonomy: semi — почини тест"),
+                         ("semi", "task"))
+
+    def test_the_flag_beats_the_task_line(self) -> None:
+        self.assertEqual(self.resolve(flag="observe", task="autonomy: auto — почини"),
+                         ("observe", "flag"))
+
+    def test_the_task_line_must_start_the_task(self) -> None:
+        """Иначе слово в прозе меняет полномочия пары: задача «перенеси текст про
+        autonomy: semi» не должна вдруг сделать пару полуавтоматом."""
+        self.declare("auto")
+        self.assertEqual(self.resolve(task="перенеси текст про autonomy: semi"),
+                         ("auto", "file"))
+
+    def test_a_junk_file_falls_through_instead_of_failing(self) -> None:
+        """Отказ запускаться хуже, чем стартовать с уровнем, который человек видит в
+        `pairctl status`."""
+        self.declare("turbo")
+        self.assertEqual(self.resolve(), ("auto", "default"))
+
+    def test_a_junk_flag_falls_through_to_the_next_source(self) -> None:
+        self.declare("semi")
+        self.assertEqual(self.resolve(flag="turbo"), ("semi", "file"))
+
+    def test_the_launcher_writes_the_level_and_where_it_came_from(self) -> None:
+        self.declare("semi")
+        self.assertEqual(main(["--state", str(self.root), "launch-autonomy"]), 0)
+        self.assertEqual(self.store.read()["autonomy"], "semi")
+        entry = [e for e in self.store.read_transcript(20) if e.get("kind") == "autonomy"][-1]
+        self.assertEqual(entry["via"], "file", "источник решения обязан попасть в журнал")
+
+    def test_the_launcher_says_auto_and_where_it_came_from(self) -> None:
+        self.assertEqual(main(["--state", str(self.root), "launch-autonomy"]), 0)
+        self.assertEqual(self.store.read()["autonomy"], "auto")
+        entry = [e for e in self.store.read_transcript(20) if e.get("kind") == "autonomy"][-1]
+        self.assertEqual(entry["via"], "default")
 
 
 class TestRosterPrune(PairTestCase):

@@ -7,6 +7,10 @@
 # Options:
 #   --worktree    Create an isolated git worktree for the critic pane
 #   --vertical    Split panes vertically (top/bottom) instead of horizontally (left/right)
+#   --autonomy L  observe | semi | auto. How far the pair goes on its own. Without it
+#                 the launcher resolves in this order: a line in the task
+#                 ("autonomy: semi"), then .pair/autonomy, then auto.
+#   --auto --semi --observe   Shorthand for --autonomy
 #   -h, --help    Show this help
 #
 # Supported CLIs:
@@ -26,6 +30,7 @@ STATE_PATH="${PAIR_STATE:-$ROOT/.pair}"
 
 USE_WORKTREE=0
 SPLIT_OPT="-h"
+AUTONOMY_OPT=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -35,6 +40,16 @@ while [[ $# -gt 0 ]]; do
       ;;
     --vertical)
       SPLIT_OPT="-v"
+      shift
+      ;;
+    --autonomy)
+      # Как далеко пара идёт сама. Без флага решает `pairctl launch-autonomy`:
+      # строка в задаче, файл .pair/autonomy, иначе auto.
+      AUTONOMY_OPT="${2:-}"
+      shift 2 || { echo "error: --autonomy needs a level" >&2; exit 2; }
+      ;;
+    --auto|--semi|--observe)
+      AUTONOMY_OPT="${1#--}"
       shift
       ;;
     -h|--help)
@@ -87,10 +102,24 @@ fi
 WRITER_ROLE="${CLI}-writer"
 CRITIC_ROLE="${CLI}-critic"
 
+# Режим автономности выбирается один раз, здесь и до того, как агенты получили
+# инструкции. Значение проверяется ДО запуска: опечатка, молча проигнорированная
+# после старта, означала бы, что пара работает не на том режиме, о котором человек
+# думает, и узнать об этом можно было бы только по факту.
+case "$AUTONOMY_OPT" in
+  ""|observe|semi|auto) ;;
+  *)
+    echo "error: --autonomy takes observe, semi or auto (got '$AUTONOMY_OPT')" >&2
+    exit 2
+    ;;
+esac
+
 # Record task and initial authority if specified
 if [[ -n "$TASK" ]]; then
   "$HERE/pairctl" task "$TASK"
 fi
+
+"$HERE/pairctl" launch-autonomy --flag "$AUTONOMY_OPT" --task "$TASK"
 
 # Authority is the human's to move (PROTOCOL §2). This script used to run
 # `pairctl assign` unconditionally, so every launch silently handed the role to

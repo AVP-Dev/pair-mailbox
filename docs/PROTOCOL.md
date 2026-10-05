@@ -373,7 +373,7 @@ thing.
 
 ### 10b. How far the pair goes alone: `observe`, `semi`, `auto`
 
-`bin/pairctl autonomy observe|semi|auto` (`semi` by default). This is a **separate**
+`bin/pairctl autonomy observe|semi|auto` (**`auto` by default**). This is a **separate**
 axis from `mode`: `mode` answers "what the round does", `autonomy` answers "how far it
 goes without the human". Merging them is wrong: `pairctl mode auto` would silently
 turn an audit into a code change, because every audit check looks at
@@ -381,9 +381,9 @@ turn an audit into a code change, because every audit check looks at
 
 | | restart a failed agent | confirm permissions | close the round |
 |---|---|---|---|
-| `observe` | no | no | needs proof; no human word needed |
+| `auto` (default) | yes | allowlist only | needs proof; no word needed — the round may close itself |
 | `semi` | yes | allowlist only | needs proof **and** the human's word: `bin/pairctl ok` |
-| `auto` | yes | allowlist only | needs proof; no word needed |
+| `observe` | no | no | needs proof; no human word needed |
 
 Note that `observe` does **not** switch the gates off. An earlier version returned an
 empty blocker list at the first line, which made `observe` the one mode where a round
@@ -397,7 +397,37 @@ before spending a turn on a foregone refusal.
 
 An unknown `autonomy` value (from state written by a newer build) reads as `observe`:
 someone else's state must not grant this build more authority than the human asked
-for.
+for. A **missing** key is different: that is an older state file, not a request for
+caution, and it reads as `auto` — the default the human set.
+
+#### 10b.1. Choosing the level once, at launch
+
+The pair is started once and then works unattended until the result is on the table.
+The level is chosen at that moment and not renegotiated mid-round, so the human is
+asked **at most once** and, in `auto`, not at all.
+
+`bin/pair-duo` takes `--autonomy observe|semi|auto`, with `--auto`, `--semi` and
+`--observe` as shorthands. The value is checked **before** tmux starts: a typo ignored
+after launch would leave the pair working at a level the human did not choose, and
+the only way to find out would be to notice the effect.
+
+With no flag, `bin/pairctl launch-autonomy` resolves in this order, strongest first:
+
+| source | what it looks like | wins over |
+|---|---|---|
+| `flag` | `pair-duo --semi` | everything |
+| `task` | `autonomy: semi` on the **first line** of the task | the file |
+| `file` | `.pair/autonomy`, one word | the default |
+| `default` | `auto` | — |
+
+The source travels with the value into the transcript as `via=flag|task|file|default`.
+A level nobody can account for becomes a dispute: "why did this round close itself?" has
+no answer unless the reason was written down when it was decided.
+
+The task line must **start** the task, not merely appear in it — otherwise the words
+"move this text about autonomy: semi" would silently demote the pair. A malformed flag
+or file falls through to the next source instead of failing the launch: refusing to
+start is worse than starting at a level the human can see in `pairctl status`.
 
 `pairctl ok` means something specific: it counts only when said at `verify` or `done`,
 the last word wins, and `bin/pairctl ok --revoke` takes it back. "I approve the plan"
@@ -409,9 +439,12 @@ the word: it was given about something the human has since stopped seeing.
 §12 is outside all of these axes. Secrets, ports, deploys, migrations, data deletion
 and git history stop the pair at any level, including `auto`.
 
-`bin/pairctl reset --yes` leaves autonomy at `observe`. A fresh state defaults to
-`semi`, so wiping state used to hand the pair more authority than it had before,
-unasked.
+`bin/pairctl reset --yes` leaves autonomy at **`auto`**, the default. An earlier
+version left it at `observe`, on the reasoning that wiping state should not raise
+authority — but authority is measured against a default, and the human has set that
+default to `auto`. Leaving `observe` stopped the pair against "work on your own and
+come back with the result", and made the human notice. §12 sits outside this axis, so
+`auto` never means "destructive work is allowed".
 
 ## 11. Audit
 
