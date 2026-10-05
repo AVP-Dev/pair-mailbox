@@ -683,20 +683,30 @@ def erase(tmux: str, pane: str, count: int) -> None:
 
 
 def tail_present(lines: list, needle: str) -> bool:
-    """Was the typed text actually on screen?
+    """Did the typed text actually appear on screen?
 
-    Two things bite here, and both bit in practice:
+    The check is on the HEAD, not the tail, and это не переименование ради
+    красоты. Измерено в своём же композере: текст длиннее экрана рисуется от
+    начала, а всё, что ниже, уходит за нижнюю границу и в `capture` не попадает
+    вовсе. Проверка хвоста для такого текста не может сработать никогда — она
+    и не срабатывала, поэтому доставка длинных сообщений всякий раз объявлялась
+    неподтверждённой, хотя текст доходил и сосед его выполнял.
 
-    - A pane is taller than its content. The cursor sits at the bottom while the
-      prompt, and the text just typed into it, stay near the top. So the last ten
-      *physical* lines are usually blank. Look at the last non-empty lines instead.
-    - A narrow pane wraps the text, so the tail of the message straddles a row
-      boundary and never appears whole in one line. Join before comparing.
+    Старая версия искала хвост по другой причине: курсор стоит внизу, а напечатанное
+    остаётся наверху, поэтому «последние строки» — это пустое. Но и «начало» там
+    не искалось — просто не оказалось нужным, пока тексты были короткими.
+
+    Проверяется начало, потому что оно единственное гарантированно видно. Хвост
+    как дополнительный признак тоже годится: если текст поместился целиком, то
+    видно и то, и другое, и совпадение по хвосту подтверждает доставку сильнее.
     """
     meaningful = [line for line in lines if line.strip()]
-    joined = " ".join(" ".join(meaningful[-6:]).split())
+    joined = " ".join(" ".join(meaningful).split())
+    head = " ".join(needle[:60].split())
     tail = " ".join(needle[-60:].split())
-    return tail in joined
+    if head and head in joined:
+        return True
+    return bool(tail) and tail in joined
 
 
 PERMISSION_PATTERNS = (
