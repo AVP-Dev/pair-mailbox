@@ -598,6 +598,23 @@ class Store:
                           self.patches_root, self.obligations_root):
             directory.mkdir(parents=True, exist_ok=True)
 
+    @property
+    def project_root(self) -> Path:
+        """Корень проекта, а НЕ каталог состояния.
+
+        Состояние живёт в `<проект>/.pair`, поэтому `self.root` — это `.pair`,
+        и сравнивать его с cwd панели бессмысленно: панель своего проекта
+        находится уровнем выше. Именно на этом ломался `pane_is_foreign`:
+        передавали `.pair` и получали отказ «панель принадлежит другому
+        проекту» для панели своего же соседа, то есть защита от межпроектной
+        инъекции блокировала и законную доставку внутри проекта.
+
+        Отдельное свойство, а не молчаливое `parent` на месте использования:
+        подменять корень в одном вызывающем месте и забыть в другом — это
+        ровно тот способ, которым ошибка и появилась.
+        """
+        return self.root.parent if self.root.name == ".pair" else self.root
+
     def default_state(self) -> dict[str, Any]:
         return {
             "task": "",
@@ -1236,7 +1253,7 @@ class PairSession:
         # который её занимал, и на этой машине несколько проектов на
         # pair-mailbox: звонок по записанному номеру будил чужого агента.
         from composer import pane_is_foreign
-        foreign, why_foreign = pane_is_foreign(tmux, pane, self.store.root)
+        foreign, why_foreign = pane_is_foreign(tmux, pane, self.store.project_root)
         if foreign:
             self.store.append_transcript(
                 "ring_refused_foreign_pane", self.role, to=target,
@@ -1365,7 +1382,7 @@ class PairSession:
         # принадлежит другому проекту, нельзя. Сообщение уходит в ящик.
         from composer import _tmux, pane_is_foreign
         try:
-            foreign, why_foreign = pane_is_foreign(_tmux(), pane, self.store.root)
+            foreign, why_foreign = pane_is_foreign(_tmux(), pane, self.store.project_root)
         except ComposerBusy as exc:
             foreign, why_foreign = True, f"tmux недоступен: {exc}"
         if foreign:

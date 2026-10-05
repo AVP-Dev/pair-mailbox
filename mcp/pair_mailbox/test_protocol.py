@@ -3222,6 +3222,45 @@ class TestPaneIdentityIsNotLiveness(PairTestCase):
         self.assertFalse(ident["alive"])
         self.assertEqual(ident["path"], "")
 
+    def test_a_state_dir_named_pair_resolves_to_the_project_root(self) -> None:
+        """Регрессия на баг, который стоил блокировки всей доставки.
+
+        `Store.root` — это каталог состояния `<проект>/.pair`, а не корень
+        проекта. Передав его в `pane_is_foreign`, мы получали отказ «панель
+        принадлежит другому проекту» для панели СВОЕГО соседа: `.pair` не
+        является родителем панели, он лежит внутри проекта. Защита от
+        межпроектной инъекции блокировала и законную доставку внутри проекта.
+
+        Юнит-тесты на `pane_is_foreign` этого не видели: они передавали корень
+        проекта, то есть не то значение, которое передаёт прод. Тесты точек
+        входа тоже не видели: они подменяли саму `pane_is_foreign`. Ошибка
+        прошла сразу через два рубежа и была замечена только потому, что agy
+        не смог до меня достучаться вживую.
+        """
+        import composer
+        state_dir = Path(tempfile.mkdtemp(prefix="pairtest-")) / ".pair"
+        state_dir.mkdir(parents=True)
+        store = Store(state_dir)
+        self.assertEqual(store.root, state_dir)
+        self.assertEqual(store.project_root, state_dir.parent,
+                         "корень проекта это родитель каталога состояния")
+        orig = composer.pane_identity
+        composer.pane_identity = lambda tmux, pane: {
+            "exists": True, "alive": True, "path": str(state_dir.parent)}
+        try:
+            # прод-значение: то, что реально передаёт код
+            foreign, why = composer.pane_is_foreign(
+                "tmux", "%1", store.project_root)
+        finally:
+            composer.pane_identity = orig
+        self.assertFalse(foreign, f"своя панель обязана проходить, получено: {why}")
+
+    def test_a_state_dir_that_is_not_pair_is_its_own_project_root(self) -> None:
+        """Не каталог `.pair` — значит это и есть корень, parent тут лишний."""
+        state_dir = Path(tempfile.mkdtemp(prefix="pairtest-"))
+        store = Store(state_dir)
+        self.assertEqual(store.project_root, state_dir)
+
     def test_a_shared_parent_directory_is_refused(self) -> None:
         """Панель из ~/work общая для нескольких проектов — значит не наша.
 
