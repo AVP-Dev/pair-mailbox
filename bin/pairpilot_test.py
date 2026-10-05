@@ -26,6 +26,16 @@ pairpilot.__dict__["__file__"] = str(ROOT / "bin" / "pairpilot")
 exec(compile((ROOT / "bin" / "pairpilot").read_text(encoding="utf-8"), "pairpilot", "exec"), pairpilot.__dict__)
 
 
+def now_iso() -> str:
+    """Текущий момент в том же формате, что пишет сервер в `last_seen`.
+
+    Отдельная функция вместо правки состояния руками: сравнение идёт по строке, и
+    «не совпало» здесь означает «роль не проснулась». Ручной литерал был бы
+    верным только сегодня.
+    """
+    return datetime.now(timezone.utc).isoformat()
+
+
 def ago(seconds: int) -> str:
     return (datetime.now(timezone.utc) - timedelta(seconds=seconds)).isoformat()
 
@@ -77,6 +87,24 @@ class PilotCase(unittest.TestCase):
             json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
         return state
 
+    def wake(self, pilot: "pairpilot.Pilot", role: str) -> dict:
+        """Записанное пробуждение роли, или {} если его нет."""
+        path = pilot.wake_root / f"{role}.json"
+        if not path.exists():
+            return {}
+        return json.loads(path.read_text(encoding="utf-8"))
+
+    def assert_printed_nothing(self, pilot: "pairpilot.Pilot", role: str) -> None:
+        """Пробуждение обязано остаться тихим.
+
+        До этой правки печать в композер была первым шагом, и «не напечатать»
+        означало «не знаю, когда ещё можно». Теперь молчание — норма, и именно
+        поэтому утверждение здесь отрицательное: пустая очередь печати и есть
+        тот результат, ради которого механизм менялся.
+        """
+        self.assertEqual("", pilot.pending(role),
+                         "пробуждение не должно печатать в композер до эскалации")
+
     def inbox(self, role: str, count: int) -> None:
         path = self.state_dir / "mailbox" / role
         path.mkdir(parents=True, exist_ok=True)
@@ -105,21 +133,71 @@ class PilotCase(unittest.TestCase):
 
 
 class TestLiveness(PilotCase):
-    def test_silent_writer_is_nudged_once_only(self) -> None:
+    def test_silent_writer_is_woken_silently(self) -> None:
+        """Молчащий писатель: пробуждение записано, в композер не напечатано.
+
+        Проверка стала строже прежней. Раньше она требовала, чтобы напоминание
+        оказалось в очереди печати, — то есть чтобы сверхвизор полез в чужое
+        окно. Теперь требуется обратное: факт есть, а в чужом окне пусто. Если
+        правка напечатала бы, тест упал бы, а не стал бы зеленее.
+        """
         self.write_state(writer="agy", roles={"agy": {"last_seen": ago(3600), "pid": 1, "pane": "%1"}})
         pilot = self.pilot()
         pilot.tick()
-        first = pilot.pending("agy")
-        self.assertTrue(first, "молчащий писатель должен получить напоминание")
-        self.assertIn("право записи", first)
+        wake = self.wake(pilot, "agy")
+        self.assertTrue(wake, "молчащий писатель должен получить пробуждение")
+        self.assertIn("фазу", wake["reason"])
+        self.assertIn("право записи", wake["text"])
+        self.assert_printed_nothing(pilot, "agy")
+
+    def test_a_writer_who_woke_up_is_not_printed_at(self) -> None:
+        """Проснувшийся не будится второй раз — и об этом есть запись.
+
+        Раньше это было неотличимо от «доставили и забыли»: очередь печати
+        очищалась и после успеха, и после отброшенного по сроку. Теперь исход
+        виден в журнале, и по нему можно проверить, что печать не понадобилась.
+        """
+        self.write_state(writer="agy", roles={"agy": {"last_seen": ago(3600), "pid": 1, "pane": "%1"}})
+        pilot = self.pilot()
         pilot.tick()
-        self.assertEqual(first, pilot.pending("agy"), "повторно в очередь не кладём")
+        self.assertTrue(self.wake(pilot, "agy"))
+        # Роль отвечает: last_seen сдвинулся.
+        self.write_state(writer="agy", roles={"agy": {"last_seen": now_iso(), "pid": 1, "pane": "%1"}})
+        pilot.tick()
+        self.assertEqual({}, self.wake(pilot, "agy"), "пробуждение снято")
+        kinds = [e.get("kind") for e in self.transcript_entries()]
+        self.assertIn("pilot_wake_acknowledged", kinds)
+        self.assert_printed_nothing(pilot, "agy")
+
+    def test_a_writer_who_ignores_the_wake_is_printed_at_once(self) -> None:
+        """Эскалация: печать становится исключением, а не первым шагом.
+
+        Порядок здесь и есть содержание правки. Если бы печать шла сразу, роль
+        с длинной правкой получала бы тычок в композер на каждом тике; теперь она
+        сначала получает шанс проснуться сама, и печать приходит один раз и
+        поздно — когда молчание уже становится риском для раунда.
+        """
+        self.write_state(writer="agy", roles={"agy": {"last_seen": ago(3600), "pid": 1, "pane": "%1"}})
+        pilot = self.pilot()
+        pilot.wake_grace = 0.0
+        pilot.tick()
+        pilot.tick()
+        printed = pilot.pending("agy")
+        self.assertTrue(printed, "после истечения терпения печать обязана быть")
+        self.assertIn("право записи", printed)
+        pilot.tick()
+        pilot.tick()
+        self.assertEqual(printed, pilot.pending("agy"),
+                         "эскалация печатает один раз, а не каждый тик")
+        kinds = [e.get("kind") for e in self.transcript_entries()]
+        self.assertEqual(1, kinds.count("pilot_wake_escalated"),
+                         "эскалация не должна повторяться")
 
     def test_fresh_writer_is_left_alone(self) -> None:
         self.write_state(writer="agy", roles={"agy": {"last_seen": ago(30), "pane": "%1"}})
         pilot = self.pilot()
         pilot.tick()
-        self.assertEqual("", pilot.pending("agy"), "молчание в пределах нормы не трогаем")
+        self.assertEqual({}, self.wake(pilot, "agy"), "молчание в пределах нормы не трогаем")
 
     def test_nudge_is_not_queued_when_round_is_done(self) -> None:
         self.write_state(writer="agy", phase="done", closed_at=ago(10),
@@ -146,8 +224,7 @@ class TestLiveness(PilotCase):
                          seen={"codex": 0})
         pilot = self.pilot()
         pilot.tick()
-        first = pilot.pending("codex")
-        self.assertTrue(first)
+        self.assertTrue(self.wake(pilot, "codex"))
         pilot.tick()
         pilot.tick()
         # Считаем события в журнале, а не текст: текст напоминания одинаковый
@@ -155,6 +232,7 @@ class TestLiveness(PilotCase):
         nudges = [e for e in self.transcript_entries() if e.get("kind") == "pilot_unread_nudge"]
         self.assertEqual(1, len(nudges),
                          "напоминание не должно повторяться каждый тик")
+        self.assert_printed_nothing(pilot, "codex")
 
     def test_unread_nudge_does_not_touch_a_role_with_nothing_unread(self) -> None:
         """Напоминание без письма — шум, а помощь."""
@@ -166,12 +244,25 @@ class TestLiveness(PilotCase):
 
 
 class TestUnread(PilotCase):
-    def test_unread_mail_produces_a_reminder(self) -> None:
+    def test_unread_mail_produces_a_silent_wake(self) -> None:
+        """Письмо есть — пробуждение есть, и в композер при этом ничего не уходит.
+
+        Проверка поменяла знак намеренно. Прежняя требовала текста в очереди печати,
+        то есть чтобы сверхвизор залез в чужое окно; новая требует, чтобы он этого
+        НЕ сделал, и ещё чтобы факт пробуждения остался наблюдаемым. Обе части
+        нужны: без первой механизм ничего не делает, без второй — делает всё
+        молча, и по журналу нечем понять, что будили вообще.
+        """
         self.inbox("agy", 3)
         self.write_state(roles={"agy": {"last_seen": ago(60), "pane": "%1"}}, seen={"agy": 0})
         pilot = self.pilot()
         pilot.tick()
-        self.assertIn("непрочитанных", pilot.pending("agy"))
+        wake = self.wake(pilot, "agy")
+        self.assertTrue(wake, "непрочитанное письмо обязано оставить след")
+        self.assertIn("непрочитанных", wake["reason"])
+        self.assertIn("непрочитанных", wake["text"])
+        self.assertEqual(3, wake["unread_at_ask"], "сколько именно не прочитано")
+        self.assert_printed_nothing(pilot, "agy")
 
     def test_read_mail_is_not_reminded(self) -> None:
         self.inbox("agy", 3)
@@ -329,11 +420,12 @@ class TestSafety(PilotCase):
         tolerant.tick()
         self.assertEqual("", tolerant.pending("agy"), "400с молчания при пороге 600с — норма")
 
-    def test_short_silence_threshold_nudges(self) -> None:
+    def test_short_silence_threshold_wakes(self) -> None:
         self.write_state(writer="agy", roles={"agy": {"last_seen": ago(400), "pane": "%1"}})
         strict = self.pilot(silence=100)
         strict.tick()
-        self.assertTrue(strict.pending("agy"), "400с молчания при пороге 100с — дефект")
+        self.assertTrue(self.wake(strict, "agy"),
+                        "400с молчания при пороге 100с — дефект")
 
 
 class TestTmuxPaths(PilotCase):
@@ -1079,7 +1171,7 @@ class TestOperatorSafety(PilotCase):
         pilot = self.pilot()
         pilot.own_pane = "%19"
         pilot.tick()
-        self.assertTrue(pilot.pending("agy"), "чужая панель — наша работа")
+        self.assertTrue(self.wake(pilot, "agy"), "чужая панель — наша работа")
 
     def test_own_pane_recorded_as_a_session_address_is_still_own(self) -> None:
         """Панель человека может быть записана адресом сессии, а не `%N`.
@@ -1135,13 +1227,20 @@ class TestVisibleWork(PilotCase):
         self.assertEqual("", pilot.pending("agy"),
                          "агент печатает — значит работает, и толкать его незачем")
 
-    def test_idle_pane_is_nudged(self) -> None:
+    def test_idle_pane_is_woken_silently(self) -> None:
+        """Пустой композер — дефект, и раньше он лечился печатью.
+
+        Теперь он лечится файлом. Проверка переехала с «что в очереди печати» на
+        «что в пробуждении», потому что по смыслу дефект один и тот же, а
+        количество нажатий клавиш — как раз то, что мы убираем.
+        """
         self.silent_writer_state()
         pilot = self.pilot()
         pilot.tmux = "/usr/bin/true"
         self.patch_composer(">", empty=True)
         pilot.tick()
-        self.assertTrue(pilot.pending("agy"), "пустой композер — вот это дефект")
+        self.assertTrue(self.wake(pilot, "agy"), "пустой композер — вот это дефект")
+        self.assert_printed_nothing(pilot, "agy")
 
     def test_missing_composer_counts_as_busy(self) -> None:
         """TUI перерисовывается, композера нет. Бить в этот момент — значит

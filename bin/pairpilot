@@ -74,6 +74,7 @@ from server import (  # noqa: E402  - после sys.path
     open_tasks,
     permissions_path,
     tasks_of,
+    utcnow,
     write_tasks_md,
 )
 
@@ -87,6 +88,13 @@ DEFAULT_REPLY_GRACE = 900.0
 # провисевший дольше, уже не помогает — он только отвлекает. Наблюдалось
 # вживую: напоминание ждало композер 22 минуты и было доставлено как свежее.
 DEFAULT_OUTBOX_TTL = 600.0
+# Сколько молчит роль, прежде чем пробуждение печатью станет эскалацией.
+#
+# Порядок намеренно перевёрнут относительно прежнего: раньше печать в композер была
+# ПЕРВЫМ шагом, и молчание означало «доставлю позже» — то есть почти всегда
+# печать. Теперь печать это исключение, а не правило: сначала пишем факт в файл,
+# затем опрашиваем, и если роль проснулась сама, не печатаем ничего.
+DEFAULT_WAKE_GRACE = 240.0
 DEFAULT_REPLY_HARD = 2400.0
 # Сколько провисает sealed-патч, прежде чем это станет дефектом, а не делом,
 # которое писатель возьмёт через минуту.
@@ -158,7 +166,8 @@ class Pilot:
                  allow: list[str] | None = None,
                  restart_limit: int = DEFAULT_RESTART_LIMIT,
                  restart_window: float = DEFAULT_RESTART_WINDOW,
-                 outbox_ttl: float = DEFAULT_OUTBOX_TTL) -> None:
+                 outbox_ttl: float = DEFAULT_OUTBOX_TTL,
+                 wake_grace: float = DEFAULT_WAKE_GRACE) -> None:
         self.state_dir = state_dir
         self.silence = silence
         self.interval = interval
@@ -174,6 +183,9 @@ class Pilot:
         self.store = Store(state_dir)
         self.outbox = state_dir / "pilot"
         self.outbox.mkdir(parents=True, exist_ok=True)
+        self.wake_root = state_dir / "wake"
+        self.wake_root.mkdir(parents=True, exist_ok=True)
+        self.wake_grace = max(1.0, float(wake_grace))
         self.reported: set[str] = set()
         self.skip: set[str] = set()
         self._default_list_named = False
@@ -403,6 +415,98 @@ class Pilot:
                 self.store.append_transcript("pilot_pane_shared", "pairpilot", pane=pane, roles=sorted(names))
         return True
 
+    # -------------------------------------------------------------- пробуждение
+
+    def mark_wake(self, state: dict, role: str, reason: str, text: str) -> None:
+        """Записать, что роль надо разбудить — в файл, а не в композер.
+
+        Печать в композер была единственным способом сказать соседу «у тебя
+        письмо», и это плохой способ: он ломается о занятый TUI, требует угадать
+        момент и оставляет след в чужом окне. Пробуждение по файлу не печатает
+        ничего — роль увидит его сама, когда посмотрит состояние, — и даёт
+        супервизору факт, по которому можно потом судить: будили или уже проснулся.
+
+        Текущий снимок `last_seen` кладётся рядом с фактом намерения. Сравнение
+        идёт с ним, а не с текущим временем: иначе роль, которая была awake в
+        момент постановки вопроса, была бы признана «проснувшейся» следующим же
+        тиком без единого своего действия.
+        """
+        path = self.wake_root / f"{role}.json"
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            info = (state.get("roles") or {}).get(role) or {}
+            path.write_text(json.dumps({
+                "role": role,
+                "reason": reason,
+                "asked_at": utcnow(),
+                "seen_at_ask": info.get("last_seen"),
+                "unread_at_ask": self.unread(state, role),
+                "text": text,
+            }, ensure_ascii=False, indent=2), encoding="utf-8")
+        except OSError as error:
+            # Не записали — значит, будить нечем, и это надо сказать, а не
+            # сделать вид, что роль получила напоминание.
+            self.store.append_transcript("pilot_wake_failed", "pairpilot",
+                                         target=role, error=str(error)[:120])
+            log(f"{role}: не смог записать пробуждение — {error}")
+            return
+        self.store.append_transcript("pilot_wake_pending", "pairpilot",
+                                     target=role, reason=reason)
+        log(f"{role}: {reason}, жду пробуждения молча (в печать не бью)")
+
+    def poll_wakes(self, state: dict) -> None:
+        """Опросить висящие пробуждения и решить по каждому: проснулся или нет.
+
+        Три исхода, и каждый виден в журнале:
+        - **проснулся** — `last_seen` сдвинулся или непрочитанных стало ноль.
+          Ничего не печатаем: роль уже в работе, и будить её значило бы мешать.
+        - **терпение кончилось** — роль молчит дольше `wake_grace`. Тогда печатаем,
+          один раз, и это уже эскалация, а не первый шаг.
+        - **всё ещё ждём** — тишина. Молчание, за которым смотрит супервизор,
+          обходится в ноль токенов.
+        """
+        if not self.wake_root.is_dir():
+            return
+        now = time.time()
+        for path in sorted(self.wake_root.glob("*.json")):
+            try:
+                wake = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                # Битый файл пробуждения нельзя чинить догадками: он удаляется,
+                # потому что иначе он будет висеть вечно, а роль так и не услышит.
+                path.unlink(missing_ok=True)
+                self.store.append_transcript("pilot_wake_damaged", "pairpilot",
+                                             file=path.name)
+                continue
+            role = str(wake.get("role") or "")
+            info = (state.get("roles") or {}).get(role) or {}
+            seen_now = info.get("last_seen")
+            seen_ask = wake.get("seen_at_ask")
+            unread_now = self.unread(state, role)
+            woke = (seen_now != seen_ask) or (unread_now < int(wake.get("unread_at_ask", 0)))
+            if woke:
+                path.unlink(missing_ok=True)
+                self.store.append_transcript("pilot_wake_acknowledged", "pairpilot",
+                                             target=role, reason=wake.get("reason"),
+                                             since_seconds=int(now - path.stat().st_mtime)
+                                             if path.exists() else 0)
+                log(f"{role}: проснулся сам, печать не понадобилась")
+                continue
+            if wake.get("escalated"):
+                continue
+            asked = parse_iso(wake.get("asked_at"))
+            age = now - asked.timestamp() if asked else 0.0
+            if age < self.wake_grace:
+                continue
+            # Эскалация: печатаем один раз. Дальше — молча, пока не проснётся.
+            self.store.append_transcript("pilot_wake_escalated", "pairpilot",
+                                         target=role, reason=wake.get("reason"),
+                                         age_seconds=int(age))
+            log(f"{role}: молчит {int(age // 60)} мин после пробуждения — печатаю")
+            self.enqueue(role, str(wake.get("text") or ""))
+            wake["escalated"] = True
+            path.write_text(json.dumps(wake, ensure_ascii=False, indent=2), encoding="utf-8")
+
     # --------------------------------------------------------------- outbox
 
     def enqueue(self, role: str, text: str) -> None:
@@ -504,14 +608,18 @@ class Pilot:
                 text = (f"[pairpilot] У тебя {missing} непрочитанных сообщений. "
                         f"Вызови pair_read и ответь соседу. Если всё сделано — "
                         f"предложи следующий кусок работы через pair_note.")
-                self.enqueue(role, text)
+                # Не печатаем: пишем факт пробуждения и ждём опроса. Раньше печать
+                # в композер была первым шагом, и «не печатать» означало «не
+                # знать», когда ещё можно. Теперь «не печатать» — это норма, и
+                # вопрос «будил или проснулся сам» имеет наблюдаемый ответ.
+                self.mark_wake(state, role, f"{missing} непрочитанных", text)
                 # Напоминание попадает в журнал: §11 требует, чтобы по журналу
                 # было видно, что происходило, а этот шаг раньше не оставлял следа.
                 # Без записи повторяющийся поток был бы невидим, и «один раз» нечем
                 # было бы проверить.
                 self.store.append_transcript("pilot_unread_nudge", "pairpilot",
                                              target=role, unread=missing)
-                log(f"{role}: {missing} непрочитанных, поставил напоминание")
+                log(f"{role}: {missing} непрочитанных, жду молча")
         return out
 
     def stale_writer(self, state: dict) -> None:
@@ -543,8 +651,9 @@ class Pilot:
                 f"и работа встанет до утра. Продолжай свою часть, закрой фазу, "
                 f"либо пиши в заметку, что заблокировано и чем. Помечать «делаю» "
                 f"не считается: нужен реальный шаг или явная блокировка.")
-        self.enqueue(writer, text)
-        log(f"{writer} молчит {int(age // 60)} мин и держит фазу {state.get('phase')!r}")
+        self.mark_wake(state, writer, f"молчит {int(age // 60)} мин и держит фазу", text)
+        log(f"{writer} молчит {int(age // 60)} мин и держит фазу {state.get('phase')!r} "
+            f"— жду молча")
 
     def pending_answers(self, state: dict) -> None:
         """Отправили запрос, ответа нет. Это хуже молчания: молчание может означать
@@ -965,6 +1074,11 @@ class Pilot:
         self.restart_agent(state)
         self.dead_pane(state)
         self.unread_peers(state)
+        # Опрос идёт ДО постановки новых пробуждений и до печати: у кого роль уже
+        # проснулась, пробуждение снимается молча, и в очередь печати не попадает
+        # ничего. Если бы опрос шёл после flush_outbox, то тик, в котором роль
+        # только что проснулась, всё равно напечатал бы в её композер.
+        self.poll_wakes(state)
         self.pending_answers(state)
         self.stalled_patches(state)
         self.flush_outbox(state)
