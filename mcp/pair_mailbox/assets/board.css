@@ -1,0 +1,218 @@
+/* Оформление дашборда пары. Контракт токенов — docs/theme-tokens.md.
+ *
+ * Инвариант, который этот файл обязан держать: Zero Hardcoded Colors. Ни одного
+ * #hex/rgb()/hsl() вне блоков объявления токенов. Всё остальное — hsl(var(--x) / a).
+ * Проверяется тестом: если сюда попадёт голый цвет, тест упадёт.
+ *
+ * Токены заданы в пространстве HSL без hsl(), потому что контракт требует именно
+ * такого формата (`--background: 240 10% 3.9%`) и именно так их умеет Tailwind
+ * из docs/theme-tokens.md §3. Писать `hsl(var(--background))` можно, писать
+ * `--background: #0a0a0b` — нельзя: это разные контракты, и через полгода никто
+ * не вспомнит, какой из них имелся в виду.
+ */
+
+:root {
+  /* Светлая тема — значения контракта, §1 docs/theme-tokens.md. */
+  --background: 0 0% 100%;
+  --foreground: 240 10% 3.9%;
+  --card: 0 0% 100%;
+  --card-foreground: 240 10% 3.9%;
+  --popover: 0 0% 100%;
+  --popover-foreground: 240 10% 3.9%;
+  --primary: 240 5.9% 10%;
+  --primary-foreground: 0 0% 98%;
+  --secondary: 240 4.8% 95.9%;
+  --secondary-foreground: 240 5.9% 10%;
+  --muted: 240 4.8% 95.9%;
+  --muted-foreground: 240 3.8% 46.1%;
+  --accent: 240 4.8% 95.9%;
+  --accent-foreground: 240 5.9% 10%;
+  --border: 240 5.9% 90%;
+  --ring: 240 5.9% 10%;
+  --destructive: 0 84.2% 60.2%;
+  --destructive-foreground: 0 0% 98%;
+  --radius: 0.5rem;
+
+  /* Токены состояния. Не из контракта: контракт описывает поверхности и
+   * акценты, а «зелёный = жив» в контракте не значится, и без явного токена
+   * статус-индикаторы пришлось бы красить голыми цветами, то есть сломать
+   * инвариант, который выше объявлен. Ссылка на источник зелёного/жёлтого/
+   * красного: те же HSL-координаты, что у статусных цветов Tailwind, чтобы
+   * дашборд совпадал с остальным интерфейсом проекта. */
+  --ok: 142 71% 35%;
+  --warn: 32 95% 30%;
+  --bad: 0 72% 45%;
+  --unknown: 240 3.8% 46.1%;
+
+  /* Плотность. Дашборд смотрят, пока думают о чём-то ещё, поэтому панели
+   * компактные: много строк на панель — это прокрутка вместо взгляда. */
+  --gap: 0.5rem;
+  --pad: 0.6rem 0.7rem;
+  --row: 1.4rem;
+}
+
+[data-theme="dark"] {
+  --background: 240 10% 3.9%;
+  --foreground: 0 0% 98%;
+  --card: 240 10% 5.5%;
+  --card-foreground: 0 0% 98%;
+  --popover: 240 10% 5.5%;
+  --popover-foreground: 0 0% 98%;
+  --primary: 0 0% 98%;
+  --primary-foreground: 240 5.9% 10%;
+  --secondary: 240 3.7% 15.9%;
+  --secondary-foreground: 0 0% 98%;
+  --muted: 240 3.7% 15.9%;
+  --muted-foreground: 240 5% 64.9%;
+  --accent: 240 3.7% 15.9%;
+  --accent-foreground: 0 0% 98%;
+  --border: 240 3.7% 15.9%;
+  --ring: 240 4.9% 83.9%;
+  --destructive: 0 62.8% 30.6%;
+  --destructive-foreground: 0 0% 98%;
+
+  --ok: 142 60% 55%;
+  --warn: 38 92% 60%;
+  --bad: 0 84% 68%;
+  --unknown: 240 5% 64.9%;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: hsl(var(--background));
+  color: hsl(var(--foreground));
+  font: 13px/1.45 ui-monospace, "SFMono-Regular", "JetBrains Mono", Menlo, monospace;
+}
+
+/* Шапка: что это и когда собрано. Метка времени важнее названия проекта —
+ * человек возвращается к вкладке через час и первым делом спрашивает «свежее ли». */
+.bar {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--gap);
+  padding: 0.5rem 0.7rem;
+  border-bottom: 1px solid hsl(var(--border));
+  background: hsl(var(--card));
+  position: sticky;
+  top: 0;
+  z-index: 2;
+}
+
+.bar h1 { font-size: 13px; margin: 0; font-weight: 600; }
+.bar-right { display: flex; align-items: baseline; gap: var(--gap); }
+
+.btn {
+  font: inherit;
+  color: hsl(var(--secondary-foreground));
+  background: hsl(var(--secondary));
+  border: 1px solid hsl(var(--border));
+  border-radius: var(--radius);
+  padding: 0.15rem 0.45rem;
+  cursor: pointer;
+}
+.btn:hover { background: hsl(var(--accent)); }
+.btn:focus-visible { outline: 2px solid hsl(var(--ring)); outline-offset: 1px; }
+.btn[aria-pressed="true"] { background: hsl(var(--primary)); color: hsl(var(--primary-foreground)); }
+
+.muted { color: hsl(var(--muted-foreground)); }
+.ok { color: hsl(var(--ok)); }
+.warn { color: hsl(var(--warn)); }
+.bad { color: hsl(var(--bad)); }
+
+main { padding: var(--gap); display: flex; flex-direction: column; gap: var(--gap); }
+
+.panel {
+  background: hsl(var(--card));
+  color: hsl(var(--card-foreground));
+  border: 1px solid hsl(var(--border));
+  border-radius: var(--radius);
+  padding: var(--pad);
+}
+.panel > h2 {
+  font-size: 12px;
+  margin: 0 0 0.35rem;
+  color: hsl(var(--muted-foreground));
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.grid { display: grid; gap: var(--gap); grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr)); }
+
+/* Фаза раунда: дорожка из пяти шагов. Завершённый шаг приглушён, текущий —
+ * основной цвет, и только он привлекает внимание, потому что остальные четыре
+ * интересуют человека ровно настолько, чтобы увидеть «дальше». */
+.phases { display: flex; gap: 0.25rem; margin: 0.3rem 0 0.45rem; }
+.phase {
+  flex: 1;
+  text-align: center;
+  padding: 0.15rem 0.2rem;
+  border-radius: calc(var(--radius) / 2);
+  background: hsl(var(--muted));
+  color: hsl(var(--muted-foreground));
+  border: 1px solid transparent;
+  font-size: 11px;
+}
+.phase.done { color: hsl(var(--foreground)); }
+.phase.now {
+  background: hsl(var(--primary));
+  color: hsl(var(--primary-foreground));
+  border-color: hsl(var(--ring));
+  font-weight: 600;
+}
+
+.kv { display: grid; grid-template-columns: auto 1fr; gap: 0.1rem 0.6rem; }
+.kv dt { color: hsl(var(--muted-foreground)); }
+.kv dd { margin: 0; overflow-wrap: anywhere; }
+
+/* Строка агента. Точка статуса — единственный цветной элемент строки, поэтому
+ * взгляд сразу находит «кто сейчас в порядке», а остальное читается текстом. */
+.role { display: flex; align-items: baseline; gap: 0.4rem; padding: 0.15rem 0; }
+.role + .role { border-top: 1px solid hsl(var(--border)); }
+.dot {
+  width: 0.5rem; height: 0.5rem;
+  border-radius: 50%;
+  flex: none;
+  background: hsl(var(--unknown));
+  transform: translateY(0.05rem);
+}
+.dot.ok { background: hsl(var(--ok)); }
+.dot.warn { background: hsl(var(--warn)); }
+.dot.bad { background: hsl(var(--bad)); }
+.role-name { font-weight: 600; }
+.tag {
+  border: 1px solid hsl(var(--border));
+  border-radius: var(--radius);
+  padding: 0 0.3rem;
+  font-size: 11px;
+  color: hsl(var(--muted-foreground));
+}
+.tag.writer { border-color: hsl(var(--ring)); color: hsl(var(--foreground)); }
+
+/* Лента событий: одна строка на событие, время слева фиксированной ширины,
+ * чтобы колонка времени не «прыгала» при обновлении страницы. */
+.events { display: flex; flex-direction: column; }
+.event {
+  display: grid;
+  grid-template-columns: 4.6rem 8.5rem auto;
+  gap: 0.4rem;
+  padding: 0.1rem 0;
+  align-items: baseline;
+}
+.event .kind { color: hsl(var(--muted-foreground)); }
+.event .sum { overflow-wrap: anywhere; }
+.event.alarm .kind { color: hsl(var(--bad)); font-weight: 600; }
+
+.task { padding: 0.15rem 0; }
+.task + .task { border-top: 1px solid hsl(var(--border)); }
+.task.open .text { font-weight: 600; }
+.task.done .text { color: hsl(var(--muted-foreground)); text-decoration: line-through; }
+
+.banner {
+  border-left: 3px solid hsl(var(--bad));
+  background: hsl(var(--muted));
+  color: hsl(var(--foreground));
+  padding: 0.4rem 0.6rem;
+  border-radius: var(--radius);
+}

@@ -127,6 +127,35 @@ bin/pairctl autonomy semi      # works alone, but closes only on your word
 bin/pairctl autonomy observe   # only reports; the human is at the wheel
 ```
 
+### 4a. Watch it without a server
+
+```bash
+bin/pairboard                   # build .pair/board.html, print the file:// url
+bin/pairboard --watch 5         # rebuild every 5s, page reloads itself
+bin/pairboard --out /tmp/b.html # somewhere else
+bin/pairboard --print-json      # the snapshot alone, for a pipe
+```
+
+One self-contained HTML file: no web server, no localhost, no requests. It opens by
+double-clicking and can be copied to another machine as-is. The page shows the round
+and its phase, every role with its pane and pid and how long it has been quiet, the
+supervisor (alive or not, its log, its report), the task ledger and the tail of the
+transcript.
+
+Two things are worth knowing before you open it:
+
+- **Without `--watch` it is a photograph, not a live view.** The page cannot read
+  `.pair/` itself — a browser on `file://` is not allowed to fetch local files — so
+  freshness has to come from the generator rewriting the file and the page reloading
+  itself. `--watch` is what makes it live, not a decoration.
+- **It never writes to `.pair/`.** The only file it produces is the HTML itself, and
+  it defaults to `.pair/board.html`, which `pairctl reset` removes with the rest of
+  the disposable state.
+
+Dark by default, light one click away; the choice and the pause are remembered in
+`localStorage`, and the pause button stops the reload while you read. If you want it
+near the terminal, `bin/pairboard --watch 5 &` in another pane is enough.
+
 Note that `observe` is not "gates off": proof is still required to close a round in
 every mode. `observe` only means it will not restart agents and does not need your
 word. See PROTOCOL §10b.
