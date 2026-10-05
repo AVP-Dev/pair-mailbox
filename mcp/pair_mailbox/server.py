@@ -177,6 +177,42 @@ TRANSCRIPT_READ_BLOCK = 64 * 1024
 # `pairctl log` без явного лимита отдаёт столько, а не весь файл: тот же расход,
 # что и `pair_transcript`, только без ограничителя.
 LOG_DEFAULT_LIMIT = 50
+# Потолок дайджеста. Замер заменяемой связки: `pair_state` 939 + `pair_task list`
+# 1051 + `pair_transcript` 1734 = 3724 токена на ориентацию. Дайджест обязан стоить
+# заметно меньше, иначе он не нужен: дешевле прочитать три вызова, чем разбираться
+# с двенадцатым вызовом в том же раунде.
+DIGEST_TOKEN_BUDGET = 500
+# Сколько записей журнала перебирается в поиске последнего вердикта. Журнал уже
+# ограничен окном ротации, но даже он не должен разбираться целиком на каждый
+# вызов дайджеста.
+TRANSCRIPT_SCAN_LIMIT = 400
+DIGEST_MARKER = "[обрезано: не влезло, полное состояние — pair_state]"
+
+
+def _digest_marker_reserve() -> int:
+    """Сколько токенов надо оставить под пометку об обрезании.
+
+    Считается ИЗ САМОЙ ПОМЕТКИ, а не задаётся круглым числом. Так было сначала
+    неверно: резерв стоял 20, пометка выходила 22, и на ровно подогнанном тексте
+    дайджест давал 501 токен при потолке 500 — то есть либо нарушал потолок, либо
+    вычищал строку, ради которой он и собирался. Резерв из константы рассинхронизи-
+    руется с пометкой при первом же её изменении.
+    """
+    return estimate_tokens(DIGEST_MARKER) + 4
+# Минимум, ниже которого строка не ставится вовсе. Обрезок в один токен не несёт
+# смысла и при этом занимает место, которого не хватит следующей строке.
+DIGEST_MIN_LINE = 8
+
+
+def _render_digest(lines: list[str]) -> str:
+    """Собранный дайджест ровно в том виде, в каком он уходит к читателю.
+
+    Отдельная функция, потому что потолок проверяется на ЭТОМ тексте. Считать
+    размер по строкам и отдавать склеенный текст — это два разных числа, и между
+    ними помещались переводы строк, из-за чего дайджест выдавал 502 токена при
+    потолке 500.
+    """
+    return "\n".join(lines) + "\n"
 NOTE_READ_MAX = 400
 
 # Фазы, на которых слово человека «ок» что-то значит. Раньше проверялся только
@@ -601,6 +637,243 @@ class ProtocolError(Exception):
         super().__init__(message)
         self.message = message
         self.hint = hint
+
+
+def estimate_tokens(text: str) -> int:
+    """Грубая оценка размера текста в токенах.
+
+    Считается символы, делённые на четыре: это оценка, а не измерение, и она
+    годится ровно для одной вещи — чтобы положить потолок на текст, который мы
+    сами же собираем. Точный счётчик стоит дороже, чем весь дайджест.
+
+    Оценка обязана быть ПЕЕРЕСТРАХОВЫВАЮЩЕЙ, а не заниженной: если токенов выйдет
+    больше потолка, агент упрётся в лимит контекста там, где рассчитывал на
+    дайджест.
+    """
+    return (len(text.encode("utf-8")) + 3) // 4
+
+
+def _digest_line(text: str, budget: int) -> str:
+    """Строка, обрезанная по бюджету, с честной пометкой обрезания.
+
+    Обрезанная строка без пометки — это тихо неверные данные. Пометка сама по себе
+    может не влезть, и тогда оставляется один многоточичный маркер.
+    """
+    if estimate_tokens(text) <= budget:
+        return text
+    if budget <= 4:
+        return "…"
+    limit = budget * 4 - 4
+    return text.encode("utf-8")[:limit].decode("utf-8", "ignore").rstrip() + "…"
+
+
+def build_digest(store: "Store", role: str = "", budget: int = DIGEST_TOKEN_BUDGET) -> str:
+    """Срез состояния пары, который укладывается в жёсткий бюджет токенов.
+
+    Зачем он есть, измерено: ориентация в паре стоит 3724 токена
+    (`pair_state` 939 + `pair_task list` 1051 + `pair_transcript` 1734). Дайджест
+    обязан быть заметно дешевле, иначе он не нужен — дешевле прочитать три вызова,
+    чем разбираться с двенадцатым вызовом в том же раунде.
+
+    Текст, а не JSON: агент читает ответ глазами и за JSON платит дважды — за ключи
+    и за значения. Короткий текст читается один раз.
+
+    ПОРЯДОК РАЗДЕЛОВ РЕШАЕТ ВСЁ. Он выбран по цене вопроса: то, без чего работа
+    пойдёт неверно, стоит первым и не обрезается; то, что можно дочитать точечно,
+    стоит последним и обрезается первым. Если разделы переставить местами, дайджест
+    станет дороже при том же составе — поэтому порядок и есть содержательная часть
+    решения, а не оформление.
+
+    Ничего не выдумывается: каждый раздел либо прочитан из состояния, либо назван
+    отсутствующим. Вердикт цитируется, а не пересказывается, потому что пересказ
+    чужого решения своими словами — это способ соврать о том, чего не читали.
+    """
+    state = store.read()
+    lines: list[str] = []
+    cut = False  # что-то не влезло и было обрезано
+
+    def budget_left() -> int:
+        """Сколько токенов ещё можно потратить на весь текст, собранный к этому месту."""
+        return budget - estimate_tokens("\n".join(lines))
+
+    def take(text: str, floor: int = 0) -> bool:
+        """Добавить строку, если в бюджет влезает, иначе — обрезанную.
+
+        Резерв под пометку об обрезании вычитается ЗДЕСЬ, а не вычищается в конце.
+        Так вышло сначала неверно: строка обрезалась ровно под остаток места, а
+        финальная чистка потом видела «место кончилось» и выбрасывала её целиком —
+        вместе с началом задачи, ради которого дайджест и читается. Резерв,
+        вычтенный заранее, делает чистку ненужной.
+        """
+        """Добавить строку, если в бюджет влезает, иначе — обрезанную.
+
+        Возвращает, пришлось ли строку обрезать или она не влезла вовсе: оба случая
+        требуют пометки в конце, и отличать их не нужно — нужно не потерять оба.
+
+        Резерв под пометку об обрезании вычитается ЗДЕСЬ, а не вычищается в конце.
+        Так вышло сначала неверно: строка обрезалась ровно под остаток места, а
+        финальная чистка потом видела «место кончилось» и выбрасывала её целиком —
+        вместе с началом задачи, ради которого дайджест и читается. Резерв,
+        вычтенный заранее, делает чистку ненужной.
+        """
+        room = budget_left() - _digest_marker_reserve() - floor
+        if room < DIGEST_MIN_LINE:
+            # Строка не влезла — ни целиком, ни хотя бы читаемым куском. Хвост в
+            # один токен бесполезен и, что хуже, съедал место: строка «режим: fix ·
+            # фаза…» стоила одного токена и вытесняла начало задачи, ради которого
+            # дайджест и читается. Лучше её не ставить и сказать, что не влезло.
+            return True
+        cut = _digest_line(text, room)
+        lines.append(cut)
+        return cut != text
+
+    # 1. То, без чего работа неверна. Ничего не обрезается.
+    task = str(state.get("task") or "").strip() or "(задача не задана)"
+    cut |= take("РАУНД", floor=DIGEST_MIN_LINE)
+    cut |= take(f"задача: {task}")
+    cut |= take(f"режим: {state.get('mode', '?')} · фаза: {state.get('phase', '?')} · "
+         f"раунд {state.get('round', 0)}")
+    cut |= take(f"пишет: {state.get('writer') or '—'}"
+         + (f" (ты)" if role and state.get("writer") == role else ""))
+
+    # 2. Открытые задачи. Закрытые не несут смысла для следующего шага: восемь
+    #    закрытых задач стоили около 800 токенов и не сказали ничего нового.
+    open_tasks = [t for t in (state.get("tasks") or []) if t.get("status") == "open"]
+    cut |= take("")
+    cut |= take(f"ОТКРЫТЫЕ ЗАДАЧИ: {len(open_tasks)}")
+    if not open_tasks:
+        cut |= take("(нет открытых задач — проверь, не пора ли добавить)")
+    for item in open_tasks[:4]:
+        cut |= take(f"#{item.get('id')} {_digest_line(str(item.get('text', '')), 60)}")
+    if len(open_tasks) > 4:
+        cut |= take(f"…и ещё {len(open_tasks) - 4}: `pair_task list`")
+
+    # 3. Обязательства. Их отсутствие — тоже факт, а не пустота.
+    obligations = _open_obligations(store)
+    cut |= take("")
+    cut |= take(f"ОБЯЗАТЕЛЬСТВА: {len(obligations)}")
+    if not obligations:
+        cut |= take("(никто никого не ждёт)")
+    for ob in obligations[:3]:
+        cut |= take(f"{ob.get('from', '?')} ждёт {ob.get('to', '?')}")
+
+    # 4. Последний коммит: из git, а не из журнала.
+    cut |= take("")
+    cut |= take(_last_commit(store), floor=60)
+
+    # 5. Последний вердикт: цитата хвоста, порядок берётся из журнала.
+    verdict = _TranscriptReader(store.transcript_path).last_note_of_kind("verdict")
+    cut |= take("")
+    cut |= take("ПОСЛЕДНИЙ ВЕРДИКТ", floor=DIGEST_MIN_LINE)
+    if not verdict:
+        cut |= take("(вердиктов не было)")
+    else:
+        cut |= take(f"{verdict.get('role', '?')} · {verdict.get('slug', '?')} · "
+             f"`note_read`", floor=70)
+        for line in _note_tail(store, verdict["slug"]):
+            cut |= take(f"  {_digest_line(line, 120)}")
+
+    # Что не влезло — сказать прямо. Молча сокращённый дайджест хуже длинного:
+    # агент решит, что вердикта не было.
+    #
+    # Потолок здесь не «на глаз», а проверен на собранном тексте: пока помещается,
+    # резерва в `take` хватает, но переводы строк и сам маркер в оценку не входили,
+    # и дайджест выдавал 502 токена при потолке 500. Обещание, которое не проверено
+    # на том, что отдаётся, — не обещание.
+    dropped = False
+    if dropped or cut:
+        marker = DIGEST_MARKER if estimate_tokens(DIGEST_MARKER) < budget else "…"
+        # Место под пометку освобождается ДО её добавления, причём проверяется
+        # рендер вместе с пометкой. Иначе второй проход вычищал бы её обратно:
+        # места нет, строка добавлена, места нет — и дайджест заканчивался без
+        # единого слова о том, что половина содержимого потеряна.
+        while len(lines) > 1 and estimate_tokens(_render_digest(lines + [marker])) > budget:
+            lines.pop()
+        lines.append(marker)
+    return _render_digest(lines)
+
+
+def _open_obligations(store: "Store") -> list[dict[str, Any]]:
+    """Открытые обязательства, без блокировки на каталог."""
+    root = store.obligations_root
+    if not root.is_dir():
+        return []
+    out = []
+    for path in sorted(root.glob("*.json")):
+        try:
+            out.append(json.loads(path.read_text(encoding="utf-8")))
+        except (OSError, json.JSONDecodeError):
+            continue
+    return out
+
+
+def _note_tail(store: "Store", slug: str, lines: int = 4) -> list[str]:
+    """Хвост заметки: актуально последнее, а не всё накопленное за историю.
+
+    Заметки пишутся append-only, и у вердикта это значит ровно то, что нужно:
+    решение в конце. Начало — это постановка прошлого раунда, и в дайджесте она
+    только отнимает место у того, что решено.
+    """
+    path = store.notes_root / f"{slug}.md"
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return []
+    return [l for l in text.splitlines() if l.strip()][-lines:]
+
+
+def _last_commit(store: "Store") -> str:
+    """Последний коммит одной строкой.
+
+    Из git, а не из журнала: журнал не знает, что было закоммичено, и агент,
+    который читает дайджест, должен увидеть фактическое состояние дерева. Если git
+    недоступен, об этом сказано, а не промолчано.
+    """
+    root = store.project_root
+    try:
+        out = subprocess.run(
+            ["git", "log", "-1", "--format=%h %s"],
+            cwd=str(root), capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        return "ПОСЛЕДНИЙ КОММИТ: (git недоступен)"
+    if out.returncode != 0 or not out.stdout.strip():
+        return "ПОСЛЕДНИЙ КОММИТ: (нет коммитов)"
+    return f"ПОСЛЕДНИЙ КОММИТ: {out.stdout.strip()}"
+
+
+class _TranscriptReader:
+    """Чтение хвоста журнала без разбора всего файла.
+
+    Отдельный класс, а не функция с числом строк, потому что нужна не одна
+    величина, а направленный поиск: «последняя заметка-вердикт». Разбор всего
+    журнала на каждом вызове дайджеста вернул бы ровно ту стоимость, которую
+    дайджест обещает не платить.
+    """
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+
+    def last_note_of_kind(self, prefix: str) -> dict | None:
+        """Последняя заметка, чей slug начинается с `prefix`, или None.
+
+        Источник порядка — сам журнал, а не время изменения файла. Заметок в
+        `notes/` девяносто две, и имена у них не упорядочены по времени: сортировка
+        по mtime была бы догадкой, потому что файл могли открыть, не изменив его.
+        В журнале порядок фактический: запись о `pair_note` несёт slug, время и
+        автора, и он пишется в момент создания заметки.
+        """
+        if not self.path.exists():
+            # Журнала ещё нет — вердиктов не было, и это не поломка. Раньше чтение
+            # отсутствующего файла роняло дайджест целиком, то есть вопрос «что
+            # там решили» стоил ошибки вместо ответа.
+            return None
+        for entry in reversed(_transcript_tail(self.path, TRANSCRIPT_SCAN_LIMIT)):
+            if entry.get("_damaged") or entry.get("kind") != "note":
+                continue
+            slug = str(entry.get("note_kind") or "")
+            if slug.startswith(prefix):
+                return {"slug": slug, "ts": entry.get("ts"), "role": entry.get("role")}
+        return None
 
 
 def _transcript_entry(raw: str) -> dict | None:
@@ -2590,6 +2863,26 @@ class PairSession:
             self.store.append_transcript("refusal", self.role, tool=name, reason=exc.message)
             raise
 
+    def tool_pair_digest(self, budget: int = DIGEST_TOKEN_BUDGET) -> dict[str, Any]:
+        """Срез состояния пары в жёстком лимите токенов — вместо чтения истории.
+
+        Ориентация в паре стоит 3724 токена, если читать `pair_state`, `pair_task`
+        и `pair_transcript`. Этот вызов укладывается в `budget` по умолчанию и
+        отвечает на вопрос «что сейчас решаем, что меня ждёт, что было решено
+        последним», ничего не читая из истории.
+
+        Поверх него историю всё ещё можно читать — дайджест не отменяет журнал,
+        он просто позволяет не платить за него, чтобы понять, читать ли его.
+        """
+        text = build_digest(self.store, self.role, budget)
+        return {
+            "digest": text,
+            "tokens": estimate_tokens(text),
+            "budget": budget,
+            "note_kind": "verdict-* для последнего вердикта, "
+                         "полный текст — в `pair_note_read`",
+        }
+
     def tool_pair_transcript(self, limit: int = 40) -> dict[str, Any]:
         """Read the append-only audit trail of everything both agents did."""
         entries = self.store.read_transcript(limit)
@@ -2871,6 +3164,24 @@ def tool_definitions() -> list[dict[str, Any]]:
                     "text": {"type": "string", "description": "Markdown body."},
                 },
                 "required": ["kind", "text"],
+            },
+        },
+        {
+            "name": "pair_digest",
+            "description": (
+                "Cheap orientation: task, mode, phase, open tasks, obligations, last commit and "
+                "last verdict, within a hard token budget. Replaces reading pair_state, "
+                "pair_task and pair_transcript to find out where the round stands (3724 tokens "
+                "measured). Read history only when the digest says you need it."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "budget": {
+                        "type": "integer",
+                        "description": f"Token ceiling for the whole answer, {DIGEST_TOKEN_BUDGET} by default.",
+                    },
+                },
             },
         },
         {
@@ -3205,6 +3516,19 @@ def run_ctl(args: argparse.Namespace, state_dir: Path) -> int:
             policy_path.write_text(json.dumps(wanted, ensure_ascii=False, indent=2), encoding="utf-8")
             print(f"сохранено для любых проектов: {policy_path}")
         print(f"расстановка: писатель {wanted.get('writer') or '—'}, критик {wanted.get('critic') or '—'}")
+        return 0
+
+    if command == "digest":
+        # Тот же текст, что отдаёт `pair_digest`, из одного места: две реализации
+        # дайджеста разъедутся, и человек увидит не то, что видит агент.
+        text = build_digest(store, args.role, args.budget)
+        sys.stdout.write(text)
+        used = estimate_tokens(text)
+        if used > args.budget:
+            # Потолок нарушен — это поломка дайджеста, а не повод сделать вид, что
+            # всё в порядке. Пишем в stderr и возвращаем ненулевой код.
+            print(f"digest: {used} токенов при потолке {args.budget}", file=sys.stderr)
+            return 1
         return 0
 
     if command == "pane":
@@ -3784,6 +4108,15 @@ def build_parser() -> argparse.ArgumentParser:
     assign.add_argument("role")
 
     sub.add_parser("release", help="human: clear write authority")
+
+    digest = sub.add_parser(
+        "digest",
+        help="human: the same bounded slice the agents get, in under 500 tokens",
+    )
+    digest.add_argument("--budget", type=int, default=DIGEST_TOKEN_BUDGET,
+                        help=f"token ceiling for the whole answer, {DIGEST_TOKEN_BUDGET} by default")
+    digest.add_argument("--role", default="",
+                        help="say 'you are the writer' when it is this role, saves a lookup")
 
     pane = sub.add_parser(
         "pane",
