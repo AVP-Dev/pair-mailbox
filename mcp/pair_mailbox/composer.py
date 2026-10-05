@@ -105,10 +105,15 @@ def pane_identity(tmux: str, pane: str) -> dict:
         [tmux, "display-message", "-p", "-t", pane,
          "#{pane_dead}\t#{pane_current_path}"],
         capture_output=True, text=True, timeout=5)
-    if r.returncode != 0:
-        return {"exists": False, "alive": False, "path": ""}
-    parts = r.stdout.strip().split("\t")
+    # tmux на НЕСУЩЕСТВУЮЩУЮ панель отвечает кодом 0 и пустым выводом — это
+    # ровно тот же факт, из-за которого фантомная панель когда-то считалась
+    # живой. Поэтому одного кода возврата мало: пустой вывод тоже означает,
+    # что панели нет. Раньше exists выводился только из returncode и врал:
+    # итог был безопасным случайно, а не по замыслу.
+    parts = r.stdout.strip().split("\t") if r.stdout.strip() else []
     dead = parts[0].strip() if parts else ""
+    if r.returncode != 0 or not dead:
+        return {"exists": False, "alive": False, "path": ""}
     path = parts[1].strip() if len(parts) > 1 else ""
     return {"exists": True, "alive": dead in ("0", "false"), "path": path}
 

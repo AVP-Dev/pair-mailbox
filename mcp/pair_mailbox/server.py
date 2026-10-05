@@ -1373,8 +1373,14 @@ class PairSession:
                 "deliver_refused_foreign_pane", self.role, to=to,
                 pane=pane, reason=why_foreign,
             )
+            # Причина отказа — в теме сообщения, а не только в транскрипте.
+            # У защиты три разных отказа (панели нет, панель мертва, панель
+            # чужого проекта), и одна общая тема «панель чужого проекта» вводила
+            # соседа в заблуждение: agy получил отказ «панель отсутствует» с
+            # темой про чужой проект и пошёл искать несуществующий конфликт.
             send_res = self.tool_pair_send(
-                to=to, text=text, subject="[mailbox fallback: панель чужого проекта]")
+                to=to, text=text,
+                subject=f"[mailbox fallback: {why_foreign}]")
             return {
                 "delivered": False,
                 "why": why_foreign,

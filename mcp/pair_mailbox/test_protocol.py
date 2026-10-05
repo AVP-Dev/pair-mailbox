@@ -3204,6 +3204,24 @@ class TestPaneIdentityIsNotLiveness(PairTestCase):
         self.assertTrue(foreign, "фантомная панель не проходит")
         self.assertIn("отсутствует", why)
 
+    def test_a_nonexistent_pane_is_not_reported_as_existing(self) -> None:
+        """Живой tmux, а не мок: именно мок эту ошибку и не поймал бы.
+
+        tmux на несуществующую панель отвечает кодом 0 и ПУСТЫМ выводом, поэтому
+        exists, выведенный только из кода возврата, врал: панель %49 значилась
+        существующей. Итог refusа был безопасным случайно — alive вычислялся
+        верно, — но поле само по себе было неправдой, и любой будущий вызывающий
+        ему поверил бы зря.
+        """
+        import composer
+        tmux = shutil_which("tmux")
+        if not tmux:
+            self.skipTest("tmux недоступен в этом окружении")
+        ident = composer.pane_identity(tmux, "%499999")
+        self.assertFalse(ident["exists"], "несуществующая панель не существует")
+        self.assertFalse(ident["alive"])
+        self.assertEqual(ident["path"], "")
+
     def test_a_shared_parent_directory_is_refused(self) -> None:
         """Панель из ~/work общая для нескольких проектов — значит не наша.
 
