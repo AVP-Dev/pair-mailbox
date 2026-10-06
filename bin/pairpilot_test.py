@@ -275,7 +275,82 @@ class TestLiveness(PilotCase):
                          "эскалация печатает один раз, а не каждый тик")
         kinds = [e.get("kind") for e in self.transcript_entries()]
         self.assertEqual(1, kinds.count("pilot_wake_escalated"),
-                         "эскалация не должна повторяться")
+                         "эскалация не должна повторяться на каждом тике")
+
+    def test_escalation_repeats_after_a_long_silence(self) -> None:
+        """Эскалация обязана повторяться.
+
+        Прежний контракт был «ровно один раз за жизнь роли», и он оказался
+        ловушкой без выхода: файл удаляется только когда роль ПРОСНУЛАСЬ, поэтому
+        у молчающей роли вторая эскалация невозможна в принципе. Найдено вживую:
+        pi молчал час, файл висел с escalated, супервизор не печатал.
+        """
+        self.write_state(writer="agy", roles={"agy": {"last_seen": ago(3600), "pid": 1, "pane": "%1"}})
+        pilot = self.pilot()
+        pilot.wake_grace = 0.0
+        pilot.tick()
+        pilot.tick()
+        self.assertTrue(pilot.pending("agy"), "первая эскалация обязана быть")
+        # Очередь очищается: иначе следующая проверка увидит не свою эскалацию, а
+        # подталкивание по простою писателя — другой повод и другой текст.
+        # Проверяется именно повтор пробуждения.
+        pilot.outbox_file("agy").unlink(missing_ok=True)
+
+        # Пауза между повторами ещё не прошла — тикаем часто, повтора быть не должно.
+        for _ in range(5):
+            pilot.tick()
+        self.assertEqual("", pilot.pending("agy"),
+                         "в пределах паузы повторять нельзя, это шум")
+
+        # Пауза прошла, роль не проснулась — повтор обязан быть.
+        wake_file = pilot.wake_root / "agy.json"
+        payload = json.loads(wake_file.read_text(encoding="utf-8"))
+        payload["escalated_at"] = ago(int(pairpilot.WAKE_ESCALATE_REPEAT_SECONDS) + 60)
+        wake_file.write_text(json.dumps(payload), encoding="utf-8")
+
+        pilot.tick()
+        self.assertTrue(pilot.pending("agy"),
+                        "роль молчит дольше паузы — повторная эскалация обязана быть")
+        kinds = [e.get("kind") for e in self.transcript_entries()]
+        self.assertGreaterEqual(kinds.count("pilot_wake_escalated"), 2,
+                                "повтор должен попасть в транскрипт")
+        repeats = [e for e in self.transcript_entries()
+                   if e.get("kind") == "pilot_wake_escalated" and e.get("repeat")]
+        self.assertEqual(1, len(repeats), "повтор помечен в транскрипте отдельно")
+
+    def test_outbox_ttl_outlives_the_escalation_pause(self) -> None:
+        """TTL очереди обязан быть длиннее паузы между эскалациями.
+
+        Это не вкусовое предпочтение, а условие работоспособности. При TTL 600 и
+        паузе 900 эскалация протухала в очереди раньше, чем повтор в неё
+        попадал: пилот писал «выброшено, ждало композер 15 мин», и повторяться
+        было нечему. Найдено на живой сессии — повторная эскалация не дошла до
+        композера ни разу.
+
+        Проверяется сравнением констант, а не поведением, потому что поведение
+        здесь и есть следствие: сначала падает доставка, и заметить можно
+        поздно.
+        """
+        self.assertGreater(
+            pairpilot.DEFAULT_OUTBOX_TTL, pairpilot.WAKE_ESCALATE_REPEAT_SECONDS,
+            "TTL очереди короче паузы между эскалациями: повтор не доедет никогда")
+
+    def test_escalation_survives_long_enough_to_repeat(self) -> None:
+        """Эскалация должна пережить собственный срок ожидания.
+
+        Проверка на живом пути: эскалация кладёт текст в очередь, и очередь не
+        должна выбросить его раньше, чем повтор.
+        """
+        self.write_state(writer="agy", roles={"agy": {"last_seen": ago(3600), "pid": 1, "pane": "%1"}})
+        pilot = self.pilot()
+        pilot.wake_grace = 0.0
+        pilot.tick()
+        pilot.tick()
+        path = pilot.outbox_file("agy")
+        self.assertTrue(path.exists(), "эскалация должна лечь в очередь")
+        age = time.time() - path.stat().st_mtime
+        self.assertLess(age, pilot.outbox_ttl,
+                        "эскалация не должна протухать в собственной очереди")
 
     def test_fresh_writer_is_left_alone(self) -> None:
         self.write_state(writer="agy", roles={"agy": {"last_seen": ago(30), "pane": "%1"}})

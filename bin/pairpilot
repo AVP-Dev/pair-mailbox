@@ -87,7 +87,11 @@ DEFAULT_REPLY_GRACE = 900.0
 # вопрос жив: пока композер занят, минута-другая ожидания уместна. Но вопрос,
 # провисевший дольше, уже не помогает — он только отвлекает. Наблюдалось
 # вживую: напоминание ждало композер 22 минуты и было доставлено как свежее.
-DEFAULT_OUTBOX_TTL = 600.0
+#
+# Должно быть ЗАВЕДОМО больше WAKE_ESCALATE_REPEAT_SECONDS, и это условие
+# работоспособности, а не вкус: при 600 против 900 эскалация протухала в очереди
+# раньше, чем повтор в неё попадал. Соотношение проверяется тестом.
+DEFAULT_OUTBOX_TTL = 1800.0
 # Сколько молчит роль, прежде чем пробуждение печатью станет эскалацией.
 #
 # Порядок намеренно перевёрнут относительно прежнего: раньше печать в композер была
@@ -95,6 +99,9 @@ DEFAULT_OUTBOX_TTL = 600.0
 # печать. Теперь печать это исключение, а не правило: сначала пишем факт в файл,
 # затем опрашиваем, и если роль проснулась сама, не печатаем ничего.
 DEFAULT_WAKE_GRACE = 240.0
+# Как часто можно повторить эскалацию, если роль так и не проснулась. Не «один раз
+# навсегда» — причина в may_escalate_again. Пауза заведомо больше wake_grace.
+WAKE_ESCALATE_REPEAT_SECONDS = 900.0
 DEFAULT_REPLY_HARD = 2400.0
 # Сколько провисает sealed-патч, прежде чем это станет дефектом, а не делом,
 # которое писатель возьмёт через минуту.
@@ -525,20 +532,40 @@ class Pilot:
                                              since_seconds=since)
                 log(f"{role}: проснулся сам, печать не понадобилась")
                 continue
-            if wake.get("escalated"):
-                continue
             asked = parse_iso(wake.get("asked_at"))
             age = now - asked.timestamp() if asked else 0.0
             if age < self.wake_grace:
                 continue
-            # Эскалация: печатаем один раз. Дальше — молча, пока не проснётся.
+            # Пауза между повторами и причина — в may_escalate_again.
+            if not self.may_escalate_again(wake, now):
+                continue
             self.store.append_transcript("pilot_wake_escalated", "pairpilot",
                                          target=role, reason=wake.get("reason"),
-                                         age_seconds=int(age))
+                                         age_seconds=int(age),
+                                         repeat=bool(wake.get("escalated")))
             log(f"{role}: молчит {int(age // 60)} мин после пробуждения — печатаю")
             self.enqueue(role, str(wake.get("text") or ""))
             wake["escalated"] = True
+            wake["escalated_at"] = utcnow()
             path.write_text(json.dumps(wake, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    def may_escalate_again(self, wake: dict, now: float) -> bool:
+        """Пора ли повторить эскалацию: роль молчит, а пауза с прошлой прошла.
+
+        Прежний контракт был «ровно один раз за жизнь роли», и это ловушка без
+        выхода: файл удаляется только когда роль ПРОСНУЛАСЬ, поэтому у молчащей
+        роли вторая эскалация невозможна в принципе. Найдено вживую — pi молчал
+        час, файл висел с escalated, супервизор писал «ждёт 40 мин» и не печатал.
+
+        Пауза обязана быть меньше срока жизни отложенного, иначе повтор протухнет
+        в очереди, не доехав до композера.
+        """
+        if not wake.get("escalated"):
+            return True
+        last = parse_iso(wake.get("escalated_at"))
+        if last is None:
+            return True
+        return (now - last.timestamp()) >= WAKE_ESCALATE_REPEAT_SECONDS
 
     # --------------------------------------------------------------- outbox
 
@@ -549,6 +576,10 @@ class Pilot:
     def pending(self, role: str) -> str:
         path = self.outbox / f"{role}.txt"
         return path.read_text(encoding="utf-8").strip() if path.exists() else ""
+
+    def outbox_file(self, role: str) -> Path:
+        """Файл отложенного для роли. Метод, чтобы путь очереди не собирали руками."""
+        return self.outbox / f"{role}.txt"
 
     def flush_outbox(self, state: dict) -> None:
         """Доставить отложенное. Пока композер занят, текст остаётся на месте —

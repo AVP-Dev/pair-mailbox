@@ -72,13 +72,17 @@ def pane_belongs_to_project(tmux: str, pane: str, project_root) -> tuple:
     ident = composer.pane_identity(tmux, pane)
     if not ident["exists"]:
         return False, "панель отсутствует"
+    # Живость проверяется ДО принадлежности, и это единственный порядок, при
+    # котором обе ветки отвечают о разном. Панель может быть мёртвой И своей:
+    # тогда принадлежность доказуема, и отказ был бы неверным — именно из-за
+    # этого две проверки и разведены. Обратный порядок давал бы «нет» там, где
+    # надо «да, но её нет», и снятие устаревших записей ростера перестало бы
+    # срабатывать.
+    if not ident["alive"]:
+        # Мёртвая панель проекту принадлежит: про неё известно, чья она.
+        return _identity_proves_ours(ident, project_root), "панель мертва"
     if _identity_proves_ours(ident, project_root):
         return True, ""
-    if not ident["alive"]:
-        # Панель мертва, но проект по её cwd виден: мёртвая панель проекту
-        # принадлежит, иначе проверка «своя» отвечала бы «нет» там, где надо
-        # «да, но её нет».
-        return _identity_proves_ours(ident, project_root), "панель мертва"
     fresh = _settle_pane_identity(tmux, pane, ident, project_root)
     if not fresh["exists"]:
         return False, "панель отсутствует"
@@ -93,6 +97,10 @@ def pane_belongs_to_project(tmux: str, pane: str, project_root) -> tuple:
     return False, f"панель принадлежит другому проекту: {theirs}"
 
 
+# Импорт `composer` в середине файла — не украшение и не забывчивость, а
+# требование цикла: `composer` импортирует `panes` лениво (внутри
+# pane_is_foreign), и прямой импорт на верхнем уровне был бы кругом. Чтобы
+# причина была видна в этом месте, а не в чужом файле, она написана здесь.
 import composer
 
 
