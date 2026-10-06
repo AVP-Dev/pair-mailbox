@@ -511,6 +511,33 @@ class TestOutboxStaleness(PilotCase):
         self.assertIn("pilot_nudge_expired", kinds,
                       "выброшенное должно быть видно в транскрипте, иначе выглядит как доставленное")
 
+    def test_expired_nudge_falls_back_to_mailbox(self) -> None:
+        """Протухшее в композере дублируется в ящик, а не исчезает.
+
+        Измерено 2026-10-06: два nudge_expired подряд, оба агента живы,
+        оба ничего не получили. Указатель протухал в outbox, пока агент
+        работал и композер был занят. Mailbox не протухает: агент
+        заберёт письмо через pair_read, когда сам решит.
+        """
+        p = self.pilot()
+        p.outbox_ttl = 600.0
+        path = self._queue(p, "agy", "прочитай pair_read", age_seconds=7200)
+        state = self.write_state(roles={"agy": {"pane": "%1", "pid": os.getpid()}})
+        orig_alive = pairpilot.pane_alive
+        pairpilot.pane_alive = lambda tmux, pane: True
+        try:
+            p.tmux = "tmux"
+            p.flush_outbox(state)
+        finally:
+            pairpilot.pane_alive = orig_alive
+        inbox = list((self.state_dir / "mailbox" / "agy").glob("*.json"))
+        self.assertEqual(1, len(inbox), "указатель обязан лежать в ящике")
+        body = json.loads(inbox[0].read_text(encoding="utf-8"))
+        self.assertEqual("pairpilot", body["from"])
+        self.assertIn("pair_read", body["text"])
+        kinds = [e.get("kind") for e in p.store.read_transcript(limit=0)]
+        self.assertIn("pilot_mailbox_fallback", kinds)
+
     def test_a_busy_composer_does_not_expire_a_fresh_nudge(self) -> None:
         """Переживающая доставка остаётся: пока композер занят, ждать уместно."""
         p = self.pilot()

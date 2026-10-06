@@ -581,6 +581,50 @@ class Pilot:
         path = self.outbox / f"{role}.txt"
         path.write_text(text, encoding="utf-8")
 
+    def mailbox_fallback(self, role: str, text: str) -> int | None:
+        """Дублировать указатель в mailbox получателя как письмо от пилота.
+
+        Outbox протухает, если композер занят дольше TTL: агент работает,
+        печатать нельзя, указатель выбрасывается — и агент никогда не узнаёт,
+        что его ждали. Mailbox не протухает: агент заберёт письмо через
+        `pair_read`, когда сам решит. Измерено 2026-10-06: два nudge_expired
+        подряд, оба агента живы, оба ничего не получили.
+        Возвращает seq письма или None, если дублировать нечего/некуда.
+        """
+        if not text.strip():
+            return None
+        try:
+            from server import atomic_write_json
+        except Exception:
+            return None
+        def apply(state: dict) -> int | None:
+            import uuid
+            inbox = self.store.mailbox_root / role
+            inbox.mkdir(parents=True, exist_ok=True)
+            existing = [0]
+            if self.store.mailbox_root.is_dir():
+                for f in self.store.mailbox_root.glob("*/*.json"):
+                    try:
+                        existing.append(int(f.name.split("-")[0]))
+                    except Exception:
+                        pass
+            seq = max(state.get("seq", 0), max(existing)) + 1
+            state["seq"] = seq
+            stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+            token = uuid.uuid4().hex[:6]
+            body = {"seq": seq, "from": "pairpilot", "to": role,
+                    "ts": utcnow(), "subject": "",
+                    "label": "Chat from pairpilot: ", "text": text.strip()}
+            atomic_write_json(inbox / f"{seq:06d}-{stamp}-pairpilot-{token}.json", body)
+            return seq
+        try:
+            seq = self.store.mutate(apply)
+        except Exception:
+            return None
+        self.store.append_transcript("pilot_mailbox_fallback", "pairpilot",
+                                     to=role, seq=seq, text=text[:120])
+        return seq
+
     def pending(self, role: str) -> str:
         path = self.outbox / f"{role}.txt"
         return path.read_text(encoding="utf-8").strip() if path.exists() else ""
@@ -616,11 +660,13 @@ class Pilot:
                 continue
             if age > self.outbox_ttl:
                 path.unlink(missing_ok=True)
+                seq = self.mailbox_fallback(role, text)
                 self.store.append_transcript(
                     "pilot_nudge_expired", "pairpilot", to=role,
-                    age_seconds=int(age), text=text[:120])
-                log(f"отложенное для {role} выброшено: ждало композер "
-                    f"{int(age // 60)} мин, вопрос устарел")
+                    age_seconds=int(age), text=text[:120],
+                    fallback_seq=seq)
+                log(f"отложенное для {role} протухло в композере "
+                    f"{int(age // 60)} мин — дублирую в ящик (seq {seq})")
                 continue
             pane = info.get("pane")
             try:
