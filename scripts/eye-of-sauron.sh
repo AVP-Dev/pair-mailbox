@@ -39,7 +39,39 @@ for v in (st.get("verdicts") or [])[::-1]:
     if vrev:
         break
 fresh = "fresh" if (vrev == head) else ("stale(" + vrev + "->" + head + ")" if vrev else "none")
-line = f"{time.strftime('%m-%d %H:%M')} ph={phase} r={rnd} w_sil={ws}s c_sil={cs}s obl={obl} verdict={fresh}"
+# Обсуждение до первого коммита (карточка pair-discussion-before-work п.3).
+# send/advance поля round не несут (только evidence) — окно позиционное:
+# последний advance(implement), далее план писателя, далее evidence(commit).
+# План = subject содержит план|plan (case-insensitive): §9a допускает оба.
+# discuss=ok — план внутри окна до коммита; miss — иначе.
+discuss = "miss"
+try:
+    import os as _os
+    import re as _re
+    _plan_re = _re.compile(r"план|plan", _re.IGNORECASE)
+    paths = [root + "/.pair/transcript.jsonl"] + sorted(
+        glob.glob(root + "/.pair/transcript-archive/*.jsonl"))
+    win_open, planned = False, False
+    for p in paths:
+        if not _os.path.exists(p):
+            continue
+        with open(p, encoding="utf-8") as fh:
+            for ln in fh:
+                if '"kind": "advance"' in ln and '"phase": "implement"' in ln:
+                    win_open, planned = True, False
+                elif '"kind": "send"' in ln and win_open:
+                    try:
+                        e = json.loads(ln)
+                    except Exception:
+                        continue
+                    if e.get("role") == writer and _plan_re.search(str(e.get("subject", ""))):
+                        planned = True
+                elif '"kind": "evidence"' in ln and '"evidence_kind": "commit"' in ln and win_open:
+                    discuss = "ok" if planned else "miss"
+                    win_open = False
+except Exception:
+    discuss = "unknown"
+line = f"{time.strftime('%m-%d %H:%M')} ph={phase} r={rnd} w_sil={ws}s c_sil={cs}s obl={obl} verdict={fresh} discuss={discuss}"
 alarm = (phase != "done" and ws > 1200 and obl == 0)
 print(("ALARM " if alarm else "ok ") + line)
 EOF

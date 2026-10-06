@@ -313,8 +313,11 @@ into the neighbouring terminal window (for example: *"there's a request waiting 
 opencode window, please send it your confirmation..."*).
 
 Such a conclusion grossly violates the contract of autonomous pair work:
-1. To signal and wake the peer there is **`pair_deliver`**, which types the command
-   straight into the peer's active tmux input.
+1. To signal and wake the peer there is **`pair_deliver`** — an optional nudge:
+   one short pointer line into the peer's active tmux input, never the full text.
+   The text lives in the mailbox; the peer picks it up with `pair_read`.
+   Delivery is best-effort (a busy composer refuses rather than overtypes),
+   so the mailbox is the mandatory path and delivery is not.
 2. For background exchange there is `pair_send` and `pair_read`.
 3. The user gives the task at the start and accepts the finished PR at the end. The
    human is not a router between windows.
@@ -358,6 +361,27 @@ verdict   the outcome of the check and what it did NOT cover
 handoff   what is done, what was skipped, what is unclear
 backlog   a real defect outside the task's scope
 ```
+
+## 9a. Talk before work: the plan goes through the mailbox first
+
+Applies in `mode=fix` only — in `audit` there are no commits, so there is
+nothing to hold back.
+
+Before the first commit of a round, the writer sends the plan through the
+mailbox: `pair_send` with `expects_reply` and a subject containing `plan`
+or `план` (either language). The critic
+answers with an objection or an agreement — only then the code. No answer,
+no code.
+
+This is a discipline, not a server gate. `_answer_obligations` closes an
+obligation on any message in the other direction, even a ping, because
+judging content would be guesswork — so a ping that closed the obligation
+is not an agreement. The writer waits for a substantive reply, not for the
+obligation file to disappear.
+
+Why: rounds used to skip the middle — the writer wrote code at once, the
+critic answered with a verdict, and nothing in between was ever discussed
+(rounds with empty-subject pings instead of a plan, October 2026).
 
 ## 10. Git is part of the work
 
@@ -464,6 +488,27 @@ authority — but authority is measured against a default, and the human has set
 default to `auto`. Leaving `observe` stopped the pair against "work on your own and
 come back with the result", and made the human notice. §12 sits outside this axis, so
 `auto` never means "destructive work is allowed".
+
+### 10c. Human-readable messages: one thought, the reason why
+
+A commit is one thought: subject ≤72 chars, imperative
+(`fix(pair): heartbeat last_seen on every call`, not "fixed/heartbeat fixes").
+The body says WHY, not WHAT — what is visible in the diff. No "why" — do not
+commit yet, write it first.
+
+Banned words in messages: `comprehensive`, `robust`, `leverage`, `seamless`,
+`cutting-edge`, `delve`, `tapestry`. The list grows; it lives in
+`docs/backlog/human-commits-no-ai-slop.md`.
+
+Notes: one entry is one fact, decision, or verdict. A sheet over 30 lines is
+cut into separate plan/finding/decision entries. Duplicates of one thought
+in different words are deleted, the exact one stays.
+
+Code comments say only why it is this way and not otherwise, with a pointer
+to the measurement or the card. Restating the code in words is banned.
+
+The critic reviews messages as code: slop in a commit is a reasoned
+objection, same as for code.
 
 ## 11. Audit
 

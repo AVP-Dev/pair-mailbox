@@ -2105,7 +2105,8 @@ class PairSession:
 
         closed = self._answer_obligations(to, self.role)
         result = self.store.mutate(apply)
-        self.store.append_transcript("send", self.role, to=to, seq=result["seq"], subject=subject)
+        self.store.append_transcript("send", self.role, to=to, seq=result["seq"],
+                                     subject=subject or text.strip()[:60])
         obligation = None
         if expects_reply:
             obligation = self._open_obligation(self.role, to, seq=result["seq"],

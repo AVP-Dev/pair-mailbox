@@ -1648,6 +1648,17 @@ class TestMessaging(PairTestCase):
         second = self.peer.tool_pair_read()
         self.assertEqual(second["count"], 0)
 
+    def test_send_without_subject_still_leaves_trace_in_transcript(self) -> None:
+        """Слепое событие send (seq 257–258) больше не повторяется.
+
+        Проверено кодом 2026-10-07: тела лежали в mailbox целыми, а событие
+        в transcript несло только пустой subject — текст терялся из журнала.
+        """
+        self.writer.tool_pair_send(to="reviewer-agent", text="план раунда: чиню send")
+        sends = [e for e in self.store.read_transcript(0) if e.get("kind") == "send"]
+        self.assertEqual(1, len(sends))
+        self.assertIn("план раунда", sends[0].get("subject", ""))
+
     def test_cannot_send_to_yourself_or_nowhere(self) -> None:
         self.writer.tool_pair_state()
         self.assertRefused(self.writer.tool_pair_send, to="writer-agent", text="me", contains="own role")
