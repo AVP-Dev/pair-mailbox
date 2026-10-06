@@ -49,6 +49,27 @@ class TestEventWake(PairTestCase):
         payload = json.loads(path.read_text(encoding="utf-8"))
         self.assertTrue(any("заметка/plan" in str(r) for r in payload.get("reasons", [])))
 
+    def test_note_does_not_ring_peers(self) -> None:
+        """Заметка — тихая: wake-файл да, слепой звонок в композер нет.
+
+        tool_pair_note раньше веером звонил всем ролям на каждой заметке;
+        при 30+ заметках за вечер это N слепых send-keys Enter в чужие
+        композеры. Пробуждение — через wake-файл, который опрашивает пилот.
+        """
+        self.writer.tool_pair_state()
+        self.peer.tool_pair_state()
+        with mock.patch.object(self.writer, "_ring",
+                               wraps=self.writer._ring) as ring:
+            result = self.writer.tool_pair_note(kind="plan", text="план готов")
+        rung = [c for c in ring.call_args_list]
+        self.assertEqual([], rung, "note не должна звонить никому")
+        self.assertEqual({}, result.get("woke_peers"),
+                         "woke_peers остаётся пустым ради совместимости")
+        kinds = [e.get("kind") for e in self.store.read_transcript(limit=0)]
+        self.assertNotIn("doorbell", kinds, "в транскрипте нет звонков")
+        path = self.wake_file("reviewer-agent")
+        self.assertTrue(path.exists(), "wake-файл по-прежнему пишется")
+
     def test_wake_merge_keeps_asked_at(self) -> None:
         """Висящее пробуждение дополняется, а не перезаписывается.
 

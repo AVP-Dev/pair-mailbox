@@ -2878,7 +2878,12 @@ class PairSession:
                         subject=f"вердикт {kind} — забери и закрой раунд")
             except Exception:  # noqa: BLE001 - обязательство не роняет вердикт
                 pass
-        woke = {}
+        # Заметки — тихие: без веерного звонка всем ролям (см.
+        # docs/backlog/pair-note-rings-everyone.md). Wake-файл ниже —
+        # единственный сигнал; его опрашивает пилот через wake_grace.
+        # Кто ждёт ответа — pair_send (точечный ring) или obligation
+        # на вердикте выше. Ключ woke_peers оставлен пустым ради
+        # совместимости ответа.
         try:
             from wake import record_wake
             snapshot = self.store.read()
@@ -2894,13 +2899,7 @@ class PairSession:
                     pass
         except Exception:  # noqa: BLE001 - импорт wake не роняет заметку
             pass
-        for other in self.store.read().get("roles", {}):
-            if other == self.role:
-                continue
-            r = self._ring(other, f"заметка/{kind}")
-            if r["rung"]:
-                woke[other] = r["pane"]
-        return {"kind": kind, "path": str(target), "woke_peers": woke}
+        return {"kind": kind, "path": str(target), "woke_peers": {}}
     def invoke(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         """Run one tool by name, recording refusals on the audit trail.
 
