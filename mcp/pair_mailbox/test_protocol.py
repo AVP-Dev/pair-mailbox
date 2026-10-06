@@ -2046,6 +2046,29 @@ class TestStalePaneSurvives(PairTestCase):
         self.assertIn("pane_collision", kinds)
         self.assertEqual(self.store.read()["roles"]["agy"].get("pane"), "%20")
 
+    def test_two_roles_on_one_unique_pane_id_is_a_collision(self) -> None:
+        """Две роли на одном уникальном ID панели — коллизия по UID (#защита).
+
+        Адрес `ml:0.2` плавает при сплитах, `%N` — при рестарте tmux; `%2751`
+        уникален и умирает вместе с панелью. Совпадение UID двух ролей —
+        та же неразличимость, что и совпадение адресов, и молчать о ней
+        нельзя: иначе доставка бьёт в чужой композер.
+        """
+        self.pane_alive(True)
+        self.register("agy", "%20", os.getpid())
+        self.store.mutate(lambda s: s["roles"]["agy"].update({"pane_uid": "%999"}))
+        self.join_pane("%21")
+        import composer
+        real_ident = composer.pane_identity
+        composer.pane_identity = lambda tmux, pane: {
+            "exists": True, "alive": True, "path": "/x", "address": "ml:0.1",
+            "session_id": "$1", "pane_uid": "%999"}
+        self.addCleanup(setattr, composer, "pane_identity", real_ident)
+        newcomer = PairSession("claude", self.store)
+        newcomer.tool_pair_state()
+        kinds = [e["kind"] for e in self.store.read_transcript()]
+        self.assertIn("pane_uid_collision", kinds)
+
     def test_a_malformed_id_is_not_vouched_for(self) -> None:
         """После ребута %1 может принадлежать совсем другому окну, поэтому
         панель проверяется только настоящим запросом к tmux, а не формой строки."""

@@ -246,7 +246,7 @@ def pane_identity(tmux: str, pane: str) -> dict:
     """
     r = subprocess.run(
         [tmux, "display-message", "-p", "-t", pane,
-         "#{pane_dead}\t#{pane_current_path}\t#{session_name}:#{window_index}.#{pane_index}"],
+         "#{pane_dead}\t#{pane_current_path}\t#{session_name}:#{window_index}.#{pane_index}\t#{session_id}\t#{pane_id}"],
         capture_output=True, text=True, timeout=5)
     # tmux на НЕСУЩЕСТВУЮЩУЮ панель отвечает кодом 0 и пустым выводом — это
     # ровно тот же факт, из-за которого фантомная панель когда-то считалась
@@ -271,8 +271,10 @@ def pane_identity(tmux: str, pane: str) -> dict:
         return {"exists": False, "alive": False, "path": "", "address": ""}
     if not address:
         address = session_address(tmux, pane)
+    extra = parts[3:]
     return {"exists": True, "alive": dead in ("0", "false"), "path": path,
-            "address": address}
+            "address": address, "session_id": extra[0].strip() if len(extra) > 0 else "",
+            "pane_uid": extra[1].strip() if len(extra) > 1 else ""}
 
 
 def pane_is_foreign(tmux: str, pane: str, project_root) -> tuple:

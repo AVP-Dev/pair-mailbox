@@ -1291,6 +1291,35 @@ class PairSession:
         if tmux:
             import roster_heal as _heal
             from composer import pane_belongs_to_project as _belongs
+            from composer import pane_identity as _ident
+            # Сверка по уникальному ID панели: открыл — живёт, закрыл — умерла.
+            # Адрес `ml:0.2` плавает при сплитах, `%N` — при рестарте tmux;
+            # `%2751` уникален и умирает вместе с панелью. Пришёл со своим
+            # UID, а записан чужой — панель подменили, запись не трогаем.
+            try:
+                _here = _ident(tmux, os.environ.get("TMUX_PANE") or "") if os.environ.get("TMUX_PANE") else {}
+            except Exception:
+                _here = {}
+            _uid_here = (_here or {}).get("pane_uid") or ""
+            if _uid_here:
+                for _rn, _ri in list(roles.items()):
+                    if _rn == self.role or not isinstance(_ri, dict):
+                        continue
+                    _their_uid = str(_ri.get("pane_uid") or "")
+                    if _their_uid and _their_uid == _uid_here:
+                        self.store.append_transcript(
+                            "pane_uid_collision", self.role, other_role=_rn,
+                            pane_uid=_uid_here,
+                            why="две роли на одной уникальной панели — доставка неразличима")
+                        break
+            if pane and not pin:
+                try:
+                    _cur = _ident(tmux, pane)
+                except Exception:
+                    _cur = {}
+                if _cur and _cur.get("exists") and _cur.get("pane_uid"):
+                    entry["pane_uid"] = _cur["pane_uid"]
+                    entry["pane_session_id"] = _cur.get("session_id") or ""
             for event in _heal.recheck_peers(
                     roles, self.role, self.store.project_root,
                     pid_alive=is_pid_alive, pane_exists=pane_exists,
