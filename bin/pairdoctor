@@ -4,7 +4,7 @@
   bin/pairdoctor            всё
   bin/pairdoctor --project  сверять ещё и состояние рабочего проекта
 """
-import json, os, shutil, subprocess, sys
+import json, os, shutil, subprocess, sys, tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -98,15 +98,30 @@ for name, prof in PROFILES.items():
     req = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "initialize",
                       "params": {"protocolVersion": "2024-11-05",
                                  "clientInfo": {"name": "pairdoctor"}}}) + "\n"
-    try:
-        p = subprocess.run(argv, input=req, capture_output=True, text=True, timeout=15)
+    # Рукопожатие пишет в состояние: `on_initialize` вызывает `_register` и
+    # сохраняет state.json, то есть заносит pid и панель диагностического
+    # процесса в ростер наравне с живыми агентами. Проверка, которая обещает
+    # ничего не менять, стёрла бы pid живого соседа и оставила в ростере
+    # мёртвый, а `pair_state` потом сообщил бы «сосед мёртв» о том, кто жив.
+    #
+    # Поэтому сервер поднимается на отдельной пустой директории состояния.
+    # `serve.sh` берёт её вторым аргументом, и `PAIR_STATE` из окружения
+    # диагностики не должен перебить этот путь.
+    with tempfile.TemporaryDirectory(prefix="pairdoctor-") as sandbox:
+        env = dict(os.environ)
+        env.pop("PAIR_STATE", None)
+        env.pop("PAIR_ROLE", None)
+        try:
+            p = subprocess.run(argv + [sandbox], input=req, capture_output=True,
+                               text=True, timeout=15, env=env)
+        except Exception as exc:
+            bad(name + ": запуск не удался — " + str(exc)[:120])
+            continue
         if any('"pair-mailbox"' in l for l in p.stdout.splitlines()):
             ok(name + ": MCP отвечает как pair-mailbox")
             live.append(name)
         else:
             bad(name + ": сервер на месте, но не отвечает — " + (p.stderr[:120] or p.stdout[:120]))
-    except Exception as exc:
-        bad(name + ": запуск не удался — " + str(exc)[:120])
 
 print("\n[3] навыки")
 for name, prof in PROFILES.items():

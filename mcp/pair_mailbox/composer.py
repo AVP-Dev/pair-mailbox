@@ -115,6 +115,7 @@ def pane_alive(tmux: str, pane: str) -> bool:
 # сразу. Поэтому пишется предпочтительный формат, а читаются оба.
 PANE_ID_FORMAT = "id"
 PANE_ADDRESS_FORMAT = "address"
+
 PANE_ID_RE = re.compile(r"%\d+\Z")
 # Имя сессии в tmux не может содержать `:` (проверено: `new-session -s 'a:b'`
 # отказывает), а `.` в нём заменяется на `_`. Поэтому двоеточие однозначно
@@ -245,7 +246,7 @@ def pane_identity(tmux: str, pane: str) -> dict:
     """
     r = subprocess.run(
         [tmux, "display-message", "-p", "-t", pane,
-         "#{pane_dead}\t#{pane_current_path}\t#{session_name}:#{window_index}.#{pane_index}"],
+         "#{pane_dead}\t#{pane_current_path}\t#{session_name}:#{window_index}.#{pane_index}\t#{session_id}\t#{pane_id}"],
         capture_output=True, text=True, timeout=5)
     # tmux на НЕСУЩЕСТВУЮЩУЮ панель отвечает кодом 0 и пустым выводом — это
     # ровно тот же факт, из-за которого фантомная панель когда-то считалась
@@ -270,45 +271,33 @@ def pane_identity(tmux: str, pane: str) -> dict:
         return {"exists": False, "alive": False, "path": "", "address": ""}
     if not address:
         address = session_address(tmux, pane)
+    extra = parts[3:]
     return {"exists": True, "alive": dead in ("0", "false"), "path": path,
-            "address": address}
+            "address": address, "session_id": extra[0].strip() if len(extra) > 0 else "",
+            "pane_uid": extra[1].strip() if len(extra) > 1 else ""}
 
 
 def pane_is_foreign(tmux: str, pane: str, project_root) -> tuple:
     """Панель доказуемо не наша? Fail-closed: не доказали своё — не печатаем.
 
-    Возвращает (True, причина) если в панель печатать нельзя, и (False, "") если
-    можно. Пустой cwd не доказывает ничего, поэтому трактуется как «чужая»:
-    молча отказаться от доставки правильнее, чем вбить текст не туда.
+    Логика уехала в `panes`: там же гонка при рождении панели и разделение
+    «чужой проект» против «панель мертва». Здесь остаётся вызов, потому что
+    `pair_deliver` и `pairctl` зовут это имя, а переименовывать его в четырёх
+    местах ради одного переезда незачем.
 
-    Строгость намеренная и вторая по важности после fail-closed: панель
-    принимается, только если её cwd совпадает с корнем проекта или лежит внутри
-    него. Панель, запущенная из ОБЩЕГО родителя вроде ~/work, отклоняется, хотя
-    формально это родитель проекта. Иначе такую панель объявили бы своей сразу
-    несколько проектов на этой машине, и межпроектная инъекция вернулась бы
-    ровно тем же путём, который здесь закрывается.
+    Импорт ленивый по той же причине, что и остальные здесь: `panes` берёт из
+    `composer` `pane_identity`, и импорт на верхнем уровне был бы циклом.
     """
-    ident = pane_identity(tmux, pane)
-    if not ident["exists"]:
-        return True, "панель отсутствует"
-    if not ident["alive"]:
-        return True, "панель мертва"
+    from panes import pane_is_foreign as impl
 
-    try:
-        ours = Path(project_root).resolve()
-    except OSError as exc:
-        return True, f"не резолвится корень проекта: {exc}"
-    raw = ident["path"]
-    if not raw:
-        return True, "tmux не сообщил cwd панели, идентичность не доказана"
-    try:
-        theirs = Path(raw).resolve()
-    except OSError as exc:
-        return True, f"не резолвится cwd панели: {exc}"
+    return impl(tmux, pane, project_root)
 
-    if theirs == ours or ours in theirs.parents:
-        return False, ""
-    return True, f"панель принадлежит другому проекту: {theirs}"
+
+def pane_belongs_to_project(tmux: str, pane: str, project_root) -> tuple:
+    """Принадлежит ли панель этому проекту. Логика — в `panes`."""
+    from panes import pane_belongs_to_project as impl
+
+    return impl(tmux, pane, project_root)
 
 
 def pane_pid(tmux: str, pane: str) -> int:

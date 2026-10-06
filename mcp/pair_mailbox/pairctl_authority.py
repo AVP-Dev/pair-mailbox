@@ -234,6 +234,22 @@ def cmd_ok(store: Store, args: argparse.Namespace) -> int:
     return 0
 
 
+def _wake_writer(store: Store, reason: str, text: str) -> None:
+    # Задача от человека — событие, а не запись: без пробуждения писатель
+    # узнает о ней только следующим случайным чтением. Будим держателя
+    # записи; если его нет (release), будить некого — человек назначит сам.
+    writer = store.read().get("writer")
+    if not writer:
+        return
+    try:
+        from wake import record_wake
+        record_wake(store.root, store.read(), writer, reason, text)
+        store.append_transcript("wake_pending", "human", to=writer, reason=reason)
+    except Exception:  # noqa: BLE001 - wake-файл не должен ронять команду:
+        # задача уже записана выше через mutate, будим best-effort, как в server.py
+        pass
+
+
 def cmd_task(store: Store, args: argparse.Namespace) -> int:
     # Список, а не одна строка. Новая задача дописывается: старая не исчезает,
     # и раунд не закроется, пока что-то не помечено сделанным или брошенным с
@@ -258,6 +274,7 @@ def cmd_task(store: Store, args: argparse.Namespace) -> int:
         item = store.mutate(close)
         store.append_transcript("task_closed", "human", task_id=item["id"], status=want)
         print(f"task #{item['id']} is {want}")
+        _wake_writer(store, "задача", f"[pair] human: задача #{item['id']} {want}, прочитай pair_state")
     else:
         body = " ".join(str(args.text or "").split())
         if not body:
@@ -276,6 +293,7 @@ def cmd_task(store: Store, args: argparse.Namespace) -> int:
         item = store.mutate(apply)
         store.append_transcript("task_added", "human", task_id=item["id"], text=body[:200])
         print(f"task #{item['id']} added: {body}")
+        _wake_writer(store, "задача", f"[pair] human: новая задача #{item['id']}, прочитай pair_state")
         still = [i["id"] for i in open_tasks(store.read())]
         if len(still) > 1:
             print(f"  open tasks now: {', '.join(str(i) for i in still)}")

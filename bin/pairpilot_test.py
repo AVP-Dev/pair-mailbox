@@ -63,8 +63,21 @@ class PilotCase(unittest.TestCase):
 
     def pilot(self, silence: float = 600.0) -> "pairpilot.Pilot":
         # tmux выключаем: тесты не должны дёргать живые окна.
+        # Профили тоже изолируем: динамический `launch_command` читает настоящий
+        # `cli-profiles.json`, и тест «нет команды — нет перезапуска» падал бы
+        # на живом дереве, где профиль `agy` есть.
         p = pairpilot.Pilot(self.state_dir, silence=silence, interval=1)
         p.tmux = None
+        orig = p._launch_commands
+        here = self.state_dir
+        def isolated(given=None):
+            saved = pairpilot.ROOT
+            try:
+                pairpilot.ROOT = here
+                return orig(given)
+            finally:
+                pairpilot.ROOT = saved
+        p._launch_commands = isolated
         return p
 
     def write_state(self, **fields) -> dict:
@@ -275,7 +288,82 @@ class TestLiveness(PilotCase):
                          "эскалация печатает один раз, а не каждый тик")
         kinds = [e.get("kind") for e in self.transcript_entries()]
         self.assertEqual(1, kinds.count("pilot_wake_escalated"),
-                         "эскалация не должна повторяться")
+                         "эскалация не должна повторяться на каждом тике")
+
+    def test_escalation_repeats_after_a_long_silence(self) -> None:
+        """Эскалация обязана повторяться.
+
+        Прежний контракт был «ровно один раз за жизнь роли», и он оказался
+        ловушкой без выхода: файл удаляется только когда роль ПРОСНУЛАСЬ, поэтому
+        у молчающей роли вторая эскалация невозможна в принципе. Найдено вживую:
+        pi молчал час, файл висел с escalated, супервизор не печатал.
+        """
+        self.write_state(writer="agy", roles={"agy": {"last_seen": ago(3600), "pid": 1, "pane": "%1"}})
+        pilot = self.pilot()
+        pilot.wake_grace = 0.0
+        pilot.tick()
+        pilot.tick()
+        self.assertTrue(pilot.pending("agy"), "первая эскалация обязана быть")
+        # Очередь очищается: иначе следующая проверка увидит не свою эскалацию, а
+        # подталкивание по простою писателя — другой повод и другой текст.
+        # Проверяется именно повтор пробуждения.
+        pilot.outbox_file("agy").unlink(missing_ok=True)
+
+        # Пауза между повторами ещё не прошла — тикаем часто, повтора быть не должно.
+        for _ in range(5):
+            pilot.tick()
+        self.assertEqual("", pilot.pending("agy"),
+                         "в пределах паузы повторять нельзя, это шум")
+
+        # Пауза прошла, роль не проснулась — повтор обязан быть.
+        wake_file = pilot.wake_root / "agy.json"
+        payload = json.loads(wake_file.read_text(encoding="utf-8"))
+        payload["escalated_at"] = ago(int(pairpilot.WAKE_ESCALATE_REPEAT_SECONDS) + 60)
+        wake_file.write_text(json.dumps(payload), encoding="utf-8")
+
+        pilot.tick()
+        self.assertTrue(pilot.pending("agy"),
+                        "роль молчит дольше паузы — повторная эскалация обязана быть")
+        kinds = [e.get("kind") for e in self.transcript_entries()]
+        self.assertGreaterEqual(kinds.count("pilot_wake_escalated"), 2,
+                                "повтор должен попасть в транскрипт")
+        repeats = [e for e in self.transcript_entries()
+                   if e.get("kind") == "pilot_wake_escalated" and e.get("repeat")]
+        self.assertEqual(1, len(repeats), "повтор помечен в транскрипте отдельно")
+
+    def test_outbox_ttl_outlives_the_escalation_pause(self) -> None:
+        """TTL очереди обязан быть длиннее паузы между эскалациями.
+
+        Это не вкусовое предпочтение, а условие работоспособности. При TTL 600 и
+        паузе 900 эскалация протухала в очереди раньше, чем повтор в неё
+        попадал: пилот писал «выброшено, ждало композер 15 мин», и повторяться
+        было нечему. Найдено на живой сессии — повторная эскалация не дошла до
+        композера ни разу.
+
+        Проверяется сравнением констант, а не поведением, потому что поведение
+        здесь и есть следствие: сначала падает доставка, и заметить можно
+        поздно.
+        """
+        self.assertGreater(
+            pairpilot.DEFAULT_OUTBOX_TTL, pairpilot.WAKE_ESCALATE_REPEAT_SECONDS,
+            "TTL очереди короче паузы между эскалациями: повтор не доедет никогда")
+
+    def test_escalation_survives_long_enough_to_repeat(self) -> None:
+        """Эскалация должна пережить собственный срок ожидания.
+
+        Проверка на живом пути: эскалация кладёт текст в очередь, и очередь не
+        должна выбросить его раньше, чем повтор.
+        """
+        self.write_state(writer="agy", roles={"agy": {"last_seen": ago(3600), "pid": 1, "pane": "%1"}})
+        pilot = self.pilot()
+        pilot.wake_grace = 0.0
+        pilot.tick()
+        pilot.tick()
+        path = pilot.outbox_file("agy")
+        self.assertTrue(path.exists(), "эскалация должна лечь в очередь")
+        age = time.time() - path.stat().st_mtime
+        self.assertLess(age, pilot.outbox_ttl,
+                        "эскалация не должна протухать в собственной очереди")
 
     def test_fresh_writer_is_left_alone(self) -> None:
         self.write_state(writer="agy", roles={"agy": {"last_seen": ago(30), "pane": "%1"}})
@@ -422,6 +510,33 @@ class TestOutboxStaleness(PilotCase):
         kinds = [e.get("kind") for e in p.store.read_transcript(limit=0)]
         self.assertIn("pilot_nudge_expired", kinds,
                       "выброшенное должно быть видно в транскрипте, иначе выглядит как доставленное")
+
+    def test_expired_nudge_falls_back_to_mailbox(self) -> None:
+        """Протухшее в композере дублируется в ящик, а не исчезает.
+
+        Измерено 2026-10-06: два nudge_expired подряд, оба агента живы,
+        оба ничего не получили. Указатель протухал в outbox, пока агент
+        работал и композер был занят. Mailbox не протухает: агент
+        заберёт письмо через pair_read, когда сам решит.
+        """
+        p = self.pilot()
+        p.outbox_ttl = 600.0
+        path = self._queue(p, "agy", "прочитай pair_read", age_seconds=7200)
+        state = self.write_state(roles={"agy": {"pane": "%1", "pid": os.getpid()}})
+        orig_alive = pairpilot.pane_alive
+        pairpilot.pane_alive = lambda tmux, pane: True
+        try:
+            p.tmux = "tmux"
+            p.flush_outbox(state)
+        finally:
+            pairpilot.pane_alive = orig_alive
+        inbox = list((self.state_dir / "mailbox" / "agy").glob("*.json"))
+        self.assertEqual(1, len(inbox), "указатель обязан лежать в ящике")
+        body = json.loads(inbox[0].read_text(encoding="utf-8"))
+        self.assertEqual("pairpilot", body["from"])
+        self.assertIn("pair_read", body["text"])
+        kinds = [e.get("kind") for e in p.store.read_transcript(limit=0)]
+        self.assertIn("pilot_mailbox_fallback", kinds)
 
     def test_a_busy_composer_does_not_expire_a_fresh_nudge(self) -> None:
         """Переживающая доставка остаётся: пока композер занят, ждать уместно."""
@@ -618,7 +733,7 @@ class TestRestart(PilotCase):
         pilot = self.pilot()
         pilot.tmux = "/usr/bin/tmux"
         pairpilot.pane_alive = lambda tmux, pane: True
-        pilot.launch = {"agy": command} if command else {}
+        pilot._explicit_launch = {"agy": command} if command else {}
         return pilot
 
     def respawns(self, role: str | None = None) -> list[list[str]]:
@@ -743,11 +858,29 @@ class TestRestart(PilotCase):
         pilot.tick()
         self.assertEqual(pilot.restart_limit + 1,
                          len(self.respawns()))
+    def test_launch_profile_added_after_start_is_picked_up(self) -> None:
+        """Профиль, добавленный после старта пилота, обязан подхватиться.
+
+        Регрессия 2026-10-06: пилот от 05.10 не знал команду `pi` и писал
+        `pilot_restart_impossible`, хотя `cli-profiles.json` уже содержал
+        профиль. Карта команд морозилась в `__init__` и без перезапуска
+        пилота не обновлялась.
+        """
+        self.dead_writer_state()
+        pilot = self.pilot_with_launch(command="")
+        pilot.tmux = "/usr/bin/tmux"
+        pairpilot.pane_alive = lambda tmux, pane: True
+        pilot.tick()
+        self.assertNoRestart("профиля нет — перезапуска нет")
+        self.assertIn("pilot_restart_impossible", self.transcript_kinds())
+        pilot._explicit_launch["agy"] = "agy --resume"
+        pilot.tick()
+        self.assertEqual(1, len(self.respawns()),
+                         "команда появилась позже старта — перезапуск обязан сработать")
 
     def test_budget_is_per_role_not_global(self) -> None:
-        """Исчерпание попыток у agy не должно запрещать перезапуск claude."""
         pilot = self.pilot_with_launch()
-        pilot.launch["claude"] = "claude"
+        pilot._explicit_launch["claude"] = "claude"
         for _ in range(pilot.restart_limit + 2):
             self.write_state(writer="agy", round=3,
                              roles={"agy": {"last_seen": ago(600), "pid": self.DEAD_PID,
@@ -1039,6 +1172,23 @@ class TestStalledPatches(PilotCase):
         self.assertIn("pair_patch_verify", pending)
         self.assertIn("deadbeef", pending)
         self.assertIn("pair_patch_applied", pending)
+
+    def test_patch_nudge_applied_while_queued_is_dropped_not_delivered(self) -> None:
+        """Протухшее в очереди напоминание про патч не доставляется (#18).
+
+        Измерено 2026-10-06: `stalled_patches` положил текст в очередь до
+        `patch_applied`, а `flush_outbox` доставил после — агент получил
+        ложный «висит неприменённым» при applied=true.
+        """
+        self.sealed()
+        pilot = self.pilot_with_grace(1800)
+        pilot.tick()
+        self.assertIn("pair_patch_verify", pilot.pending("agy"))
+        self.sealed(applied=True)
+        pilot.tick()
+        self.assertEqual("", pilot.pending("agy"),
+                         "патч применён, пока текст ждал, — доставлять нечего")
+        self.assertIn("pilot_nudge_stale", self.transcript_kinds())
 
     def test_patched_owner_is_told_too(self) -> None:
         """Автор патча молчал и счёл его принятым. Его персональное дело —

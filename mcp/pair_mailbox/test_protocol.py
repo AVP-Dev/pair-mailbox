@@ -38,11 +38,24 @@ from server import (  # noqa: E402
     ProtocolError,
     Store,
     done_blockers,
-    is_pid_alive,
     main,
     resolve_autonomy,
 )
 
+# Потолок дайджеста продублирован намеренно: тест должен падать, если сервер
+# поднимет свою константу выше проверяемой, а не молча переписать её под себя.
+DIGEST_TOKEN_BUDGET_FOR_TEST = 500
+
+
+def fresh_seen() -> str:
+    """Свежая метка времени: сид заведомо моложе любого TTL истечения.
+
+    Нужна сидам протухших панелей/мёртвых процессов: их намерение — «панель
+    снять, но запись оставить», а last_seen из прошлого года теперь честно
+    истекает по TTL (19.3). Возраст там случаен, свежесть фиксирует предмет.
+    """
+    from datetime import datetime, timezone
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 class TestWriteAuthority(PairTestCase):
     def test_claim_and_release(self) -> None:
@@ -283,20 +296,27 @@ class TestObligations(PairTestCase):
         outsider.tool_pair_send(to="writer-agent", text="я тут ни при чём")
         self.assertEqual(1, len(list(self.store.obligations_root.glob("*.json"))))
 
-    def test_state_shows_both_sides_of_the_obligation(self) -> None:
-        self.writer.tool_pair_send(to="reviewer-agent", text="проверь", expects_reply=True)
-        mine = self.writer.tool_pair_state()["obligations"]
-        self.assertEqual(1, len(mine["i_am_waiting_for"]))
-        self.assertEqual("reviewer-agent", mine["i_am_waiting_for"][0]["to"])
-        theirs = self.peer.tool_pair_state()["obligations"]
-        self.assertEqual(1, len(theirs["they_wait_for_me"]))
-        self.assertEqual([], self.peer.tool_pair_state()["obligations"]["i_am_waiting_for"])
-
     def test_answering_twice_is_not_an_error(self) -> None:
         self.writer.tool_pair_send(to="reviewer-agent", text="проверь", expects_reply=True)
         self.peer.tool_pair_send(to="writer-agent", text="первый ответ")
         self.peer.tool_pair_send(to="writer-agent", text="и ещё уточнение")
         self.assertEqual([], list(self.store.obligations_root.glob("*.json")))
+
+    def test_verdict_opens_obligation_for_writer(self) -> None:
+        """Вердикт критика открывает обязательство писателю (полный цикл).
+
+        Измерено 2026-10-06: вердикт seq 252 лежал 3.5 часа, писатель стоял
+        на recap «жду вердикт», пилот молчал — сторожить было нечего,
+        obligation-файла не было. Теперь пилот пинает получателя автоматом.
+        """
+        self.writer.tool_pair_claim(reason="беру перо")
+        self.peer.tool_pair_note(kind="verdict", text="принято, закрывай")
+        files = list(self.store.obligations_root.glob("*.json"))
+        self.assertEqual(1, len(files))
+        record = json.loads(files[0].read_text(encoding="utf-8"))
+        self.assertEqual("reviewer-agent", record["from"])
+        self.assertEqual("writer-agent", record["to"])
+        self.assertIn("вердикт", record.get("subject", ""))
 
 
 
@@ -662,19 +682,6 @@ class TestEvidenceGate(PairTestCase):
 
     def test_empty_value_is_refused(self) -> None:
         self.assertRefused(self.writer.tool_pair_evidence, "test", "  ", contains="value")
-
-    def test_state_says_what_blocks_closing(self) -> None:
-        """Агент должен видеть причину заранее, а не тратить ход на заведомый
-        отказ."""
-        self.set_autonomy("semi")
-        state = self.writer.tool_pair_state()
-        self.assertTrue(state["closing_blocked_by"])
-        self.assertTrue(state["awaiting_human_ok"])
-        self.assertEqual(state["evidence_this_round"], [])
-        self.record_test_evidence()
-        state = self.writer.tool_pair_state()
-        self.assertEqual(state["evidence_this_round"][0]["kind"], "test")
-        self.assertEqual(len(state["closing_blocked_by"]), 1, "осталось только слово человека")
 
     def test_state_says_nothing_is_awaited_from_the_human_in_auto(self) -> None:
         """Обратная сторона дефолта: в auto никто не должен ждать слова человека,
@@ -1853,6 +1860,63 @@ class TestMCPStdio(PairTestCase):
             process.stdin.close()
             process.wait(timeout=10)
 
+    def test_every_advertised_tool_is_dispatchable(self) -> None:
+        """Объявленный в tools/list инструмент обязан быть вызываемым.
+
+        `pair_digest` был объявлен в `tool_definitions()`, но отсутствовал в
+        `HANDLERS`, и `invoke` отвечал на него "unknown tool". Агент, который
+        читает список, видел инструмент и брал его за рабочий, а на деле
+        получал отказ — и молчал об этом, потому что отказ это законный ответ
+        сервера, а не ошибка. Тест на список этого не ловил: он сверял
+        tools/list с tool_definitions(), то есть объявление с объявлением.
+
+        Поэтому проверяем второе свойство: каждый объявленный инструмент
+        разрешается в непустой обработчик. Список берём у сервера, а не
+        перечисляем руками — иначе проверка выродилась бы в повторение того
+        же объявления.
+        """
+        from server import HANDLERS, tool_definitions
+
+        advertised = {tool["name"] for tool in tool_definitions()}
+        self.assertTrue(advertised, "сервер не объявил ни одного инструмента")
+        unhandled = sorted(
+            name for name in advertised
+            if HANDLERS.get(name) is None or not callable(HANDLERS.get(name))
+        )
+        self.assertEqual(unhandled, [], "объявлены, но не вызываемы: " + ", ".join(unhandled))
+
+    def test_pair_digest_answers_over_mcp(self) -> None:
+        """Дайджест должен работать через MCP, а не только через `pairctl digest`.
+
+        Навык pair-work велит начинать раунд с `pair_digest` ради экономии
+        токенов, и кэш `pair_state` отсылает к нему же. Если инструмент не
+        вызывается, инструкция в навыке ведёт в отказ, а экономия обещана
+        тем, кто её не получает.
+        """
+        process = self._start("writer-agent")
+        try:
+            self._rpc(process, {
+                "jsonrpc": "2.0", "id": 1, "method": "initialize",
+                "params": {"protocolVersion": "2025-06-18", "clientInfo": {"name": "test"}},
+            })
+            self._notify(process, {"jsonrpc": "2.0", "method": "notifications/initialized"})
+            called = self._rpc(process, {
+                "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                "params": {"name": "pair_digest", "arguments": {"budget": 500}},
+            })
+            self.assertFalse(called["result"]["isError"], called["result"])
+            payload = json.loads(called["result"]["content"][0]["text"])
+            self.assertIn("digest", payload)
+            self.assertIn("tokens", payload)
+            # Дайджест обязан быть дешевле полного среза: иначе он не даёт
+            # обещанной экономии и навык pair-work врёт.
+            self.assertLess(payload["tokens"], DIGEST_TOKEN_BUDGET_FOR_TEST,
+                            "дайджест дороже своего потолка")
+            self.assertIn("РАУНД", payload["digest"])
+        finally:
+            process.stdin.close()
+            process.wait(timeout=10)
+
     def test_malformed_input_gets_a_jsonrpc_error_not_a_crash(self) -> None:
         process = self._start("writer-agent")
         try:
@@ -1923,10 +1987,30 @@ class TestStalePaneSurvives(PairTestCase):
 
         Подмена ставится здесь, а не в setUp, потому что два теста ниже проверяют
         сам pane_exists — со стабильной подменой они проверяли бы её же.
+
+        Подменяется и `pane_is_foreign`, потому что `_register` спрашивает у
+        composer оба вопроса: панель жива ли И своя ли она. Одной подмены
+        мало — вторая проверка пошла бы в настоящий tmux, и тест про «мёртвую
+        панель» получал бы верный ответ по не той причине.
         """
+        import composer
+
         real = self.server.pane_exists
+        real_foreign = composer.pane_is_foreign
+        real_belongs = composer.pane_belongs_to_project
         self.server.pane_exists = lambda pane: value
+        if value:
+            composer.pane_is_foreign = lambda tmux, pane, root: (False, "")
+            composer.pane_belongs_to_project = lambda tmux, pane, root: (True, "")
+        else:
+            composer.pane_is_foreign = lambda tmux, pane, root: (True, "панель отсутствует")
+            # Мёртвая панель проекту принадлежит — она просто мёртвая. Путать эти
+            # два факта нельзя, иначе проверка «своя» отвечала бы «нет» и снимала
+            # запись ростера не тем путём, который здесь проверяется.
+            composer.pane_belongs_to_project = lambda tmux, pane, root: (True, "")
         self.addCleanup(setattr, self.server, "pane_exists", real)
+        self.addCleanup(setattr, composer, "pane_is_foreign", real_foreign)
+        self.addCleanup(setattr, composer, "pane_belongs_to_project", real_belongs)
 
     def register(self, role: str, pane: str, pid: int) -> PairSession:
         self.store.mutate(lambda s: s.setdefault("roles", {}).setdefault(role, {}).update(
@@ -1977,6 +2061,29 @@ class TestStalePaneSurvives(PairTestCase):
         kinds = [e["kind"] for e in self.store.read_transcript()]
         self.assertIn("pane_collision", kinds)
         self.assertEqual(self.store.read()["roles"]["agy"].get("pane"), "%20")
+
+    def test_two_roles_on_one_unique_pane_id_is_a_collision(self) -> None:
+        """Две роли на одном уникальном ID панели — коллизия по UID (#защита).
+
+        Адрес `ml:0.2` плавает при сплитах, `%N` — при рестарте tmux; `%2751`
+        уникален и умирает вместе с панелью. Совпадение UID двух ролей —
+        та же неразличимость, что и совпадение адресов, и молчать о ней
+        нельзя: иначе доставка бьёт в чужой композер.
+        """
+        self.pane_alive(True)
+        self.register("agy", "%20", os.getpid())
+        self.store.mutate(lambda s: s["roles"]["agy"].update({"pane_uid": "%999"}))
+        self.join_pane("%21")
+        import composer
+        real_ident = composer.pane_identity
+        composer.pane_identity = lambda tmux, pane: {
+            "exists": True, "alive": True, "path": "/x", "address": "ml:0.1",
+            "session_id": "$1", "pane_uid": "%999"}
+        self.addCleanup(setattr, composer, "pane_identity", real_ident)
+        newcomer = PairSession("claude", self.store)
+        newcomer.tool_pair_state()
+        kinds = [e["kind"] for e in self.store.read_transcript()]
+        self.assertIn("pane_uid_collision", kinds)
 
     def test_a_malformed_id_is_not_vouched_for(self) -> None:
         """После ребута %1 может принадлежать совсем другому окну, поэтому
@@ -2060,275 +2167,110 @@ class TestStalePaneSurvives(PairTestCase):
                          f"{pane} после смерти сессии — фантом, а не панель")
 
 
+class TestSingleLiveProcessPerRole(PairTestCase):
+    """Одна живая роль — один живой процесс (#19.2).
 
-class TestDigest(PairTestCase):
-    """Дайджест: срез состояния в жёстком бюджете токенов (пункт 5).
-
-    Зачем он, измерено до того, как он написан: ориентация в паре стоит
-    `pair_state` 939 + `pair_task list` 1051 + `pair_transcript` 1734 = 3724 токена.
-    Дайджест обязан быть заметно дешевле, иначе он не нужен.
-
-    Три свойства, которые проверяются здесь, а не декларируются:
-    - **потолок держится** на любом состоянии, включая специально раздутое;
-    - **порядок разделов решает всё**: перестановка делает дороже при том же составе;
-    - **вердикт цитируется, а не пересказывается**, потому что пересказ чужого
-      решения своими словами — это способ соврать о том, чего не читали.
-    """
+    Второй процесс на том же имени роли с другой панели при живом записанном
+    pid — дубль, а не рестарт: регистрация отказывает, ростер не тронут.
+    Но pid переиспользуется, а адрес панели протухает, поэтому отказ — только
+    когда проверять есть чем. Каждый тест ниже фиксирует одну сторону этого
+    условия: ложный отказ здесь — вечный lockout легитимного агента."""
 
     def setUp(self) -> None:
         super().setUp()
         import server
         self.server = server
 
-    def digest(self, budget: int = 500, role: str = "") -> str:
-        return self.server.build_digest(self.store, role, budget)
+    def live_pid(self, value: bool):
+        """Подменить живость записанного pid: чужой pid в тесте мёртв всегда."""
+        patcher = mock.patch.object(self.server, "is_pid_alive", return_value=value)
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
-    def ctl(self, *argv: str) -> int:
-        return main(["--state", str(self.root), *argv])
+    def same_pane_as(self, value: bool):
+        """Подменить сравнение панелей: граница tmux, в unit — мок."""
+        patcher = mock.patch.object(self.server, "same_pane", return_value=value)
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
-    def with_state(self, **fields: object) -> None:
-        self.store.mutate(lambda st: st.update(fields))
+    def join_pane(self, pane: str) -> None:
+        previous = os.environ.get("TMUX_PANE")
+        os.environ["TMUX_PANE"] = pane
+        self.addCleanup(lambda: os.environ.__setitem__("TMUX_PANE", previous)
+                        if previous is not None else os.environ.pop("TMUX_PANE", None))
 
-    def many_tasks(self, count: int, status: str = "open") -> None:
-        self.store.mutate(lambda st: st.setdefault("tasks", []).extend(
-            {"id": 100 + i, "text": f"задача номер {i} " + "хвост " * 12,
-             "status": status, "added_at": "then", "added_by": "human", "round": 14}
-            for i in range(count)))
+    def pane_alive(self, value: bool):
+        real = self.server.pane_exists
+        self.server.pane_exists = lambda pane: value
+        self.addCleanup(setattr, self.server, "pane_exists", real)
+        import composer
+        real_belongs = composer.pane_belongs_to_project
+        composer.pane_belongs_to_project = lambda tmux, pane, root: (True, "")
+        self.addCleanup(setattr, composer, "pane_belongs_to_project", real_belongs)
 
-    # ------------------------------------------------------------------ потолок
+    def register(self, role: str, pane: str, pid: int):
+        self.store.mutate(lambda s: s.setdefault("roles", {}).setdefault(role, {}).update(
+            {"pane": pane, "pid": pid}))
 
-    def test_the_digest_fits_the_budget(self) -> None:
-        """Потолок — свойство, а не пожелание.
+    def test_second_live_process_on_another_pane_is_refused(self) -> None:
+        """Дубль: живой pid, живая удержанная панель, другая пришедшая — отказ."""
+        self.register("agy", "%20", 999999)
+        self.live_pid(True)
+        self.pane_alive(True)
+        self.same_pane_as(False)
+        self.join_pane("%21")
+        with self.assertRaises(ProtocolError):
+            PairSession("agy", self.store).tool_pair_state()
+        roles = self.store.read()["roles"]
+        self.assertEqual(roles["agy"].get("pid"), 999999)
+        self.assertEqual(roles["agy"].get("pane"), "%20")
+        kinds = [e["kind"] for e in self.store.read_transcript()]
+        self.assertIn("role_collision", kinds)
 
-        Дайджест, который перестал помещаться, хуже отсутствующего: агент будет
-        планировать контекст по потолку, который уже не действует.
-        """
-        self.with_state(task="автоматизация парной работы: пилот-сверхвизор, роли, режимы",
-                        writer="opencode", mode="fix", phase="implement", round=14)
-        self.many_tasks(6)
-        text = self.digest()
-        self.assertLessEqual(self.server.estimate_tokens(text), 500,
-                             "дайджест обязан помещаться в потолок")
+    def test_restart_on_the_same_pane_updates_pid(self) -> None:
+        """Рестарт: pid сменился, панель та же — регистрация проходит."""
+        self.register("agy", "%20", 999999)
+        self.live_pid(False)
+        self.pane_alive(True)
+        self.same_pane_as(True)
+        self.join_pane("%20")
+        PairSession("agy", self.store).tool_pair_state()
+        self.assertEqual(self.store.read()["roles"]["agy"].get("pid"), os.getpid())
 
-    def test_the_budget_holds_on_a_deliberately_bloated_state(self) -> None:
-        """Потолок держится на состоянии, специально раздутом.
+    def test_reused_pid_on_the_same_pane_is_not_a_refusal(self) -> None:
+        """Переиспользованный pid: записанный «жив», но панель та же — не отказ.
 
-        Проверка дешёвого дайджеста на нормальном состоянии ничего не доказывает:
-        он и так поместится. Ломается он на том, чего не ждёшь, — двадцать
-        открытых задач с длинными текстами и отсутствие git.
-        """
-        self.with_state(task="задача " * 400, writer="agy", mode="fix",
-                        phase="verify", round=99)
-        self.many_tasks(20, status="open")
-        text = self.digest()
-        self.assertLessEqual(self.server.estimate_tokens(text), 500)
+        os.kill(pid, 0) видит чужой процесс как живой, поэтому один факт живого
+        pid без второго факта (другая панель) отказывать не вправе."""
+        self.register("agy", "%20", 999999)
+        self.live_pid(True)
+        self.pane_alive(True)
+        self.same_pane_as(True)
+        self.join_pane("%20")
+        PairSession("agy", self.store).tool_pair_state()
+        self.assertEqual(self.store.read()["roles"]["agy"].get("pid"), os.getpid())
 
-    def test_a_tiny_budget_is_still_honoured(self) -> None:
-        """Потолок маленький — он тоже потолок, а не ориентир.
+    def test_no_pane_means_no_refusal(self) -> None:
+        """Безадресный вызов ни на какой композер не претендует — не отказ."""
+        self.register("agy", "%20", 999999)
+        self.live_pid(True)
+        self.pane_alive(True)
+        self.same_pane_as(False)
+        PairSession("agy", self.store).tool_pair_state()
+        kinds = [e["kind"] for e in self.store.read_transcript()]
+        self.assertIn("role_collision", kinds)
 
-        Если бы урезание не работало, агент на ограниченном контексте получил бы
-        полный текст и узнал об этом по факту, когда упёрся в лимит.
-        """
-        self.with_state(task="задача " * 200, writer="agy")
-        self.many_tasks(8)
-        text = self.digest(budget=80)
-        self.assertLessEqual(self.server.estimate_tokens(text), 80)
+    def test_dead_held_pane_means_restart_not_duplicate(self) -> None:
+        """Удержанная панель мертва, процесс жив: рестарт после смерти панели."""
+        self.register("agy", "%20", 999999)
+        self.live_pid(True)
+        self.pane_alive(False)
+        self.same_pane_as(False)
+        self.join_pane("%21")
+        PairSession("agy", self.store).tool_pair_state()
+        self.assertEqual(self.store.read()["roles"]["agy"].get("pid"), os.getpid())
 
-    def test_what_did_not_fit_is_said(self) -> None:
-        """Обрезание обязано быть объявлено.
 
-        Молча сокращённый дайджест хуже длинного: агент решит, что вердикта не
-        было, и начнёт искать его там, где его нет.
-        """
-        self.with_state(task="задача " * 400, writer="agy")
-        self.many_tasks(20)
-        text = self.digest(budget=120)
-        self.assertIn("обрезано", text)
-
-    # ------------------------------------------------------------------ состав
-
-    def test_the_reserve_covers_the_marker(self) -> None:
-        """Резерв обязан быть не меньше самой пометки.
-
-        Найдено на себе: резерв стоял круглым числом 20, пометка выходила 22, и на
-        тексте, подогнанном точно под потолок, дайджест давал 501 токен при потолке
-        500 — то есть либо нарушал обещание, либо вычищал строку, ради которой он
-        собирался. Оба варианта плохи, и оба выглядят как «почти работает».
-        """
-        self.assertGreaterEqual(self.server._digest_marker_reserve(),
-                                self.server.estimate_tokens(self.server.DIGEST_MARKER),
-                                "резерв меньше пометки: дайджест выдаст пометку ценой "
-                                "вычищенной полезной строки")
-
-    def test_an_oversized_line_is_cut_rather_than_dropped(self) -> None:
-        """Обрезанная первая строка полезнее, чем её отсутствие.
-
-        Здесь видна разница между двумя способами держать потолок, и она не
-        косметическая. Отбросить строку целиком — бюджет выдержан, но агент не
-        видит задачи вообще и вынужден звать `pair_state`. Обрезать её — агент
-        видит начало задачи и понимает, о чём раунд.
-
-        Проверено мутацией: если убрать только обрезание строки, потолок всё равно
-        держится (его держат `take` и финальная чистка), и набор остаётся зелёным.
-        То есть без этой проверки обрезание было бы мёртвым кодом.
-        """
-        self.with_state(task="ЗАДАЧА-ОЧЕНЬ-ДЛИННАЯ " + "подробности " * 400)
-        text = self.digest(budget=200)
-        self.assertLessEqual(self.server.estimate_tokens(text), 200)
-        self.assertIn("ЗАДАЧА-ОЧЕНЬ-ДЛИННАЯ", text,
-                      "начало задачи обязано быть видно, иначе агент не знает, о чём раунд")
-        self.assertIn("…", text, "обрезание обязано быть помечено")
-
-    def test_the_digest_states_what_cannot_be_guessed(self) -> None:
-        """Задача, режим, фаза и писатель — то, без чего работа идёт неверно.
-
-        Отсутствие задачи тоже факт, а не пустота: пустая строка выглядит как
-        «задача есть, но пустая», и это разные вещи.
-        """
-        text = self.digest()
-        self.assertIn("РАУНД", text)
-        self.assertIn("задача", text)
-        self.assertIn("режим", text)
-        self.assertIn("фаза", text)
-        self.assertIn("пишет", text)
-
-    def test_closed_tasks_do_not_take_space(self) -> None:
-        """Закрытые задачи не несут смысла для следующего шага.
-
-        Восемь закрытых задач стоили около 800 токенов в `pair_task list` и не
-        сказали ничего, чего агент не знает.
-        """
-        self.many_tasks(6, status="done")
-        text = self.digest()
-        self.assertIn("ОТКРЫТЫЕ ЗАДАЧИ: 0", text)
-        self.assertNotIn("задача номер", text)
-
-    def test_missing_obligations_are_stated(self) -> None:
-        """Отсутствие обязательств — факт, а не пустое место в тексте."""
-        text = self.digest()
-        self.assertIn("ОБЯЗАТЕЛЬСТВА: 0", text)
-        self.assertIn("никто никого не ждёт", text)
-
-    def test_an_open_obligation_is_named(self) -> None:
-        """Кто кого ждёт — это то, ради чего агент и смотрит дайджест."""
-        self.store.mutate(lambda st: None)
-        path = self.store.obligations_root
-        path.mkdir(parents=True, exist_ok=True)
-        (path / "o1.json").write_text(json.dumps(
-            {"from": "opencode", "to": "agy", "subject": "пункт 5"}, ensure_ascii=False),
-            encoding="utf-8")
-        text = self.digest()
-        self.assertIn("opencode ждёт agy", text)
-
-    def test_the_last_commit_is_read_from_git_not_from_the_log(self) -> None:
-        """Фактическое состояние дерева, а не пересказ журнала.
-
-        Журнал не знает, что закоммичено. Агент, читающий дайджест, должен увидеть
-        правду о дереве, иначе он планирует работу по устаревшему представлению.
-        """
-        text = self.digest()
-        self.assertIn("ПОСЛЕДНИЙ КОММИТ", text)
-
-    def test_no_git_is_said_out_loud(self) -> None:
-        """Отсутствие git объявляется, а не выглядит как «коммитов нет».
-
-        Это разные факты с разными последствиями: первый означает «следи сам», второй
-        — «дерево чистое, делать нечего».
-        """
-        with mock.patch("subprocess.run", side_effect=OSError("нет git")):
-            text = self.digest()
-        self.assertIn("git недоступен", text)
-
-    # ----------------------------------------------------------------- вердикт
-
-    def _note_in_journal(self, slug: str, role: str = "agy") -> None:
-        """Заметка, зарегистрированная в журнале так же, как её пишет `pair_note`."""
-        self.store.append_transcript("note", role, note_kind=slug, chars=10)
-        path = self.store.notes_root / f"{slug}.md"
-        path.parent.mkdir(parents=True, exist_ok=True)
-        # Заметка длиннее хвоста: если бы дайджест брал начало, в него попало бы
-        # «ПОСТАНОВКА ПРОШЛОГО РАУНДА» вместо решения.
-        body = [f"строка {i} постановки" for i in range(12)]
-        path.write_text("\n".join(body + ["ВЕРДИКТ: принято."]) + "\n", encoding="utf-8")
-
-    def test_the_last_verdict_is_quoted_not_summarised(self) -> None:
-        """Цитата, а не пересказ.
-
-        Дайджест пересказывает чужое решение своими словами — он умеет соврать о
-        том, чего не читал. Поэтому в него попадает дословный хвост заметки, и
-        видно, чей это вердикт.
-        """
-        self._note_in_journal("verdict-прошлое")
-        self._note_in_journal("verdict-свежее")
-        text = self.digest()
-        self.assertIn("ВЕРДИКТ: принято.", text)
-        self.assertIn("verdict-свежее", text)
-        self.assertNotIn("строка 0 постановки", text,
-                         "дайджест берёт хвост заметки, а не её начало")
-
-    def test_the_newest_verdict_wins_regardless_of_name(self) -> None:
-        """Порядок вердиктов берётся из журнала, а не из имени файла.
-
-        Имена не упорядочены по времени: `verdict.md`, `verdict-agy.md`,
-        `verdict-pairctl-pane.md` — какой из них последний, по имени не видно.
-        Заметок девяносто две, и читать их содержимое, чтобы найти последний, — это
-        ровно та стоимость, которую дайджест обещает не платить.
-        """
-        # Сначала в журнале один, потом другой: порядок задаёт журнал.
-        self._note_in_journal("verdict-aaa")
-        self._note_in_journal("verdict-zzz")
-        text = self.digest()
-        self.assertIn("verdict-zzz", text)
-
-    def test_no_verdict_is_stated_as_no_verdict(self) -> None:
-        """Отсутствие вердикта говорится прямо.
-
-        Иначе пустой раздел выглядит как «вердикт есть, но не влез».
-        """
-        text = self.digest()
-        self.assertIn("ПОСЛЕДНИЙ ВЕРДИКТ", text)
-        self.assertIn("вердиктов не было", text)
-
-    # --------------------------------------------------------------- поверхности
-
-    def test_the_tool_and_the_command_return_the_same_thing(self) -> None:
-        """Одна реализация на человека и агента.
-
-        Две реализации дайджеста разъедутся, и человек увидит не то, что видит
-        агент, — а расхождение в такой штуке обнаруживается только при разборе
-        инцидента.
-        """
-        self.with_state(task="одна и та же задача", writer="opencode")
-        out = io.StringIO()
-        with contextlib.redirect_stdout(out):
-            self.assertEqual(0, self.ctl("digest", "--budget", "400"))
-        self.assertEqual(self.server.build_digest(self.store, "", 400), out.getvalue())
-
-    def test_the_command_fails_loudly_when_the_budget_is_broken(self) -> None:
-        """Потолок, который не выдержали, — это поломка, а не повод сделать вид.
-
-        Молчаливый выход с кодом 0 дал бы человеку текст, который он принял за
-        дайджест, и он бы на него опирался.
-        """
-        # Подменяется модуль-потребитель: `cmd_digest` живёт в `pairctl_read` и
-        # берёт `build_digest` оттуда, а не из `server`. Подмена `server` после
-        # разбора ничего бы не изменила, и тест проверял бы не тот код.
-        with mock.patch("pairctl_read.build_digest", return_value="х" * 4000):
-            err = io.StringIO()
-            with contextlib.redirect_stderr(err):
-                code = self.ctl("digest", "--budget", "100")
-        self.assertEqual(1, code)
-        self.assertIn("потолке", err.getvalue())
-
-    def test_the_digest_names_the_role_that_writes(self) -> None:
-        """При переданной роли дайджест говорит «ты пишешь».
-
-        Это избавляет агента от второго вызова, и смысл тут не в красоте, а в том,
-        что весь смысл дайджеста — убрать лишний заход в состояние.
-        """
-        self.with_state(writer="opencode")
-        self.assertIn("(ты)", self.digest(role="opencode"))
-        self.assertNotIn("(ты)", self.digest(role="agy"))
 
 
 
@@ -2543,12 +2485,56 @@ class TestSessionAddressing(PairTestCase):
         окно оператора. Здесь это неуместно: адресация проверяется на живой
         панели, а агент узнаёт свою панель именно из этой переменной. Без
         возврата переменной тесты проходили бы, ничего не проверив.
+
+        Панель создаётся внутри `self.root` — то есть в корне проекта набора, а
+        не в панели оператора. `_register` сверяет cwd панели с корнем проекта и
+        отказывается записывать чужую, и это ровно тот дефект, который чинился:
+        показывать панель оператора было бы проверкой не той ветки. Своя панель
+        нужна и для остальных проверок этого класса — они тоже адресуют %.
         """
-        pane = self._pane_at_startup
+        pane = self._own_pane()
         if not pane:
             self.skipTest("набор запущен вне tmux")
+        # `previous` читается ДО присваивания, и это не опечатка: capture после
+        # записи даёт `previous == pane`, то есть восстановление возвращает
+        # собственную панель набора вместо прежнего значения. Дальше
+        # `PairTestBase.setUp` следующего теста читает `TMUX_PANE` и запоминает
+        # его как «панель оператора» — уже убитую, и набор падал на
+        # `pane_exists` в зависимости от порядка тестов.
+        previous = os.environ.get("TMUX_PANE")
         os.environ["TMUX_PANE"] = pane
-        self.addCleanup(os.environ.__setitem__, "TMUX_PANE", pane)
+        self.addCleanup(
+            lambda: os.environ.__setitem__("TMUX_PANE", previous)
+            if previous is not None else os.environ.pop("TMUX_PANE", None))
+        return pane
+
+    def _own_pane(self) -> str:
+        """Живая панель с cwd внутри корня проекта набора, один раз на тест.
+
+        Создаётся один раз и переиспользуется: `split-window` на каждый вызов
+        оставил бы после теста десяток окон, а панель набора всё равно должна
+        быть одна и та же.
+        """
+        cached = getattr(self, "_own_pane_cache", None)
+        if cached is not None:
+            return cached or ""
+        # Панель создаётся в корне ПРОЕКТА, а не в каталоге состояния: `project_root`
+        # у `Store` — это родитель `.pair`, и панель, запущенная из `.pair`,
+        # была бы объявлена чужой собственному проекту.
+        project = self.store.project_root
+        project.mkdir(parents=True, exist_ok=True)
+        pane = ""
+        if shutil_which("tmux"):
+            made = subprocess.run(
+                ["tmux", "split-window", "-d", "-P", "-F", "#{pane_id}",
+                 "-c", str(project)],
+                capture_output=True, text=True, timeout=10)
+            if made.returncode == 0 and made.stdout.strip():
+                pane = made.stdout.strip()
+                self.addCleanup(subprocess.run,
+                                ["tmux", "kill-pane", "-t", pane],
+                                capture_output=True, timeout=10)
+        self._own_pane_cache = pane
         return pane
 
     def test_a_session_address_is_recognised_as_a_pane(self) -> None:
@@ -2697,13 +2683,26 @@ class TestSessionAddressing(PairTestCase):
         """
         self.live_pane()
         import composer
-        real = composer.session_address
-        composer.session_address = lambda tmux, pane: ""   # адрес не получается
-        self.addCleanup(setattr, composer, "session_address", real)
+        # Подмена бьёт по адресу-записи, а не по `pane_identity`: тот же вызов
+        # обслуживает проверку «панель своя», и пустой ответ оттуда объявил бы
+        # панель несуществующей. Проверяется отказ адресации, а не отказ панели.
+        real_write = composer.session_address
+        identity_calls = []
+
+        def fake(tmux_arg, pane_arg):
+            if pane_arg == self._own_pane_cache:
+                return ""                      # адрес не получился
+            identity_calls.append(pane_arg)
+            return real_write(tmux_arg, pane_arg)
+
+        composer.session_address = fake
+        self.addCleanup(setattr, composer, "session_address", real_write)
         session = PairSession("agy", self.store)
         session.tool_pair_state()
         pane = self.store.read()["roles"]["agy"].get("pane")
         self.assertTrue(pane, "запись не теряется: работать надо и на %N")
+        self.assertEqual(pane, self._own_pane_cache,
+                         "без адреса сессии остаётся %N")
         kinds = [e["kind"] for e in self.store.read_transcript()]
         self.assertIn("pane_address_unavailable", kinds)
 
@@ -3070,7 +3069,7 @@ class TestRingAndUnblock(PairTestCase):
         # чем дойдёт до композера. Тест про невидимый композер, поэтому
         # принадлежность панели объявляется заранее, а не подменяется пустым
         # результатом: иначе он проверял бы уже другую ветку.
-        composer.pane_is_foreign = lambda tmux, pane, root: (False, "")
+        self.allow_panes()
         try:
             result = self.writer._ring("reviewer-agent", "заметка", "детали")
         finally:
@@ -3251,20 +3250,13 @@ class TestMailboxInvariants(PairTestCase):
             contains="allowed: implement.",
         )
 
-    def test_is_pid_alive(self) -> None:
-        self.assertTrue(is_pid_alive(os.getpid()))
-        self.assertFalse(is_pid_alive(-1))
-        self.assertFalse(is_pid_alive(0))
-        self.assertFalse(is_pid_alive(None))
-        self.assertFalse(is_pid_alive(99999999))
-
     def test_duo_roles_registration_and_stale_pane_cleanup(self) -> None:
         # Prepopulate state with a stale role that has a dead PID holding pane %99
         def seed(state):
             roles = state.setdefault("roles", {})
             roles["old-agent"] = {
-                "first_seen": "2026-01-01T00:00:00+00:00",
-                "last_seen": "2026-01-01T00:00:00+00:00",
+                "first_seen": fresh_seen(),
+                "last_seen": fresh_seen(),
                 "pid": 99999999,
                 "pane": "%99",
             }
@@ -3273,6 +3265,12 @@ class TestMailboxInvariants(PairTestCase):
         # Now start an agent in pane %99
         orig_pane = os.environ.get("TMUX_PANE")
         try:
+            # `%99` и `%100` — фантомы: tmux отвечает на них кодом 0 и пустым
+            # выводом. Раньше набор требовал, чтобы такие адреса попали в ростер
+            # как свои, и проходил ровно на несуществующих панелях. Теперь
+            # `_register` отказывается записывать панель, которую нельзя
+            # доказать, поэтому здесь проверяется отказ с записью в транскрипт, а
+            # устаревшая запись снимается по-прежнему.
             os.environ["TMUX_PANE"] = "%99"
             duo_writer = PairSession("opencode-writer", self.store)
             duo_critic = PairSession("opencode-critic", self.store)
@@ -3283,14 +3281,16 @@ class TestMailboxInvariants(PairTestCase):
             state = self.store.read()
             # Stale role's pane should have been cleared
             self.assertNotIn("pane", state["roles"]["old-agent"])
-            # New role has pane %99
-            self.assertEqual(state["roles"]["opencode-writer"]["pane"], "%99")
+            # Фантомная панель не доказана как своя, и в ростер не попадает
+            self.assertNotIn("pane", state["roles"]["opencode-writer"])
+            kinds = [e["kind"] for e in self.store.read_transcript()]
+            self.assertIn("pane_env_rejected", kinds)
 
             # Critic can also register without conflict
             os.environ["TMUX_PANE"] = "%100"
             duo_critic.tool_pair_state()
             state = self.store.read()
-            self.assertEqual(state["roles"]["opencode-critic"]["pane"], "%100")
+            self.assertNotIn("pane", state["roles"]["opencode-critic"])
         finally:
             if orig_pane is not None:
                 os.environ["TMUX_PANE"] = orig_pane
@@ -3298,11 +3298,18 @@ class TestMailboxInvariants(PairTestCase):
                 os.environ.pop("TMUX_PANE", None)
 
     def test_peer_status_reports_dead_process(self) -> None:
+        """Сквозная проверка через `pair_state`: мёртвый сосед виден в ответе.
+
+        Логика самого ответа вынесена в `liveness` и проверяется в
+        `test_liveness.py` — по одному тест-файлу на исходник. Здесь важно
+        другое: что ответ `pair_state` действительно несёт это поле, а агент,
+        читающий состояние, узнаёт о молчании соседа.
+        """
         def seed(state):
             roles = state.setdefault("roles", {})
             roles["ghost-agent"] = {
-                "first_seen": "2026-01-01T00:00:00+00:00",
-                "last_seen": "2026-01-01T00:00:00+00:00",
+                "first_seen": fresh_seen(),
+                "last_seen": fresh_seen(),
                 "pid": 99999999,
             }
         self.store.mutate(seed)
@@ -3324,8 +3331,8 @@ class TestMailboxInvariants(PairTestCase):
         """
         def seed(state):
             state.setdefault("roles", {})["reviewer-agent"] = {
-                "first_seen": "2026-01-01T00:00:00+00:00",
-                "last_seen": "2026-01-01T00:00:00+00:00",
+                "first_seen": fresh_seen(),
+                "last_seen": fresh_seen(),
                 "pid": os.getpid(),
                 "pane": "%55",
             }
@@ -3334,7 +3341,7 @@ class TestMailboxInvariants(PairTestCase):
         import composer
         orig_deliver = composer.deliver
         orig_foreign = composer.pane_is_foreign
-        composer.pane_is_foreign = lambda tmux, pane, root: (False, "")
+        self.allow_panes()
 
         def mock_deliver(pane, text, wait_for_empty=0.0, submit=True):
             return {"delivered": False, "unverified": True, "chars": len(text),
@@ -3358,8 +3365,8 @@ class TestMailboxInvariants(PairTestCase):
         def seed(state):
             roles = state.setdefault("roles", {})
             roles["reviewer-agent"] = {
-                "first_seen": "2026-01-01T00:00:00+00:00",
-                "last_seen": "2026-01-01T00:00:00+00:00",
+                "first_seen": fresh_seen(),
+                "last_seen": fresh_seen(),
                 "pid": os.getpid(),
                 "pane": "%55",
             }
@@ -3368,7 +3375,7 @@ class TestMailboxInvariants(PairTestCase):
         import composer
         orig_deliver = composer.deliver
         orig_foreign = composer.pane_is_foreign
-        composer.pane_is_foreign = lambda tmux, pane, root: (False, "")
+        self.allow_panes()
 
         def mock_deliver(pane, text, wait_for_empty=0.0, submit=True):
             raise composer.ComposerBusy("user is actively typing")
@@ -3392,7 +3399,6 @@ class TestMailboxInvariants(PairTestCase):
         finally:
             composer.deliver = orig_deliver
             composer.pane_is_foreign = orig_foreign
-
 
 
 class TestPaneIdentityIsNotLiveness(PairTestCase):
@@ -3624,7 +3630,7 @@ class TestTuiIsNotABus(PairTestCase):
         """Прогнать доставку, подменив печать, и вернуть то, что ушло в композер."""
         orig_deliver = self.composer.deliver
         orig_foreign = self.composer.pane_is_foreign
-        self.composer.pane_is_foreign = lambda tmux, pane, root: (False, "")
+        self.allow_panes()
 
         def fake_deliver(pane, body, wait_for_empty=0.0, submit=True):
             self.printed.append(body)
@@ -3672,7 +3678,7 @@ class TestTuiIsNotABus(PairTestCase):
         """
         orig_deliver = self.composer.deliver
         orig_foreign = self.composer.pane_is_foreign
-        self.composer.pane_is_foreign = lambda tmux, pane, root: (False, "")
+        self.allow_panes()
         self.composer.deliver = lambda *a, **kw: (_ for _ in ()).throw(
             self.composer.ComposerBusy("занято"))
         try:

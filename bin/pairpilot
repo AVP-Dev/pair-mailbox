@@ -87,7 +87,11 @@ DEFAULT_REPLY_GRACE = 900.0
 # вопрос жив: пока композер занят, минута-другая ожидания уместна. Но вопрос,
 # провисевший дольше, уже не помогает — он только отвлекает. Наблюдалось
 # вживую: напоминание ждало композер 22 минуты и было доставлено как свежее.
-DEFAULT_OUTBOX_TTL = 600.0
+#
+# Должно быть ЗАВЕДОМО больше WAKE_ESCALATE_REPEAT_SECONDS, и это условие
+# работоспособности, а не вкус: при 600 против 900 эскалация протухала в очереди
+# раньше, чем повтор в неё попадал. Соотношение проверяется тестом.
+DEFAULT_OUTBOX_TTL = 1800.0
 # Сколько молчит роль, прежде чем пробуждение печатью станет эскалацией.
 #
 # Порядок намеренно перевёрнут относительно прежнего: раньше печать в композер была
@@ -95,6 +99,9 @@ DEFAULT_OUTBOX_TTL = 600.0
 # печать. Теперь печать это исключение, а не правило: сначала пишем факт в файл,
 # затем опрашиваем, и если роль проснулась сама, не печатаем ничего.
 DEFAULT_WAKE_GRACE = 240.0
+# Как часто можно повторить эскалацию, если роль так и не проснулась. Не «один раз
+# навсегда» — причина в may_escalate_again. Пауза заведомо больше wake_grace.
+WAKE_ESCALATE_REPEAT_SECONDS = 900.0
 DEFAULT_REPLY_HARD = 2400.0
 # Сколько провисает sealed-патч, прежде чем это станет дефектом, а не делом,
 # которое писатель возьмёт через минуту.
@@ -197,18 +204,26 @@ class Pilot:
         # а иногда и панель агента, который его запустил. Вбивать туда что-либо
         # нельзя: там ждёт ввод человека, и мы бы съели его текст.
         self.own_pane = os.environ.get("TMUX_PANE") or None
-        self.launch = self._launch_commands(launch or {})
+        self._explicit_launch = dict(launch or {})
 
     # ------------------------------------------------------------- restart map
 
-    def _launch_commands(self, given: dict[str, str]) -> dict[str, str]:
+    def _launch_commands(self, given: dict[str, str] | None = None) -> dict[str, str]:
         """Как запустить роль, если её процесс умер.
 
         Порядок источников от «явного» к «угаданному»: то, что человек написал
         сам, потом профиль в cli-profiles.json, потом переменная окружения.
         Ничего не угадываем по имени: команда, которой не существует, хуже
         отсутствия команды, потому что панель оживает и сразу падает.
+
+        Карта пересобирается на каждом обращении (см. `launch_command`), а не
+        морозится в `__init__`: иначе профиль, добавленный позже (как `pi`
+        2026-10-06), и правка `restart.json` вступают в силу только после
+        перезапуска пилота. Измерено: пилот от 05.10 не знал команду `pi` и
+        писал `pilot_restart_impossible`, хотя профиль уже был на диске.
         """
+        explicit = dict(getattr(self, "_explicit_launch", None)
+                        if given is None else (given or {}))
         out: dict[str, str] = {}
         file_cmd = self.state_dir / "restart.json"
         try:
@@ -226,7 +241,7 @@ class Pilot:
                     out.setdefault(name, str(profile["launch"]))
         except (OSError, json.JSONDecodeError):
             pass
-        out.update(given)
+        out.update(explicit)
         for role in list(out):
             env_cmd = os.environ.get(f"PAIR_LAUNCH_{re.sub(r'[^A-Za-z0-9]', '_', role).upper()}")
             if env_cmd:
@@ -234,7 +249,7 @@ class Pilot:
         return out
 
     def launch_command(self, role: str) -> str:
-        return self.launch.get(role, "").strip()
+        return self._launch_commands().get(role, "").strip()
 
     # ------------------------------------------------------------ restart budget
 
@@ -525,20 +540,40 @@ class Pilot:
                                              since_seconds=since)
                 log(f"{role}: проснулся сам, печать не понадобилась")
                 continue
-            if wake.get("escalated"):
-                continue
             asked = parse_iso(wake.get("asked_at"))
             age = now - asked.timestamp() if asked else 0.0
             if age < self.wake_grace:
                 continue
-            # Эскалация: печатаем один раз. Дальше — молча, пока не проснётся.
+            # Пауза между повторами и причина — в may_escalate_again.
+            if not self.may_escalate_again(wake, now):
+                continue
             self.store.append_transcript("pilot_wake_escalated", "pairpilot",
                                          target=role, reason=wake.get("reason"),
-                                         age_seconds=int(age))
+                                         age_seconds=int(age),
+                                         repeat=bool(wake.get("escalated")))
             log(f"{role}: молчит {int(age // 60)} мин после пробуждения — печатаю")
             self.enqueue(role, str(wake.get("text") or ""))
             wake["escalated"] = True
+            wake["escalated_at"] = utcnow()
             path.write_text(json.dumps(wake, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    def may_escalate_again(self, wake: dict, now: float) -> bool:
+        """Пора ли повторить эскалацию: роль молчит, а пауза с прошлой прошла.
+
+        Прежний контракт был «ровно один раз за жизнь роли», и это ловушка без
+        выхода: файл удаляется только когда роль ПРОСНУЛАСЬ, поэтому у молчащей
+        роли вторая эскалация невозможна в принципе. Найдено вживую — pi молчал
+        час, файл висел с escalated, супервизор писал «ждёт 40 мин» и не печатал.
+
+        Пауза обязана быть меньше срока жизни отложенного, иначе повтор протухнет
+        в очереди, не доехав до композера.
+        """
+        if not wake.get("escalated"):
+            return True
+        last = parse_iso(wake.get("escalated_at"))
+        if last is None:
+            return True
+        return (now - last.timestamp()) >= WAKE_ESCALATE_REPEAT_SECONDS
 
     # --------------------------------------------------------------- outbox
 
@@ -546,9 +581,57 @@ class Pilot:
         path = self.outbox / f"{role}.txt"
         path.write_text(text, encoding="utf-8")
 
+    def mailbox_fallback(self, role: str, text: str) -> int | None:
+        """Дублировать указатель в mailbox получателя как письмо от пилота.
+
+        Outbox протухает, если композер занят дольше TTL: агент работает,
+        печатать нельзя, указатель выбрасывается — и агент никогда не узнаёт,
+        что его ждали. Mailbox не протухает: агент заберёт письмо через
+        `pair_read`, когда сам решит. Измерено 2026-10-06: два nudge_expired
+        подряд, оба агента живы, оба ничего не получили.
+        Возвращает seq письма или None, если дублировать нечего/некуда.
+        """
+        if not text.strip():
+            return None
+        try:
+            from server import atomic_write_json
+        except Exception:
+            return None
+        def apply(state: dict) -> int | None:
+            import uuid
+            inbox = self.store.mailbox_root / role
+            inbox.mkdir(parents=True, exist_ok=True)
+            existing = [0]
+            if self.store.mailbox_root.is_dir():
+                for f in self.store.mailbox_root.glob("*/*.json"):
+                    try:
+                        existing.append(int(f.name.split("-")[0]))
+                    except Exception:
+                        pass
+            seq = max(state.get("seq", 0), max(existing)) + 1
+            state["seq"] = seq
+            stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+            token = uuid.uuid4().hex[:6]
+            body = {"seq": seq, "from": "pairpilot", "to": role,
+                    "ts": utcnow(), "subject": "",
+                    "label": "Chat from pairpilot: ", "text": text.strip()}
+            atomic_write_json(inbox / f"{seq:06d}-{stamp}-pairpilot-{token}.json", body)
+            return seq
+        try:
+            seq = self.store.mutate(apply)
+        except Exception:
+            return None
+        self.store.append_transcript("pilot_mailbox_fallback", "pairpilot",
+                                     to=role, seq=seq, text=text[:120])
+        return seq
+
     def pending(self, role: str) -> str:
         path = self.outbox / f"{role}.txt"
         return path.read_text(encoding="utf-8").strip() if path.exists() else ""
+
+    def outbox_file(self, role: str) -> Path:
+        """Файл отложенного для роли. Метод, чтобы путь очереди не собирали руками."""
+        return self.outbox / f"{role}.txt"
 
     def flush_outbox(self, state: dict) -> None:
         """Доставить отложенное. Пока композер занят, текст остаётся на месте —
@@ -577,15 +660,15 @@ class Pilot:
                 continue
             if age > self.outbox_ttl:
                 path.unlink(missing_ok=True)
+                seq = self.mailbox_fallback(role, text)
                 self.store.append_transcript(
                     "pilot_nudge_expired", "pairpilot", to=role,
-                    age_seconds=int(age), text=text[:120])
-                log(f"отложенное для {role} выброшено: ждало композер "
-                    f"{int(age // 60)} мин, вопрос устарел")
+                    age_seconds=int(age), text=text[:120],
+                    fallback_seq=seq)
+                log(f"отложенное для {role} протухло в композере "
+                    f"{int(age // 60)} мин — дублирую в ящик (seq {seq})")
                 continue
             pane = info.get("pane")
-            if not pane or not pane_alive(self.tmux, pane):
-                continue
             try:
                 result = deliver(pane, text, wait_for_empty=0)
             except ComposerBusy:
@@ -595,7 +678,49 @@ class Pilot:
                 self.store.append_transcript("pilot_deliver", "pairpilot", to=role, text=text[:120])
                 log(f"доставил отложенное для {role}")
 
-    # ---------------------------------------------------------------- nudges
+    def drop_stale_outbox(self, state: dict) -> None:
+        """Снять протухшее в очереди до попытки печати (#18).
+
+        Отдельно от `flush_outbox`, потому что тот без tmux выходит сразу
+        и перепроверка не срабатывала бы ни в тестах, ни в проекте без
+        tmux. Порядок в `tick` — после `stalled_patches`, до `flush_outbox`:
+        свежее условие уже записано, протухшее снимается здесь.
+        """
+        now = time.time()
+        for role in state.get("roles", {}):
+            text = self.pending(role)
+            if not text:
+                continue
+            path = self.outbox / f"{role}.txt"
+            try:
+                age = now - path.stat().st_mtime
+            except OSError:
+                continue
+            if self.nudge_still_true(state, role, text):
+                continue
+            path.unlink(missing_ok=True)
+            self.store.append_transcript(
+                "pilot_nudge_stale", "pairpilot", to=role,
+                age_seconds=int(age), text=text[:120])
+            log(f"отложенное для {role} снято: условие протухло, пока ждало")
+
+    def nudge_still_true(self, state: dict, role: str, text: str) -> bool:
+        """Протухло ли условие отложенного, пока оно ждало композер (#18).
+
+        Измерено 2026-10-06: напоминание про sealed-патч zmtcbrb9 легло в
+        очередь до `patch_applied`, а доставлено после — агент получил
+        ложный «висит неприменённым» при applied=true. Условие читается
+        из свежего состояния здесь, а не из момента постановки.
+        Неопознанный текст не трогаем: лучше доставить лишнее, чем молча
+        выбросить то, чего не поняли.
+        """
+        low = text.lower()
+        if "патч" not in low and "patch" not in low:
+            return True
+        for _path, record in (state.get("patches") or {}).items():
+            if record.get("sealed") and not record.get("applied"):
+                return True
+        return False
 
     def visibly_busy(self, pane: str) -> bool:
         """Видно ли по панели, что агент работает прямо сейчас.
@@ -1114,6 +1239,7 @@ class Pilot:
         self.poll_wakes(state)
         self.pending_answers(state)
         self.stalled_patches(state)
+        self.drop_stale_outbox(state)
         self.flush_outbox(state)
         self.stale_writer(state)
         self.checkpoint(state)

@@ -157,8 +157,17 @@ class TestPaneOverride(PairTestCase):
         Набор работает в состоянии во временном каталоге, а панель — в реальном
         проекте, поэтому подлинность панели здесь всегда «чужая». Подменять её на
         «своя» надо явно: иначе тест проверял бы только отказ, а не принятие.
+
+        Подменяются оба вопроса. `_register` спрашивает «панель этого проекта?»,
+        а `pair_deliver` — «не чужая ли?». С появлением второй проверки подмена
+        осталась на первой, и проверка принятия стала проверкой отказа: тест
+        требовал записи панели, а получал её снятие.
         """
-        return mock.patch("composer.pane_is_foreign", return_value=(False, ""))
+        return mock.patch.multiple(
+            "composer",
+            pane_is_foreign=mock.Mock(return_value=(False, "")),
+            pane_belongs_to_project=mock.Mock(return_value=(True, "")),
+        )
 
     def bind(self, role: str, pane: str, pid: int) -> None:
         self.store.mutate(lambda st: st.setdefault("roles", {}).update(
@@ -257,7 +266,8 @@ class TestPaneOverride(PairTestCase):
         pane = self.live_pane()
         self.with_pane(pane)
         self.bind("opencode", "старое", 999999)
-        self.register("opencode")
+        with self.as_ours():
+            self.register("opencode")
         from composer import _tmux, session_address
         expected = session_address(_tmux(), pane) or pane
         self.assertEqual(expected, self.pinned().get("pane"))
@@ -275,7 +285,8 @@ class TestPaneOverride(PairTestCase):
             self.assertEqual(0, self.ctl("pane", "--role", "opencode", pane))
         self.assertEqual(0, self.ctl("pane", "--role", "opencode", "--clear"))
         self.assertNotIn("pane_pin", self.pinned())
-        self.register("opencode")
+        with self.as_ours():
+            self.register("opencode")
         from composer import _tmux, session_address
         self.assertEqual(session_address(_tmux(), pane) or pane,
                          self.pinned().get("pane"))
@@ -298,6 +309,59 @@ class TestPaneOverride(PairTestCase):
         self.assertLessEqual(
             kinds.count("pane_pin_honoured"), 1,
             "запись должна появляться на изменении, а не на каждом вызове")
+
+
+    def test_positional_role_and_address_bind_without_flag(self) -> None:
+        """Позиционная форма из карточки: `pane <role> <addr>` без --role.
+
+        Иначе при перезапуске окон чинить привязку можно только длинной
+        формой, а карточка требует именно `pane <role> <tmux-pane>`.
+        Окружение сброшено специально: иначе $TMUX_PANE-fallback
+        замаскировал бы сломанный разбор позиционных (проверено мутацией).
+        """
+        pane = self.live_pane()
+        self.with_pane(None)
+        self.bind("opencode", pane, 999999)
+        with self.as_ours():
+            self.assertEqual(0, self.ctl("pane", "opencode", pane))
+        self.assertEqual(pane, self.pinned().get("pane_pin"))
+
+    def test_tmux_pane_env_is_used_only_with_current_flag(self) -> None:
+        """$TMUX_PANE берётся только с явным --current (регрессия %2205).
+
+        Без флага `pane <role>` из живой панели — только показ: иначе два
+        опроса подряд (`pane opencode` + `pane pi` из одного окна) молча
+        сажают обе роли на одну панель, и супервизор пропускает их как
+        неразличимые. Измерено на живом состоянии 2026-10-06.
+        """
+        pane = self.live_pane()
+        self.with_pane(pane)
+        self.bind("opencode", pane, 999999)
+        with self.as_ours():
+            self.assertEqual(0, self.ctl("pane", "opencode"))
+        self.assertNotIn("pane_pin", self.pinned(),
+                         "показ из живой панели обязан ничего не писать")
+        with self.as_ours():
+            self.assertEqual(0, self.ctl("pane", "--role", "opencode", pane))
+        with self.as_ours():
+            self.assertEqual(0, self.ctl("pane", "opencode"))
+        self.assertEqual(pane, self.pinned().get("pane_pin"))
+        self.store.mutate(lambda st: (st["roles"]["opencode"].pop("pane_pin", None),
+                                      st["roles"]["opencode"].pop("pane_pin_why", None)))
+        with self.as_ours():
+            self.assertEqual(0, self.ctl("pane", "opencode", "--current"))
+        self.assertEqual(pane, self.pinned().get("pane_pin"))
+
+    def test_show_when_no_address_and_no_tmux_pane(self) -> None:
+        """Без address и без $TMUX_PANE — показ, а не выдуманный адрес."""
+        pane = self.live_pane()
+        self.with_pane(None)
+        self.bind("opencode", pane, 999999)
+        with self.as_ours():
+            self.assertEqual(0, self.ctl("pane", "--role", "opencode", pane))
+        self.with_pane(None)
+        self.assertEqual(0, self.ctl("pane", "--role", "opencode"))
+        self.assertEqual(pane, self.pinned().get("pane_pin"))
 
 
 if __name__ == "__main__":

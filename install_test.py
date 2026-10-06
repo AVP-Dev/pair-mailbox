@@ -403,6 +403,26 @@ class TestPilotLaunchMap(InstallCase):
         data = json.loads((ROOT / "cli-profiles.json").read_text(encoding="utf-8"))
         self.assertIn("_readme", data)
 
+    def test_profiles_sharing_one_file_use_different_server_keys(self) -> None:
+        """Два CLI на одном mcp.json обязаны писать в разные ключи (#omp).
+
+        Измерено 2026-10-06: `install.sh omp` перезаписал ключ `pair` в
+        `~/.pi/agent/mcp.json` ролью `omp` и молча сломал MCP у `pi`.
+        Общий файл без развода ключей — это одна роль на двоих.
+        """
+        profiles = json.loads((ROOT / "cli-profiles.json").read_text(encoding="utf-8"))
+        by_path: dict[str, dict[str, str]] = {}
+        for name, profile in profiles.items():
+            if name.startswith("_"):
+                continue
+            spec = (profile or {}).get("mcp") or {}
+            by_path.setdefault(str(spec.get("path")), {})[name] = str(
+                spec.get("server_key", "pair"))
+        for path, keys in by_path.items():
+            with self.subTest(path=path):
+                self.assertEqual(len(keys), len(set(keys.values())),
+                                 f"один файл {path} — разные ключи: {keys}")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

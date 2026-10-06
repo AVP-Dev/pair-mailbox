@@ -50,5 +50,31 @@
     },
     "skills_dir": "~/.claude/skills",
     "instructions": "~/.claude/CLAUDE.md"
+  },
+  "pi": {
+    "launch": "pi",
+    "label": "Pi Coding Agent",
+    "mcp": {
+      "path": "~/.pi/agent/mcp.json",
+      "format": "json",
+      "root_key": "mcpServers",
+      "entry": { "command": "sh", "args": [], "timeout": 65000 }
+    },
+    "skills_dir": "~/.pi/agent/skills",
+    "instructions": "~/.pi/agent/AGENTS.md"
+  },
+  "omp": {
+    "launch": "omp",
+    "label": "OMP Coding Agent",
+    "binary": "omp",
+    "mcp": {
+      "path": "~/.pi/agent/mcp.json",
+      "format": "json",
+      "root_key": "mcpServers",
+      "server_key": "pair-omp",
+      "entry": { "command": "sh", "args": [], "timeout": 65000 }
+    },
+    "skills_dir": "~/.pi/agent/skills",
+    "instructions": "~/.pi/agent/AGENTS.md"
   }
 }
