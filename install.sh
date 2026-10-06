@@ -46,7 +46,8 @@ def binary(name):
 def present(profile):
     """CLI считается установленным, если его бинарь или каталог конфига есть."""
     spec = profile["mcp"]
-    names = {"opencode": "opencode", "agy": "agy", "codex": "codex", "claude": "claude"}
+    names = {"opencode": "opencode", "agy": "agy", "codex": "codex", "claude": "claude",
+             "pi": "pi", "omp": "omp"}
     key = next((k for k, v in PROFILES.items() if v is profile), "")
     bin_name = profile.get("binary", names.get(key, key))
     if binary(bin_name):
@@ -160,7 +161,8 @@ def write_mcp(profile, role):
         entry["command"] = argv
     else:
         entry["command"], entry["args"] = argv[0], argv[1:]
-    cfg.setdefault(spec["root_key"], {})["pair"] = entry
+    server_key = spec.get("server_key", "pair")
+    cfg.setdefault(spec["root_key"], {})[server_key] = entry
     path.write_text(json.dumps(cfg, indent=2, ensure_ascii=False), encoding="utf-8")
     return argv
 
@@ -297,7 +299,8 @@ def main():
                     argv = argv_from_toml(text)
                 else:
                     cfg = json.loads(text)
-                    entry = cfg[spec["root_key"]]["pair"]
+                    server_key = spec.get("server_key", "pair")
+                    entry = cfg[spec["root_key"]][server_key]
                     argv = entry["command"] if isinstance(entry["command"], list) else [entry["command"]] + entry.get("args", [])
             except Exception:
                 print("    конфиг не найден или нечитаем")

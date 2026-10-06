@@ -204,18 +204,26 @@ class Pilot:
         # а иногда и панель агента, который его запустил. Вбивать туда что-либо
         # нельзя: там ждёт ввод человека, и мы бы съели его текст.
         self.own_pane = os.environ.get("TMUX_PANE") or None
-        self.launch = self._launch_commands(launch or {})
+        self._explicit_launch = dict(launch or {})
 
     # ------------------------------------------------------------- restart map
 
-    def _launch_commands(self, given: dict[str, str]) -> dict[str, str]:
+    def _launch_commands(self, given: dict[str, str] | None = None) -> dict[str, str]:
         """Как запустить роль, если её процесс умер.
 
         Порядок источников от «явного» к «угаданному»: то, что человек написал
         сам, потом профиль в cli-profiles.json, потом переменная окружения.
         Ничего не угадываем по имени: команда, которой не существует, хуже
         отсутствия команды, потому что панель оживает и сразу падает.
+
+        Карта пересобирается на каждом обращении (см. `launch_command`), а не
+        морозится в `__init__`: иначе профиль, добавленный позже (как `pi`
+        2026-10-06), и правка `restart.json` вступают в силу только после
+        перезапуска пилота. Измерено: пилот от 05.10 не знал команду `pi` и
+        писал `pilot_restart_impossible`, хотя профиль уже был на диске.
         """
+        explicit = dict(getattr(self, "_explicit_launch", None)
+                        if given is None else (given or {}))
         out: dict[str, str] = {}
         file_cmd = self.state_dir / "restart.json"
         try:
@@ -233,7 +241,7 @@ class Pilot:
                     out.setdefault(name, str(profile["launch"]))
         except (OSError, json.JSONDecodeError):
             pass
-        out.update(given)
+        out.update(explicit)
         for role in list(out):
             env_cmd = os.environ.get(f"PAIR_LAUNCH_{re.sub(r'[^A-Za-z0-9]', '_', role).upper()}")
             if env_cmd:
@@ -241,7 +249,7 @@ class Pilot:
         return out
 
     def launch_command(self, role: str) -> str:
-        return self.launch.get(role, "").strip()
+        return self._launch_commands().get(role, "").strip()
 
     # ------------------------------------------------------------ restart budget
 
@@ -615,8 +623,6 @@ class Pilot:
                     f"{int(age // 60)} мин, вопрос устарел")
                 continue
             pane = info.get("pane")
-            if not pane or not pane_alive(self.tmux, pane):
-                continue
             try:
                 result = deliver(pane, text, wait_for_empty=0)
             except ComposerBusy:
@@ -626,7 +632,49 @@ class Pilot:
                 self.store.append_transcript("pilot_deliver", "pairpilot", to=role, text=text[:120])
                 log(f"доставил отложенное для {role}")
 
-    # ---------------------------------------------------------------- nudges
+    def drop_stale_outbox(self, state: dict) -> None:
+        """Снять протухшее в очереди до попытки печати (#18).
+
+        Отдельно от `flush_outbox`, потому что тот без tmux выходит сразу
+        и перепроверка не срабатывала бы ни в тестах, ни в проекте без
+        tmux. Порядок в `tick` — после `stalled_patches`, до `flush_outbox`:
+        свежее условие уже записано, протухшее снимается здесь.
+        """
+        now = time.time()
+        for role in state.get("roles", {}):
+            text = self.pending(role)
+            if not text:
+                continue
+            path = self.outbox / f"{role}.txt"
+            try:
+                age = now - path.stat().st_mtime
+            except OSError:
+                continue
+            if self.nudge_still_true(state, role, text):
+                continue
+            path.unlink(missing_ok=True)
+            self.store.append_transcript(
+                "pilot_nudge_stale", "pairpilot", to=role,
+                age_seconds=int(age), text=text[:120])
+            log(f"отложенное для {role} снято: условие протухло, пока ждало")
+
+    def nudge_still_true(self, state: dict, role: str, text: str) -> bool:
+        """Протухло ли условие отложенного, пока оно ждало композер (#18).
+
+        Измерено 2026-10-06: напоминание про sealed-патч zmtcbrb9 легло в
+        очередь до `patch_applied`, а доставлено после — агент получил
+        ложный «висит неприменённым» при applied=true. Условие читается
+        из свежего состояния здесь, а не из момента постановки.
+        Неопознанный текст не трогаем: лучше доставить лишнее, чем молча
+        выбросить то, чего не поняли.
+        """
+        low = text.lower()
+        if "патч" not in low and "patch" not in low:
+            return True
+        for _path, record in (state.get("patches") or {}).items():
+            if record.get("sealed") and not record.get("applied"):
+                return True
+        return False
 
     def visibly_busy(self, pane: str) -> bool:
         """Видно ли по панели, что агент работает прямо сейчас.
@@ -1145,6 +1193,7 @@ class Pilot:
         self.poll_wakes(state)
         self.pending_answers(state)
         self.stalled_patches(state)
+        self.drop_stale_outbox(state)
         self.flush_outbox(state)
         self.stale_writer(state)
         self.checkpoint(state)

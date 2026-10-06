@@ -63,8 +63,21 @@ class PilotCase(unittest.TestCase):
 
     def pilot(self, silence: float = 600.0) -> "pairpilot.Pilot":
         # tmux выключаем: тесты не должны дёргать живые окна.
+        # Профили тоже изолируем: динамический `launch_command` читает настоящий
+        # `cli-profiles.json`, и тест «нет команды — нет перезапуска» падал бы
+        # на живом дереве, где профиль `agy` есть.
         p = pairpilot.Pilot(self.state_dir, silence=silence, interval=1)
         p.tmux = None
+        orig = p._launch_commands
+        here = self.state_dir
+        def isolated(given=None):
+            saved = pairpilot.ROOT
+            try:
+                pairpilot.ROOT = here
+                return orig(given)
+            finally:
+                pairpilot.ROOT = saved
+        p._launch_commands = isolated
         return p
 
     def write_state(self, **fields) -> dict:
@@ -693,7 +706,7 @@ class TestRestart(PilotCase):
         pilot = self.pilot()
         pilot.tmux = "/usr/bin/tmux"
         pairpilot.pane_alive = lambda tmux, pane: True
-        pilot.launch = {"agy": command} if command else {}
+        pilot._explicit_launch = {"agy": command} if command else {}
         return pilot
 
     def respawns(self, role: str | None = None) -> list[list[str]]:
@@ -818,11 +831,29 @@ class TestRestart(PilotCase):
         pilot.tick()
         self.assertEqual(pilot.restart_limit + 1,
                          len(self.respawns()))
+    def test_launch_profile_added_after_start_is_picked_up(self) -> None:
+        """Профиль, добавленный после старта пилота, обязан подхватиться.
+
+        Регрессия 2026-10-06: пилот от 05.10 не знал команду `pi` и писал
+        `pilot_restart_impossible`, хотя `cli-profiles.json` уже содержал
+        профиль. Карта команд морозилась в `__init__` и без перезапуска
+        пилота не обновлялась.
+        """
+        self.dead_writer_state()
+        pilot = self.pilot_with_launch(command="")
+        pilot.tmux = "/usr/bin/tmux"
+        pairpilot.pane_alive = lambda tmux, pane: True
+        pilot.tick()
+        self.assertNoRestart("профиля нет — перезапуска нет")
+        self.assertIn("pilot_restart_impossible", self.transcript_kinds())
+        pilot._explicit_launch["agy"] = "agy --resume"
+        pilot.tick()
+        self.assertEqual(1, len(self.respawns()),
+                         "команда появилась позже старта — перезапуск обязан сработать")
 
     def test_budget_is_per_role_not_global(self) -> None:
-        """Исчерпание попыток у agy не должно запрещать перезапуск claude."""
         pilot = self.pilot_with_launch()
-        pilot.launch["claude"] = "claude"
+        pilot._explicit_launch["claude"] = "claude"
         for _ in range(pilot.restart_limit + 2):
             self.write_state(writer="agy", round=3,
                              roles={"agy": {"last_seen": ago(600), "pid": self.DEAD_PID,
@@ -1114,6 +1145,23 @@ class TestStalledPatches(PilotCase):
         self.assertIn("pair_patch_verify", pending)
         self.assertIn("deadbeef", pending)
         self.assertIn("pair_patch_applied", pending)
+
+    def test_patch_nudge_applied_while_queued_is_dropped_not_delivered(self) -> None:
+        """Протухшее в очереди напоминание про патч не доставляется (#18).
+
+        Измерено 2026-10-06: `stalled_patches` положил текст в очередь до
+        `patch_applied`, а `flush_outbox` доставил после — агент получил
+        ложный «висит неприменённым» при applied=true.
+        """
+        self.sealed()
+        pilot = self.pilot_with_grace(1800)
+        pilot.tick()
+        self.assertIn("pair_patch_verify", pilot.pending("agy"))
+        self.sealed(applied=True)
+        pilot.tick()
+        self.assertEqual("", pilot.pending("agy"),
+                         "патч применён, пока текст ждал, — доставлять нечего")
+        self.assertIn("pilot_nudge_stale", self.transcript_kinds())
 
     def test_patched_owner_is_told_too(self) -> None:
         """Автор патча молчал и счёл его принятым. Его персональное дело —

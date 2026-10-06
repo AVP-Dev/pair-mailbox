@@ -326,20 +326,30 @@ class TestPaneOverride(PairTestCase):
             self.assertEqual(0, self.ctl("pane", "opencode", pane))
         self.assertEqual(pane, self.pinned().get("pane_pin"))
 
-    def test_tmux_pane_env_is_used_when_address_omitted(self) -> None:
-        """Без address берётся живая $TMUX_PANE (карточка, пункт 1).
+    def test_tmux_pane_env_is_used_only_with_current_flag(self) -> None:
+        """$TMUX_PANE берётся только с явным --current (регрессия %2205).
 
-        Перезапуск чинится одной командой из живой панели, без ручной
-        правки state.json. Без этого `pane <role>` только показывал.
+        Без флага `pane <role>` из живой панели — только показ: иначе два
+        опроса подряд (`pane opencode` + `pane pi` из одного окна) молча
+        сажают обе роли на одну панель, и супервизор пропускает их как
+        неразличимые. Измерено на живом состоянии 2026-10-06.
         """
         pane = self.live_pane()
         self.with_pane(pane)
         self.bind("opencode", pane, 999999)
         with self.as_ours():
             self.assertEqual(0, self.ctl("pane", "opencode"))
-        self.assertEqual(pane, self.pinned().get("pane_pin"))
+        self.assertNotIn("pane_pin", self.pinned(),
+                         "показ из живой панели обязан ничего не писать")
         with self.as_ours():
-            self.assertEqual(0, self.ctl("pane", "--role", "opencode"))
+            self.assertEqual(0, self.ctl("pane", "--role", "opencode", pane))
+        with self.as_ours():
+            self.assertEqual(0, self.ctl("pane", "opencode"))
+        self.assertEqual(pane, self.pinned().get("pane_pin"))
+        self.store.mutate(lambda st: (st["roles"]["opencode"].pop("pane_pin", None),
+                                      st["roles"]["opencode"].pop("pane_pin_why", None)))
+        with self.as_ours():
+            self.assertEqual(0, self.ctl("pane", "opencode", "--current"))
         self.assertEqual(pane, self.pinned().get("pane_pin"))
 
     def test_show_when_no_address_and_no_tmux_pane(self) -> None:

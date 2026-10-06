@@ -123,7 +123,10 @@ def build_parser() -> argparse.ArgumentParser:
     pane.add_argument("positional", nargs="*",
                       help="позиционная форма из карточки: <role> [address]; "
                            "address: номер панели или <session>:<window>.<pane>; "
-                           "без address берётся $TMUX_PANE, без него — показ")
+                           "без address — только показ, без записи")
+    pane.add_argument("--current", action="store_true",
+                      help="привязать роль к $TMUX_PANE текущей панели; без флага "
+                           "pane <role> ничего не меняет, только показывает")
     pane.add_argument("--clear", action="store_true",
                       help="drop the override; the pane goes back to what the process reports")
 

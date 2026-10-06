@@ -93,10 +93,12 @@ def cmd_pane(store: Store, args: argparse.Namespace) -> int:
     # Две формы вызова, одна семантика (карточка pairctl-pane-missing):
     #   pairctl pane --role <role> [address] [--clear]   # исходная, остаётся
     #   pairctl pane <role> [address]                    # позиционная из карточки
-    # Без address в обеих формах пробуем $TMUX_PANE текущей панели человека:
-    # перезапуск окон/сессий чинится одной командой `pairctl pane <role>`
-    # из живой панели, без ручной правки state.json. Если и его нет — показываем,
-    # как раньше, а не выдумываем адрес.
+    # Без address — только показ, без записи: `pane <role>` из живой панели
+    # обязан отвечать, а не закреплять. Привязка к текущей панели — только
+    # явным флагом `--current`: иначе последовательные опросы двух ролей из
+    # одного окна молча сажают обе на одну панель, и супервизор пропускает
+    # их как неразличимые (shared_panes -> skip). Причина измерена: %2205
+    # за opencode и pi после `pane opencode` + `pane pi` из ml:0.0.
     positionals = list(getattr(args, "positional", None)
                        or ([getattr(args, "address", None)]
                            if getattr(args, "address", None) else []))
@@ -112,7 +114,7 @@ def cmd_pane(store: Store, args: argparse.Namespace) -> int:
         print("error: укажи роль: `pane <role> [address]` или `pane --role <role> [address]`",
               file=sys.stderr)
         return 2
-    if not address and not args.clear:
+    if not address and getattr(args, "current", False) and not args.clear:
         env_pane = (os.environ.get("TMUX_PANE") or "").strip()
         if env_pane:
             address = env_pane
