@@ -157,8 +157,17 @@ class TestPaneOverride(PairTestCase):
         Набор работает в состоянии во временном каталоге, а панель — в реальном
         проекте, поэтому подлинность панели здесь всегда «чужая». Подменять её на
         «своя» надо явно: иначе тест проверял бы только отказ, а не принятие.
+
+        Подменяются оба вопроса. `_register` спрашивает «панель этого проекта?»,
+        а `pair_deliver` — «не чужая ли?». С появлением второй проверки подмена
+        осталась на первой, и проверка принятия стала проверкой отказа: тест
+        требовал записи панели, а получал её снятие.
         """
-        return mock.patch("composer.pane_is_foreign", return_value=(False, ""))
+        return mock.patch.multiple(
+            "composer",
+            pane_is_foreign=mock.Mock(return_value=(False, "")),
+            pane_belongs_to_project=mock.Mock(return_value=(True, "")),
+        )
 
     def bind(self, role: str, pane: str, pid: int) -> None:
         self.store.mutate(lambda st: st.setdefault("roles", {}).update(
@@ -257,7 +266,8 @@ class TestPaneOverride(PairTestCase):
         pane = self.live_pane()
         self.with_pane(pane)
         self.bind("opencode", "старое", 999999)
-        self.register("opencode")
+        with self.as_ours():
+            self.register("opencode")
         from composer import _tmux, session_address
         expected = session_address(_tmux(), pane) or pane
         self.assertEqual(expected, self.pinned().get("pane"))
@@ -275,7 +285,8 @@ class TestPaneOverride(PairTestCase):
             self.assertEqual(0, self.ctl("pane", "--role", "opencode", pane))
         self.assertEqual(0, self.ctl("pane", "--role", "opencode", "--clear"))
         self.assertNotIn("pane_pin", self.pinned())
-        self.register("opencode")
+        with self.as_ours():
+            self.register("opencode")
         from composer import _tmux, session_address
         self.assertEqual(session_address(_tmux(), pane) or pane,
                          self.pinned().get("pane"))

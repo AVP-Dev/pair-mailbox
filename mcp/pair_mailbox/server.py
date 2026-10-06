@@ -52,6 +52,23 @@ from typing import Any
 # Путь добавляем здесь, после того как Path уже есть.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import digest  # noqa: E402 - требует sys.path выше
+import liveness  # noqa: E402 - требует sys.path выше
+import statecache  # noqa: E402 - требует sys.path выше
+
+# Имена дайджеста переотдаются из `digest`: их читает `pairctl_read`, и держать
+# второй источник правды значит вернуть расхождение, ради которого дайджест и
+# выносился.
+DIGEST_TOKEN_BUDGET = digest.DIGEST_TOKEN_BUDGET
+DIGEST_MARKER = digest.DIGEST_MARKER
+TRANSCRIPT_SCAN_LIMIT = digest.TRANSCRIPT_SCAN_LIMIT
+build_digest = digest.build_digest
+estimate_tokens = digest.estimate_tokens
+_digest_marker_reserve = digest._digest_marker_reserve
+_render_digest = digest._render_digest
+_digest_line = digest._digest_line
+DIGEST_MIN_LINE = digest.DIGEST_MIN_LINE
+
 # MCP protocol revisions this server understands. We echo the client's requested
 # revision back when we know it, because clients reject a downgrade they did not
 # ask for.
@@ -176,42 +193,6 @@ TRANSCRIPT_READ_BLOCK = 64 * 1024
 # `pairctl log` без явного лимита отдаёт столько, а не весь файл: тот же расход,
 # что и `pair_transcript`, только без ограничителя.
 LOG_DEFAULT_LIMIT = 50
-# Потолок дайджеста. Замер заменяемой связки: `pair_state` 939 + `pair_task list`
-# 1051 + `pair_transcript` 1734 = 3724 токена на ориентацию. Дайджест обязан стоить
-# заметно меньше, иначе он не нужен: дешевле прочитать три вызова, чем разбираться
-# с двенадцатым вызовом в том же раунде.
-DIGEST_TOKEN_BUDGET = 500
-# Сколько записей журнала перебирается в поиске последнего вердикта. Журнал уже
-# ограничен окном ротации, но даже он не должен разбираться целиком на каждый
-# вызов дайджеста.
-TRANSCRIPT_SCAN_LIMIT = 400
-DIGEST_MARKER = "[обрезано: не влезло, полное состояние — pair_state]"
-
-
-def _digest_marker_reserve() -> int:
-    """Сколько токенов надо оставить под пометку об обрезании.
-
-    Считается ИЗ САМОЙ ПОМЕТКИ, а не задаётся круглым числом. Так было сначала
-    неверно: резерв стоял 20, пометка выходила 22, и на ровно подогнанном тексте
-    дайджест давал 501 токен при потолке 500 — то есть либо нарушал потолок, либо
-    вычищал строку, ради которой он и собирался. Резерв из константы рассинхронизи-
-    руется с пометкой при первом же её изменении.
-    """
-    return estimate_tokens(DIGEST_MARKER) + 4
-# Минимум, ниже которого строка не ставится вовсе. Обрезок в один токен не несёт
-# смысла и при этом занимает место, которого не хватит следующей строке.
-DIGEST_MIN_LINE = 8
-
-
-def _render_digest(lines: list[str]) -> str:
-    """Собранный дайджест ровно в том виде, в каком он уходит к читателю.
-
-    Отдельная функция, потому что потолок проверяется на ЭТОМ тексте. Считать
-    размер по строкам и отдавать склеенный текст — это два разных числа, и между
-    ними помещались переводы строк, из-за чего дайджест выдавал 502 токена при
-    потолке 500.
-    """
-    return "\n".join(lines) + "\n"
 NOTE_READ_MAX = 400
 
 # Фазы, на которых слово человека «ок» что-то значит. Раньше проверялся только
@@ -638,241 +619,11 @@ class ProtocolError(Exception):
         self.hint = hint
 
 
-def estimate_tokens(text: str) -> int:
-    """Грубая оценка размера текста в токенах.
-
-    Считается символы, делённые на четыре: это оценка, а не измерение, и она
-    годится ровно для одной вещи — чтобы положить потолок на текст, который мы
-    сами же собираем. Точный счётчик стоит дороже, чем весь дайджест.
-
-    Оценка обязана быть ПЕЕРЕСТРАХОВЫВАЮЩЕЙ, а не заниженной: если токенов выйдет
-    больше потолка, агент упрётся в лимит контекста там, где рассчитывал на
-    дайджест.
-    """
-    return (len(text.encode("utf-8")) + 3) // 4
 
 
-def _digest_line(text: str, budget: int) -> str:
-    """Строка, обрезанная по бюджету, с честной пометкой обрезания.
-
-    Обрезанная строка без пометки — это тихо неверные данные. Пометка сама по себе
-    может не влезть, и тогда оставляется один многоточичный маркер.
-    """
-    if estimate_tokens(text) <= budget:
-        return text
-    if budget <= 4:
-        return "…"
-    limit = budget * 4 - 4
-    return text.encode("utf-8")[:limit].decode("utf-8", "ignore").rstrip() + "…"
 
 
-def build_digest(store: "Store", role: str = "", budget: int = DIGEST_TOKEN_BUDGET) -> str:
-    """Срез состояния пары, который укладывается в жёсткий бюджет токенов.
 
-    Зачем он есть, измерено: ориентация в паре стоит 3724 токена
-    (`pair_state` 939 + `pair_task list` 1051 + `pair_transcript` 1734). Дайджест
-    обязан быть заметно дешевле, иначе он не нужен — дешевле прочитать три вызова,
-    чем разбираться с двенадцатым вызовом в том же раунде.
-
-    Текст, а не JSON: агент читает ответ глазами и за JSON платит дважды — за ключи
-    и за значения. Короткий текст читается один раз.
-
-    ПОРЯДОК РАЗДЕЛОВ РЕШАЕТ ВСЁ. Он выбран по цене вопроса: то, без чего работа
-    пойдёт неверно, стоит первым и не обрезается; то, что можно дочитать точечно,
-    стоит последним и обрезается первым. Если разделы переставить местами, дайджест
-    станет дороже при том же составе — поэтому порядок и есть содержательная часть
-    решения, а не оформление.
-
-    Ничего не выдумывается: каждый раздел либо прочитан из состояния, либо назван
-    отсутствующим. Вердикт цитируется, а не пересказывается, потому что пересказ
-    чужого решения своими словами — это способ соврать о том, чего не читали.
-    """
-    state = store.read()
-    lines: list[str] = []
-    cut = False  # что-то не влезло и было обрезано
-
-    def budget_left() -> int:
-        """Сколько токенов ещё можно потратить на весь текст, собранный к этому месту."""
-        return budget - estimate_tokens("\n".join(lines))
-
-    def take(text: str, floor: int = 0) -> bool:
-        """Добавить строку, если в бюджет влезает, иначе — обрезанную.
-
-        Резерв под пометку об обрезании вычитается ЗДЕСЬ, а не вычищается в конце.
-        Так вышло сначала неверно: строка обрезалась ровно под остаток места, а
-        финальная чистка потом видела «место кончилось» и выбрасывала её целиком —
-        вместе с началом задачи, ради которого дайджест и читается. Резерв,
-        вычтенный заранее, делает чистку ненужной.
-        """
-        """Добавить строку, если в бюджет влезает, иначе — обрезанную.
-
-        Возвращает, пришлось ли строку обрезать или она не влезла вовсе: оба случая
-        требуют пометки в конце, и отличать их не нужно — нужно не потерять оба.
-
-        Резерв под пометку об обрезании вычитается ЗДЕСЬ, а не вычищается в конце.
-        Так вышло сначала неверно: строка обрезалась ровно под остаток места, а
-        финальная чистка потом видела «место кончилось» и выбрасывала её целиком —
-        вместе с началом задачи, ради которого дайджест и читается. Резерв,
-        вычтенный заранее, делает чистку ненужной.
-        """
-        room = budget_left() - _digest_marker_reserve() - floor
-        if room < DIGEST_MIN_LINE:
-            # Строка не влезла — ни целиком, ни хотя бы читаемым куском. Хвост в
-            # один токен бесполезен и, что хуже, съедал место: строка «режим: fix ·
-            # фаза…» стоила одного токена и вытесняла начало задачи, ради которого
-            # дайджест и читается. Лучше её не ставить и сказать, что не влезло.
-            return True
-        cut = _digest_line(text, room)
-        lines.append(cut)
-        return cut != text
-
-    # 1. То, без чего работа неверна. Ничего не обрезается.
-    task = str(state.get("task") or "").strip() or "(задача не задана)"
-    cut |= take("РАУНД", floor=DIGEST_MIN_LINE)
-    cut |= take(f"задача: {task}")
-    cut |= take(f"режим: {state.get('mode', '?')} · фаза: {state.get('phase', '?')} · "
-         f"раунд {state.get('round', 0)}")
-    cut |= take(f"пишет: {state.get('writer') or '—'}"
-         + (f" (ты)" if role and state.get("writer") == role else ""))
-
-    # 2. Открытые задачи. Закрытые не несут смысла для следующего шага: восемь
-    #    закрытых задач стоили около 800 токенов и не сказали ничего нового.
-    open_tasks = [t for t in (state.get("tasks") or []) if t.get("status") == "open"]
-    cut |= take("")
-    cut |= take(f"ОТКРЫТЫЕ ЗАДАЧИ: {len(open_tasks)}")
-    if not open_tasks:
-        cut |= take("(нет открытых задач — проверь, не пора ли добавить)")
-    for item in open_tasks[:4]:
-        cut |= take(f"#{item.get('id')} {_digest_line(str(item.get('text', '')), 60)}")
-    if len(open_tasks) > 4:
-        cut |= take(f"…и ещё {len(open_tasks) - 4}: `pair_task list`")
-
-    # 3. Обязательства. Их отсутствие — тоже факт, а не пустота.
-    obligations = _open_obligations(store)
-    cut |= take("")
-    cut |= take(f"ОБЯЗАТЕЛЬСТВА: {len(obligations)}")
-    if not obligations:
-        cut |= take("(никто никого не ждёт)")
-    for ob in obligations[:3]:
-        cut |= take(f"{ob.get('from', '?')} ждёт {ob.get('to', '?')}")
-
-    # 4. Последний коммит: из git, а не из журнала.
-    cut |= take("")
-    cut |= take(_last_commit(store), floor=60)
-
-    # 5. Последний вердикт: цитата хвоста, порядок берётся из журнала.
-    verdict = _TranscriptReader(store.transcript_path).last_note_of_kind("verdict")
-    cut |= take("")
-    cut |= take("ПОСЛЕДНИЙ ВЕРДИКТ", floor=DIGEST_MIN_LINE)
-    if not verdict:
-        cut |= take("(вердиктов не было)")
-    else:
-        cut |= take(f"{verdict.get('role', '?')} · {verdict.get('slug', '?')} · "
-             f"`note_read`", floor=70)
-        for line in _note_tail(store, verdict["slug"]):
-            cut |= take(f"  {_digest_line(line, 120)}")
-
-    # Что не влезло — сказать прямо. Молча сокращённый дайджест хуже длинного:
-    # агент решит, что вердикта не было.
-    #
-    # Потолок здесь не «на глаз», а проверен на собранном тексте: пока помещается,
-    # резерва в `take` хватает, но переводы строк и сам маркер в оценку не входили,
-    # и дайджест выдавал 502 токена при потолке 500. Обещание, которое не проверено
-    # на том, что отдаётся, — не обещание.
-    dropped = False
-    if dropped or cut:
-        marker = DIGEST_MARKER if estimate_tokens(DIGEST_MARKER) < budget else "…"
-        # Место под пометку освобождается ДО её добавления, причём проверяется
-        # рендер вместе с пометкой. Иначе второй проход вычищал бы её обратно:
-        # места нет, строка добавлена, места нет — и дайджест заканчивался без
-        # единого слова о том, что половина содержимого потеряна.
-        while len(lines) > 1 and estimate_tokens(_render_digest(lines + [marker])) > budget:
-            lines.pop()
-        lines.append(marker)
-    return _render_digest(lines)
-
-
-def _open_obligations(store: "Store") -> list[dict[str, Any]]:
-    """Открытые обязательства, без блокировки на каталог."""
-    root = store.obligations_root
-    if not root.is_dir():
-        return []
-    out = []
-    for path in sorted(root.glob("*.json")):
-        try:
-            out.append(json.loads(path.read_text(encoding="utf-8")))
-        except (OSError, json.JSONDecodeError):
-            continue
-    return out
-
-
-def _note_tail(store: "Store", slug: str, lines: int = 4) -> list[str]:
-    """Хвост заметки: актуально последнее, а не всё накопленное за историю.
-
-    Заметки пишутся append-only, и у вердикта это значит ровно то, что нужно:
-    решение в конце. Начало — это постановка прошлого раунда, и в дайджесте она
-    только отнимает место у того, что решено.
-    """
-    path = store.notes_root / f"{slug}.md"
-    try:
-        text = path.read_text(encoding="utf-8")
-    except OSError:
-        return []
-    return [l for l in text.splitlines() if l.strip()][-lines:]
-
-
-def _last_commit(store: "Store") -> str:
-    """Последний коммит одной строкой.
-
-    Из git, а не из журнала: журнал не знает, что было закоммичено, и агент,
-    который читает дайджест, должен увидеть фактическое состояние дерева. Если git
-    недоступен, об этом сказано, а не промолчано.
-    """
-    root = store.project_root
-    try:
-        out = subprocess.run(
-            ["git", "log", "-1", "--format=%h %s"],
-            cwd=str(root), capture_output=True, text=True, timeout=5)
-    except (OSError, subprocess.SubprocessError):
-        return "ПОСЛЕДНИЙ КОММИТ: (git недоступен)"
-    if out.returncode != 0 or not out.stdout.strip():
-        return "ПОСЛЕДНИЙ КОММИТ: (нет коммитов)"
-    return f"ПОСЛЕДНИЙ КОММИТ: {out.stdout.strip()}"
-
-
-class _TranscriptReader:
-    """Чтение хвоста журнала без разбора всего файла.
-
-    Отдельный класс, а не функция с числом строк, потому что нужна не одна
-    величина, а направленный поиск: «последняя заметка-вердикт». Разбор всего
-    журнала на каждом вызове дайджеста вернул бы ровно ту стоимость, которую
-    дайджест обещает не платить.
-    """
-
-    def __init__(self, path: Path) -> None:
-        self.path = path
-
-    def last_note_of_kind(self, prefix: str) -> dict | None:
-        """Последняя заметка, чей slug начинается с `prefix`, или None.
-
-        Источник порядка — сам журнал, а не время изменения файла. Заметок в
-        `notes/` девяносто две, и имена у них не упорядочены по времени: сортировка
-        по mtime была бы догадкой, потому что файл могли открыть, не изменив его.
-        В журнале порядок фактический: запись о `pair_note` несёт slug, время и
-        автора, и он пишется в момент создания заметки.
-        """
-        if not self.path.exists():
-            # Журнала ещё нет — вердиктов не было, и это не поломка. Раньше чтение
-            # отсутствующего файла роняло дайджест целиком, то есть вопрос «что
-            # там решили» стоил ошибки вместо ответа.
-            return None
-        for entry in reversed(_transcript_tail(self.path, TRANSCRIPT_SCAN_LIMIT)):
-            if entry.get("_damaged") or entry.get("kind") != "note":
-                continue
-            slug = str(entry.get("note_kind") or "")
-            if slug.startswith(prefix):
-                return {"slug": slug, "ts": entry.get("ts"), "role": entry.get("role")}
-        return None
 
 
 def _transcript_entry(raw: str) -> dict | None:
@@ -1192,14 +943,12 @@ def _next_entry(lines: list[str]) -> int:
 
 
 def is_pid_alive(pid: Any) -> bool:
-    """True if pid is an integer of a currently running process."""
-    if not isinstance(pid, int) or pid <= 0:
-        return False
-    try:
-        os.kill(pid, 0)
-        return True
-    except OSError as err:
-        return err.errno == errno.EPERM
+    """True if pid is an integer of a currently running process.
+
+    Обёртка над `liveness.pid_alive`: проверка одна, а зовут её и протокол, и
+    чтение состояния — две копии разъехались бы при первой же правке.
+    """
+    return liveness.pid_alive(pid)
 
 
 def same_pane(left, right) -> bool:
@@ -1256,6 +1005,19 @@ class PairSession:
 
     # ---------------------------------------------------------------- helpers
 
+    def _git_fingerprint(self) -> Any:
+        """Снимок HEAD+dirty для отпечатка состояния.
+
+        Гасится в `None`: отсутствие git — повод не различать два состояния по
+        этой части отпечатка, а не повод не ответить агенту вообще.
+        """
+        try:
+            from review import snapshot as git_snapshot
+
+            return git_snapshot(self.store.project_root)
+        except Exception:  # noqa: BLE001 - снимок не должен ронять кэш
+            return None
+
     def _register(self, state: dict[str, Any]) -> None:
         roles = state.setdefault("roles", {})
         current_pid = os.getpid()
@@ -1298,7 +1060,43 @@ class PairSession:
                 self.store.append_transcript("pane_pin_dropped", self.role,
                                              pin=pin, why=pin_why)
                 pin = ""
+
         pane = pin or os.environ.get("TMUX_PANE")
+        # Адрес, отвергнутый как чужой. Пуст, пока отвергать нечего: иначе при
+        # `pane == ""` переменная осталась бы неопределённой и уборка устаревших
+        # записей падала бы NameError на каждом вызове без панели.
+        rejected = ""
+
+        # Панель из окружения проверяется на принадлежность проекту ДО записи в
+        # ростер, и это не паранойя, а воспроизведённый дефект.
+        #
+        # `TMUX_PANE` приходит от tmux, а не от проекта: агент, запущенный из
+        # панели чужого проекта, честно видит свою панель — и она была записана в
+        # ростер этого проекта как своя. Ростер на этой машине общий на роль, а
+        # проектов несколько, поэтому один проект получал в соседи чужую панель:
+        # `pair_deliver` уходил в чужой композер (защита `pane_is_foreign` его
+        # отбивала), а `pair_state` показывал соседа с панелью, лежащей в другом
+        # репозитории. Человек видел «агент работает в другом проекте», и это
+        # было буквально верно.
+        #
+        # Fail-closed, как в `pane_is_foreign`: доказать своё нельзя — не пишем.
+        # Пустая панель безопаснее неверной, потому что неверная адресует чужой
+        # композер, а пустая просто лишает доставку.
+        if pane and not pin:
+            from composer import pane_belongs_to_project
+
+            ours, why_not_ours = pane_belongs_to_project(
+                tmux, pane, self.store.project_root)
+            if not ours:
+                self.store.append_transcript(
+                    "pane_env_rejected", self.role, pane=pane, why=why_not_ours,
+                )
+                # Адрес сохраняется для уборки, но не как своя панель: дальше он
+                # нужен, чтобы проверить, не осталась ли запись ЗА ПРЕДЕЛАМИ этой
+                # панели — те самые устаревшие, которые снимаются по двум
+                # независимым фактам.
+                rejected = pane
+                pane = ""
 
         # If this role already existed with a different living PID, record collision
         existing = roles.get(self.role)
@@ -1321,25 +1119,29 @@ class PairSession:
         # panel is absent too, which is what makes this correct in the other
         # direction — never clearing would leave a phantom %1 pointing at whatever
         # window now owns that id.
-        if pane:
-            for other_name, other_info in list(roles.items()):
-                if other_name != self.role and same_pane(pane, other_info.get("pane")):
-                    other_pid = other_info.get("pid")
-                    if other_pid and not is_pid_alive(other_pid) and not pane_exists(other_info["pane"]):
-                        other_info.pop("pane", None)
-                        self.store.append_transcript(
-                            "pane_stale_cleared", self.role, pane=pane,
-                            other_role=other_name, other_pid=other_pid,
-                        )
-                    elif other_pid:
-                        self.store.append_transcript(
-                            "pane_collision",
-                            self.role,
-                            pane=pane,
-                            other_role=other_name,
-                            other_pid=other_pid,
-                            other_alive=is_pid_alive(other_pid),
-                        )
+        # Уборка устаревших записей идёт по адресу, а не по факту «своя панель»:
+        # если свою панель отвергли как чужую, уборка всё равно нужна, иначе
+        # роль с мёртвым pid и несуществующей панелью осталась бы в ростере
+        # навсегда. Проверка «есть ли своя панель» молча выключала бы её.
+        for other_name, other_info in list(roles.items()):
+            if other_name != self.role and same_pane(pane or rejected,
+                                                     other_info.get("pane")):
+                other_pid = other_info.get("pid")
+                if other_pid and not is_pid_alive(other_pid) and not pane_exists(other_info["pane"]):
+                    other_info.pop("pane", None)
+                    self.store.append_transcript(
+                        "pane_stale_cleared", self.role, pane=pane or rejected,
+                        other_role=other_name, other_pid=other_pid,
+                    )
+                elif other_pid:
+                    self.store.append_transcript(
+                        "pane_collision",
+                        self.role,
+                        pane=pane or rejected,
+                        other_role=other_name,
+                        other_pid=other_pid,
+                        other_alive=is_pid_alive(other_pid),
+                    )
 
         entry = roles.setdefault(self.role, {"first_seen": utcnow(), "reads": 0, "sends": 0})
         entry["last_seen"] = utcnow()
@@ -1402,6 +1204,50 @@ class PairSession:
                     pane=pane,
                     why="имя сессии получить не удалось, адресация на %N неустойчива")
             entry["pane"] = address or pane
+        else:
+            # Ни закрепления, ни своей панели — а в ростере уже стоит адрес.
+            # Это ровно тот заражённый случай: панель была записана, когда
+            # проверки ещё не было, и без явного снятия она жила бы вечно,
+            # потому что писать её больше нечем. `pair_state` продолжал бы
+            # показывать соседа с чужой панелью, а `pair_deliver` — бить туда.
+            #
+            # Снимается с записью в транскрипт, потому что молчаливую починку
+            # нельзя отличить от того, что панели не было никогда.
+            stale = entry.get("pane")
+            if stale:
+                entry.pop("pane", None)
+                entry.pop("pane_pin_why", None)
+                self.store.append_transcript(
+                    "pane_stale_dropped", self.role, pane=stale,
+                    why="панель не доказана как своя и не подтверждена закреплением",
+                )
+
+            # Чужая панель СОСЕДА снимается здесь же, а не только своя.
+            # Причина та же: заражённая запись была записана до проверки, и
+            # ждать, пока владелец роли сам себя перерегистрирует, нельзя —
+            # он может и не появиться, а `pair_state` продолжит показывать
+            # соседа с панелью чужого проекта, и `pair_deliver` в неё
+            # целиться будет.
+            #
+            # Проверяется принадлежность проекту, а не живость: мёртвую панель
+            # снимает другой путь, и смешивать эти два факта нельзя.
+            if tmux:
+                from composer import pane_belongs_to_project
+
+                for other_name, other_info in list(roles.items()):
+                    if other_name == self.role:
+                        continue
+                    other_pane = other_info.get("pane")
+                    if not other_pane or other_info.get("pane_pin"):
+                        continue
+                    theirs, why_theirs = pane_belongs_to_project(
+                        tmux, other_pane, self.store.project_root)
+                    if not theirs:
+                        other_info.pop("pane", None)
+                        self.store.append_transcript(
+                            "pane_foreign_dropped", self.role, other_role=other_name,
+                            pane=other_pane, why=why_theirs,
+                        )
 
     def _require_not_writer(self, action: str) -> None:
         state = self.store.read()
@@ -1463,52 +1309,20 @@ class PairSession:
             self._register(state)
             self.store._save(state)
 
-        # Кэширование: если состояние не изменилось с прошлого вызова, возвращаем
-        # короткий ответ. Полный ответ стоит ~939 токенов, и агенты зовут pair_state
-        # 3-4 раза за раунд, хотя состояние почни не меняется.
-        # Отключается через PAIR_DISABLE_STATE_CACHE=1 (для тестов).
-        if not os.environ.get("PAIR_DISABLE_STATE_CACHE"):
-            # Ключ — отпечаток всего, что читает полный ответ. Поля вручную не
-            # перечисляем: ответ зависит от evidence, human_ok, verdicts, patches,
-            # roles, seen и от файлов обязательств (они живут на диске и в state не
-            # попадают), и промах по любому возвращал заглушку без obligations и
-            # evidence_this_round — то есть без ровно тех полей, ради которых агент
-            # позвал pair_state. Исключаем только то, что меняется при каждом зове
-            # само по себе (updated_at, last_seen), иначе кэш не срабатывал бы
-            # никогда.
-            roles = {
-                name: {k: v for k, v in info.items() if k != "last_seen"}
-                for name, info in (state.get("roles") or {}).items()
-                if isinstance(info, dict)
-            }
-            # Git в ключе только когда есть вердикты: _done_blockers читает его
-            # для проверки stale, и ключ обязан это видеть.
-            git_fp = None
-            if state.get("verdicts"):
-                try:
-                    from review import snapshot as git_snapshot
-                    git_fp = git_snapshot(self.store.project_root)
-                except Exception:  # noqa: BLE001 - снимок не должен ронять кэш
-                    git_fp = None
-            cache_key = {
-                "state": {k: v for k, v in state.items()
-                          if k not in ("updated_at", "roles")},
-                "roles": roles,
-                "obligations": sorted(
-                    p.name for p in self.store.obligations_root.glob("*.json")
-                ),
-                "inbox": [p.name for p in self._inbox_files()],
-                "git": git_fp,
-            }
-            state_hash = hashlib.sha256(
-                json.dumps(cache_key, sort_keys=True).encode()
-            ).hexdigest()[:12]
+        # Кэш: неизменившееся состояние даёт короткий ответ вместо полного
+        # (~939 токенов, а агенты зовут это 3-4 раза за раунд). Отпечаток
+        # считает statecache — он не знает ни про git, ни про то, где лежат
+        # файлы обязательств, и потому не может разойтись с ответом.
+        if not statecache.cache_disabled():
+            state_hash = statecache.fingerprint(
+                state,
+                obligation_names=[p.name for p in
+                                  self.store.obligations_root.glob("*.json")],
+                inbox_names=[p.name for p in self._inbox_files()],
+                git_snapshot=self._git_fingerprint,
+            )
             if state_hash == self._last_state_hash:
-                return {
-                    "unchanged": True,
-                    "hash": state_hash,
-                    "note": "Состояние не изменилось с прошлого вызова. Читай pair_digest для ориентации.",
-                }
+                return statecache.unchanged_answer(state_hash)
             self._last_state_hash = state_hash
 
         writer = state.get("writer")
@@ -1614,45 +1428,9 @@ class PairSession:
         }
 
     def _peer_status(self, state: dict[str, Any], writer: str | None) -> dict[str, Any]:
-        """What each other role is doing, and whether it is still listening.
-
-        A writer used to close a round with no way of knowing the peer had already
-        walked away, so the peer's report landed in a closed round. Saying so out
-        loud is cheaper than a dead-lettered finding.
-        """
-        phase = state.get("phase", "scoping")
-        now = datetime.now(timezone.utc)
-        out: dict[str, Any] = {}
-        for name, info in (state.get("roles") or {}).items():
-            if name == self.role:
-                continue
-            age = None
-            try:
-                if info.get("last_seen"):
-                    age = int((now - datetime.fromisoformat(info["last_seen"])).total_seconds())
-            except Exception:
-                age = None
-            closed = phase == "done"
-            pid = info.get("pid")
-            alive = is_pid_alive(pid) if pid else None
-            hint = "Listening."
-            if closed:
-                hint = (
-                    "The round is closed. This role has moved on and will not read new"
-                    " messages. To get it back: pair_advance('implement')."
-                )
-            elif alive is False:
-                hint = f"Process is no longer running (PID {pid} is dead)."
-            out[name] = {
-                "role": "writer" if name == writer else "critic",
-                "last_seen": info.get("last_seen"),
-                "silent_seconds": age,
-                "alive": alive,
-                "round_closed": closed,
-                "will_read_new_messages": not closed and (alive is not False),
-                "hint": hint,
-            }
-        return out
+        """Живость соседей. Логика — в `liveness`: её читают оба агента, и она
+        проверяется там без поднятия сервера."""
+        return liveness.peer_status(state, role=self.role, writer=writer)
 
     def _unread_count(self, state: dict[str, Any]) -> int:
         seen = int(state.get("seen", {}).get(self.role, 0))
@@ -3447,6 +3225,7 @@ HANDLERS = {
     "pair_note": lambda session, args: session.tool_pair_note(**args),
     "pair_note_index": lambda session, args: session.tool_pair_note_index(),
     "pair_note_read": lambda session, args: session.tool_pair_note_read(**args),
+    "pair_digest": lambda session, args: session.tool_pair_digest(**args),
     "pair_transcript": lambda session, args: session.tool_pair_transcript(**args),
     "pair_unblock": lambda session, args: session.tool_pair_unblock(**args),
 }
