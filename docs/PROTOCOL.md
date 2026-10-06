@@ -319,6 +319,25 @@ Such a conclusion grossly violates the contract of autonomous pair work:
 3. The user gives the task at the start and accepts the finished PR at the end. The
    human is not a router between windows.
 
+## 7b. Do not disturb the human: the pair closes the loop itself
+
+Default, not a prompt ornament. Applies in every round unless §12 fires:
+
+- The human is never called: no questions, no "take a look", no "confirm".
+  Stuck — write a `pair_note` saying what is blocked and by what, take the
+  next step yourself.
+- The critic is silent for 15+ minutes — resend `pair_send` with
+  `expects_reply` and keep working, the pilot catches them up.
+- A verdict opens an obligation to the writer automatically — take `done`
+  yourself when blockers are zero. Closed the round — take the next card
+  from `docs/backlog/` yourself, the writer opens the new round.
+- Uncertainty is resolved between the agents (§12): pick an option, record
+  a `decision` with the reason, carry on.
+
+Only six things stop the pair and ask the user (§12): secrets, ports,
+deploys, migrations, data or history deletion. Everything else is
+resolved without them — that is what `auto` means.
+
 ## 8. Answer "how's it going?" with a fact
 
 Not "I'll check". Open `pair_state` or `pair_transcript` and say what is **true
