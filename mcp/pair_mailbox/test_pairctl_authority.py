@@ -171,6 +171,30 @@ class TestControlSurface(PairTestCase):
         self.assertIn("задача", payload["reasons"],
                       "закрытие задачи тоже меняет работу писателя")
 
+    def test_task_drop_wakes_the_writer(self) -> None:
+        """--drop идёт тем же кодом, что --done: писатель должен проснуться."""
+        self._ctl("assign", "writer-agent")
+        self._ctl("task", "drop me with reason")
+        self._ctl("task", "--drop", "1", "--reason", "not needed")
+        wake = self.root / "wake" / "writer-agent.json"
+        self.assertTrue(wake.exists(), "дроп задачи обязан будить писателя")
+        payload = json.loads(wake.read_text(encoding="utf-8"))
+        self.assertIn("задача", payload["reasons"])
+
+    def test_task_wake_failure_does_not_fail_the_command(self) -> None:
+        """Находка pi: упавший record_wake не должен ронять cmd_task.
+
+        Задача уже записана через mutate выше по коду; wake — best-effort,
+        как в server.py (record_wake + wake_pending под try/except).
+        """
+        import unittest.mock
+        self._ctl("assign", "writer-agent")
+        with unittest.mock.patch("wake.record_wake", side_effect=OSError("disk full")):
+            self.assertEqual(self._ctl("task", "wake fails but task lands"), 0)
+        tasks = self.store.read()["tasks"]
+        self.assertEqual(1, len(tasks))
+        self.assertEqual("open", tasks[0]["status"])
+
     def test_task_without_writer_wakes_nobody(self) -> None:
         """Будеть некого — не будим никого и не падаем."""
         self._ctl("release")

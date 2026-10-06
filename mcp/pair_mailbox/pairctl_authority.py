@@ -241,9 +241,13 @@ def _wake_writer(store: Store, reason: str, text: str) -> None:
     writer = store.read().get("writer")
     if not writer:
         return
-    from wake import record_wake
-    record_wake(store.root, store.read(), writer, reason, text)
-    store.append_transcript("wake_pending", "human", to=writer, reason=reason)
+    try:
+        from wake import record_wake
+        record_wake(store.root, store.read(), writer, reason, text)
+        store.append_transcript("wake_pending", "human", to=writer, reason=reason)
+    except Exception:  # noqa: BLE001 - wake-файл не должен ронять команду:
+        # задача уже записана выше через mutate, будим best-effort, как в server.py
+        pass
 
 
 def cmd_task(store: Store, args: argparse.Namespace) -> int:
