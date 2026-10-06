@@ -150,6 +150,36 @@ class TestControlSurface(PairTestCase):
         self.assertEqual(self._ctl("reset", "--yes"), 0)
         self.assertEqual(self.store.read()["task"], "")
 
+    def test_task_wakes_the_writer(self) -> None:
+        """#16: задача от человека обязана будить держателя записи.
+
+        До правки `pairctl task` молча менял состояние: ни письма, ни заметки,
+        ни wake-файла — писатель узнавал о новой работе только следующим
+        случайным чтением. Проверяются обе стороны: добавление будит, закрытие
+        будит, а без держателя записи будить некого и wake-файла быть не должно.
+        """
+        self._ctl("assign", "writer-agent")
+
+        self._ctl("task", "wake me up")
+        wake = self.root / "wake" / "writer-agent.json"
+        self.assertTrue(wake.exists(), "новая задача обязана будить писателя")
+        payload = json.loads(wake.read_text(encoding="utf-8"))
+        self.assertIn("задача", payload["reasons"])
+
+        self._ctl("task", "--done", "1")
+        payload = json.loads(wake.read_text(encoding="utf-8"))
+        self.assertIn("задача", payload["reasons"],
+                      "закрытие задачи тоже меняет работу писателя")
+
+    def test_task_without_writer_wakes_nobody(self) -> None:
+        """Будеть некого — не будим никого и не падаем."""
+        self._ctl("release")
+        self._ctl("task", "work with no holder")
+        wake_dir = self.root / "wake"
+        leftovers = list(wake_dir.glob("*.json")) if wake_dir.is_dir() else []
+        self.assertEqual([], leftovers,
+                         "без держателя записи wake-файлов быть не должно")
+
 
 
 class TestStateFlagPlacement(PairTestCase):
