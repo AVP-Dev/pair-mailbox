@@ -1018,6 +1018,26 @@ class PairSession:
         except Exception:  # noqa: BLE001 - снимок не должен ронять кэш
             return None
 
+    def _heartbeat(self, state: dict[str, Any]) -> None:
+        """Отметить, что эта роль жива: только `last_seen` (+ `pid`), ничего больше.
+
+        `_register` ниже — тяжёлая машинерия (панели, pin, сверка соседей,
+        записи в транскрипт), и зовут его лишь 4 инструмента из 19. Агент,
+        который пишет заметки или двигает evidence, молчал по часам, хотя
+        работал: `last_seen` старел, `_writer_is_abandoned` срабатывал, и
+        сосед забирал авторитет у активного писателя
+        (docs/backlog/last-seen-stale.md).
+
+        Heartbeat идёт в начале каждого `invoke`, поэтому признак жизни —
+        это сам вызов, а не выборочный инструмент. Панели здесь нет
+        осознанно: адресация доставки меняется только в `_register`.
+        """
+        roles = state.setdefault("roles", {})
+        entry = roles.setdefault(
+            self.role, {"first_seen": utcnow(), "reads": 0, "sends": 0})
+        entry["last_seen"] = utcnow()
+        entry["pid"] = os.getpid()
+
     def _register(self, state: dict[str, Any]) -> None:
         roles = state.setdefault("roles", {})
         current_pid = os.getpid()
@@ -2909,7 +2929,21 @@ class PairSession:
         exactly the event worth keeping.
         """
         handler = HANDLERS.get(name)
-        if handler is None:
+        # Признак жизни — сам вызов, а не выборочный инструмент: любой звонок
+        # двигает `last_seen`, иначе агент, пишущий заметки в закрытом раунде,
+        # выглядит брошенным (docs/backlog/last-seen-stale.md). Только метка
+        # времени: панели и pin трогает исключительно `_register`. Heartbeat
+        # идёт до инструмента, а не после: отказ — тоже признак жизни, иначе
+        # агент, получивший `refusal`, выглядел бы мёртвым, хотя он только
+        # что говорил с сервером. Неизвестного инструмента это не касается:
+        # опечатка в имени — не признак жизни, и раздувать ростер под неё
+        # незачем.
+        if handler is not None:
+            try:
+                self.store.mutate(self._heartbeat)
+            except Exception:  # noqa: BLE001 - heartbeat не роняет инструмент
+                pass
+        else:
             raise ProtocolError(f"unknown tool {name!r}")
         try:
             return handler(self, arguments)

@@ -1743,6 +1743,69 @@ class TestPhasesAndNotes(PairTestCase):
         self.assertRefused(self.writer.tool_pair_note, kind="plan", text="", contains="required")
 
 
+class TestHeartbeatIsEveryCall(PairTestCase):
+    """Каждый вызов двигает `last_seen` (heartbeat в invoke)."""
+
+    def _backdate_writer(self) -> str:
+        old = "2000-01-01T00:00:00+00:00"
+        self.store.mutate(lambda state: state["roles"]["writer-agent"].__setitem__("last_seen", old))
+        return old
+
+    def test_note_moves_last_seen(self) -> None:
+        self.writer.invoke("pair_state", {})
+        old = self._backdate_writer()
+        self.writer.invoke("pair_note", {"kind": "plan", "text": "работаю, не бросил"})
+        fresh = self.store.read()["roles"]["writer-agent"]["last_seen"]
+        self.assertNotEqual(old, fresh)
+        self.assertGreater(fresh, old)
+
+    def _close_round(self) -> None:
+        self.writer.invoke("pair_claim", {})
+        self.record_test_evidence()
+        for phase in ("plan", "implement", "verify", "done"):
+            self.writer.invoke("pair_advance", {"phase": phase})
+
+    def test_quiet_writer_in_done_is_abandoned(self) -> None:
+        import server
+        real_stall = server.STALL_SECONDS
+        server.STALL_SECONDS = 3600
+        try:
+            self.writer.invoke("pair_state", {})
+            self._close_round()
+            self._backdate_writer()
+            state = self.store.read()
+            writer = state.get("writer")
+            assert writer is not None
+            self.assertTrue(self.writer._writer_is_abandoned(state, writer))
+        finally:
+            server.STALL_SECONDS = real_stall
+
+    def test_active_writer_in_done_is_not_abandoned(self) -> None:
+        import server
+        real_stall = server.STALL_SECONDS
+        server.STALL_SECONDS = 1
+        try:
+            self.writer.invoke("pair_state", {})
+            self.peer.invoke("pair_state", {})
+            self._close_round()
+            # Активный писатель в done: заметки двигают last_seen.
+            for i in range(3):
+                self.writer.invoke("pair_note", {"kind": "plan", "text": f"шаг {i}"})
+            state = self.store.read()
+            writer = state.get("writer")
+            assert writer is not None
+            self.assertFalse(self.writer._writer_is_abandoned(state, writer))
+        finally:
+            server.STALL_SECONDS = real_stall
+
+    def test_refusal_is_also_a_heartbeat(self) -> None:
+        self.writer.invoke("pair_state", {})
+        self.writer.invoke("pair_claim", {})
+        old = self._backdate_writer()
+        # Отказ тоже heartbeat: писатель не резервирует патчи.
+        self.assertRefused(self.writer.invoke, "pair_patch_reserve", {}, contains="must not")
+        fresh = self.store.read()["roles"]["writer-agent"]["last_seen"]
+        self.assertNotEqual(old, fresh)
 
 class TestAuditTrail(PairTestCase):
     def test_every_action_is_recorded(self) -> None:
