@@ -300,5 +300,48 @@ class TestPaneOverride(PairTestCase):
             "запись должна появляться на изменении, а не на каждом вызове")
 
 
+    def test_positional_role_and_address_bind_without_flag(self) -> None:
+        """Позиционная форма из карточки: `pane <role> <addr>` без --role.
+
+        Иначе при перезапуске окон чинить привязку можно только длинной
+        формой, а карточка требует именно `pane <role> <tmux-pane>`.
+        Окружение сброшено специально: иначе $TMUX_PANE-fallback
+        замаскировал бы сломанный разбор позиционных (проверено мутацией).
+        """
+        pane = self.live_pane()
+        self.with_pane(None)
+        self.bind("opencode", pane, 999999)
+        with self.as_ours():
+            self.assertEqual(0, self.ctl("pane", "opencode", pane))
+        self.assertEqual(pane, self.pinned().get("pane_pin"))
+
+    def test_tmux_pane_env_is_used_when_address_omitted(self) -> None:
+        """Без address берётся живая $TMUX_PANE (карточка, пункт 1).
+
+        Перезапуск чинится одной командой из живой панели, без ручной
+        правки state.json. Без этого `pane <role>` только показывал.
+        """
+        pane = self.live_pane()
+        self.with_pane(pane)
+        self.bind("opencode", pane, 999999)
+        with self.as_ours():
+            self.assertEqual(0, self.ctl("pane", "opencode"))
+        self.assertEqual(pane, self.pinned().get("pane_pin"))
+        with self.as_ours():
+            self.assertEqual(0, self.ctl("pane", "--role", "opencode"))
+        self.assertEqual(pane, self.pinned().get("pane_pin"))
+
+    def test_show_when_no_address_and_no_tmux_pane(self) -> None:
+        """Без address и без $TMUX_PANE — показ, а не выдуманный адрес."""
+        pane = self.live_pane()
+        self.with_pane(None)
+        self.bind("opencode", pane, 999999)
+        with self.as_ours():
+            self.assertEqual(0, self.ctl("pane", "--role", "opencode", pane))
+        self.with_pane(None)
+        self.assertEqual(0, self.ctl("pane", "--role", "opencode"))
+        self.assertEqual(pane, self.pinned().get("pane_pin"))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

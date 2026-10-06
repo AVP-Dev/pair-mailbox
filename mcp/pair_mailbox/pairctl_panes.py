@@ -21,6 +21,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import shutil
 import sys
 from pathlib import Path
@@ -89,7 +90,32 @@ def cmd_pane(store: Store, args: argparse.Namespace) -> int:
     # Адрес проверяется той же мерой, что и снятый автоматически, иначе
     # переопределение стало бы дырой в изоляции между проектами.
     tmux = shutil.which("tmux")
-    role = args.role
+    # Две формы вызова, одна семантика (карточка pairctl-pane-missing):
+    #   pairctl pane --role <role> [address] [--clear]   # исходная, остаётся
+    #   pairctl pane <role> [address]                    # позиционная из карточки
+    # Без address в обеих формах пробуем $TMUX_PANE текущей панели человека:
+    # перезапуск окон/сессий чинится одной командой `pairctl pane <role>`
+    # из живой панели, без ручной правки state.json. Если и его нет — показываем,
+    # как раньше, а не выдумываем адрес.
+    positionals = list(getattr(args, "positional", None)
+                       or ([getattr(args, "address", None)]
+                           if getattr(args, "address", None) else []))
+    role = getattr(args, "role", None) or ""
+    address = None
+    if role and positionals:
+        address = positionals[0]
+    elif not role and len(positionals) >= 2:
+        role, address = positionals[0], positionals[1]
+    elif not role and len(positionals) == 1:
+        role = positionals[0]
+    if not role:
+        print("error: укажи роль: `pane <role> [address]` или `pane --role <role> [address]`",
+              file=sys.stderr)
+        return 2
+    if not address and not args.clear:
+        env_pane = (os.environ.get("TMUX_PANE") or "").strip()
+        if env_pane:
+            address = env_pane
     state = store.read()
     roles_now = state.setdefault("roles", {})
     if role not in roles_now:
@@ -106,7 +132,7 @@ def cmd_pane(store: Store, args: argparse.Namespace) -> int:
         print(f"переопределение панели роли {role} снято, снова берётся из tmux")
         return 0
 
-    if not args.address:
+    if not address:
         info = roles_now.get(role, {})
         if not info:
             print(f"роль {role} не подключалась; панель неизвестна")
@@ -121,7 +147,7 @@ def cmd_pane(store: Store, args: argparse.Namespace) -> int:
                   f"{info.get('pane') or '—'}")
         return 0
 
-    verdict, why = pin_verdict(tmux, args.address, store.project_root)
+    verdict, why = pin_verdict(tmux, address, store.project_root)
     if verdict != PIN_OK:
         # Отказ здесь обязателен и одинаков для `bad` и `unknown`: записать
         # негодный адрес — значит на следующем же вызове `pair_deliver` уйти в
@@ -129,26 +155,26 @@ def cmd_pane(store: Store, args: argparse.Namespace) -> int:
         # положить в состояние то, о чём мы не знаем. Разница между ними
         # проявится позже, в `_register`: `bad` сотрёт закрепление,
         # `unknown` оставит его в силе.
-        print(f"error: {args.address!r} не годится: {why}", file=sys.stderr)
+        print(f"error: {address!r} не годится: {why}", file=sys.stderr)
         return 1
 
     def apply_pin(st):
         entry = st.setdefault("roles", {}).setdefault(
             role, {"first_seen": utcnow(), "reads": 0, "sends": 0})
         previous = entry.get("pane")
-        entry["pane_pin"] = args.address
+        entry["pane_pin"] = address
         entry["pane_pin_why"] = f"закреплено человеком: {why}"
         # Сразу записываем в `pane`, чтобы переопределение начало действовать
         # без ожидания следующего вызова инструмента, а не только после него.
-        entry["pane"] = args.address
+        entry["pane"] = address
         entry["last_seen"] = entry.get("last_seen") or utcnow()
         return previous
 
     previous = store.mutate(apply_pin)
     store.append_transcript("pane_pin_set", role, by="human",
-                            pane=args.address, was=previous, why=why)
-    print(f"{role} закреплена за {args.address} ({why})")
-    if previous and previous != args.address:
+                            pane=address, was=previous, why=why)
+    print(f"{role} закреплена за {address} ({why})")
+    if previous and previous != address:
         print(f"  было: {previous}")
     return 0
 

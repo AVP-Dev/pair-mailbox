@@ -118,9 +118,12 @@ def build_parser() -> argparse.ArgumentParser:
         "pane",
         help="human: bind a role to a pane by hand, or --clear to go back to what tmux says",
     )
-    pane.add_argument("--role", required=True, help="role whose binding to set")
-    pane.add_argument("address", nargs="?",
-                      help="pane to bind it to: %%N or <session>:<window>.<pane>")
+    pane.add_argument("--role", required=False, default="",
+                      help="role whose binding to set (или позиционно: pane <role> [address])")
+    pane.add_argument("positional", nargs="*",
+                      help="позиционная форма из карточки: <role> [address]; "
+                           "address: номер панели или <session>:<window>.<pane>; "
+                           "без address берётся $TMUX_PANE, без него — показ")
     pane.add_argument("--clear", action="store_true",
                       help="drop the override; the pane goes back to what the process reports")
 
