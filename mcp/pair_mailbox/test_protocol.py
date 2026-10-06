@@ -47,6 +47,16 @@ from server import (  # noqa: E402
 DIGEST_TOKEN_BUDGET_FOR_TEST = 500
 
 
+def fresh_seen() -> str:
+    """Свежая метка времени: сид заведомо моложе любого TTL истечения.
+
+    Нужна сидам протухших панелей/мёртвых процессов: их намерение — «панель
+    снять, но запись оставить», а last_seen из прошлого года теперь честно
+    истекает по TTL (19.3). Возраст там случаен, свежесть фиксирует предмет.
+    """
+    from datetime import datetime, timezone
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
 class TestWriteAuthority(PairTestCase):
     def test_claim_and_release(self) -> None:
         self.writer.tool_pair_state()  # register
@@ -3206,8 +3216,8 @@ class TestMailboxInvariants(PairTestCase):
         def seed(state):
             roles = state.setdefault("roles", {})
             roles["old-agent"] = {
-                "first_seen": "2026-01-01T00:00:00+00:00",
-                "last_seen": "2026-01-01T00:00:00+00:00",
+                "first_seen": fresh_seen(),
+                "last_seen": fresh_seen(),
                 "pid": 99999999,
                 "pane": "%99",
             }
@@ -3259,8 +3269,8 @@ class TestMailboxInvariants(PairTestCase):
         def seed(state):
             roles = state.setdefault("roles", {})
             roles["ghost-agent"] = {
-                "first_seen": "2026-01-01T00:00:00+00:00",
-                "last_seen": "2026-01-01T00:00:00+00:00",
+                "first_seen": fresh_seen(),
+                "last_seen": fresh_seen(),
                 "pid": 99999999,
             }
         self.store.mutate(seed)
@@ -3282,8 +3292,8 @@ class TestMailboxInvariants(PairTestCase):
         """
         def seed(state):
             state.setdefault("roles", {})["reviewer-agent"] = {
-                "first_seen": "2026-01-01T00:00:00+00:00",
-                "last_seen": "2026-01-01T00:00:00+00:00",
+                "first_seen": fresh_seen(),
+                "last_seen": fresh_seen(),
                 "pid": os.getpid(),
                 "pane": "%55",
             }
@@ -3316,8 +3326,8 @@ class TestMailboxInvariants(PairTestCase):
         def seed(state):
             roles = state.setdefault("roles", {})
             roles["reviewer-agent"] = {
-                "first_seen": "2026-01-01T00:00:00+00:00",
-                "last_seen": "2026-01-01T00:00:00+00:00",
+                "first_seen": fresh_seen(),
+                "last_seen": fresh_seen(),
                 "pid": os.getpid(),
                 "pane": "%55",
             }
@@ -3350,7 +3360,6 @@ class TestMailboxInvariants(PairTestCase):
         finally:
             composer.deliver = orig_deliver
             composer.pane_is_foreign = orig_foreign
-
 
 
 class TestPaneIdentityIsNotLiveness(PairTestCase):

@@ -1280,6 +1280,31 @@ class PairSession:
                             pane=other_pane, why=why_theirs,
                         )
 
+        # Самозалечивание ростера (#19.1 + #19.3): перепроверка панелей соседей
+        # и истечение мёртвых записей — при КАЖДОМ вызове, а не только когда
+        # своей панели нет. Старая ветка выше снимала лишь чужой проект и лишь
+        # без своей панели; recheck покрывает протухшие, чужие и занятые
+        # панели всегда, expire удаляет записи без панели после TTL молчания.
+        # Логика в roster_heal (решение по готовым фактам), здесь только вызов
+        # и запись событий в журнал. Без изменений — молча, иначе каждый вызов
+        # писал бы в журнал (тот же потолок, что у pane_pin_honoured).
+        if tmux:
+            import roster_heal as _heal
+            from composer import pane_belongs_to_project as _belongs
+            for event in _heal.recheck_peers(
+                    roles, self.role, self.store.project_root,
+                    pid_alive=is_pid_alive, pane_exists=pane_exists,
+                    belongs_to_project=lambda pane, root: _belongs(tmux, pane, root),
+                    same_pane=same_pane):
+                kind = event.pop("kind")
+                self.store.append_transcript(kind, event.pop("role"),
+                                             **event)
+            for event in _heal.expire_dead_roles(
+                    roles, state.get("writer"), pid_alive=is_pid_alive):
+                kind = event.pop("kind")
+                self.store.append_transcript(kind, event.pop("role"),
+                                             **event)
+
     def _require_not_writer(self, action: str) -> None:
         state = self.store.read()
         if state.get("writer") == self.role:
