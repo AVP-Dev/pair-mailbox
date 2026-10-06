@@ -497,8 +497,9 @@ The body says WHY, not WHAT — what is visible in the diff. No "why" — do not
 commit yet, write it first.
 
 Banned words in messages: `comprehensive`, `robust`, `leverage`, `seamless`,
-`cutting-edge`, `delve`, `tapestry`. The list grows; it lives in
-`docs/backlog/human-commits-no-ai-slop.md`.
+`cutting-edge`, `delve`, `tapestry`, `«в современном мире»`. The list grows
+in place — new entries land here, in §10c, not in a side file that a closed
+card deletes.
 
 Notes: one entry is one fact, decision, or verdict. A sheet over 30 lines is
 cut into separate plan/finding/decision entries. Duplicates of one thought
