@@ -39,6 +39,12 @@ class PairTestCase(unittest.TestCase):
         self._pane_at_startup = self._orig_tmux_pane
         self._orig_disable_ring = os.environ.get("PAIR_DISABLE_RING")
         os.environ["PAIR_DISABLE_RING"] = "1"
+        # Кэш состояния в tool_pair_state возвращает заглушку без obligations и
+        # evidence_this_round на второй подряд вызов. Тесты проверяют контракт
+        # «каждый зов возвращает полное состояние», поэтому кэш здесь выключен
+        # (сервер читает PAIR_DISABLE_STATE_CACHE — см. tool_pair_state).
+        self._orig_disable_state_cache = os.environ.get("PAIR_DISABLE_STATE_CACHE")
+        os.environ["PAIR_DISABLE_STATE_CACHE"] = "1"
 
     def tearDown(self) -> None:
         self._tmp.cleanup()
@@ -50,6 +56,10 @@ class PairTestCase(unittest.TestCase):
             os.environ["PAIR_DISABLE_RING"] = self._orig_disable_ring
         else:
             os.environ.pop("PAIR_DISABLE_RING", None)
+        if self._orig_disable_state_cache is not None:
+            os.environ["PAIR_DISABLE_STATE_CACHE"] = self._orig_disable_state_cache
+        else:
+            os.environ.pop("PAIR_DISABLE_STATE_CACHE", None)
 
     def assertRefused(self, callable_, *args, contains: str = "", **kwargs):
         with self.assertRaises(ProtocolError) as caught:

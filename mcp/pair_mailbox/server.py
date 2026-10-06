@@ -1252,6 +1252,7 @@ class PairSession:
             raise SystemExit(f"invalid --role {role!r}: use letters, digits, dot, dash, underscore")
         self.role = role
         self.store = store
+        self._last_state_hash: str | None = None
 
     # ---------------------------------------------------------------- helpers
 
@@ -1461,6 +1462,54 @@ class PairSession:
             state = self.store._load()
             self._register(state)
             self.store._save(state)
+
+        # Кэширование: если состояние не изменилось с прошлого вызова, возвращаем
+        # короткий ответ. Полный ответ стоит ~939 токенов, и агенты зовут pair_state
+        # 3-4 раза за раунд, хотя состояние почни не меняется.
+        # Отключается через PAIR_DISABLE_STATE_CACHE=1 (для тестов).
+        if not os.environ.get("PAIR_DISABLE_STATE_CACHE"):
+            # Ключ — отпечаток всего, что читает полный ответ. Поля вручную не
+            # перечисляем: ответ зависит от evidence, human_ok, verdicts, patches,
+            # roles, seen и от файлов обязательств (они живут на диске и в state не
+            # попадают), и промах по любому возвращал заглушку без obligations и
+            # evidence_this_round — то есть без ровно тех полей, ради которых агент
+            # позвал pair_state. Исключаем только то, что меняется при каждом зове
+            # само по себе (updated_at, last_seen), иначе кэш не срабатывал бы
+            # никогда.
+            roles = {
+                name: {k: v for k, v in info.items() if k != "last_seen"}
+                for name, info in (state.get("roles") or {}).items()
+                if isinstance(info, dict)
+            }
+            # Git в ключе только когда есть вердикты: _done_blockers читает его
+            # для проверки stale, и ключ обязан это видеть.
+            git_fp = None
+            if state.get("verdicts"):
+                try:
+                    from review import snapshot as git_snapshot
+                    git_fp = git_snapshot(self.store.project_root)
+                except Exception:  # noqa: BLE001 - снимок не должен ронять кэш
+                    git_fp = None
+            cache_key = {
+                "state": {k: v for k, v in state.items()
+                          if k not in ("updated_at", "roles")},
+                "roles": roles,
+                "obligations": sorted(
+                    p.name for p in self.store.obligations_root.glob("*.json")
+                ),
+                "inbox": [p.name for p in self._inbox_files()],
+                "git": git_fp,
+            }
+            state_hash = hashlib.sha256(
+                json.dumps(cache_key, sort_keys=True).encode()
+            ).hexdigest()[:12]
+            if state_hash == self._last_state_hash:
+                return {
+                    "unchanged": True,
+                    "hash": state_hash,
+                    "note": "Состояние не изменилось с прошлого вызова. Читай pair_digest для ориентации.",
+                }
+            self._last_state_hash = state_hash
 
         writer = state.get("writer")
         policy_writer = self._policy(state).get("writer")
@@ -2926,7 +2975,11 @@ class PairSession:
         with self.store.lock():
             with target.open("a", encoding="utf-8") as stream:
                 stream.write(f"\n## {utcnow()} — {self.role}\n\n{text.strip()}\n")
-            self._rotate_note(kind, target)
+            # Ротация при достижении 10 КБ: заметки растут без ограничений, и чтение
+            # хвоста из файла на 72 КБ стоит ~18000 токенов. Ротация держит активную
+            # часть компактной, а старое уходит в archive/.
+            if target.stat().st_size > 10 * 1024:
+                self._rotate_note(kind, target)
         self.store.append_transcript("note", self.role, note_kind=kind, chars=len(text))
         if kind == "verdict" or kind.startswith("verdict-"):
             # Привязка вердикта к ревизии: HEAD + dirty-hash + файлы.
@@ -3007,7 +3060,7 @@ class PairSession:
                          "полный текст — в `pair_note_read`",
         }
 
-    def tool_pair_transcript(self, limit: int = 40) -> dict[str, Any]:
+    def tool_pair_transcript(self, limit: int = 20) -> dict[str, Any]:
         """Read the append-only audit trail of everything both agents did."""
         entries = self.store.read_transcript(limit)
         return {"entries": entries, "count": len(entries)}
