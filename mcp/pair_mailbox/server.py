@@ -2863,6 +2863,21 @@ class PairSession:
                                              note_kind=kind, head=(rev.get("head") or "")[:12])
             except Exception:  # noqa: BLE001 - снимок не роняет вердикт
                 pass
+            # Вердикт без обязательства — тупик: критик сдал, писатель ждёт,
+            # а сторожить нечего. Obligation писателю «забери вердикт и
+            # закрой раунд» замыкает цикл без человека: пилот пинает
+            # получателя через reply_grace, автора — через reply_hard.
+            # Измерено 2026-10-06: вердикт seq 252 лежал 3.5 часа,
+            # писатель стоял на recap «жду вердикт», пилот молчал —
+            # сторожить было нечего, obligation-файла не было.
+            try:
+                writer = (self.store.read().get("writer") or "").strip()
+                if writer and writer != self.role:
+                    self._open_obligation(
+                        self.role, writer, int(self.store.read().get("seq", 0)),
+                        subject=f"вердикт {kind} — забери и закрой раунд")
+            except Exception:  # noqa: BLE001 - обязательство не роняет вердикт
+                pass
         woke = {}
         try:
             from wake import record_wake

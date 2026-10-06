@@ -302,6 +302,22 @@ class TestObligations(PairTestCase):
         self.peer.tool_pair_send(to="writer-agent", text="и ещё уточнение")
         self.assertEqual([], list(self.store.obligations_root.glob("*.json")))
 
+    def test_verdict_opens_obligation_for_writer(self) -> None:
+        """Вердикт критика открывает обязательство писателю (полный цикл).
+
+        Измерено 2026-10-06: вердикт seq 252 лежал 3.5 часа, писатель стоял
+        на recap «жду вердикт», пилот молчал — сторожить было нечего,
+        obligation-файла не было. Теперь пилот пинает получателя автоматом.
+        """
+        self.writer.tool_pair_claim(reason="беру перо")
+        self.peer.tool_pair_note(kind="verdict", text="принято, закрывай")
+        files = list(self.store.obligations_root.glob("*.json"))
+        self.assertEqual(1, len(files))
+        record = json.loads(files[0].read_text(encoding="utf-8"))
+        self.assertEqual("reviewer-agent", record["from"])
+        self.assertEqual("writer-agent", record["to"])
+        self.assertIn("вердикт", record.get("subject", ""))
+
 
 
 class TestPatchFlow(PairTestCase):
