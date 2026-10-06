@@ -33,6 +33,8 @@ board-hosts	positive	1	python3 mcp/pair_mailbox/test_board_hosts.py
 board-snapshot	positive	1	python3 mcp/pair_mailbox/test_board_snapshot.py
 board-render	positive	1	python3 mcp/pair_mailbox/test_board_render.py
 board-cli	positive	1	python3 bin/pairboard_test.py
+wake	positive	1	python3 mcp/pair_mailbox/test_wake.py
+review	positive	1	python3 mcp/pair_mailbox/test_review.py
 file-size-gate-tests	positive	1	bash scripts/file-size-gate_test.sh
 
 # --- integration: медленное, но обязательное перед финализацией ---

@@ -1621,7 +1621,47 @@ class PairSession:
         return unresolved_patches(state)
 
     def _done_blockers(self, state: dict[str, Any]) -> list[str]:
-        return done_blockers(state)
+        blockers = done_blockers(state)
+        # Очередь ревью и stale-вердикты (карточка review-queue).
+        # Писатель не блокируется в середине работы; блокировка — здесь,
+        # перед фиксацией результата. Всё fail-open: без git и без файлов
+        # обязательств раунд не держим.
+        try:
+            from review import changed_between, dirty_files, git_head, is_stale
+            pending = 0
+            if self.store.obligations_root.is_dir():
+                for path in self.store.obligations_root.glob("*.json"):
+                    try:
+                        record = json.loads(path.read_text(encoding="utf-8"))
+                    except (OSError, ValueError):
+                        continue
+                    if record.get("from") and record.get("to"):
+                        pending += 1
+            if pending:
+                blockers.append(
+                    f"очередь висящих ревью не пуста (pending_reviews={pending}). "
+                    f"Раунд не закрывается поверх непрочитанного вердикта: "
+                    f"дождись ответов через pair_read или закрой лишние запросы."
+                )
+            verdicts = [v for v in (state.get("verdicts") or []) if isinstance(v, dict)]
+            if verdicts:
+                last = verdicts[-1]
+                old = last.get("rev") or {}
+                current = git_head(self.store.project_root)
+                if current:
+                    stale, why = is_stale(old, current,
+                                          changed_between(self.store.project_root,
+                                                          str(old.get("head") or ""), current),
+                                          dirty_files(self.store.project_root))
+                    if stale:
+                        blockers.append(
+                            f"последний вердикт {last.get('role')}/{last.get('kind')} "
+                            f"stale относительно HEAD: {why}. "
+                            f"Применять его к новому коду нельзя — запроси повторное ревью."
+                        )
+        except Exception:  # noqa: BLE001 - ревью-гейт не роняет закрытие
+            pass
+        return blockers
 
     def _inbox_files(self) -> list[Path]:
         inbox = self.store.mailbox_root / self.role
@@ -1821,20 +1861,23 @@ class PairSession:
             )
             return {"rung": False, "why": why_foreign}
         from composer import capture, composer_line, is_composer_empty
-        deadline = time.monotonic() + 1.5
-        while True:
+        # Single-shot без ожидания: звонок — оптимизация, а не условие.
+        # Файл wake/*.json (пишется вызывающим по событию) — гарантия,
+        # которую опросит pairpilot; ждать освобождения композера здесь —
+        # значит вешать инструмент на 1.5с и перехватывать ввод соседа.
+        # Занято/не видно — сразу возвращаемся в файловый канал.
+        try:
             line = composer_line(capture(tmux, pane))
-            # None — композер не виден, и это не то же самое, что «свободен».
-            # `is_composer_empty(None)` падает на NoneType.rstrip, то есть любой
-            # звонок в панель, где TUI перерисовался, ронял звонящего. Отсутствие
-            # строки ввода — это «не трогать», ровно как в deliver().
-            if line is not None and is_composer_empty(line):
-                break
-            if time.monotonic() >= deadline:
-                reason = "композер соседа не виден, не перебиваем" if line is None \
-                    else "композер соседа занят, не перебиваем"
-                return {"rung": False, "why": reason}
-            time.sleep(0.3)
+        except Exception as exc:  # noqa: BLE001 - панель исчезла между проверками
+            return {"rung": False, "why": f"панель не прочиталась: {exc}"}
+        # None — композер не виден, и это не то же самое, что «свободен».
+        # `is_composer_empty(None)` падает на NoneType.rstrip, то есть любой
+        # звонок в панель, где TUI перерисовался, ронял звонящего. Отсутствие
+        # строки ввода — это «не трогать», ровно как в deliver().
+        if line is None or not is_composer_empty(line):
+            reason = "композер соседа не виден, не перебиваем" if line is None \
+                else "композер соседа занят, не перебиваем"
+            return {"rung": False, "why": reason}
         prompt = f"pair: {kind} от {self.role}. Прочитай pair_read."
         if detail:
             # Повод без текста письма. Обрезанный текст здесь был бы «шиной по
@@ -2029,6 +2072,14 @@ class PairSession:
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         path = self.store.obligations_root / f"{seq:06d}-{stamp}-{frm}-{to}.json"
         record = {"seq": seq, "from": frm, "to": to, "opened_at": utcnow(), "subject": subject}
+        # Привязка запроса к ревизии (review-queue): HEAD + dirty-hash + файлы.
+        # Без неё вердикт, пришедший после новых коммитов, молча ложился бы
+        # на непроверенный код. Fail-open: без git пишется пустой снимок.
+        try:
+            from review import snapshot
+            record["rev"] = snapshot(self.store.project_root)
+        except Exception:  # noqa: BLE001 - снимок не должен ронять запрос
+            record["rev"] = {"head": "", "dirty": "", "files": []}
         atomic_write_json(path, record)
         self.store.append_transcript("obligation_opened", frm, to=to, seq=seq, subject=subject)
         return record
@@ -2068,6 +2119,23 @@ class PairSession:
             raise ProtocolError("`text` is required.")
         if to == self.role:
             raise ProtocolError("cannot send a message to your own role.")
+        if expects_reply:
+            # Лимит очереди ревью: не более 2 неподтверждённых (карточка).
+            # Пять открытых ревью означали ответы всё позже и всё реже
+            # попадавшие в свою ревизию. На третьем — остановиться и читать.
+            try:
+                from review import MAX_OPEN_REVIEWS, queue_full
+                if queue_full(self.store.obligations_root, self.role):
+                    raise ProtocolError(
+                        f"очередь ревью полна ({MAX_OPEN_REVIEWS} открытых). "
+                        f"Не добавляй запросов молча: войди в "
+                        f"pair_read(wait_seconds=30) и дождись вердиктов, "
+                        f"иначе ответы придут уже не на твою ревизию."
+                    )
+            except ProtocolError:
+                raise
+            except Exception:  # noqa: BLE001 - подсчёт не роняет отправку
+                pass
 
         def apply(state: dict[str, Any]) -> dict[str, Any]:
             self._register(state)
@@ -2110,6 +2178,17 @@ class PairSession:
         if expects_reply:
             obligation = self._open_obligation(self.role, to, seq=result["seq"],
                                                subject=subject or text.strip()[:60])
+        # Событийное пробуждение — файл, а не печать (wake-without-composer).
+        # Письмо уже в mailbox, файл — гарантия для опроса pairpilot;
+        # _ring ниже — только оптимизация быстрого отклика.
+        try:
+            from wake import record_wake
+            record_wake(self.store.root, self.store.read(), to, "сообщение",
+                        f"[pair] {self.role}: новое сообщение в ящике, прочитай pair_read")
+            self.store.append_transcript("wake_pending", self.role, to=to,
+                                         reason="сообщение", seq=result["seq"])
+        except Exception:  # noqa: BLE001 - wake-файл не должен ронять отправку
+            pass
         ring = self._ring(to, "сообщение")
         return {
             "delivered": True,
@@ -2849,7 +2928,41 @@ class PairSession:
                 stream.write(f"\n## {utcnow()} — {self.role}\n\n{text.strip()}\n")
             self._rotate_note(kind, target)
         self.store.append_transcript("note", self.role, note_kind=kind, chars=len(text))
+        if kind == "verdict" or kind.startswith("verdict-"):
+            # Привязка вердикта к ревизии: HEAD + dirty-hash + файлы.
+            # Молчаливое применение вердикта к уехавшей ревизии хуже
+            # отсутствия вердикта. Fail-open: без git пишется пустой снимок.
+            try:
+                from review import snapshot as review_snapshot
+                rev = review_snapshot(self.store.project_root)
+
+                def remember_verdict(state: dict[str, Any]) -> None:
+                    verdicts = state.setdefault("verdicts", [])
+                    verdicts.append({"role": self.role, "kind": kind,
+                                     "at": utcnow(), "rev": rev,
+                                     "chars": len(text)})
+                    del verdicts[: max(0, len(verdicts) - 20)]
+                self.store.mutate(remember_verdict)
+                self.store.append_transcript("verdict_pinned", self.role,
+                                             note_kind=kind, head=(rev.get("head") or "")[:12])
+            except Exception:  # noqa: BLE001 - снимок не роняет вердикт
+                pass
         woke = {}
+        try:
+            from wake import record_wake
+            snapshot = self.store.read()
+            for other in snapshot.get("roles", {}):
+                if other == self.role:
+                    continue
+                try:
+                    record_wake(self.store.root, snapshot, other, f"заметка/{kind}",
+                                f"[pair] {self.role}: новая заметка {kind}, прочитай pair_note_read")
+                    self.store.append_transcript("wake_pending", self.role, to=other,
+                                                 reason=f"заметка/{kind}")
+                except Exception:  # noqa: BLE001 - wake-файл не роняет заметку
+                    pass
+        except Exception:  # noqa: BLE001 - импорт wake не роняет заметку
+            pass
         for other in self.store.read().get("roles", {}):
             if other == self.role:
                 continue
