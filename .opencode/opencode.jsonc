@@ -3,14 +3,12 @@
 
   "instructions": ["AGENTS.md", "docs/PROTOCOL.md"],
 
-  "mcp": {
-    "pair": {
-      "type": "local",
-      "command": ["sh", "mcp/pair_mailbox/serve.sh", "opencode"],
-      "enabled": true,
-      "timeout": 20000
-    }
-  },
+  // MCP pair-сервера здесь НЕТ — намеренно. Проектный конфиг читает ЛЮБОЙ CLI
+  // с opencode-discovery (omp/pi), запущенный из корня репо, и ключ `pair`
+  // с ролью внутри подменяет его собственную роль (живой случай 2026-10-07:
+  // процесс omp поднял server.py --role opencode и потерял write authority).
+  // Роль раздаёт только user-конфиг ~/.config/opencode/opencode.jsonc,
+  // который ставит install.sh. Подробнее: docs/SETUP.md «Чужие CLI читают наши конфиги».
 
   "permission": {
     "edit": "ask",

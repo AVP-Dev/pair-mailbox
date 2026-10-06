@@ -68,13 +68,13 @@
     "label": "OMP Coding Agent",
     "binary": "omp",
     "mcp": {
-      "path": "~/.pi/agent/mcp.json",
+      "path": "~/.omp/agent/mcp.json",
       "format": "json",
       "root_key": "mcpServers",
       "server_key": "pair-omp",
       "entry": { "command": "sh", "args": [], "timeout": 65000 }
     },
-    "skills_dir": "~/.pi/agent/skills",
-    "instructions": "~/.pi/agent/AGENTS.md"
+    "skills_dir": "~/.omp/agent/skills",
+    "instructions": "~/.omp/agent/AGENTS.md"
   }
 }

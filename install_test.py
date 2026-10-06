@@ -423,6 +423,30 @@ class TestPilotLaunchMap(InstallCase):
                 self.assertEqual(len(keys), len(set(keys.values())),
                                  f"один файл {path} — разные ключи: {keys}")
 
+    def test_no_two_profiles_share_one_config_home(self) -> None:
+        """Два РАЗНЫХ движка на одном доме конфигов — это общая роль (ROLE-BUG 2026-10-07).
+
+        Измерено 2026-10-07: бинарь `omp` — симлинк на pi-coding-agent, но его дом —
+        `~/.omp/agent/`, а профиль `omp` писал в `~/.pi/agent/mcp.json`. Хуже того:
+        `omp`/`pi` грузят чужие MCP через discovery (OpenCode/Claude/Codex/Cursor/
+        Gemini/VSCode/Windsurf), и ключ `pair` коллизирует между источниками —
+        процесс `omp` поднял `server.py --role opencode` из проектного
+        `.opencode/opencode.jsonc` и потерял write authority. Профиль обязан
+        указывать на собственный дом движка, а не на чужой.
+        """
+        profiles = json.loads((ROOT / "cli-profiles.json").read_text(encoding="utf-8"))
+        home_of = {"pi": ".pi", "omp": ".omp", "opencode": ".config/opencode",
+                   "agy": ".gemini", "codex": ".codex", "claude": ".claude"}
+        for name, profile in profiles.items():
+            if name.startswith("_"):
+                continue
+            spec = (profile or {}).get("mcp") or {}
+            path = str(spec.get("path"))
+            with self.subTest(profile=name):
+                if name in home_of:
+                    self.assertIn(home_of[name], path,
+                                 f"профиль {name} пишет в чужой дом: {path}")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

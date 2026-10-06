@@ -195,12 +195,43 @@ Validate rather than trust, especially after an OpenCode upgrade:
 
 ```sh
 # editor validation: $schema is already in the file
-# or check by hand:
-python3 -c "import json;print(json.load(open('.opencode/opencode.jsonc')))"
+# or check by hand (jsonc allows comments, so plain json.load is not enough):
+./install.sh --check
 ```
 
 The live shape of any field is in `https://opencode.ai/config.json` under `$defs`. If a config
 change seems to do nothing, that file is where the answer is.
+
+## Чужие CLI читают наши конфиги (ROLE-BUG 2026-10-07)
+
+`omp`/`pi` (один движок `pi-coding-agent`, разные дома `~/.omp/` vs `~/.pi/`) грузят чужие
+MCP через discovery-провайдеры: OpenCode (`~/.config/opencode/opencode.json[c]` + project's
+`opencode.json[c]` + `.opencode/` с мёржем project поверх user), Claude (`.claude.json`),
+Codex (`config.toml [mcp_servers.*]`), Cursor, Gemini, VSCode, Windsurf.
+
+Ключ сервера один — `pair`. Чей конфиг последний в мёрже, тот и поднимается. Измерено
+вживую 2026-10-07: процесс `omp` (PID 207528), запущенный из корня репо, поднял
+`server.py --role opencode` из проектного `.opencode/opencode.jsonc` — и `pair_state`
+отдал `you_are_writer=false`, то есть агент послушно отказался писать и редактировать.
+Никакой смены модели/провайдера не было: роль — это аргумент `serve.sh <role>`, а не API.
+
+Отсюда три правила, все уже применены:
+
+1. **Проектный конфиг не несёт identity.** В `.opencode/opencode.jsonc` нет блока `mcp`
+   (только комментарий почему). Роль раздаёт лишь user-конфиг, который ставит install.sh.
+   То же касается любого проектного файла, который читает чужой движок.
+2. **У каждого движка свой дом.** Профиль `omp` в `cli-profiles.json` указывает на
+   `~/.omp/agent/mcp.json` с ключом `pair-omp`, а не на `~/.pi/agent/mcp.json`.
+   Тест `test_no_two_profiles_share_one_config_home` это сторожит.
+3. **Чужой discovery глушится в самом CLI.** Для `omp`:
+   `omp config set disabledProviders '["opencode"]'` +
+   `omp config set commands.enableOpencodeProject false`.
+   Без этого даже без проектного конфига подхватится `pair => opencode` из юзерского
+   `~/.config/opencode/opencode.jsonc`.
+
+Дополнительно `serve.sh` отказывается стартовать, если `PAIR_ROLE` из окружения
+противоречит роли из argv (exit 3): роль приходит из конфига, никогда из env —
+теперь это отказ, а не комментарий.
 
 ## The plugin guide disagrees with this build too
 

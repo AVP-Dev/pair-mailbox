@@ -15,8 +15,12 @@ if [ "$#" -lt 1 ]; then
   exit 2
 fi
 
-role="${PAIR_ROLE:-$1}"
+role="$1"
 state="${PAIR_STATE:-${2:-.pair}}"
+if [ -n "${PAIR_ROLE:-}" ] && [ "${PAIR_ROLE}" != "$1" ]; then
+  echo "pair-mailbox: refusing: PAIR_ROLE=${PAIR_ROLE} != argv role $1 (role comes from config, never from env)" >&2
+  exit 3
+fi
 
 here="$(cd -- "$(dirname -- "$0")" && pwd)"
 
