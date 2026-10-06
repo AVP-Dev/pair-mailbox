@@ -29,6 +29,10 @@ pairctl-authority	positive	1	python3 mcp/pair_mailbox/test_pairctl_authority.py
 pairctl-panes	positive	1	python3 mcp/pair_mailbox/test_pairctl_panes.py
 pairctl-read	positive	1	python3 mcp/pair_mailbox/test_pairctl_read.py
 supervisor	positive	1	python3 bin/pairpilot_test.py
+board-hosts	positive	1	python3 mcp/pair_mailbox/test_board_hosts.py
+board-snapshot	positive	1	python3 mcp/pair_mailbox/test_board_snapshot.py
+board-render	positive	1	python3 mcp/pair_mailbox/test_board_render.py
+board-cli	positive	1	python3 bin/pairboard_test.py
 file-size-gate-tests	positive	1	bash scripts/file-size-gate_test.sh
 
 # --- integration: медленное, но обязательное перед финализацией ---

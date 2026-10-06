@@ -1,0 +1,466 @@
+/* Оформление дашборда пары. Контракт токенов — docs/theme-tokens.md.
+ *
+ * Инвариант: Zero Hardcoded Colors. Ни одного #hex/rgb()/hsl() вне блоков токенов.
+ * Всё остальное — hsl(var(--x) / a).
+ */
+
+:root {
+  /* Светлая тема — значения контракта, §1 docs/theme-tokens.md. */
+  --background: 0 0% 100%;
+  --foreground: 240 10% 3.9%;
+  --card: 0 0% 100%;
+  --card-foreground: 240 10% 3.9%;
+  --popover: 0 0% 100%;
+  --popover-foreground: 240 10% 3.9%;
+  --primary: 240 5.9% 10%;
+  --primary-foreground: 0 0% 98%;
+  --secondary: 240 4.8% 95.9%;
+  --secondary-foreground: 240 5.9% 10%;
+  --muted: 240 4.8% 95.9%;
+  --muted-foreground: 240 3.8% 46.1%;
+  --accent: 240 4.8% 95.9%;
+  --accent-foreground: 240 5.9% 10%;
+  --border: 240 5.9% 90%;
+  --ring: 240 5.9% 10%;
+  --destructive: 0 84.2% 60.2%;
+  --destructive-foreground: 0 0% 98%;
+  --radius: 0.5rem;
+
+  --ok: 142 71% 35%;
+  --warn: 32 95% 30%;
+  --bad: 0 72% 45%;
+  --unknown: 240 3.8% 46.1%;
+
+  --gap: 0.75rem;
+  --pad: 1rem 1.15rem;
+  --row: 1.4rem;
+}
+
+[data-theme="dark"] {
+  --background: 240 10% 3.9%;
+  --foreground: 0 0% 98%;
+  --card: 240 10% 5.5%;
+  --card-foreground: 0 0% 98%;
+  --popover: 240 10% 5.5%;
+  --popover-foreground: 0 0% 98%;
+  --primary: 0 0% 98%;
+  --primary-foreground: 240 5.9% 10%;
+  --secondary: 240 3.7% 15.9%;
+  --secondary-foreground: 0 0% 98%;
+  --muted: 240 3.7% 15.9%;
+  --muted-foreground: 240 5% 64.9%;
+  --accent: 240 3.7% 15.9%;
+  --accent-foreground: 0 0% 98%;
+  --border: 240 3.7% 15.9%;
+  --ring: 240 4.9% 83.9%;
+  --destructive: 0 62.8% 30.6%;
+  --destructive-foreground: 0 0% 98%;
+
+  --ok: 142 60% 55%;
+  --warn: 38 92% 60%;
+  --bad: 0 84% 68%;
+  --unknown: 240 5% 64.9%;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: hsl(var(--background));
+  color: hsl(var(--foreground));
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  font-size: 13px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Шапка */
+.bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--gap);
+  padding: 0.75rem 1.25rem;
+  border-bottom: 1px solid hsl(var(--border));
+  background: hsl(var(--card));
+  position: sticky;
+  top: 0;
+  z-index: 10;
+}
+
+.bar h1 {
+  font-size: 14px;
+  margin: 0;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+.bar-right {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.btn {
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  color: hsl(var(--secondary-foreground));
+  background: hsl(var(--secondary));
+  border: 1px solid hsl(var(--border));
+  border-radius: var(--radius);
+  padding: 0.35rem 0.75rem;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.btn:hover {
+  background: hsl(var(--accent));
+  color: hsl(var(--accent-foreground));
+}
+.btn:focus-visible {
+  outline: 2px solid hsl(var(--ring));
+  outline-offset: 1px;
+}
+.btn[aria-pressed="true"] {
+  background: hsl(var(--primary));
+  color: hsl(var(--primary-foreground));
+}
+
+.muted { color: hsl(var(--muted-foreground)); }
+.ok { color: hsl(var(--ok)); }
+.warn { color: hsl(var(--warn)); }
+.bad { color: hsl(var(--bad)); }
+
+main {
+  max-width: 1400px;
+  margin: 0 auto;
+  padding: 1.25rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+}
+
+.panel {
+  background: hsl(var(--card));
+  color: hsl(var(--card-foreground));
+  border: 1px solid hsl(var(--border));
+  border-radius: calc(var(--radius) * 1.5);
+  padding: var(--pad);
+  box-shadow: 0 1px 3px hsl(var(--border) / 0.2);
+}
+
+.panel > h2 {
+  font-size: 11px;
+  margin: 0 0 0.75rem;
+  color: hsl(var(--muted-foreground));
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-weight: 700;
+}
+
+/* Лейаут: сетка сводки и 2-колоночный рабочий дашборд */
+.grid {
+  display: grid;
+  gap: var(--gap);
+  grid-template-columns: repeat(auto-fit, minmax(18rem, 1fr));
+}
+
+.kpi-grid {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+}
+
+.dashboard-grid {
+  display: grid;
+  gap: 1.25rem;
+  grid-template-columns: minmax(320px, 380px) 1fr;
+  align-items: start;
+}
+
+@media (max-width: 960px) {
+  .dashboard-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.col-left, .col-right {
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+}
+
+/* Дорожка фаз раунда */
+.phases {
+  display: flex;
+  gap: 0.35rem;
+  margin: 0.5rem 0 0.85rem;
+}
+
+.phase {
+  flex: 1;
+  text-align: center;
+  padding: 0.3rem 0.4rem;
+  border-radius: var(--radius);
+  background: hsl(var(--secondary));
+  color: hsl(var(--muted-foreground));
+  border: 1px solid hsl(var(--border));
+  font-size: 11px;
+  font-weight: 500;
+  font-family: ui-monospace, monospace;
+  transition: all 0.15s ease;
+}
+
+.phase.done {
+  background: hsl(var(--muted));
+  color: hsl(var(--foreground));
+  font-weight: 600;
+}
+
+.phase.now {
+  background: hsl(var(--primary));
+  color: hsl(var(--primary-foreground));
+  border-color: hsl(var(--ring));
+  font-weight: 700;
+  box-shadow: 0 0 10px hsl(var(--ring) / 0.3);
+}
+
+.kv {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0.35rem 0.85rem;
+  font-size: 12px;
+}
+
+.kv dt {
+  color: hsl(var(--muted-foreground));
+  font-weight: 500;
+}
+
+.kv dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+  font-family: ui-monospace, monospace;
+}
+
+/* Карточки агентов */
+.role {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 0.65rem;
+  padding: 0.65rem 0;
+}
+
+.role + .role {
+  border-top: 1px solid hsl(var(--border));
+}
+
+.dot {
+  width: 0.6rem;
+  height: 0.6rem;
+  border-radius: 50%;
+  flex: none;
+  background: hsl(var(--unknown));
+  box-shadow: 0 0 4px hsl(var(--unknown));
+}
+
+.dot.ok {
+  background: hsl(var(--ok));
+  box-shadow: 0 0 6px hsl(var(--ok));
+}
+
+.dot.warn {
+  background: hsl(var(--warn));
+  box-shadow: 0 0 6px hsl(var(--warn));
+}
+
+.dot.bad {
+  background: hsl(var(--bad));
+  box-shadow: 0 0 6px hsl(var(--bad));
+}
+
+.role-name {
+  font-size: 13px;
+  font-weight: 700;
+  color: hsl(var(--foreground));
+}
+
+.tag {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid hsl(var(--border));
+  border-radius: 9999px;
+  padding: 0.1rem 0.5rem;
+  font-size: 11px;
+  font-weight: 600;
+  font-family: ui-monospace, monospace;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  background: hsl(var(--secondary));
+  color: hsl(var(--secondary-foreground));
+}
+
+.tag.writer {
+  background: hsl(var(--primary));
+  color: hsl(var(--primary-foreground));
+  border-color: hsl(var(--ring));
+  box-shadow: 0 0 8px hsl(var(--ring) / 0.25);
+}
+
+.tag.critic {
+  background: hsl(var(--muted));
+  color: hsl(var(--muted-foreground));
+}
+
+/* Лента событий */
+.events {
+  display: flex;
+  flex-direction: column;
+  max-height: 600px;
+  overflow-y: auto;
+  padding-right: 0.25rem;
+}
+
+.event {
+  display: grid;
+  grid-template-columns: 4.8rem auto 1fr;
+  gap: 0.6rem;
+  padding: 0.35rem 0.5rem;
+  border-radius: calc(var(--radius) / 2);
+  align-items: baseline;
+  font-size: 12px;
+  transition: background 0.1s ease;
+}
+
+.event:hover {
+  background: hsl(var(--accent));
+}
+
+.event .kind {
+  font-family: ui-monospace, monospace;
+  font-size: 11px;
+  font-weight: 500;
+  color: hsl(var(--muted-foreground));
+  padding: 0.1rem 0.35rem;
+  border-radius: calc(var(--radius) / 2);
+  background: hsl(var(--secondary));
+  white-space: nowrap;
+}
+
+.event .sum {
+  overflow-wrap: anywhere;
+  line-height: 1.45;
+}
+
+.event.alarm {
+  background: hsl(var(--destructive) / 0.08);
+}
+
+.event.alarm .kind {
+  color: hsl(var(--bad));
+  font-weight: 700;
+  background: hsl(var(--bad) / 0.15);
+  border: 1px solid hsl(var(--bad) / 0.3);
+}
+
+/* Задачи */
+.task {
+  padding: 0.6rem 0.75rem;
+  border: 1px solid hsl(var(--border));
+  border-radius: var(--radius);
+  background: hsl(var(--card));
+  margin-bottom: 0.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.task.open {
+  border-left: 3px solid hsl(var(--primary));
+}
+
+.task.done {
+  border-left: 3px solid hsl(var(--muted));
+  opacity: 0.75;
+}
+
+.task .text {
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.task.done .text {
+  color: hsl(var(--muted-foreground));
+  text-decoration: line-through;
+}
+
+.banner {
+  border-left: 4px solid hsl(var(--bad));
+  background: hsl(var(--muted));
+  color: hsl(var(--foreground));
+  padding: 0.65rem 0.85rem;
+  border-radius: var(--radius);
+  font-size: 13px;
+}
+
+/* Выделение цели раунда в верхней карточке */
+.hero-goal {
+  background: hsl(var(--secondary));
+  border: 1px solid hsl(var(--border));
+  border-radius: var(--radius);
+  padding: 0.5rem 0.75rem;
+  margin-bottom: 0.65rem;
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+}
+.hero-badge {
+  background: hsl(var(--primary));
+  color: hsl(var(--primary-foreground));
+  font-weight: 700;
+  font-size: 10px;
+  padding: 0.15rem 0.45rem;
+  border-radius: calc(var(--radius) / 2);
+  letter-spacing: 0.05em;
+  flex: none;
+}
+.hero-text {
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.4;
+  color: hsl(var(--foreground));
+}
+
+/* Архив выполненных задач */
+.tasks-clean {
+  margin: 0.35rem 0 0.65rem;
+  color: hsl(var(--muted-foreground));
+  font-size: 12px;
+}
+.task-archive {
+  margin-top: 0.5rem;
+  border-top: 1px solid hsl(var(--border));
+  padding-top: 0.4rem;
+}
+.task-archive > summary {
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 600;
+  user-select: none;
+  padding: 0.2rem 0;
+}
+.task-archive[open] > summary {
+  margin-bottom: 0.4rem;
+}
+
+/* Сообщения диалога пары */
+.event.chat-msg {
+  background: hsl(var(--accent) / 0.4);
+  border-left: 2px solid hsl(var(--ring));
+}
+.event.chat-msg .sum {
+  font-weight: 500;
+  color: hsl(var(--foreground));
+}

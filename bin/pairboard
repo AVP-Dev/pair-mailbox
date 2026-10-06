@@ -1,0 +1,178 @@
+#!/usr/bin/env python3
+"""Дашборд пары: собирает один статический HTML и (по желанию) держит его свежим.
+
+Запуск:
+
+    bin/pairboard                     раз собрать .pair/board.html и напечатать путь
+    bin/pairboard --watch 5           пересобирать каждые 5 секунд
+    bin/pairboard --out /tmp/x.html   собрать в другое место
+    bin/pairboard --print-json        вывести снимок в stdout, HTML не писать
+
+Почему не сервер. Задача раунда — наблюдение без localhost. Страница, открытая с
+`file://`, не может прочитать `.pair/` сама: браузер запрещает `fetch()` локальных
+файлов. Значит свежесть обеспечивается с этой стороны: генератор перезаписывает
+файл, а открытая страница перезагружается через `<meta http-equiv="refresh">`.
+Это единственная честная схема без веб-сервера, и она же объясняет, почему
+`--watch` — не украшение, а способ получить живую картину.
+
+Модули живут в `mcp/pair_mailbox/`, потому что состояние пары описано там же, и
+дублировать чтение `.pair/` здесь означало бы завести вторую арифметику, которая
+разъедется с первой при первом же изменении формата.
+
+Ничего не пишется в `.pair/`, кроме самого `board.html`. Наблюдатель, который
+меняет состояние, которым наблюдает, — худший вид инструмента для наблюдения.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import signal
+import sys
+import time
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "mcp" / "pair_mailbox"))
+
+from board_render import AssetError, write_page  # noqa: E402
+from board_snapshot import DEFAULT_EVENTS, DEFAULT_STALE_AFTER, build_snapshot  # noqa: E402
+
+DEFAULT_OUT = ".pair/board.html"
+MIN_WATCH = 1
+MAX_WATCH = 3600
+# На сколько секунд засыпать за раз между проверками флага остановки. Мало —
+# отвечает быстро на Ctrl-C, много — не будит процесс слишком часто.
+SLEEP_SLICE = 0.25
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        prog="pairboard",
+        description="Статический HTML-дашборд состояния пары (без веб-сервера).")
+    parser.add_argument("--state", default=".pair", help="каталог состояния пары (по умолчанию .pair)")
+    parser.add_argument("--out", default=DEFAULT_OUT, help=f"куда писать HTML (по умолчанию {DEFAULT_OUT})")
+    parser.add_argument("--watch", type=float, default=0, metavar="N",
+                        help="пересобирать каждые N секунд и вложить автообновление в страницу")
+    parser.add_argument("--limit", type=int, default=DEFAULT_EVENTS,
+                        help=f"сколько последних событий журнала показать (по умолчанию {DEFAULT_EVENTS})")
+    parser.add_argument("--stale-after", type=int, default=DEFAULT_STALE_AFTER,
+                        help="после скольких секунд снимок считается протухшим")
+    parser.add_argument("--print-json", action="store_true", help="напечатать снимок и выйти, HTML не писать")
+    return parser.parse_args(argv)
+
+
+def resolve_state(raw: str) -> Path:
+    """Путь к состоянию: относительный — от корня проекта, не от текущего каталога.
+
+    От текущего каталога получается ровно то самое, что человек не ожидает: запустил
+    из подкаталога, получил «пара не найдена» и пустую страницу. Корень проекта
+    один, и `.pair` живёт именно в нём.
+    """
+    candidate = Path(raw).expanduser()
+    if candidate.is_absolute():
+        return candidate
+    return (ROOT / candidate).resolve()
+
+
+def build_once(state_dir: Path, out: Path, *, limit: int, stale_after: int,
+               refresh: int) -> Path:
+    """Один проход: снимок -> страница -> файл."""
+    snapshot = build_snapshot(state_dir, limit=limit, stale_after=stale_after)
+    snapshot["watch"] = refresh > 0
+    return write_page(out, snapshot, refresh_seconds=refresh)
+
+
+def run_watch(state_dir: Path, out: Path, *, interval: float, limit: int,
+              stale_after: int, once: bool = False) -> int:
+    """Пересобирать, пока не остановят. Ctrl-C заканчивает работу кодом 0.
+
+    Сигнал ловится явно, а не через исключение по умолчанию: без него первый же
+    Ctrl-C оставил бы временный файл `board.html.tmp` в `.pair/` и тихо вернул бы
+    код 130, который в гейте читается как падение.
+    """
+    stopping = {"now": False}
+
+    def stop(_signum, _frame):
+        stopping["now"] = True
+
+    previous = signal.signal(signal.SIGINT, stop)
+    previous_term = signal.signal(signal.SIGTERM, stop)
+    seconds = max(MIN_WATCH, min(MAX_WATCH, float(interval)))
+    try:
+        written = build_once(state_dir, out, limit=limit, stale_after=stale_after,
+                             refresh=int(seconds))
+        print(f"дашборд: {written} (обновление каждые {seconds:g} с, Ctrl-C выход)")
+        if once:
+            return 0
+        while not stopping["now"]:
+            _sleep_until(seconds, stopping)
+            if stopping["now"]:
+                break
+            try:
+                build_once(state_dir, out, limit=limit, stale_after=stale_after,
+                           refresh=int(seconds))
+            except (OSError, AssetError) as error:
+                # Падение одного прохода не должно убивать наблюдение: файл на
+                # диске остаётся предыдущим и протухшим, и страница об этом скажет.
+                print(f"дашборд: проход не удался: {error}", file=sys.stderr)
+        print("дашборд: остановлен")
+        return 0
+    finally:
+        signal.signal(signal.SIGINT, previous)
+        signal.signal(signal.SIGTERM, previous_term)
+
+
+def _sleep_until(seconds: float, stopping: dict) -> None:
+    """Спать, но не дольше `SLEEP_SLICE`, и выходить по флагу остановки.
+
+    Почему не `time.sleep(seconds)` одной строкой. После срабатывания обработчика
+    сигнала Python (PEP 475) возобновляет прерванный `sleep` на оставшееся время, а
+    не прерывает его. С `--watch 3600` это значит одно: Ctrl-C не останавливает
+    дашборд в течение часа, и человек решает, что он сломан. Нарезка на короткие
+    куски делает реакцию мгновенной и не требует ни потоков, ни сигнализации.
+    """
+    waited = 0.0
+    while waited < seconds and not stopping["now"]:
+        nap = min(SLEEP_SLICE, seconds - waited)
+        time.sleep(nap)
+        waited += nap
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv)
+    state_dir = resolve_state(args.state)
+    if not (state_dir / "state.json").exists() and not args.print_json:
+        print(f"дашборд: в {state_dir} нет state.json — это не состояние пары. "
+              f"Укажи --state, если каталог другой.", file=sys.stderr)
+        return 2
+
+    if args.print_json:
+        snapshot = build_snapshot(state_dir, limit=args.limit, stale_after=args.stale_after)
+        json.dump(snapshot, sys.stdout, ensure_ascii=False, indent=2)
+        sys.stdout.write("\n")
+        return 0
+
+    out = Path(args.out).expanduser()
+    if not out.is_absolute():
+        out = ROOT / out
+
+    try:
+        if args.watch > 0:
+            return run_watch(state_dir, out, interval=args.watch, limit=args.limit,
+                             stale_after=args.stale_after)
+        written = build_once(state_dir, out, limit=args.limit, stale_after=args.stale_after,
+                             refresh=0)
+        print(f"дашборд: {written}")
+        print(f"открыть: file://{written}")
+        print("картинка не обновляется сама; для live-режима: bin/pairboard --watch 5")
+        return 0
+    except AssetError as error:
+        print(f"дашборд: {error}", file=sys.stderr)
+        return 2
+    except OSError as error:
+        print(f"дашборд: {error}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

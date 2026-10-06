@@ -28,6 +28,25 @@ def run_install(home: Path, *args: str) -> subprocess.CompletedProcess:
                           text=True, env=env, cwd=str(ROOT), timeout=300)
 
 
+def _roles_claiming(raw: str | None, pane: str) -> set[str]:
+    """Роли, у которых записана эта панель.
+
+    Нужен именно владелец панели, а не сам факт её присутствия: панель запускающего
+    набора процесса законно стоит в ростере, когда набор запущен из панели самой
+    пары, и «есть в ростере» против «принадлежит этой роли» — разные утверждения.
+    Битый json даёт пустое множество: проверка не должна падать из-за того, что
+    читает не то, а не из-за того, что установщик что-то сделал.
+    """
+    if not raw:
+        return set()
+    try:
+        roles = json.loads(raw).get("roles") or {}
+    except (ValueError, AttributeError):
+        return set()
+    return {name for name, info in roles.items()
+            if isinstance(info, dict) and info.get("pane") == pane}
+
+
 class InstallCase(unittest.TestCase):
     def setUp(self) -> None:
         self.home = Path(tempfile.mkdtemp(prefix="pair-install-"))
@@ -197,10 +216,37 @@ class TestVerifyDoesNotTouchTheRoster(InstallCase):
         self.assertEqual(before, after,
                          "install.sh не имеет права менять ростер живого проекта: "
                          "проверка транспорта писала в настоящий .pair/state.json")
-        if before is not None:
-            self.assertNotIn(pane, after,
-                             "панель запускающего процесса не должна попасть "
-                             "в ростер как панель другой роли")
+        if before is None:
+            return
+        # Что именно проверять. Раньше здесь стояло `assertNotIn(pane, after)`,
+        # то есть «панель запускающего процесса не должна встречаться в ростере».
+        # Набор, запущенный ИЗ ПАНЕЛИ САМОЙ ПАРЫ, эту проверку проходить не может:
+        # панель `%0` — это законная панель писателя opencode, и она обязана лежать
+        # в ростере. Утверждение падало на правильном поведении, то есть красный
+        # гейт требовал, чтобы установщик СНЁС чужую запись. Проверять надо не
+        # «панели нет в ростере», а «установщик не изменил, кому она принадлежит».
+        self.assertEqual(_roles_claiming(before, pane), _roles_claiming(after, pane),
+                         "панель запускающего процесса не должна перейти к другой "
+                         "роли: установщик добавил или отнял её в живом ростере")
+
+    def test_a_pane_may_belong_to_a_role_without_being_rejected(self) -> None:
+        """Панель набора законно может стоять в ростере.
+
+        Набор запускают из панели самой пары, и тогда `%0` — это панель писателя.
+        Старая проверка требовала, чтобы такой панели в ростере не было, то есть
+        требовала от установщика снести чужую запись, и падала на правильном
+        поведении. Этот тест падает, если кто-то вернёт ту формулировку в виде
+        «панели набора не должно быть в ростере» — то есть сторожит сторожа.
+        """
+        pane = self.live_pane()
+        state = ROOT / ".pair" / "state.json"
+        if not state.exists():
+            self.skipTest("нет состояния пары")
+        owners = _roles_claiming(state.read_text(encoding="utf-8"), pane)
+        if not owners:
+            self.skipTest("панель набора в ростере не значится: нечего проверять")
+        for role in owners:
+            self.assertIn(role, json.loads(state.read_text(encoding="utf-8"))["roles"])
 
     def test_the_role_in_the_install_still_gets_registered(self) -> None:
         """Изоляция проверки не превратилась в «сервер не запускается».
