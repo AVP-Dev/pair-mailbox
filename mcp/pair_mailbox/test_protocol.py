@@ -2118,6 +2118,110 @@ class TestStalePaneSurvives(PairTestCase):
                          f"{pane} после смерти сессии — фантом, а не панель")
 
 
+class TestSingleLiveProcessPerRole(PairTestCase):
+    """Одна живая роль — один живой процесс (#19.2).
+
+    Второй процесс на том же имени роли с другой панели при живом записанном
+    pid — дубль, а не рестарт: регистрация отказывает, ростер не тронут.
+    Но pid переиспользуется, а адрес панели протухает, поэтому отказ — только
+    когда проверять есть чем. Каждый тест ниже фиксирует одну сторону этого
+    условия: ложный отказ здесь — вечный lockout легитимного агента."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        import server
+        self.server = server
+
+    def live_pid(self, value: bool):
+        """Подменить живость записанного pid: чужой pid в тесте мёртв всегда."""
+        patcher = mock.patch.object(self.server, "is_pid_alive", return_value=value)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def same_pane_as(self, value: bool):
+        """Подменить сравнение панелей: граница tmux, в unit — мок."""
+        patcher = mock.patch.object(self.server, "same_pane", return_value=value)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def join_pane(self, pane: str) -> None:
+        previous = os.environ.get("TMUX_PANE")
+        os.environ["TMUX_PANE"] = pane
+        self.addCleanup(lambda: os.environ.__setitem__("TMUX_PANE", previous)
+                        if previous is not None else os.environ.pop("TMUX_PANE", None))
+
+    def pane_alive(self, value: bool):
+        real = self.server.pane_exists
+        self.server.pane_exists = lambda pane: value
+        self.addCleanup(setattr, self.server, "pane_exists", real)
+        import composer
+        real_belongs = composer.pane_belongs_to_project
+        composer.pane_belongs_to_project = lambda tmux, pane, root: (True, "")
+        self.addCleanup(setattr, composer, "pane_belongs_to_project", real_belongs)
+
+    def register(self, role: str, pane: str, pid: int):
+        self.store.mutate(lambda s: s.setdefault("roles", {}).setdefault(role, {}).update(
+            {"pane": pane, "pid": pid}))
+
+    def test_second_live_process_on_another_pane_is_refused(self) -> None:
+        """Дубль: живой pid, живая удержанная панель, другая пришедшая — отказ."""
+        self.register("agy", "%20", 999999)
+        self.live_pid(True)
+        self.pane_alive(True)
+        self.same_pane_as(False)
+        self.join_pane("%21")
+        with self.assertRaises(ProtocolError):
+            PairSession("agy", self.store).tool_pair_state()
+        roles = self.store.read()["roles"]
+        self.assertEqual(roles["agy"].get("pid"), 999999)
+        self.assertEqual(roles["agy"].get("pane"), "%20")
+        kinds = [e["kind"] for e in self.store.read_transcript()]
+        self.assertIn("role_collision", kinds)
+
+    def test_restart_on_the_same_pane_updates_pid(self) -> None:
+        """Рестарт: pid сменился, панель та же — регистрация проходит."""
+        self.register("agy", "%20", 999999)
+        self.live_pid(False)
+        self.pane_alive(True)
+        self.same_pane_as(True)
+        self.join_pane("%20")
+        PairSession("agy", self.store).tool_pair_state()
+        self.assertEqual(self.store.read()["roles"]["agy"].get("pid"), os.getpid())
+
+    def test_reused_pid_on_the_same_pane_is_not_a_refusal(self) -> None:
+        """Переиспользованный pid: записанный «жив», но панель та же — не отказ.
+
+        os.kill(pid, 0) видит чужой процесс как живой, поэтому один факт живого
+        pid без второго факта (другая панель) отказывать не вправе."""
+        self.register("agy", "%20", 999999)
+        self.live_pid(True)
+        self.pane_alive(True)
+        self.same_pane_as(True)
+        self.join_pane("%20")
+        PairSession("agy", self.store).tool_pair_state()
+        self.assertEqual(self.store.read()["roles"]["agy"].get("pid"), os.getpid())
+
+    def test_no_pane_means_no_refusal(self) -> None:
+        """Безадресный вызов ни на какой композер не претендует — не отказ."""
+        self.register("agy", "%20", 999999)
+        self.live_pid(True)
+        self.pane_alive(True)
+        self.same_pane_as(False)
+        PairSession("agy", self.store).tool_pair_state()
+        kinds = [e["kind"] for e in self.store.read_transcript()]
+        self.assertIn("role_collision", kinds)
+
+    def test_dead_held_pane_means_restart_not_duplicate(self) -> None:
+        """Удержанная панель мертва, процесс жив: рестарт после смерти панели."""
+        self.register("agy", "%20", 999999)
+        self.live_pid(True)
+        self.pane_alive(False)
+        self.same_pane_as(False)
+        self.join_pane("%21")
+        PairSession("agy", self.store).tool_pair_state()
+        self.assertEqual(self.store.read()["roles"]["agy"].get("pid"), os.getpid())
+
+
 
 
 

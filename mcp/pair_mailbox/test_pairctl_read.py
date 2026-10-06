@@ -255,9 +255,14 @@ class TestMultiProject(PairTestCase):
         os.environ["PAIR_SCAN"] = str(Path(self._tmp.name) / "*" / ".pair")
         cwd = os.getcwd()
         os.chdir(mine.parent)
+        # Подпроцесс наследует окружение: чужой PAIR_STATE из оболочки (а у
+        # пары он всегда есть) перебивает cwd в pick_roots, и тест видит живой
+        # проект вместо временного. Чистим — проверяется именно поиск от cwd.
+        env = dict(os.environ)
+        env.pop("PAIR_STATE", None)
         try:
             done = subprocess.run([sys.executable, str(PAIRCHAT), "--once"],
-                                  capture_output=True, text=True, timeout=30)
+                                  capture_output=True, text=True, timeout=30, env=env)
         finally:
             del os.environ["PAIR_SCAN"]
             os.chdir(cwd)
@@ -270,9 +275,11 @@ class TestMultiProject(PairTestCase):
         self._project("somewhere-else", events=1)
         cwd = os.getcwd()
         os.chdir(self._tmp.name)  # тут .pair нет
+        env = dict(os.environ)
+        env.pop("PAIR_STATE", None)
         try:
             done = subprocess.run([sys.executable, str(PAIRCHAT), "--once"],
-                                  capture_output=True, text=True, timeout=30)
+                                  capture_output=True, text=True, timeout=30, env=env)
         finally:
             os.chdir(cwd)
         self.assertEqual(done.returncode, 1)

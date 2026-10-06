@@ -1098,7 +1098,27 @@ class PairSession:
                 rejected = pane
                 pane = ""
 
-        # If this role already existed with a different living PID, record collision
+        # Одна живая роль — один живой процесс (#19.2). Второй процесс на том же
+        # имени роли с другой панели — не рестарт, а дубль: молчаливое
+        # перезаписывание pid делило слот между двумя агентами, и доставка била
+        # не туда. Поэтому отказ (ProtocolError превращается в `refusal` с
+        # записью в транскрипт в invoke), а не запись: ростер не тронут.
+        #
+        # Отказ — только когда проверять есть чем, иначе ложный отказ станет
+        # вечным lockout легитимного агента:
+        # - записанный pid жив (os.kill видит и чужой процесс, поэтому одного
+        #   этого факта мало — pid переиспользуется);
+        # - у пришедшего есть своя панель — безадресный вызов ни на какой
+        #   композер не претендует;
+        # - удержанная панель известна: pin человека выигрывает у старой записи,
+        #   иначе пересадка роли человеком отбивалась бы как дубль;
+        # - удержанная панель жива в tmux: протухший адрес + живой процесс — это
+        #   рестарт после смерти панели, а не второй агент (без tmux pane_exists
+        #   всегда False, то есть без tmux отказа нет вообще — проверить нечем);
+        # - панели разные через same_pane: та же панель — рестарт того же
+        #   агента, pid обновляется ниже как раньше.
+        # Не сошлось хоть что-то — только `role_collision` в транскрипт, как
+        # раньше: сказать, а не отбить.
         existing = roles.get(self.role)
         if existing and existing.get("pid") and existing["pid"] != current_pid:
             if is_pid_alive(existing["pid"]):
@@ -1108,6 +1128,17 @@ class PairSession:
                     current_pid=current_pid,
                     existing_pid=existing["pid"],
                 )
+                held = pin or entry.get("pane")
+                if pane and held and pane_exists(held) and not same_pane(pane, held):
+                    raise ProtocolError(
+                        f"роль {self.role!r} уже занята живым процессом "
+                        f"(pid {existing['pid']}, панель {held}); второй процесс "
+                        "на той же роли не регистрируется.",
+                        "Одна живая роль — один живой процесс: выйди из дубля и "
+                        "зайди под своим именем роли. Пересадка — волей человека: "
+                        "`pairctl pane <role> <панель>`, тогда новая панель станет "
+                        "удержанной и отказ уйдёт.",
+                    )
 
         # Another role claims this pane. Clearing its pane on a dead pid alone cost
         # us a night: the panel was alive, its process belonged to a role that had
