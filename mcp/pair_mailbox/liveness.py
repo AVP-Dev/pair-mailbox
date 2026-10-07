@@ -47,6 +47,7 @@ def peer_status(
     role: str,
     writer: str | None,
     alive_check=pid_alive,
+    unread: dict[str, int] | None = None,
 ) -> dict[str, Any]:
     """Что делает каждый другой участник и услышит ли он новое.
 
@@ -56,6 +57,10 @@ def peer_status(
 
     `alive_check` подменяется в тестах: проверка «сосед мёртв» не должна зависеть
     от того, жив лиPID в момент прогона набора.
+
+    `unread` — непрочитанные по ролям (role → count), считает вызыватель:
+    сам модуль mailbox не видит. Нет подсчёта — нет полей, а не нули:
+    ноль означал бы «прочитано всё», а отсутствие данных — неизвестно.
     """
     phase = state.get("phase", "scoping")
     now = datetime.now(timezone.utc)
@@ -89,4 +94,6 @@ def peer_status(
             "will_read_new_messages": not closed and (alive is not False),
             "hint": hint,
         }
+        if unread is not None and name in unread:
+            out[name]["unread"] = unread[name]
     return out

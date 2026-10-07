@@ -189,5 +189,25 @@ class TestSilentSeconds(unittest.TestCase):
         self.assertIn("pi", status)
 
 
+class TestUnreadCounters(unittest.TestCase):
+    """P1: затык виден за секунды. Счётчик unread по ролям — в peers."""
+
+    def test_unread_arrives_with_the_count(self) -> None:
+        status = liveness.peer_status(
+            state_with(roles={"pi": {"pid": 2}}), role="opencode",
+            writer="opencode", alive_check=alive, unread={"pi": 3},
+        )
+        self.assertEqual(3, status["pi"]["unread"])
+
+    def test_no_count_means_no_field_not_zero(self) -> None:
+        """Ноль означал бы «прочитано всё», а отсутствие данных — неизвестно."""
+        status = liveness.peer_status(
+            state_with(roles={"pi": {"pid": 2}}), role="opencode",
+            writer="opencode", alive_check=alive,
+        )
+        self.assertNotIn("unread", status["pi"])
+
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

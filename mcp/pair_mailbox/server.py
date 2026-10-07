@@ -1435,6 +1435,7 @@ class PairSession:
                 obligation_names=[p.name for p in
                                   self.store.obligations_root.glob("*.json")],
                 inbox_names=[p.name for p in self._inbox_files()],
+                peer_inbox_names=self._peer_inbox_names(state),
                 git_snapshot=self._git_fingerprint,
                 alive=alive,
             )
@@ -1546,12 +1547,42 @@ class PairSession:
 
     def _peer_status(self, state: dict[str, Any], writer: str | None) -> dict[str, Any]:
         """Живость соседей. Логика — в `liveness`: её читают оба агента, и она
-        проверяется там без поднятия сервера."""
-        return liveness.peer_status(state, role=self.role, writer=writer)
+        проверяется там без поднятия сервера. Непрочитанные считаем здесь:
+        mailbox виден только серверу (P1 — затык виден за секунды)."""
+        unread = self._peer_mailbox(state)[1]
+        return liveness.peer_status(state, role=self.role, writer=writer, unread=unread)
 
     def _unread_count(self, state: dict[str, Any]) -> int:
         seen = int(state.get("seen", {}).get(self.role, 0))
         return max(0, len(self._inbox_files()) - seen)
+
+    def _peer_mailbox(self, state: dict[str, Any]) -> tuple[dict[str, list[str]], dict[str, int]]:
+        """Чужие ящики за один проход: имена — для отпечатка кэша, счётчики — для peers.
+
+        Без имён письмо соседу не сдвигало отпечаток: вызыватель получал
+        `unchanged` без новых unread соседа, и затык оставался невидимым.
+        """
+        seen = state.get("seen") or {}
+        names: dict[str, list[str]] = {}
+        unread: dict[str, int] = {}
+        for name in (state.get("roles") or {}):
+            if name == self.role:
+                continue
+            try:
+                files = [p.name for p in (self.store.mailbox_root / name).glob("*.json")]
+            except OSError:
+                files = []
+            names[name] = files
+            try:
+                read = int((seen.get(name) or 0))
+            except (TypeError, ValueError):
+                read = 0
+            unread[name] = max(0, len(files) - min(read, len(files)))
+        return names, unread
+
+    def _peer_inbox_names(self, state: dict[str, Any]) -> dict[str, list[str]]:
+        return self._peer_mailbox(state)[0]
+
 
     # ------------------------------------------------------------- evidence
 
