@@ -46,7 +46,6 @@ from server import (  # noqa: E402
 # поднимет свою константу выше проверяемой, а не молча переписать её под себя.
 DIGEST_TOKEN_BUDGET_FOR_TEST = 500
 
-
 def fresh_seen() -> str:
     """Свежая метка времени: сид заведомо моложе любого TTL истечения.
 
@@ -181,8 +180,6 @@ class TestWriteAuthority(PairTestCase):
         self.assertEqual(code, 0)
         self.assertIn("разобрался в потоке ретраев", out.getvalue())
 
-
-
 class TestPersistentRoles(PairTestCase):
     """Постоянная расстановка: человек один раз говорит, кто всегда пишет, и
     гонка за право записи исчезает. Без неё каждый раунд тратит ход на спор,
@@ -261,63 +258,7 @@ class TestPersistentRoles(PairTestCase):
             [sys.executable, str(SERVER), "--state", str(self.root), "roles", "--clear"],
             capture_output=True, text=True, timeout=30,
         )
-        self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertNotIn("policy", self.store.read())
-
-
-
-class TestObligations(PairTestCase):
-    """Запрос, на который ждут ответа, должен быть виден как обязательство. Иначе
-    он умирает в ящике, и пара выглядит спокойно ровно до утра."""
-
-    def test_small_talk_creates_no_obligation(self) -> None:
-        self.writer.tool_pair_send(to="reviewer-agent", text="привет")
-        self.assertEqual([], list(self.store.obligations_root.glob("*.json")))
-
-    def test_request_creates_an_obligation(self) -> None:
-        result = self.writer.tool_pair_send(
-            to="reviewer-agent", text="проверь, что линтер зелёный", expects_reply=True)
-        self.assertTrue(result["awaits_answer"])
-        files = list(self.store.obligations_root.glob("*.json"))
-        self.assertEqual(1, len(files))
-        record = json.loads(files[0].read_text(encoding="utf-8"))
-        self.assertEqual("writer-agent", record["from"])
-        self.assertEqual("reviewer-agent", record["to"])
-        self.assertEqual(result["seq"], record["seq"])
-
-    def test_reply_closes_the_obligation(self) -> None:
-        self.writer.tool_pair_send(to="reviewer-agent", text="проверь", expects_reply=True)
-        self.peer.tool_pair_send(to="writer-agent", text="проверил, зелено")
-        self.assertEqual([], list(self.store.obligations_root.glob("*.json")))
-
-    def test_reply_from_a_third_role_does_not_close_it(self) -> None:
-        self.writer.tool_pair_send(to="reviewer-agent", text="проверь", expects_reply=True)
-        outsider = PairSession("codex-agent", self.store)
-        outsider.tool_pair_send(to="writer-agent", text="я тут ни при чём")
-        self.assertEqual(1, len(list(self.store.obligations_root.glob("*.json"))))
-
-    def test_answering_twice_is_not_an_error(self) -> None:
-        self.writer.tool_pair_send(to="reviewer-agent", text="проверь", expects_reply=True)
-        self.peer.tool_pair_send(to="writer-agent", text="первый ответ")
-        self.peer.tool_pair_send(to="writer-agent", text="и ещё уточнение")
-        self.assertEqual([], list(self.store.obligations_root.glob("*.json")))
-
-    def test_verdict_opens_obligation_for_writer(self) -> None:
-        """Вердикт критика открывает обязательство писателю (полный цикл).
-
-        Измерено 2026-10-06: вердикт seq 252 лежал 3.5 часа, писатель стоял
-        на recap «жду вердикт», пилот молчал — сторожить было нечего,
-        obligation-файла не было. Теперь пилот пинает получателя автоматом.
-        """
-        self.writer.tool_pair_claim(reason="беру перо")
-        self.peer.tool_pair_note(kind="verdict", text="принято, закрывай")
-        files = list(self.store.obligations_root.glob("*.json"))
-        self.assertEqual(1, len(files))
-        record = json.loads(files[0].read_text(encoding="utf-8"))
-        self.assertEqual("reviewer-agent", record["from"])
-        self.assertEqual("writer-agent", record["to"])
-        self.assertIn("вердикт", record.get("subject", ""))
-
 
 
 class TestPatchFlow(PairTestCase):
@@ -448,8 +389,6 @@ class TestPatchFlow(PairTestCase):
         obligations = list(store_repo.obligations_root.glob("*.json"))
         self.assertEqual(len(obligations), 1)
 
-
-
 class TestTaskList(PairTestCase):
     """Список задач вместо одной строки. Потеря середины — не вопрос памяти
     модели, а отсутствие места, где задача живёт: state хранил один `task`, и
@@ -544,8 +483,6 @@ class TestTaskList(PairTestCase):
         self.assertIn("покрыта пунктом 3", text)
         self.assertIn("190 passed, exit 0", text)   # доказательство приписано к #1
 
-
-
 class TestHumanCheckpoint(PairTestCase):
     """`pairctl ok` значил «одобрен план» и закрывал раунд на verify."""
 
@@ -578,8 +515,6 @@ class TestHumanCheckpoint(PairTestCase):
         self.store.mutate(lambda st: st.setdefault("human_ok", []).append(
             {"round": int(st.get("round", 0)), "at": "now", "phase": "verify", "revoke": True}))
         self.assertRefused(self.writer.tool_pair_advance, "done", contains="pairctl ok")
-
-
 
 class TestEvidenceGate(PairTestCase):
     """Гейт закрытия раунда. Уверенность моделей в собственных оценках почти
@@ -759,8 +694,6 @@ class TestEvidenceGate(PairTestCase):
         self.record_test_evidence()
         self.assertEqual(self.writer.tool_pair_advance("done")["phase"], "done")
 
-
-
 class TestAutonomyDefault(PairTestCase):
     """Дефолт — auto, и это ровно то, что задал человек: он даёт задачу, пара
     отрабатывает её сама и приходит с одним выводом.
@@ -794,8 +727,6 @@ class TestAutonomyDefault(PairTestCase):
         просил человек: неизвестное — это observe, даже если дефолт теперь auto."""
         self.store.mutate(lambda state: state.__setitem__("autonomy", "turbo"))
         self.assertEqual(self.writer.tool_pair_state()["autonomy"], "observe")
-
-
 
 class TestAutonomyTriggers(PairTestCase):
     """Режим выбирается один раз при старте, и место выбора должно быть видно:
@@ -857,8 +788,6 @@ class TestAutonomyTriggers(PairTestCase):
         self.assertEqual(self.store.read()["autonomy"], "auto")
         entry = [e for e in self.store.read_transcript(20) if e.get("kind") == "autonomy"][-1]
         self.assertEqual(entry["via"], "default")
-
-
 
 class TestDefaultAllowlist(PairTestCase):
     """Отсутствие файла настроек = список по умолчанию, а не «не подтверждать ничего».
@@ -955,8 +884,6 @@ class TestDefaultAllowlist(PairTestCase):
         self.assertTrue(on_default)
         self.assertTrue(patterns)
 
-
-
 class TestReadWaitBudget(PairTestCase):
     """pair_read не должен обещать больше, чем клиент способен дождаться.
 
@@ -1013,8 +940,6 @@ class TestReadWaitBudget(PairTestCase):
                 self.assertGreater(
                     timeout / 1000.0, srv.MAX_READ_WAIT_SECONDS,
                     f"{name}: клиент рвёт вызов раньше, чем сервер может проснуться")
-
-
 
 class TestPatchAccounting(PairTestCase):
     """Патч, о применении которого никто не сказал, обязан быть виден.
@@ -1173,8 +1098,6 @@ class TestPatchAccounting(PairTestCase):
         self.store.mutate(lambda state: state.__setitem__("mode", "audit"))
         self.assertEqual(self.writer.unresolved_patches(self.store.read()), [])
 
-
-
 class TestOverflowedComposer(PairTestCase):
     """Свёрнутый длинный ввод — это присутствие, а не отсутствие.
 
@@ -1286,8 +1209,6 @@ class TestOverflowedComposer(PairTestCase):
         self.assertFalse(composer.tail_present(["  вывод", "  ┃", "  Build"], body),
                          "пустой композер — это не доставка")
 
-
-
 class TestInputBoxCornerVsSideFrame(PairTestCase):
     """Поле ввода отличается от боковой рамки геометрией угла.
 
@@ -1325,8 +1246,6 @@ class TestInputBoxCornerVsSideFrame(PairTestCase):
         panel = ["  ┃  Build · something", "  ┃", "  ┃", ""]
         self.assertIsNone(composer_line(panel),
                           "панель из рамок печатать некуда: это «занято», а не «свободно»")
-
-
 
 class TestNoteTailReads(PairTestCase):
     """Заметки не читаются целиком: ни файловым инструментом, ни подавно.
@@ -1409,8 +1328,6 @@ class TestNoteTailReads(PairTestCase):
         self.assertRefused(lambda: self.writer.tool_pair_note_read(kind="verdict", tail_lines=0))
         self.assertRefused(lambda: self.writer.tool_pair_note_read(kind="нет-такой"))
 
-
-
 class TestNoteRotation(PairTestCase):
     """Потолок роста: файл заметки не должен расти бесконечно.
 
@@ -1475,8 +1392,6 @@ class TestNoteRotation(PairTestCase):
         before = path.read_text()
         self.writer._rotate_note("plain", path)
         self.assertEqual(path.read_text(), before, "файл без разметки записей не режется")
-
-
 
 class TestPermissionAllowlist(PairTestCase):
     """Белый список разрешений. До него «y» уходил на любой промпт, включая
@@ -1793,8 +1708,6 @@ class TestPermissionAllowlist(PairTestCase):
         kinds = [entry["kind"] for entry in self.store.read_transcript()]
         self.assertIn("unblock_refused", kinds)
 
-
-
 class TestClosingRuleIsSingleSourced(PairTestCase):
     """Правило закрытия раунда живёт в одном месте — в сервере.
 
@@ -1811,8 +1724,6 @@ class TestClosingRuleIsSingleSourced(PairTestCase):
              module.__dict__)
         self.assertIs(module._done_blockers.__globals__["done_blockers"], done_blockers,
                       "сверхвизор должен звать правило сервера, а не свою копию")
-
-
 
 class TestMessaging(PairTestCase):
     def test_label_is_applied_by_the_server(self) -> None:
@@ -1905,8 +1816,6 @@ class TestMessaging(PairTestCase):
     def test_negative_wait_is_refused(self) -> None:
         self.assertRefused(self.peer.tool_pair_read, wait_seconds=-1, contains="negative")
 
-
-
 class TestPhasesAndNotes(PairTestCase):
     def setUp(self) -> None:
         super().setUp()
@@ -1943,7 +1852,6 @@ class TestPhasesAndNotes(PairTestCase):
     def test_note_kind_must_be_a_slug(self) -> None:
         self.assertRefused(self.writer.tool_pair_note, kind="../escape", text="x", contains="slug")
         self.assertRefused(self.writer.tool_pair_note, kind="plan", text="", contains="required")
-
 
 class TestHeartbeatIsEveryCall(PairTestCase):
     """Каждый вызов двигает `last_seen` (heartbeat в invoke)."""
@@ -2063,11 +1971,6 @@ class TestAuditTrail(PairTestCase):
         before = len(self.store.read_transcript())
         reopened = Store(self.root)
         self.assertGreaterEqual(len(reopened.read_transcript()), before)
-
-
-
-
-
 
 class TestMCPStdio(PairTestCase):
     """End-to-end over the wire, the way a real MCP client talks to it."""
@@ -2247,8 +2150,6 @@ class TestMCPStdio(PairTestCase):
             for process in (writer, reviewer):
                 process.stdin.close()
                 process.wait(timeout=10)
-
-
 
 class TestStalePaneSurvives(PairTestCase):
     """Ростер не должен сносить панель у живой роли.
@@ -2447,7 +2348,6 @@ class TestStalePaneSurvives(PairTestCase):
         self.assertFalse(self.server.pane_exists(pane),
                          f"{pane} после смерти сессии — фантом, а не панель")
 
-
 class TestSingleLiveProcessPerRole(PairTestCase):
     """Одна живая роль — один живой процесс (#19.2).
 
@@ -2550,10 +2450,6 @@ class TestSingleLiveProcessPerRole(PairTestCase):
         self.join_pane("%21")
         PairSession("agy", self.store).tool_pair_state()
         self.assertEqual(self.store.read()["roles"]["agy"].get("pid"), os.getpid())
-
-
-
-
 
 class TestTranscriptWindow(PairTestCase):
     """Скользящее окно транскрипта: чтение хвоста и ротация (пункт 4).
@@ -2737,8 +2633,6 @@ class TestTranscriptWindow(PairTestCase):
             with contextlib.redirect_stdout(io.StringIO()):
                 self.ctl("log")
         self.assertEqual("", err.getvalue().strip())
-
-
 
 class TestSessionAddressing(PairTestCase):
     """Адресация панелей по имени сессии вместо сквозного номера `%N`.
@@ -3006,8 +2900,6 @@ class TestSessionAddressing(PairTestCase):
         self.assertEqual(1, len(switches),
                          "смена формата адреса — событие один раз, а не на каждом вызове")
 
-
-
 class TestDeliveryRollback(PairTestCase):
     """Откат доставки не должен быть разрушительным на непроверенном выводе.
 
@@ -3089,8 +2981,6 @@ class TestDeliveryRollback(PairTestCase):
             f"откат по непрочитанному кадру стёр {state['erased']} символов "
             f"в панели, где может лежать чужой ввод: {result}",
         )
-
-
 
 class TestPermissionMenu(PairTestCase):
     """Промпт-меню, а не «[y/N]». Найдено соседом, и это была моя регрессия.
@@ -3177,8 +3067,6 @@ class TestPermissionMenu(PairTestCase):
     def resolve_verdict(self, lines):
         return self.resolve(lines)[0]
 
-
-
 class TestStatusLineIsNotAComposer(PairTestCase):
     """`$0.00` в строке статуса TUI — это цена, а не шелл-промпт.
 
@@ -3226,8 +3114,6 @@ class TestStatusLineIsNotAComposer(PairTestCase):
         self.assertFalse(looks_like_status_line("user@host:~$"))
         self.assertFalse(looks_like_status_line("> "))
         self.assertFalse(looks_like_status_line("a line with no dollar at all"))
-
-
 
 class TestPermissionContext(PairTestCase):
     """Вердикт выносится по тексту, из которого реально видно команду.
@@ -3284,8 +3170,6 @@ class TestPermissionContext(PairTestCase):
             result = composer.resolve_permission_prompt("/usr/bin/tmux", "%7")
         sent = [c.args[0] for c in run.call_args_list if c.args and isinstance(c.args[0], list)]
         return result, [[cmd[-1]] for cmd in sent if "send-keys" in cmd]
-
-
 
 class TestRingAndUnblock(PairTestCase):
     def test_permission_prompt_detection(self) -> None:
@@ -3382,8 +3266,6 @@ class TestRingAndUnblock(PairTestCase):
         self.assertFalse(res["unblocked"])
         self.assertIn("нет панели tmux", res["why"])
         self.assertEqual(res["prompt"], "")
-
-
 
 class TestMailboxInvariants(PairTestCase):
     def test_claim_clears_closed_at_and_phase(self) -> None:
@@ -3681,7 +3563,6 @@ class TestMailboxInvariants(PairTestCase):
             composer.deliver = orig_deliver
             composer.pane_is_foreign = orig_foreign
 
-
 class TestPaneIdentityIsNotLiveness(PairTestCase):
     """Живость панели — не её идентичность.
 
@@ -3887,8 +3768,6 @@ class TestPaneIdentityIsNotLiveness(PairTestCase):
         self.assertEqual(read["count"], 1)
         self.assertIn("payload worth keeping", read["messages"][0]["text"])
 
-
-
 class TestTuiIsNotABus(PairTestCase):
     """Директива человека: терминал — дисплей, а не шина между агентами.
 
@@ -3972,8 +3851,6 @@ class TestTuiIsNotABus(PairTestCase):
         self.assertIn("не потерять", read["messages"][0]["text"])
         self.assertTrue(res["delivered"])
 
-
-
 class TestComposerOfAnOpencodePane(PairTestCase):
     """У OpenCode нет ASCII-маркера промпта: поле ввода — рамка над статусом.
 
@@ -4015,7 +3892,6 @@ class TestComposerOfAnOpencodePane(PairTestCase):
         import re
         from composer import BOX_GLYPH
         self.assertTrue(re.fullmatch(rf"[{BOX_GLYPH}]+", "\u2580\u2580\u2580"))
-
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

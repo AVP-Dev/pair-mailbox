@@ -21,11 +21,12 @@ file-size	static	1	./scripts/file-size-gate.sh
 comment-lint	static	1	bash scripts/comment-lint.sh
 
 # --- positive: поведение, которое обязано работать ---
-# Наборов стало четыре после разбора `server.py`: по одному тест-файлу на
+# Наборов стало пять после выноса obligations из `server.py`: по одному тест-файлу на
 # исходник. Каждый запускается отдельно, потому что `python3 test_protocol.py`
 # больше не выполняет тесты соседних модулей, а молчаливо исключённый набор
 # выглядел бы как зелёный.
 protocol	positive	1	python3 mcp/pair_mailbox/test_protocol.py
+obligations	positive	1	python3 mcp/pair_mailbox/test_obligations.py
 pairctl-authority	positive	1	python3 mcp/pair_mailbox/test_pairctl_authority.py
 pairctl-panes	positive	1	python3 mcp/pair_mailbox/test_pairctl_panes.py
 pairctl-read	positive	1	python3 mcp/pair_mailbox/test_pairctl_read.py

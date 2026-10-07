@@ -54,6 +54,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import digest  # noqa: E402 - требует sys.path выше
 import liveness  # noqa: E402 - требует sys.path выше
+import obligations  # noqa: E402 - требует sys.path выше
 import statecache  # noqa: E402 - требует sys.path выше
 
 # Имена дайджеста переотдаются из `digest`: их читает `pairctl_read`, и держать
@@ -1978,69 +1979,14 @@ class PairSession:
         return result
 
     def _obligations_where(self, side: str, role: str | None) -> list[dict[str, Any]]:
-        """Open obligations, optionally filtered to one role.
-
-        Kept small on purpose: a long list of stale obligations is noise, and the
-        supervisor is what actually chases them.
-        """
-        out: list[dict[str, Any]] = []
-        if not self.store.obligations_root.is_dir():
-            return out
-        for path in sorted(self.store.obligations_root.glob("*.json")):
-            try:
-                record = json.loads(path.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError):
-                continue
-            if role is not None and record.get(side) != role:
-                continue
-            out.append({"seq": record.get("seq"), "from": record.get("from"),
-                        "to": record.get("to"), "opened_at": record.get("opened_at"),
-                        "subject": record.get("subject", "")})
-        return out[:20]
+        # Тонкий вызов: логика в obligations.py (server-py-still-a-monolith).
+        return obligations.list_obligations(self.store, side, role)
 
     def _open_obligation(self, frm: str, to: str, seq: int, subject: str = "") -> dict[str, Any]:
-        """Record that `frm` is waiting for an answer from `to`.
-
-        The protocol's blind spot was exactly this: a message asking for a decision was
-        indistinguishable from small talk, so a request nobody answered looked like a quiet
-        evening. An obligation is a plain file, so the supervisor can read it without
-        understanding any of the conversation.
-        """
-        self.store.obligations_root.mkdir(parents=True, exist_ok=True)
-        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-        path = self.store.obligations_root / f"{seq:06d}-{stamp}-{frm}-{to}.json"
-        record = {"seq": seq, "from": frm, "to": to, "opened_at": utcnow(), "subject": subject}
-        # Привязка запроса к ревизии (review-queue): HEAD + dirty-hash + файлы.
-        # Без неё вердикт, пришедший после новых коммитов, молча ложился бы
-        # на непроверенный код. Fail-open: без git пишется пустой снимок.
-        try:
-            from review import snapshot
-            record["rev"] = snapshot(self.store.project_root)
-        except Exception:  # noqa: BLE001 - снимок не должен ронять запрос
-            record["rev"] = {"head": "", "dirty": "", "files": []}
-        atomic_write_json(path, record)
-        self.store.append_transcript("obligation_opened", frm, to=to, seq=seq, subject=subject)
-        return record
+        return obligations.open_obligation(self.store, frm, to, seq, subject)
 
     def _answer_obligations(self, answerer: str, author: str) -> list[int]:
-        """Called when `answerer` writes to `author`: whatever they owed each other closes.
-
-        Any later message counts as the answer, including a fresh request, because two agents
-        talking have by definition stopped waiting on each other. Judging the content would be
-        guesswork, and a wrong guess here means a real request gets nagged about at 3am.
-        """
-        closed: list[int] = []
-        for path in sorted(self.store.obligations_root.glob("*.json")) if self.store.obligations_root.is_dir() else []:
-            try:
-                record = json.loads(path.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError):
-                continue
-            if record.get("from") == answerer and record.get("to") == author:
-                path.unlink(missing_ok=True)
-                closed.append(int(record.get("seq", 0)))
-        if closed:
-            self.store.append_transcript("obligation_answered", answerer, author=author, seqs=closed)
-        return closed
+        return obligations.answer_obligations(self.store, answerer, author)
 
     def tool_pair_send(self, to: str, text: str, subject: str = "",
                         expects_reply: bool = False) -> dict[str, Any]:
