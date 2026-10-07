@@ -2546,6 +2546,7 @@ class PairSession:
 
     def tool_pair_patch_seal(self, path: str) -> dict[str, Any]:
         """Compute and record the hash of a patch this role reserved."""
+        self._require_fix_mode("seal a patch")
         if any(char in path for char in GLOB_CHARS):
             raise ProtocolError(f"{path} contains a glob character; exact paths only.")
 
@@ -2576,6 +2577,7 @@ class PairSession:
     def tool_pair_patch_verify(self, path: str) -> dict[str, Any]:
         """Re-check a sealed patch against its recorded hash. The writer calls this
         immediately before applying; anything other than a match means stop."""
+        self._require_fix_mode("verify a patch")
         if any(char in path for char in GLOB_CHARS):
             raise ProtocolError(f"{path} contains a glob character; exact paths only.")
         current = self.store.read()

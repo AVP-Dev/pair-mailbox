@@ -1156,6 +1156,19 @@ class TestPatchAccounting(PairTestCase):
         path = self.sealed_patch()
         self.assertRefused(self.peer.tool_pair_patch_applied, path, contains="only the writer")
 
+    def test_audit_refuses_seal_and_verify_but_not_release(self) -> None:
+        """В audit закрыт весь конвейер, а не только reserve: seal и verify
+        отказывают, release мусора работает. Иначе раунд «без diff» выдавал
+        бы зелёный вердикт на применение (audit-leaves-patch-pipeline-open)."""
+        path = self.peer.tool_pair_patch_reserve()["path"]
+        Path(path).write_text("--- a\n+++ b\n", encoding="utf-8")
+        self.store.mutate(lambda state: state.__setitem__("mode", "audit"))
+        self.assertRefused(self.peer.tool_pair_patch_reserve, contains="audit")
+        self.assertRefused(self.peer.tool_pair_patch_seal, path, contains="audit")
+        self.assertRefused(self.writer.tool_pair_patch_verify, path, contains="audit")
+        self.writer.tool_pair_patch_release(path)
+        self.assertEqual(self.writer.unresolved_patches(self.store.read()), [])
+
     def test_audit_round_does_not_chase_patches(self) -> None:
         self.store.mutate(lambda state: state.__setitem__("mode", "audit"))
         self.assertEqual(self.writer.unresolved_patches(self.store.read()), [])
