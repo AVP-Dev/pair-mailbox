@@ -81,7 +81,7 @@ interface PairState {
  * sides agree on which directory is "theirs".
  */
 function findStateDir(options: Record<string, unknown> | undefined): string | null {
-  const explicit = options?.stateDir ?? process.env.PAIR_STATE_DIR
+  const explicit = options?.stateDir ?? process.env.PAIR_STATE_DIR ?? process.env.PAIR_STATE
   if (typeof explicit === "string" && explicit.length > 0) {
     const direct = resolve(explicit)
     return existsSync(join(direct, "state.json")) ? direct : null

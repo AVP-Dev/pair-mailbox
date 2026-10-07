@@ -344,6 +344,25 @@ class TestMultiProject(PairTestCase):
         self.assertEqual(done.returncode, 1)
         self.assertIn("нет", done.stdout + done.stderr)
 
+    def test_state_resolution_prefers_flag_over_env_over_cwd(self) -> None:
+        """Три компонента разрешали путь по-разному — второе состояние в одном
+        проекте (state-dir-not-pinned). Приоритет: --state, затем PAIR_STATE."""
+        from pairctl_read import extract_state
+        explicit = str(self.root)
+        self.assertEqual(extract_state(["--state", explicit, "status"])[0], Path(explicit))
+        env = dict(os.environ, PAIR_STATE=explicit)
+        old = os.environ.get("PAIR_STATE")
+        os.environ["PAIR_STATE"] = explicit
+        try:
+            self.assertEqual(extract_state(["status"])[0], Path(explicit))
+        finally:
+            if old is None:
+                os.environ.pop("PAIR_STATE", None)
+            else:
+                os.environ["PAIR_STATE"] = old
+        self.assertNotEqual(explicit, str(Path(".pair").resolve()))
+
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

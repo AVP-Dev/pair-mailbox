@@ -138,7 +138,10 @@ def extract_state(argv: list[str]) -> tuple[Path, list[str]]:
     here instead. Both `server.py --state X ctl status` and
     `server.py ctl status --state X` work.
     """
-    raw = ".pair"
+    # Один резолвер для всех: явный --state выигрывает, затем PAIR_STATE,
+    # затем .pair от cwd. Иначе сервер из вложенного каталога молча создаёт
+    # второе независимое состояние в одном проекте (state-dir-not-pinned).
+    raw = os.environ.get("PAIR_STATE") or ".pair"
     rest: list[str] = []
     index = 0
     while index < len(argv):

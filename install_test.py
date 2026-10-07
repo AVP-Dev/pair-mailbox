@@ -100,6 +100,35 @@ class TestForeignFilesSurvive(InstallCase):
         run_install(self.home, "opencode")
         self.assertEqual(self.read_jsonc()["server"], "https://example.com/a//b")
 
+    def test_jsonc_comments_survive_the_install(self) -> None:
+        """json.dumps переписывал файл целиком и стирал комментарии человека —
+        вопреки обещанию «чужие ключи не трогает». Правится только блок pair."""
+        self.write_jsonc(
+            '{\n  // мой комментарий\n  "model": "test-model",\n'
+            '  /* блочный */\n  "mcp": {\n    // внутри mcp\n    "context7": {"url": "https://x/a//b"},\n  },\n}\n')
+        run_install(self.home, "opencode")
+        raw = self.jsonc.read_text(encoding="utf-8")
+        self.assertIn("// мой комментарий", raw)
+        self.assertIn("/* блочный */", raw)
+        self.assertIn("// внутри mcp", raw)
+        self.assertIn("https://x/a//b", raw)
+        cfg = self.read_jsonc()
+        self.assertEqual(cfg["model"], "test-model")
+        self.assertIn("pair", cfg["mcp"])
+        self.assertIn("context7", cfg["mcp"])
+
+    def test_second_install_keeps_comments_and_replaces_pair(self) -> None:
+        """Повтор не дублирует блок и не ест комментарии: замена, не вставка."""
+        self.write_jsonc('{\n  // держи меня\n  "model": "m",\n}\n')
+        run_install(self.home, "opencode")
+        first = self.jsonc.read_text(encoding="utf-8")
+        run_install(self.home, "opencode")
+        second = self.jsonc.read_text(encoding="utf-8")
+        self.assertIn("// держи меня", second)
+        self.assertEqual(second.count('"pair"'), 1)
+        self.assertEqual(first, second)
+
+
     def test_instructions_tail_after_the_marker_is_kept(self) -> None:
         """Прежний код делал split(MARK)[0] и удалял всё после маркера — тихо и
         на каждом запуске. Удаление содержимого чужого файла §12 требует спросить."""

@@ -150,6 +150,21 @@ class TestControlSurface(PairTestCase):
         self.assertEqual(self._ctl("reset", "--yes"), 0)
         self.assertEqual(self.store.read()["task"], "")
 
+    def test_reset_archives_the_transcript_and_warns_about_fix(self) -> None:
+        """reset стирал append-only транскрипт (§11) и молча возвращал fix.
+        Теперь архив transcript-<дата>.jsonl, новый журнал начинается с reset,
+        а вывод предупреждает о выключенном audit-гарде."""
+        self._ctl("task", "something to lose")
+        before = len(self.store.read_transcript(1000))
+        self.assertGreater(before, 0)
+        self._ctl("reset", "--yes")
+        archived = list((self.root / "transcript-archive").glob("transcript-*.jsonl"))
+        self.assertEqual(len(archived), 1)
+        self.assertGreaterEqual(sum(1 for _ in archived[0].open(encoding="utf-8")), before)
+        fresh = self.store.read_transcript(1000)
+        self.assertEqual([e["kind"] for e in fresh], ["reset"])
+        self.assertEqual(self.store.read().get("mode"), "fix")
+
     def test_task_wakes_the_writer(self) -> None:
         """#16: задача от человека обязана будить держателя записи.
 
