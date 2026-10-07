@@ -2437,7 +2437,15 @@ class TestSingleLiveProcessPerRole(PairTestCase):
         self.live_pid(True)
         self.pane_alive(True)
         self.same_pane_as(False)
-        PairSession("agy", self.store).tool_pair_state()
+        # Поиск своей панели по дереву процессов (раунд 32) в наборе находит
+        # панель запускающего shell — тест перестал бы быть безадресным.
+        import composer
+        real_find = composer.find_own_pane
+        composer.find_own_pane = lambda tmux: ""
+        try:
+            PairSession("agy", self.store).tool_pair_state()
+        finally:
+            composer.find_own_pane = real_find
         kinds = [e["kind"] for e in self.store.read_transcript()]
         self.assertIn("role_collision", kinds)
 
