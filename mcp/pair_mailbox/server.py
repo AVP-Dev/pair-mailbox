@@ -1083,6 +1083,11 @@ class PairSession:
                 pin = ""
 
         pane = pin or os.environ.get("TMUX_PANE")
+        if not pane and tmux:
+            # TMUX_PANE в окружении сервера может не быть, а ростер без панели
+            # делает deliver/unblock слепыми. Обратный путь — дерево процессов.
+            from composer import find_own_pane
+            pane = find_own_pane(tmux) or ""
         # Адрес, отвергнутый как чужой. Пуст, пока отвергать нечего: иначе при
         # `pane == ""` переменная осталась бы неопределённой и уборка устаревших
         # записей падала бы NameError на каждом вызове без панели.

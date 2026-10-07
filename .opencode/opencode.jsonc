@@ -10,9 +10,19 @@
   // Роль раздаёт только user-конфиг ~/.config/opencode/opencode.jsonc,
   // который ставит install.sh. Подробнее: docs/SETUP.md «Чужие CLI читают наши конфиги».
 
+  // Пара работает без человека (§7b auto): рутинные прогоны не спрашивают.
+  // Граница — deny, который человек видит и меняет. Готовый блок из §13c.
   "permission": {
+    "bash": {
+      "*": "allow",
+      "sudo *": "deny", "curl *": "deny", "wget *": "deny",
+      "pip install *": "deny", "npm install *": "deny", "npm publish *": "deny",
+      "ssh *": "deny", "docker *": "deny", "kubectl *": "deny",
+      "terraform *": "deny", "helm *": "deny", "mkfs*": "deny", "killall *": "deny",
+      "git push *main*": "deny", "git push *master*": "deny", "git push --force*": "deny",
+      "git reset --hard *": "deny", "git clean -f*": "deny", "git filter-branch *": "deny"
+    },
     "edit": "ask",
-    "bash": "ask",
     "webfetch": "ask"
   },
 

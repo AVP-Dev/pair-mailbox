@@ -209,5 +209,18 @@ class TestComposerDelegatesWithoutForkingBehaviour(PaneOwnershipBase):
                              composer.pane_belongs_to_project(TMUX, pane, root))
 
 
+class TestFindOwnPane(PaneOwnershipBase):
+    def test_own_process_tree_resolves_to_a_live_pane(self) -> None:
+        """Без TMUX_PANE ростер оставался без панели и deliver/unblock слепли.
+        Обратный путь — цепочка предков до pane_pid: находит живую панель."""
+        found = composer.find_own_pane(TMUX)
+        self.assertTrue(found, "процесс набора живёт в панели — её надо найти")
+        self.assertTrue(composer.pane_alive(TMUX, found))
+
+    def test_unknown_tmux_binary_gives_empty(self) -> None:
+        """Нет tmux — честный "", а не выдуманная панель."""
+        self.assertEqual(composer.find_own_pane("tmux-no-such-binary-xyz"), "")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
