@@ -2881,22 +2881,12 @@ class PairSession:
                 self._rotate_note(kind, target)
         self.store.append_transcript("note", self.role, note_kind=kind, chars=len(text))
         if kind == "verdict" or kind.startswith("verdict-"):
-            # Привязка вердикта к ревизии: HEAD + dirty-hash + файлы.
+            # Привязка вердикта к ревизии живёт в review рядом со snapshot.
             # Молчаливое применение вердикта к уехавшей ревизии хуже
             # отсутствия вердикта. Fail-open: без git пишется пустой снимок.
             try:
-                from review import snapshot as review_snapshot
-                rev = review_snapshot(self.store.project_root)
-
-                def remember_verdict(state: dict[str, Any]) -> None:
-                    verdicts = state.setdefault("verdicts", [])
-                    verdicts.append({"role": self.role, "kind": kind,
-                                     "at": utcnow(), "rev": rev,
-                                     "chars": len(text)})
-                    del verdicts[: max(0, len(verdicts) - 20)]
-                self.store.mutate(remember_verdict)
-                self.store.append_transcript("verdict_pinned", self.role,
-                                             note_kind=kind, head=(rev.get("head") or "")[:12])
+                from review import pin_verdict
+                pin_verdict(self.store, self.role, kind, text, utcnow)
             except Exception:  # noqa: BLE001 - снимок не роняет вердикт
                 pass
             # Вердикт без обязательства — тупик: критик сдал, писатель ждёт,
