@@ -1521,6 +1521,17 @@ class TestObligations(PilotCase):
         pilot.tick()
         self.assertEqual("", pilot.pending("agy"), "только что спросили — ждём")
 
+    def test_recipient_poked_within_five_minutes(self) -> None:
+        """P1: затык будится за <5 мин. Граница 180с: 60с — молчим, 200с — будим."""
+        self.obligation(8, "opencode", "agy", age=60)
+        self.write_state(roles={"agy": {"last_seen": ago(30), "pane": "%20"}})
+        pilot = self.pilot()
+        pilot.tick()
+        self.assertEqual("", pilot.pending("agy"), "минута — ещё ждём")
+        self.obligation(9, "opencode", "agy", age=200)
+        pilot.tick()
+        self.assertIn("ответа в его почте нет", pilot.pending("agy"))
+
     def test_recipient_is_poked_first(self) -> None:
         self.obligation(7, "opencode", "agy", age=1000)
         self.write_state(roles={"agy": {"last_seen": ago(30), "pane": "%20"}})
