@@ -21,6 +21,21 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 INSTALL = ROOT / "install.sh"
 
+sys.path.insert(0, str(ROOT))
+import importlib.util as _ilu
+
+
+def _install_mod():
+    from importlib.machinery import SourceFileLoader
+    loader = SourceFileLoader("install_sh", str(INSTALL))
+    spec = _ilu.spec_from_loader("install_sh", loader)
+    mod = _ilu.module_from_spec(spec)
+    mod.__dict__["__file__"] = str(INSTALL)
+    loader.exec_module(mod)
+    return mod
+
+
+_INSTALL = _install_mod()
 
 def run_install(home: Path, *args: str) -> subprocess.CompletedProcess:
     env = dict(os.environ, HOME=str(home))
@@ -91,7 +106,8 @@ class TestForeignFilesSurvive(InstallCase):
         result = run_install(self.home, "opencode")
         self.assertNotIn("не читается", result.stdout,
                          "комментарий в jsonc не должен ронять установку")
-        self.assertEqual(self.read_jsonc().get("model"), "test-model")
+        cfg = _INSTALL.parse_jsonc(self.jsonc.read_text(encoding="utf-8"))
+        self.assertEqual(cfg.get("model"), "test-model")
 
     def test_urls_inside_strings_are_not_mangled(self) -> None:
         """Комментарии снимаются конечным автоматом, а не регуляркой: иначе
@@ -112,7 +128,7 @@ class TestForeignFilesSurvive(InstallCase):
         self.assertIn("/* блочный */", raw)
         self.assertIn("// внутри mcp", raw)
         self.assertIn("https://x/a//b", raw)
-        cfg = self.read_jsonc()
+        cfg = _INSTALL.parse_jsonc(self.jsonc.read_text(encoding="utf-8"))
         self.assertEqual(cfg["model"], "test-model")
         self.assertIn("pair", cfg["mcp"])
         self.assertIn("context7", cfg["mcp"])

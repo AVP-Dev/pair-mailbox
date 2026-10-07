@@ -242,8 +242,12 @@ def splice_json_block(text, root_key, server_key, entry_json):
     if pair is not None:
         return (text[:pair[0]] + '"%s": %s' % (server_key, entry_json) + text[pair[1]:], "replaced")
     before = text[inner_start + 1:inner_end]
-    sep = "" if not before.strip() else ","
-    return (text[:inner_end] + "%s\n    \"%s\": %s\n" % (sep, server_key, entry_json) + text[inner_end:], "inserted")
+    # Висячая запятая перед } снимается, иначе вставка даёт ",," и битый JSON.
+    head = text[:inner_end].rstrip()
+    if head.endswith(","):
+        head = head[:-1]
+    sep = "" if not head[inner_start + 1:].strip() else ","
+    return (head + "%s\n    \"%s\": %s\n" % (sep, server_key, entry_json) + text[inner_end:], "inserted")
 
 
 def write_mcp(profile, role):
