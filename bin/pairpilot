@@ -801,8 +801,11 @@ class Pilot:
         return len(list(inbox.glob("*.json"))) if inbox.exists() else 0
 
     def unread_peers(self, state: dict) -> list[str]:
-        """Кого разбудить из-за непрочитанного. Молчание в этом случае НЕ дефект:
-        агент не читает потому, что не знает, что есть письмо. Сообщаем один раз."""
+        """Кого разбудить из-за непрочитанного. Почтальон на чеку: письмо в ящике
+        без толчка не лежит — память (wake) и толчок (outbox) пишутся вместе.
+        Память — чтобы было видно, кого будили и когда, толчок — чтобы спящий
+        узнал сейчас: следующий flush (этот же тик) вбивает его в композер.
+        """
         out = []
         for role in state.get("roles", {}):
             if role in self.skip:
@@ -816,18 +819,11 @@ class Pilot:
                 text = (f"[pairpilot] У тебя {missing} непрочитанных сообщений. "
                         f"Вызови pair_read и ответь соседу. Если всё сделано — "
                         f"предложи следующий кусок работы через pair_note.")
-                # Не печатаем: пишем факт пробуждения и ждём опроса. Раньше печать
-                # в композер была первым шагом, и «не печатать» означало «не
-                # знать», когда ещё можно. Теперь «не печатать» — это норма, и
-                # вопрос «будил или проснулся сам» имеет наблюдаемый ответ.
                 self.mark_wake(state, role, f"{missing} непрочитанных", text)
-                # Напоминание попадает в журнал: §11 требует, чтобы по журналу
-                # было видно, что происходило, а этот шаг раньше не оставлял следа.
-                # Без записи повторяющийся поток был бы невидим, и «один раз» нечем
-                # было бы проверить.
+                self.enqueue(role, text)
                 self.store.append_transcript("pilot_unread_nudge", "pairpilot",
                                              target=role, unread=missing)
-                log(f"{role}: {missing} непрочитанных, жду молча")
+                log(f"{role}: {missing} непрочитанных, толкаю сразу")
         return out
 
     def stale_writer(self, state: dict) -> None:
@@ -860,8 +856,9 @@ class Pilot:
                 f"либо пиши в заметку, что заблокировано и чем. Помечать «делаю» "
                 f"не считается: нужен реальный шаг или явная блокировка.")
         self.mark_wake(state, writer, f"молчит {int(age // 60)} мин и держит фазу", text)
+        self.enqueue(writer, text)
         log(f"{writer} молчит {int(age // 60)} мин и держит фазу {state.get('phase')!r} "
-            f"— жду молча")
+            f"— толкаю сразу")
 
     def pending_answers(self, state: dict) -> None:
         """Отправили запрос, ответа нет. Это хуже молчания: молчание может означать
@@ -1353,9 +1350,9 @@ class Pilot:
         self.poll_wakes(state)
         self.pending_answers(state)
         self.stalled_patches(state)
+        self.stale_writer(state)
         self.drop_stale_outbox(state)
         self.flush_outbox(state)
-        self.stale_writer(state)
         self.checkpoint(state)
         self.report_once(state)
         return state

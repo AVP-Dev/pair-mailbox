@@ -107,16 +107,17 @@ class PilotCase(unittest.TestCase):
             return {}
         return json.loads(path.read_text(encoding="utf-8"))
 
-    def assert_printed_nothing(self, pilot: "pairpilot.Pilot", role: str) -> None:
-        """Пробуждение обязано остаться тихим.
+    def assert_enqueued_for_push(self, pilot: "pairpilot.Pilot", role: str) -> None:
+        """Почтальон толкает сразу: очередь НЕ пуста после непрочитанного.
 
-        До этой правки печать в композер была первым шагом, и «не напечатать»
-        означало «не знаю, когда ещё можно». Теперь молчание — норма, и именно
-        поэтому утверждение здесь отрицательное: пустая очередь печати и есть
-        тот результат, ради которого механизм менялся.
+        Старый контракт требовал тишины до эскалации (wake-файл, опрос через
+        4 мин, потом печать) — спящий агент узнавал о письме через минуты,
+        и пара работала только пока человек толкал вручную. Новый контракт:
+        память (wake) и толчок (outbox) пишутся вместе, flush этого же тика
+        вбивает толчок в свободный композер.
         """
-        self.assertEqual("", pilot.pending(role),
-                         "пробуждение не должно печатать в композер до эскалации")
+        self.assertTrue(pilot.pending(role),
+                        "непрочитанное обязано лечь в очередь толчка сразу")
 
     def inbox(self, role: str, count: int) -> None:
         path = self.state_dir / "mailbox" / role
@@ -245,7 +246,7 @@ class TestLiveness(PilotCase):
         self.assertTrue(wake, "молчащий писатель должен получить пробуждение")
         self.assertIn("фазу", wake["reason"])
         self.assertIn("право записи", wake["text"])
-        self.assert_printed_nothing(pilot, "agy")
+        self.assert_enqueued_for_push(pilot, "agy")
 
     def test_a_writer_who_woke_up_is_not_printed_at(self) -> None:
         """Проснувшийся не будится второй раз — и об этом есть запись.
@@ -264,7 +265,7 @@ class TestLiveness(PilotCase):
         self.assertEqual({}, self.wake(pilot, "agy"), "пробуждение снято")
         kinds = [e.get("kind") for e in self.transcript_entries()]
         self.assertIn("pilot_wake_acknowledged", kinds)
-        self.assert_printed_nothing(pilot, "agy")
+        self.assert_enqueued_for_push(pilot, "agy")
 
     def test_a_writer_who_ignores_the_wake_is_printed_at_once(self) -> None:
         """Эскалация: печать становится исключением, а не первым шагом.
@@ -388,8 +389,8 @@ class TestLiveness(PilotCase):
         self.assertEqual("", pilot.pending("codex"))
 
     def test_unread_nudge_is_sent_once_and_not_every_tick(self) -> None:
-        """Напоминание о непрочитанном — ускоритель, а не основа: агент
-        заканчивает ход сам (PROTOCOL §7), и напоминание не должно превращаться в
+        """Напоминание о непрочитанном — толчок сразу, но один раз: агент
+        заканчивает ход сам (PROTOCOL §7), и толчок не должен превращаться в
         поток, который сам и будит, и засыпает."""
         self.inbox("codex", 2)
         self.write_state(writer="agy", roles={"codex": {"last_seen": ago(60), "pane": "%1"}},
@@ -404,7 +405,7 @@ class TestLiveness(PilotCase):
         nudges = [e for e in self.transcript_entries() if e.get("kind") == "pilot_unread_nudge"]
         self.assertEqual(1, len(nudges),
                          "напоминание не должно повторяться каждый тик")
-        self.assert_printed_nothing(pilot, "codex")
+        self.assert_enqueued_for_push(pilot, "codex")
 
     def test_unread_nudge_does_not_touch_a_role_with_nothing_unread(self) -> None:
         """Напоминание без письма — шум, а помощь."""
@@ -416,14 +417,13 @@ class TestLiveness(PilotCase):
 
 
 class TestUnread(PilotCase):
-    def test_unread_mail_produces_a_silent_wake(self) -> None:
-        """Письмо есть — пробуждение есть, и в композер при этом ничего не уходит.
+    def test_unread_mail_produces_a_wake_and_a_push(self) -> None:
+        """Письмо есть — память и толчок есть: wake-файл и очередь вбивки.
 
-        Проверка поменяла знак намеренно. Прежняя требовала текста в очереди печати,
-        то есть чтобы сверхвизор залез в чужое окно; новая требует, чтобы он этого
-        НЕ сделал, и ещё чтобы факт пробуждения остался наблюдаемым. Обе части
-        нужны: без первой механизм ничего не делает, без второй — делает всё
-        молча, и по журналу нечем понять, что будили вообще.
+        Старый контракт требовал тишины до эскалации — спящий агент узнавал
+        о письме через минуты опроса, и пара работала только пока человек
+        толкал вручную. Новый контракт почтальона: толчок сразу, память
+        рядом, flush этого же тика вбивает его в свободный композер.
         """
         self.inbox("agy", 3)
         self.write_state(roles={"agy": {"last_seen": ago(60), "pane": "%1"}}, seen={"agy": 0})
@@ -434,7 +434,7 @@ class TestUnread(PilotCase):
         self.assertIn("непрочитанных", wake["reason"])
         self.assertIn("непрочитанных", wake["text"])
         self.assertEqual(3, wake["unread_at_ask"], "сколько именно не прочитано")
-        self.assert_printed_nothing(pilot, "agy")
+        self.assert_enqueued_for_push(pilot, "agy")
 
     def test_read_mail_is_not_reminded(self) -> None:
         self.inbox("agy", 3)
@@ -1635,7 +1635,7 @@ class TestVisibleWork(PilotCase):
         self.patch_composer(">", empty=True)
         pilot.tick()
         self.assertTrue(self.wake(pilot, "agy"), "пустой композер — вот это дефект")
-        self.assert_printed_nothing(pilot, "agy")
+        self.assert_enqueued_for_push(pilot, "agy")
 
     def test_missing_composer_counts_as_busy(self) -> None:
         """TUI перерисовывается, композера нет. Бить в этот момент — значит
