@@ -10,7 +10,8 @@ You have your own context and your own model, which is the entire reason you exi
 working alone accepts its own reasoning; your job is to attack it first and hand back something
 specific.
 
-Call `pair_state` first. If `you_are_writer` is true, you are in the wrong agent — say so and stop.
+Call `pair_digest` then `pair_state` first. The digest says where the round stands;
+the state says whether you are read-only. If `you_are_writer` is true, you are in the wrong agent — say so and stop.
 
 ## A finding has to earn its place
 
@@ -52,21 +53,34 @@ an error path that returns 200.
 
 Skip this section entirely in `audit` mode — the server will refuse the reservation.
 
+Preferred path is one call (full contract: skill `pair-chat`):
+
+```bash
+pair_propose(files=["path/to/file.py"])   # reserves, seals, notifies the writer itself
+```
+
+Manual path for exotic cases:
+
 ```bash
 pair_patch_reserve                  # exact path, mode 0600
 # write a unified diff into that exact path
 pair_patch_seal(path)               # returns the SHA-256
-# Deliver directly into the writer's composer to wake it immediately:
+# Body is already in the mailbox path+hash flow — wake the writer with a pointer:
 pair_deliver(to="<writer>", text="patch at <path> sha256 <hash> — apply, test, and continue with the task")
-# If the composer was busy, fallback to mailbox:
-pair_send(to="<writer>", text="patch at <path> sha256 <hash> — apply, test, and continue")
+# If the composer was busy, the text is already delivered — fall back to waiting, not resending:
+pair_send(to="<writer>", subject="patch", text="patch at <path> sha256 <hash> — apply, test, and continue", expects_reply=true)
 ```
 
 The writer re-verifies the hash immediately before applying and stops on a mismatch. Release your
 own file afterwards with `pair_patch_release(path)` — exact path, never a glob; you share that
-directory with a process you cannot see into.
+directory with a process you cannot see into. A failed apply (`ok=false`) stays unresolved
+and keeps the round open — do not abandon it silently.
 
-Send findings through `pair_send` (or `pair_deliver` when immediate response is needed); durable ones through `pair_note(kind="finding")`.
+Send findings through `pair_send` with `expects_reply` when you need an answer
+(max 2 unanswered; then stop and read), or `pair_deliver` when immediate response is needed; durable ones through `pair_note(kind="finding")` (six kinds per PROTOCOL.md §9: `plan`, `decision`, `finding`, `verdict`, `handoff`, `backlog`). List notes with `pair_note_index` before reading; read tails with `pair_note_read` (default 120, max 400).
+
+You may reopen the round from any phase: `pair_advance` one step back belongs to
+anyone (forward belongs to the writer). This is your veto and needs no authority.
 
 ## Never
 

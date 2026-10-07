@@ -176,7 +176,7 @@ def main() -> int:
         run([sys.executable, ROOT / "mcp/pair_mailbox/server.py",
              "--state", args.state, "autonomy", args.autonomy])
     else:
-        print("не задана, остаётся текущая (по умолчанию semi)")
+        print("не задана, остаётся текущая (fresh default auto)")
 
     if args.no_pair:
         print("\nГотово: установлено и проверено. Агенты не поднимались (--no-pair).")

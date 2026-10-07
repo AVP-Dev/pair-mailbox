@@ -44,7 +44,7 @@ From there the critic has two honest paths, neither involving the human:
   its mind and hand over authority itself.
 - Agree, and work as the critic.
 
-Neither path takes authority away from the other. It cannot be taken at all.
+Neither path takes authority away from an active holder. A claim succeeds when authority is free or stale: released, a closed round (`closed_at` or phase `done` — the claim reopens it at `implement` with `round + 1`), an abandoned writer (closed round plus silence past `PAIR_STALL_SECONDS`), or the standing policy naming the claimant (`by_policy`).
 
 Enforced by the server:
 
@@ -86,10 +86,7 @@ bin/pairctl why          # across all projects
 bin/pairctl status       # in the current project, JSON
 ```
 
-A script may not do this. `bin/pair-duo` used to run `pairctl assign` on its own,
-which meant a launcher silently moved the trust boundary on every run; it is now
-behind an explicit `--duo` flag, and `finish.sh` follows the standing arrangement by
-default.
+A script may not do this. `finish.sh --duo` delegates to `bin/pair-duo`, which used to run `pairctl assign` on its own, silently moving the trust boundary on every run. Only `--duo` lets it appoint `<cli>-writer`, and only when no standing arrangement and no current writer exist; `finish.sh` without `--duo` follows the standing arrangement by default.
 
 ## 3. A read-only agent proposes patches, it does not apply them
 
@@ -98,7 +95,7 @@ One command (preferred):
 ```
 pair_propose(files=["a.py", "b.py"], subject="what it fixes")
 # the server builds the diff itself, seals it, and delivers path+hash
-# to the writer with a review request
+# to the writer via pair_send with expects_reply
 ```
 
 Manual path (legacy, for exotic cases — e.g. a diff assembled by hand):
@@ -158,7 +155,9 @@ round: the test suite with its count and exit code, lint, typecheck, a diffstat,
 commit, a PR URL. Kinds: `test`, `lint`, `typecheck`, `build`, `diff`, `commit`,
 `pr`, `manual`.
 
-In `semi` and `auto` a round cannot close while:
+Evidence blockers apply in every autonomy level, including `observe`, and refusal wording never names a level as the reason: `semi` only *adds* the human's word (`pairctl ok`) on top.
+
+In every mode a round cannot close while:
 
 - there is no passing evidence for the current round;
 - the last run of any kind failed;
@@ -243,6 +242,7 @@ those separately rather than guessing.
 Forward is the writer's. **One step back is anyone's:**
 
 ```
+plan      → scoping     anyone
 done      → implement   anyone
 verify    → implement   anyone
 implement → plan        anyone
@@ -461,10 +461,7 @@ The pair is started once and then works unattended until the result is on the ta
 The level is chosen at that moment and not renegotiated mid-round, so the human is
 asked **at most once** and, in `auto`, not at all.
 
-`bin/pair-duo` takes `--autonomy observe|semi|auto`, with `--auto`, `--semi` and
-`--observe` as shorthands. The value is checked **before** tmux starts: a typo ignored
-after launch would leave the pair working at a level the human did not choose, and
-the only way to find out would be to notice the effect.
+`bin/pair-duo` takes `--autonomy observe|semi|auto`, with `--auto`, `--semi` and `--observe` as shorthands. The value is checked **before** tmux starts: a bad value is a usage error (`exit 2`), not a fall-through to the next source — a typo ignored after launch would leave the pair working at a level the human did not choose, and the only way to find out would be to notice the effect.
 
 With no flag, `bin/pairctl launch-autonomy` resolves in this order, strongest first:
 
@@ -479,10 +476,7 @@ The source travels with the value into the transcript as `via=flag|task|file|def
 A level nobody can account for becomes a dispute: "why did this round close itself?" has
 no answer unless the reason was written down when it was decided.
 
-The task line must **start** the task, not merely appear in it — otherwise the words
-"move this text about autonomy: semi" would silently demote the pair. A malformed flag
-or file falls through to the next source instead of failing the launch: refusing to
-start is worse than starting at a level the human can see in `pairctl status`.
+The task line must **start** the task, not merely appear in it — otherwise the words "move this text about autonomy: semi" would silently demote the pair. A malformed task line or file falls through to the next source instead of failing the launch: refusing to start is worse than starting at a level the human can see in `pairctl status`.
 
 `pairctl ok` means something specific: it counts only when said at `verify` or `done`,
 the last word wins, and `bin/pairctl ok --revoke` takes it back. "I approve the plan"
@@ -525,7 +519,7 @@ objection, same as for code.
 
 ## 11. Audit
 
-`pair-transcript.jsonl`, append-only, per event: a message, a capture, a phase
+`transcript.jsonl`, append-only, per event: a message, a capture, a phase
 change, a patch reservation, sealing, hash verification, **and every refusal**.
 
 Refusals are the most valuable part. A peer trying to cross the write boundary is

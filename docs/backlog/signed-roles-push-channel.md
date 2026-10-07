@@ -2,6 +2,7 @@
 title: подписи ролей и push-канал вместо опроса — Ed25519 + subscriptions/listen
 found: 2026-10-07
 severity: high
+status: done п.1 (ключи) — остаток ниже
 ---
 
 ## Зачем (слова человека)
@@ -24,22 +25,27 @@ severity: high
 
 ## Что сделать
 
-1. **Ключи на роль+проект, генерим сами.** `pairctl keys gen <role>` → Ed25519-пара
-   в `.pair/keys/<role>.priv` (0600) + публичный в `state.json`. Привязка
-   `key_id = проект + роль + инсталляция`. Рестарт CLI ключ не меняет —
-   протухания нет по построению. Потеря ключа = регенезис без lockout
-   (старый ключ в revoke-листе, fail-open с записью в транскрипт).
+Выполнено (раунд 34): **п.1 — ключи на роль+проект.** `pairctl keys gen <role>` →
+Ed25519-пара в `.pair/keys/<role>.priv` (0600) + публичный в `state.json`
+(`mcp/pair_mailbox/pairctl_authority.py`, потолок 367 в baseline). Рестарт CLI
+ключ не меняет; потеря ключа = регенезис без lockout (старый ключ в revoke-листе,
+fail-open с записью в транскрипт). Проверка чтения (`pair_read`/`digest`):
+без ключа письмо отдаётся как раньше (fail-open), неверная подпись — отказ с
+`bad_signature` в транскрипт (`server.py:2397`).
+
+Осталось (п.2–6 — в карточке `signed-roles-push-channel-remainder.md`):
+
 2. **Подписанный конверт.** Каждое письмо/вердикт/evidence — `{seq,from,to,ts,body_sha,
-   key_id, sig}`. Проверка на чтении (`pair_read`/`digest`): верна — отдать,
-   нет — отказ с `bad_signature` в транскрипт. `PyNaCl 1.6.2` уже стоит,
-   новых зависимостей ноль.
+   key_id, sig}`. Проверка на чтении уже частично есть (см. выше); довести до
+   полного конверта на запись.
 3. **Цепочка транскрипта.** Каждая строка — `prev_hash` предыдущей. Ручная правка
    или потеря куска рвёт цепь и видна сразу, а не при аудите через неделю.
-4. **Push по спеке MCP 2026-07-28.** `resources/list` отдаёт `mailbox://<role>` и
-   `obligations://`; `subscriptions/listen` открывает поток, сервер шлёт
-   `notifications/resources/updated` с `subscriptionId` на каждый `send`.
-   Обрыв — клиент переподписывается (так требует спека). Нет `listen` у хоста —
-   работает текущий long-poll `pair_read`, без регресса.
+   (Ротация уже продолжает цепь через `transcript-archive/`, `server.py:960`.)
+4. **Push.** Ресурсы `mailbox://<role>` и `obligations://` уже отдаются
+   (`server.py:3817`), подписка — `resources/subscribe` + `resources/unsubscribe`
+   (`server.py:3830`), сервер шлёт `notifications/resources/updated` с
+   `subscriptionId` на каждый `send`. Осталось: переподписка клиента на обрыв
+   и проверка, что push — только ускоритель, гарантия — mailbox.
 5. **Singleton сервера на роль.** `flock` на `.pair/.server-<role>.lock`: второй
    процесс той же роли на том же проекте — отказ, а не молчаливая коллизия pid.
 6. **Мультипроект из коробки.** Ключ и state строго per-project (walk-up уже есть
@@ -48,7 +54,7 @@ severity: high
 
 ## Порядок
 
-Ключи + конверт → chain → singleton → listen. Каждый пункт — свой коммит со
+Конверт → chain → singleton → push-дочистка. Каждый пункт — свой коммит со
 своими hermetic-тестами (подпись верна / подмена краснеет / разрыв цепи /
 push на send / реплей от `seen` / дубль сервера отказан).
 
