@@ -43,6 +43,7 @@ digest	positive	1	python3 mcp/pair_mailbox/test_digest.py
 panes	positive	1	python3 mcp/pair_mailbox/test_panes.py
 roster-heal	positive	1	python3 mcp/pair_mailbox/test_roster_heal.py
 file-size-gate-tests	positive	1	bash scripts/file-size-gate_test.sh
+eye-deadlock	positive	1	bash scripts/eye-of-sauron_test.sh
 
 # --- integration: медленное, но обязательное перед финализацией ---
 installer	integration	1	python3 install_test.py

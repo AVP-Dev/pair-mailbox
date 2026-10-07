@@ -2,7 +2,7 @@
 # Тест Ока Саурона: deadlock-сигнал на копии скрипта в tmp.
 # Живой tmux не нужен: панели "none" дают стоящий хэш — как idle-панели.
 set -u
-EYE="/home/alexios/work/umputum/scripts/eye-of-sauron.sh"
+EYE="$(cd "$(dirname "$0")" && pwd)/eye-of-sauron.sh"
 fail=0
 run_eye() {  # $1 = state.json content, $2 = obligations count
   local t; t="$(mktemp -d)"
