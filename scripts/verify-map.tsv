@@ -31,13 +31,13 @@ mcp/pair_mailbox/digest.py	digest
 mcp/pair_mailbox/test_board_hosts.py	board-hosts
 mcp/pair_mailbox/test_board_snapshot.py	board-snapshot
 mcp/pair_mailbox/test_board_render.py	board-render
-bin/pairpilot	pairpilot-test
 bin/pairpilot	supervisor
 bin/pairpilot_test.py	supervisor
 bin/pairboard	board-cli
 bin/pairboard_test.py	board-cli
 bin/pairchat	pairchat-check
-bin/pairdoctor	pairdoctor-check
+bin/pairdoctor	doctor
+bin/pairdoctor_test.py	doctor
 install.sh	installer-subset
 cli-profiles.json	installer-subset
 .opencode/plugins/pair-guard.ts	guard-check

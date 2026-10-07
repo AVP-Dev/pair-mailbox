@@ -860,13 +860,17 @@ class Pilot:
                     self.enqueue(sender, text)
                     log(f"{sender} ждёт ответа на запрос {seq} уже {int(age // 60)} мин")
 
-    def live_project_panes(self, state: dict) -> list[str]:
+    def live_project_panes(self, state: dict, role: str = "") -> list[str]:
         """Живые панели этого проекта, не занятые ролями — кандидаты для wake.
 
         Ростер знает только записанные панели, а агент мог открыть терминал
         внутри проекта мимо него (критик seq 381: pane None в ростере при
         живых панелях с cwd проекта). Ищем напрямую через list-panes
         и доказываем принадлежность через panes-модуль, а не строкой.
+
+        Усыновляем только панель с живым server.py роли (первый фактор),
+        cwd — второй: иначе пилот прописал бы роль в шелл человека,
+        открытый в проекте (вердикт раунда 33).
         """
         if self.tmux is None:
             return []
@@ -881,6 +885,8 @@ class Pilot:
         for pane in out.splitlines():
             pane = pane.strip()
             if not pane or self.pane_key(pane) in taken:
+                continue
+            if role and not pane_role_pid(self.tmux, pane, role):
                 continue
             try:
                 ours, _why = pane_belongs_to_project(self.tmux, pane,
@@ -911,8 +917,8 @@ class Pilot:
                     healed = find_pane_of_pid(self.tmux, pid)
                 if not healed:
                     # pid не помог, но агент мог открыть терминал внутри проекта
-                    # мимо ростера: первая свободная живая панель проекта.
-                    live = self.live_project_panes(state)
+                    # мимо ростера: первая свободная панель с его server.py.
+                    live = self.live_project_panes(state, role)
                     healed = live[0] if live else ""
                 if healed:
                     def heal(st):

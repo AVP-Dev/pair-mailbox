@@ -290,7 +290,10 @@ class TestMultiProject(PairTestCase):
     def test_agent_notes_are_shown_by_default_and_work_notes_are_not(self) -> None:
         # Заметки агентов (plan, finding...) — часть работы, их видно.
         # Мои рабочие заметки о самом pair-mailbox — нет, их сотни строк кода.
-        for kind in ("plan", "finding", "verdict", "z-scratch"):
+        # backlog и finding-<ID> предписаны §9 и навыками: их отсутствие
+        # в выдаче — тот же дефект, что чинился в pairchat (вердикт раунда 33).
+        for kind in ("plan", "finding", "finding-12", "backlog", "verdict",
+                     "z-scratch", "x-wrap"):
             path = self.root / "notes" / f"{kind}.md"
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(f"содержимое заметки {kind}\n", encoding="utf-8")
@@ -309,7 +312,10 @@ class TestMultiProject(PairTestCase):
         self.assertEqual(done.returncode, 0, done.stderr)
         self.assertIn("содержимое заметки plan", done.stdout)
         self.assertIn("содержимое заметки verdict", done.stdout)
+        self.assertIn("содержимое заметки backlog", done.stdout)
+        self.assertIn("содержимое заметки finding-12", done.stdout)
         self.assertNotIn("z-scratch", done.stdout, "рабочая заметка попала в выдачу")
+        self.assertNotIn("x-wrap", done.stdout, "рабочая заметка попала в выдачу")
         self.assertIn("содержимое заметки z-scratch", loud.stdout,
                       "--all-notes должен показывать и рабочие заметки")
 

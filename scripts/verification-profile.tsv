@@ -35,6 +35,7 @@ board-hosts	positive	1	python3 mcp/pair_mailbox/test_board_hosts.py
 board-snapshot	positive	1	python3 mcp/pair_mailbox/test_board_snapshot.py
 board-render	positive	1	python3 mcp/pair_mailbox/test_board_render.py
 board-cli	positive	1	python3 bin/pairboard_test.py
+doctor	positive	1	python3 bin/pairdoctor_test.py
 wake	positive	1	python3 mcp/pair_mailbox/test_wake.py
 review	positive	1	python3 mcp/pair_mailbox/test_review.py
 statecache	positive	1	python3 mcp/pair_mailbox/test_statecache.py
@@ -42,6 +43,7 @@ liveness	positive	1	python3 mcp/pair_mailbox/test_liveness.py
 digest	positive	1	python3 mcp/pair_mailbox/test_digest.py
 panes	positive	1	python3 mcp/pair_mailbox/test_panes.py
 composer	positive	1	python3 mcp/pair_mailbox/test_composer.py
+roster-heal	positive	1	python3 mcp/pair_mailbox/test_roster_heal.py
 file-size-gate-tests	positive	1	bash scripts/file-size-gate_test.sh
 eye-deadlock	positive	1	bash scripts/eye-of-sauron_test.sh
 

@@ -683,10 +683,12 @@ class TestTmuxPaths(PilotCase):
         pilot = self.fake_tmux()
         real_find = pairpilot.find_pane_of_pid
         real_belongs = pairpilot.pane_belongs_to_project
+        real_rolepid = pairpilot.pane_role_pid
         real_run = pairpilot.subprocess.run
         pairpilot.find_pane_of_pid = lambda tmux, pid: ""
         pairpilot.pane_belongs_to_project = (
             lambda tmux, pane, root: (pane == "%11", ""))
+        pairpilot.pane_role_pid = lambda tmux, pane, role: 4242 if pane == "%11" else 0
         pairpilot.subprocess.run = lambda *a, **k: type("R", (), {
             "stdout": "%9\n%11\n", "returncode": 0})()
         pilot.pane_key = lambda pane: str(pane)
@@ -695,6 +697,7 @@ class TestTmuxPaths(PilotCase):
         finally:
             pairpilot.find_pane_of_pid = real_find
             pairpilot.pane_belongs_to_project = real_belongs
+            pairpilot.pane_role_pid = real_rolepid
             pairpilot.subprocess.run = real_run
         self.assertIn("pilot_pane_healed", self.transcript_kinds())
         self.assertEqual(self.pilot().store.read()["roles"]["codex"]["pane"], "%11")
@@ -716,6 +719,30 @@ class TestTmuxPaths(PilotCase):
         finally:
             pairpilot.find_pane_of_pid = real_find
             pairpilot.pane_belongs_to_project = real_belongs
+            pairpilot.subprocess.run = real_run
+        self.assertIn("pilot_pane_missing", self.transcript_kinds())
+        self.assertNotIn("pane", self.pilot().store.read()["roles"]["codex"])
+
+    def test_human_shell_is_not_adopted_without_role_server(self) -> None:
+        """Панель проекта без server.py роли (шелл человека) не усыновляется:
+        cwd второй фактор, первый — живой процесс роли (вердикт раунда 33)."""
+        self.write_state(roles={"codex": {"last_seen": ago(10), "pid": 1}})
+        pilot = self.fake_tmux()
+        real_find = pairpilot.find_pane_of_pid
+        real_belongs = pairpilot.pane_belongs_to_project
+        real_rolepid = pairpilot.pane_role_pid
+        real_run = pairpilot.subprocess.run
+        pairpilot.find_pane_of_pid = lambda tmux, pid: ""
+        pairpilot.pane_belongs_to_project = lambda tmux, pane, root: (True, "")
+        pairpilot.pane_role_pid = lambda tmux, pane, role: 0
+        pairpilot.subprocess.run = lambda *a, **k: type("R", (), {"stdout": "%9\n", "returncode": 0})()
+        pilot.pane_key = lambda pane: str(pane)
+        try:
+            pilot.tick()
+        finally:
+            pairpilot.find_pane_of_pid = real_find
+            pairpilot.pane_belongs_to_project = real_belongs
+            pairpilot.pane_role_pid = real_rolepid
             pairpilot.subprocess.run = real_run
         self.assertIn("pilot_pane_missing", self.transcript_kinds())
         self.assertNotIn("pane", self.pilot().store.read()["roles"]["codex"])
