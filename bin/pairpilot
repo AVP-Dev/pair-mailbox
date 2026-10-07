@@ -497,6 +497,48 @@ class Pilot:
         self.store.append_transcript("pilot_wake_pending", "pairpilot",
                                      target=role, reason=reason)
         log(f"{role}: {reason}, жду пробуждения молча (в печать не бью)")
+        self.ring(state, role, reason)
+
+    def ring(self, state: dict, role: str, reason: str) -> None:
+        """Позвонить в панель роли: display-message, не печать в композер.
+
+        Печать в занятый TUI — мусор в строке ввода; звонок — всплывашка,
+        которую агент видит краем глаза и сам решает, когда отвлечься.
+        Троттл — по полю rung_at в wake-файле: не чаще раза в 5 мин,
+        иначе это тот же спам, только без текста.
+        """
+        if self.tmux is None or role in self.skip:
+            return
+        path = self.wake_root / f"{role}.json"
+        if time.time() - self._last_ring(path) < 300:
+            return
+        pane = ((state.get("roles") or {}).get(role) or {}).get("pane")
+        if not pane or not pane_alive(self.tmux, pane):
+            return
+        try:
+            subprocess.run([self.tmux, "display-message", "-t", pane,
+                            "-d", "4000",
+                            f"[pair] {reason} — забери из mailbox через pair_read"],
+                           capture_output=True, timeout=5)
+        except Exception:
+            return
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            payload["rung_at"] = time.time()
+            path.write_text(json.dumps(payload, ensure_ascii=False, indent=2),
+                            encoding="utf-8")
+        except (OSError, ValueError):
+            pass
+        self.store.append_transcript("pilot_ring", "pairpilot", target=role,
+                                     reason=reason)
+        log(f"{role}: позвонил в панель ({reason})")
+
+    @staticmethod
+    def _last_ring(path) -> float:
+        try:
+            return float(json.loads(path.read_text(encoding="utf-8")).get("rung_at") or 0)
+        except (OSError, ValueError):
+            return 0.0
 
     def poll_wakes(self, state: dict) -> None:
         """Опросить висящие пробуждения и решить по каждому: проснулся или нет.

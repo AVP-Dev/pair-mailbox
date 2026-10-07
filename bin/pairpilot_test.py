@@ -747,6 +747,42 @@ class TestTmuxPaths(PilotCase):
         self.assertIn("pilot_pane_missing", self.transcript_kinds())
         self.assertNotIn("pane", self.pilot().store.read()["roles"]["codex"])
 
+    def test_wake_placement_rings_the_pane_without_typing(self) -> None:
+        """Постановка wake звонит в панель display-message, а не печатает
+        в композер: звонок виден, строка ввода цела."""
+        self.write_state(roles={"codex": {"last_seen": ago(10), "pane": "%9"}})
+        pilot = self.fake_tmux()
+        calls = []
+        real_run = pairpilot.subprocess.run
+        pairpilot.subprocess.run = lambda *a, **k: calls.append(a[0]) or type("R", (), {
+            "stdout": "", "returncode": 0})()
+        try:
+            pilot.mark_wake(self.pilot().store.read(), "codex", "сообщение", "текст")
+        finally:
+            pairpilot.subprocess.run = real_run
+        self.assertIn("pilot_ring", self.transcript_kinds())
+        self.assertTrue(any("display-message" in c for c in calls),
+                        "звонок идёт через display-message, а не send-keys")
+        self.assertFalse(any("send-keys" in c for c in calls),
+                         "печать в композер запрещена")
+
+    def test_ring_is_throttled_to_five_minutes(self) -> None:
+        """Второй звонок подряд — молчание: чаще раза в 5 мин не звоним."""
+        self.write_state(roles={"codex": {"last_seen": ago(10), "pane": "%9"}})
+        pilot = self.fake_tmux()
+        real_run = pairpilot.subprocess.run
+        pairpilot.subprocess.run = lambda *a, **k: type("R", (), {
+            "stdout": "", "returncode": 0})()
+        try:
+            state = self.pilot().store.read()
+            pilot.mark_wake(state, "codex", "сообщение", "текст")
+            before = self.transcript_kinds().count("pilot_ring")
+            pilot.mark_wake(self.pilot().store.read(), "codex", "сообщение", "текст")
+            after = self.transcript_kinds().count("pilot_ring")
+        finally:
+            pairpilot.subprocess.run = real_run
+        self.assertEqual(before, after, "повторный звонок в пределах 5 мин запрещён")
+
     def test_dead_pane_is_recorded_once(self) -> None:
         self.write_state(roles={"agy": {"last_seen": ago(10), "pane": "%9"}})
         pilot = self.fake_tmux(alive=False)
