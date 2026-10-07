@@ -791,7 +791,7 @@ NEVER_ALLOW_PATTERNS = (
     r"\bfind\b[^\n]*-(?:delete|exec|execdir|ok)\b",
     r"\bxargs\b",
     r":\(\)\s*\{",
-    r">\s*/dev/",
+    r">\s*/dev/(?!null\b)",
     r"\bmkfs\b",
     r"\bdd\s+if=",
     r"\bdeploy\b",
@@ -815,10 +815,15 @@ NEVER_ALLOW_PATTERNS = (
     r"\bgit\s+filter-branch\b",
     r"\bgit\s+reflog\s+expire\b",
     r"\bgit\s+rebase\b[^\n]*\b(?:main|master)\b",
-    # Деструкция системы. Внутри проекта rm -rfbuild/ — обычная уборка, и её
+    # Деструкция системы. Внутри проекта rm -rf build/ — обычная уборка, и её
     # нельзя запрещать вместе с rm -rf /: разница не в команде, а в цели.
-    r"\brm\s+-[a-zA-Z]*[rf][a-zA-Z]*\s+(?:/|~|\$HOME|\*|\.\s*$|\.\.)",
-    r"\brm\s+-[a-zA-Z]*[rf][a-zA-Z]*\s+/[a-z]",
+    # /tmp — именованные одноуровневые подпути без глобов (уборка своих
+    # времянок): вырез ниже сужает гард ровно на них, голый /tmp, /tmp/*
+    # и rm -rf / остаются refuse и проверяются тестами.
+    r"\brm\s+-[a-zA-Z]*[rf][a-zA-Z]*\s+(?:~|\$HOME|\*|\.\s*$|\.\.)",
+    r"\brm\s+-[a-zA-Z]*[rf][a-zA-Z]*\s+/(?!tmp/[A-Za-z0-9_.-]+(?:\s|$))",
+    r"\brm\s+-[a-zA-Z]*[rf][a-zA-Z]*\s+/tmp(?:\s|$|/\*|/\.?$)",
+    r"\brm\s+-[a-zA-Z]*[rf][a-zA-Z]*\s+/tmp/[A-Za-z0-9_.-]+/.+",
     r"\brmdir\b",
     r"\bkill(?:all)?\b",
     r"\bchmod\s+777\b",
@@ -889,11 +894,24 @@ DEFAULT_ALLOW_PATTERNS = (
     # не матчатся здесь, а не только в тестах. Задача seq 329: рутинные прогоны
     # требовали ручного Allow, хотя это та же работа, что pytest напрямую.
     r"\bbash\s+scripts/(?!/)(?![^\s]*\.\.)[A-Za-z0-9_.-]+\.sh\b",
-    # Уборка артефактов внутри проекта — обычная часть работы. Цель обязана быть
-    # относительной: `rm -rf /`, `rm -rf ~` и `rm -rf .` отсеяны запретами выше,
-    # а эти lookahead'ы не дают им пройти второй раз. `./dist` — цель
-    # относительная, поэтому проходит.
-    r"\brm\s+-[a-zA-Z]+\s+(?![/~$*])(?!\.{1,2}(?:\s|$))[^\s]+",
+    # Наблюдение без записи: чтение состояния, а не изменение (§12 не задевают).
+    # Чистое наблюдение — без редиректа (>), без -i, без -o: printf > /etc,
+    # sed -i /etc, sort -o /etc — это запись вне проекта, а не наблюдение.
+    # awk — refuse (тот же класс, что python3 -c: system()/pipe исполняют);
+    # trap/export — refuse (безопасность в значении, матчем не отличить).
+    r"\b(?:date|du|wc|sleep|mktemp|which|command|echo|uptime|uniq|cut|tr|diff)\b",
+    r"\b(?:mkdir|touch)\s+(?:-[a-zA-Z]+\s+)*(?:(?![/~$*])(?!\.{1,2}(?:\s|$))[^\s-]+|/tmp/[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*)",
+    r"\b(?:printf|sort)\b(?![^\n]*\s*>+\s*/(?!tmp/|dev/null))(?![^\n]*\s-o\s*/(?!tmp/))(?![^\n]*>+/(?!tmp/|dev/null))",
+    r"\bsed\b(?![^\n]*-i[^\n]*\s/(?!tmp/))(?![^\n]*-i/(?!tmp/))",
+    r"\bgit\s+check-ignore\b",
+    r"\bpython3\s+--version\b",
+    # Файловые операции внутри проекта и /tmp: cp/mv/ln, rm файла
+    # без флагов, rm -rf одноуровневых именованных подпутей /tmp без глобов.
+    # Голый /tmp, /tmp/* и rm -rf / остаются refuse (см. NEVER выше).
+    # touch/mkdir — выше, в скоупе observe (те же границы).
+    r"\b(?:cp|mv|ln)\s+(?:(?![/~$*])(?!\.{1,2}(?:\s|$))[^\s]+|/tmp/[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*)",
+    r"\brm\s+(?:(?![/~$*./-])(?!\.{1,2}(?:\s|$))[^\s]+|/tmp/[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*)",
+    r"\brm\s+-[a-zA-Z]+\s+(?:(?![/~$*])(?!\.{1,2}(?:\s|$))[^\s]+|/tmp/[A-Za-z0-9_.-]+)",
     # локальный git: §10 требует ветку и коммит, поэтому это разрешено
     r"\bgit\s+(?:status|diff|log|show|branch|remote|describe|rev-parse|add|commit|"
     r"checkout|switch|stash|tag|blame|shortlog|reflog)\b",
