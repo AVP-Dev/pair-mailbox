@@ -29,14 +29,24 @@ state="${state:-${PAIR_STATE:-}}"
 if [ -z "$state" ]; then
     # Тот же walk-up, что у плагина и extract_state: запуск из подкаталога
     # не создаёт второе состояние. Общие конфиги pin не несут by design.
-    dir="$(pwd)"
-    for _ in 1 2 3 4 5 6 7 8 9 10 11 12; do
-        if [ -f "$dir/.pair/state.json" ]; then state="$dir/.pair"; break; fi
-        parent="$(dirname -- "$dir")"
-        if [ "$parent" = "$dir" ]; then break; fi
-        dir="$parent"
-    done
-    state="${state:-.pair}"
+    # Вне git-репозитория walk-up не идёт вовсе: иначе probe из $HOME
+    # поднимает сервер на мусорном ~/.pair и угоняет роль
+    # (измерено 2026-10-07: дубль --role opencode на ~/.pair).
+    top="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+    if [ -n "$top" ]; then
+        dir="$(pwd)"
+        for _ in 1 2 3 4 5 6 7 8 9 10 11 12; do
+            if [ -f "$dir/.pair/state.json" ]; then state="$dir/.pair"; break; fi
+            if [ "$dir" = "$top" ]; then break; fi
+            parent="$(dirname -- "$dir")"
+            if [ "$parent" = "$dir" ]; then break; fi
+            dir="$parent"
+        done
+    fi
+    if [ -z "$state" ]; then
+        echo "pair-mailbox: refusing: no git repository here ($(pwd)), no .pair above repo root — refusing to create a stray state" >&2
+        exit 4
+    fi
 fi
 if [ -n "${PAIR_ROLE:-}" ] && [ "${PAIR_ROLE}" != "$role" ]; then
   echo "pair-mailbox: refusing: PAIR_ROLE=${PAIR_ROLE} != argv role $role (role comes from config, never from env)" >&2
