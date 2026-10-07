@@ -676,6 +676,50 @@ class TestTmuxPaths(PilotCase):
         self.assertIn("pilot_pane_healed", self.transcript_kinds())
         self.assertEqual(self.pilot().store.read()["roles"]["codex"]["pane"], "%7")
 
+    def test_live_project_pane_heals_roster_without_pid(self) -> None:
+        """pid мёртв/пуст, но в проекте есть живая свободная панель: чиним
+        запись по cwd, а не хороним роль (P1, критик seq 381)."""
+        self.write_state(roles={"codex": {"last_seen": ago(10), "pid": 1}})
+        pilot = self.fake_tmux()
+        real_find = pairpilot.find_pane_of_pid
+        real_belongs = pairpilot.pane_belongs_to_project
+        real_run = pairpilot.subprocess.run
+        pairpilot.find_pane_of_pid = lambda tmux, pid: ""
+        pairpilot.pane_belongs_to_project = (
+            lambda tmux, pane, root: (pane == "%11", ""))
+        pairpilot.subprocess.run = lambda *a, **k: type("R", (), {
+            "stdout": "%9\n%11\n", "returncode": 0})()
+        pilot.pane_key = lambda pane: str(pane)
+        try:
+            pilot.tick()
+        finally:
+            pairpilot.find_pane_of_pid = real_find
+            pairpilot.pane_belongs_to_project = real_belongs
+            pairpilot.subprocess.run = real_run
+        self.assertIn("pilot_pane_healed", self.transcript_kinds())
+        self.assertEqual(self.pilot().store.read()["roles"]["codex"]["pane"], "%11")
+
+    def test_foreign_pane_does_not_heal_the_roster(self) -> None:
+        """Чужая панель не чинит ростер: принадлежность не доказана —
+        роль остаётся без панели, fail-closed."""
+        self.write_state(roles={"codex": {"last_seen": ago(10), "pid": 1}})
+        pilot = self.fake_tmux()
+        real_find = pairpilot.find_pane_of_pid
+        real_belongs = pairpilot.pane_belongs_to_project
+        real_run = pairpilot.subprocess.run
+        pairpilot.find_pane_of_pid = lambda tmux, pid: ""
+        pairpilot.pane_belongs_to_project = lambda tmux, pane, root: (False, "чужой")
+        pairpilot.subprocess.run = lambda *a, **k: type("R", (), {"stdout": "%9\n", "returncode": 0})()
+        pilot.pane_key = lambda pane: str(pane)
+        try:
+            pilot.tick()
+        finally:
+            pairpilot.find_pane_of_pid = real_find
+            pairpilot.pane_belongs_to_project = real_belongs
+            pairpilot.subprocess.run = real_run
+        self.assertIn("pilot_pane_missing", self.transcript_kinds())
+        self.assertNotIn("pane", self.pilot().store.read()["roles"]["codex"])
+
     def test_dead_pane_is_recorded_once(self) -> None:
         self.write_state(roles={"agy": {"last_seen": ago(10), "pane": "%9"}})
         pilot = self.fake_tmux(alive=False)

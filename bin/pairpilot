@@ -63,6 +63,7 @@ try:
         pane_role_pid,
         resolve_permission_prompt,
     )
+    from panes import pane_belongs_to_project  # noqa: E402 - принадлежность панели проекту
 except Exception as error:  # noqa: BLE001 - причина должна быть видна сразу
     print(f"pairpilot: не удалось подключить composer: {error}", file=sys.stderr)
     raise SystemExit(1)
@@ -859,6 +860,37 @@ class Pilot:
                     self.enqueue(sender, text)
                     log(f"{sender} ждёт ответа на запрос {seq} уже {int(age // 60)} мин")
 
+    def live_project_panes(self, state: dict) -> list[str]:
+        """Живые панели этого проекта, не занятые ролями — кандидаты для wake.
+
+        Ростер знает только записанные панели, а агент мог открыть терминал
+        внутри проекта мимо него (критик seq 381: pane None в ростере при
+        живых панелях с cwd проекта). Ищем напрямую через list-panes
+        и доказываем принадлежность через panes-модуль, а не строкой.
+        """
+        if self.tmux is None:
+            return []
+        try:
+            out = subprocess.run([self.tmux, "list-panes", "-a", "-F", "#{pane_id}"],
+                                 capture_output=True, text=True, timeout=5).stdout
+        except Exception:
+            return []
+        taken = {self.pane_key(info.get("pane")) for info in (state.get("roles") or {}).values()
+                 if info.get("pane")}
+        found = []
+        for pane in out.splitlines():
+            pane = pane.strip()
+            if not pane or self.pane_key(pane) in taken:
+                continue
+            try:
+                ours, _why = pane_belongs_to_project(self.tmux, pane,
+                                                     self.store.project_root)
+            except Exception:
+                continue
+            if ours:
+                found.append(pane)
+        return found
+
     def dead_pane(self, state: dict) -> None:
         """Окно агента исчезло. Подтолкнуть нечем — это тот случай, где человек
         нужен по-настоящему. Но сказать об этом надо громко и один раз, а не
@@ -877,13 +909,18 @@ class Pilot:
                 pid = info.get("pid")
                 if isinstance(pid, int) and pid > 0 and is_pid_alive(pid):
                     healed = find_pane_of_pid(self.tmux, pid)
+                if not healed:
+                    # pid не помог, но агент мог открыть терминал внутри проекта
+                    # мимо ростера: первая свободная живая панель проекта.
+                    live = self.live_project_panes(state)
+                    healed = live[0] if live else ""
                 if healed:
                     def heal(st):
                         st.get("roles", {}).get(role, {})["pane"] = healed
                     self.store.mutate(heal)
                     self.store.append_transcript("pilot_pane_healed", "pairpilot",
                                                  target=role, pane=healed)
-                    log(f"{role}: панель {healed} найдена по процессу — чиню ростер")
+                    log(f"{role}: панель {healed} найдена в проекте — чиню ростер")
                     continue
                 if self.remember(f"nopane-{role}"):
                     self.store.append_transcript("pilot_pane_missing", "pairpilot", target=role)
