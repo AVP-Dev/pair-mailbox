@@ -25,7 +25,19 @@ while [ "$#" -gt 0 ]; do
         *) if [ -z "$state" ]; then case "$1" in --*) ;; *) state="$1";; esac; fi; shift;;
     esac
 done
-state="${state:-${PAIR_STATE:-.pair}}"
+state="${state:-${PAIR_STATE:-}}"
+if [ -z "$state" ]; then
+    # Тот же walk-up, что у плагина и extract_state: запуск из подкаталога
+    # не создаёт второе состояние. Общие конфиги pin не несут by design.
+    dir="$(pwd)"
+    for _ in 1 2 3 4 5 6 7 8 9 10 11 12; do
+        if [ -f "$dir/.pair/state.json" ]; then state="$dir/.pair"; break; fi
+        parent="$(dirname -- "$dir")"
+        if [ "$parent" = "$dir" ]; then break; fi
+        dir="$parent"
+    done
+    state="${state:-.pair}"
+fi
 if [ -n "${PAIR_ROLE:-}" ] && [ "${PAIR_ROLE}" != "$role" ]; then
   echo "pair-mailbox: refusing: PAIR_ROLE=${PAIR_ROLE} != argv role $role (role comes from config, never from env)" >&2
   exit 3

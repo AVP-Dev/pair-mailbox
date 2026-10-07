@@ -249,14 +249,15 @@ def splice_json_block(text, root_key, server_key, entry_json):
     sep = "" if not head[inner_start + 1:].strip() else ","
     return (head + "%s\n    \"%s\": %s\n" % (sep, server_key, entry_json) + text[inner_end:], "inserted")
 
-
 def write_mcp(profile, role):
     spec = profile["mcp"]
     path = expand(spec["path"])
     path.parent.mkdir(parents=True, exist_ok=True)
-    # Явный --state: иначе сервер стартует с .pair от cwd агента и из
-    # вложенного каталога молча создаёт второе состояние (state-dir-not-pinned).
-    argv = ["sh", str(SERVER), role, "--state", str(ROOT / ".pair")]
+    # Без --state by design: в общие конфиги (~/.config) абсолютный pin
+    # проекта нельзя — все проекты делили бы одно состояние. Резолв на
+    # рантайме: walk-up до .pair/state.json в serve.sh и extract_state.
+    argv = ["sh", str(SERVER), role]
+    path.parent.mkdir(parents=True, exist_ok=True)
 
     if spec["format"] == "toml":
         text = path.read_text(encoding="utf-8") if path.exists() else ""
@@ -271,7 +272,7 @@ def write_mcp(profile, role):
                 else:
                     continue
             lines.append(line)
-        block = '[mcp_servers.pair]\ncommand = "sh"\nargs = ["%s", "%s", "--state", "%s"]\n' % (SERVER, role, ROOT / ".pair")
+        block = '[mcp_servers.pair]\ncommand = "sh"\nargs = ["%s", "%s"]\n' % (SERVER, role)
         path.write_text("\n".join(lines).rstrip() + "\n\n" + block, encoding="utf-8")
         return argv
 

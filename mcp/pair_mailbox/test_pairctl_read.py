@@ -362,6 +362,25 @@ class TestMultiProject(PairTestCase):
                 os.environ["PAIR_STATE"] = old
         self.assertNotEqual(explicit, str(Path(".pair").resolve()))
 
+    def test_nested_cwd_resolves_to_project_root_state(self) -> None:
+        """Запуск из подкаталога не создаёт второй .pair: walk-up до
+        .pair/state.json (state-dir-not-pinned, ВОЗРАЖАЮ-2)."""
+        from pairctl_read import extract_state, walk_up_to_state
+        proj = Path(self._tmp.name) / "proj"
+        (proj / ".pair").mkdir(parents=True)
+        (proj / ".pair" / "state.json").write_text("{}")
+        deep = proj / "a" / "b"
+        deep.mkdir(parents=True)
+        old_env = os.environ.pop("PAIR_STATE", None)
+        cwd = os.getcwd()
+        os.chdir(deep)
+        try:
+            self.assertEqual(walk_up_to_state(), (proj / ".pair").resolve())
+            self.assertEqual(extract_state(["status"])[0], (proj / ".pair").resolve())
+        finally:
+            os.chdir(cwd)
+            if old_env is not None:
+                os.environ["PAIR_STATE"] = old_env
 
 
 if __name__ == "__main__":
