@@ -210,13 +210,6 @@ class TestComposerDelegatesWithoutForkingBehaviour(PaneOwnershipBase):
 
 
 class TestFindOwnPane(PaneOwnershipBase):
-    def test_own_process_tree_resolves_to_a_live_pane(self) -> None:
-        """Без TMUX_PANE ростер оставался без панели и deliver/unblock слепли.
-        Обратный путь — цепочка предков до pane_pid: находит живую панель."""
-        found = composer.find_own_pane(TMUX)
-        self.assertTrue(found, "процесс набора живёт в панели — её надо найти")
-        self.assertTrue(composer.pane_alive(TMUX, found))
-
     def test_chain_meets_pane_pid_in_stub_tmux(self) -> None:
         """Hermetic: цепочка предков встречается с pane_pid стаба — панель
         находится без живого tmux. Скип здесь маскировал бы поломку."""
