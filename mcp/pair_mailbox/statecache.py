@@ -47,6 +47,7 @@ def fingerprint(
     obligation_names: list[str] | None = None,
     inbox_names: list[str] | None = None,
     git_snapshot: Callable[[], Any] | None = None,
+    alive: dict[str, bool | None] | None = None,
 ) -> str:
     """Короткий отпечаток всего, что читает полный ответ `pair_state`.
 
@@ -62,6 +63,11 @@ def fingerprint(
 
     Имена файлов обязательств и входящих передаются списками, а не читаются
     здесь: модуль не должен знать, где они лежат, — этим владеет сессия.
+    То же с `alive`: `peers.alive` читается живым `os.kill(pid, 0)`, а не
+    номером в state — процесс умирает снаружи, state не меняется, и без
+    этого снимка заглушка врала бы, что мёртвый сосед слушает. Сессия
+    снимает живость сама и передаёт готовую — тогда модуль не знает
+    про процессы вовсе.
 
     `git_snapshot` вызывается только когда есть вердикты: `_done_blockers`
     читает снимок HEAD+dirty для проверки stale, и отпечаток обязан это видеть.
@@ -82,6 +88,7 @@ def fingerprint(
         "obligations": sorted(obligation_names or []),
         "inbox": list(inbox_names or []),
         "git": git_fp,
+        "alive": dict(sorted((alive or {}).items())),
     }
     return hashlib.sha256(json.dumps(cache_key, sort_keys=True).encode()).hexdigest()[:12]
 

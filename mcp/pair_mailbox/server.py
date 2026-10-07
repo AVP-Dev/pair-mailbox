@@ -1419,12 +1419,18 @@ class PairSession:
         # считает statecache — он не знает ни про git, ни про то, где лежат
         # файлы обязательств, и потому не может разойтись с ответом.
         if not statecache.cache_disabled():
+            alive = {
+                name: liveness.pid_alive(info.get("pid"))
+                for name, info in (state.get("roles") or {}).items()
+                if isinstance(info, dict) and info.get("pid")
+            }
             state_hash = statecache.fingerprint(
                 state,
                 obligation_names=[p.name for p in
                                   self.store.obligations_root.glob("*.json")],
                 inbox_names=[p.name for p in self._inbox_files()],
                 git_snapshot=self._git_fingerprint,
+                alive=alive,
             )
             if state_hash == self._last_state_hash:
                 return statecache.unchanged_answer(state_hash)

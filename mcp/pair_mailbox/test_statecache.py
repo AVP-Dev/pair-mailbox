@@ -132,6 +132,7 @@ class TestFingerprintSeesEverythingTheAnswerReads(unittest.TestCase):
             statecache.fingerprint(state, inbox_names=[]),
         )
 
+
     def test_obligation_order_does_not_change_it(self) -> None:
         """Порядок имён не содержание: два вызова не должны различаться из-за него."""
         state = self.base_state()
@@ -280,6 +281,79 @@ class TestCacheOverARealSession(PairTestCase):
             )
         finally:
             os.environ[statecache.CACHE_DISABLED_ENV] = "1"
+
+    def test_a_dead_peer_is_not_hidden_by_the_stub(self) -> None:
+        """Смерть соседа обязана пробивать заглушку, а не прятаться за ней.
+
+        `peers.alive` зависит от живого `os.kill(pid, 0)`, а не от номера
+        в state: процесс умирает снаружи, state не меняется, отпечаток
+        тот же — и заглушка врала бы, что сосед слушает. Живым процессом
+        (`sleep 60`, потом `kill`) доказано: до смерти alive=True,
+        после — заглушка вместо alive=False.
+        """
+        import subprocess
+
+        os.environ.pop(statecache.CACHE_DISABLED_ENV, None)
+        try:
+            self.writer.tool_pair_claim(reason="writer")
+            self.writer.tool_pair_state()
+            self.peer.tool_pair_state()
+            proc = subprocess.Popen(["sleep", "60"])
+            try:
+                self.store.mutate(
+                    lambda s: s["roles"]["reviewer-agent"].__setitem__(
+                        "pid", proc.pid))
+                alive = self.writer.tool_pair_state()
+                self.assertIn("reviewer-agent", alive["peers"])
+                self.assertTrue(
+                    self.writer.tool_pair_state().get("unchanged"),
+                    "кэш не сработал на неизменившемся",
+                )
+                proc.kill()
+                proc.wait()
+                reread = self.writer.tool_pair_state()
+                self.assertNotIn("unchanged", reread,
+                                 "кэш спрятал смерть соседа за заглушкой")
+                self.assertFalse(reread["peers"]["reviewer-agent"]["alive"])
+            finally:
+                if proc.poll() is None:
+                    proc.kill()
+                    proc.wait()
+        finally:
+            os.environ[statecache.CACHE_DISABLED_ENV] = "1"
+
+
+    def test_a_new_letter_is_not_hidden_by_the_stub(self) -> None:
+        """Новое письмо соседу обязано пробивать заглушку, а не прятаться за ней.
+
+        Отпечаток видит ящик по именам файлов, прочтение — по `seen` в state.
+        Проверяется живым вызовом: заглушка на тишине, полный ответ после
+        письма, полный ответ после прочтения. Без этого пара возвращалась
+        к опросу вслепую: агент с кэшем не замечал, что ему написали.
+        """
+        os.environ.pop(statecache.CACHE_DISABLED_ENV, None)
+        try:
+            self.peer.tool_pair_state()
+            self.assertTrue(
+                self.peer.tool_pair_state().get("unchanged"),
+                "кэш не сработал на неизменившемся",
+            )
+
+            self.writer.tool_pair_send(
+                to="reviewer-agent", text="смотри сюда", expects_reply=False)
+            after = self.peer.tool_pair_state()
+            self.assertNotIn("unchanged", after,
+                             "кэш спрятал новое письмо за заглушкой")
+            self.assertEqual(after.get("unread"), 1)
+
+            self.peer.tool_pair_read(limit=10)
+            reread = self.peer.tool_pair_state()
+            self.assertNotIn("unchanged", reread,
+                             "кэш спрятал прочтение за заглушкой")
+            self.assertEqual(reread.get("unread"), 0)
+        finally:
+            os.environ[statecache.CACHE_DISABLED_ENV] = "1"
+
 
 
 if __name__ == "__main__":
