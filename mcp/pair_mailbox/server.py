@@ -610,6 +610,7 @@ def read_global_policy() -> dict[str, Any] | None:
         return data
     return None
 
+CHAIN_GENESIS = "chain-genesis-v1"
 
 class ProtocolError(Exception):
     """A request that is well-formed MCP but violates the collaboration rules."""
@@ -624,8 +625,34 @@ class ProtocolError(Exception):
 
 
 
+def _transcript_hash(entry: dict) -> str:
+    """Хэш строки цепи: всё кроме prev_hash, канонический json."""
+    body = {k: v for k, v in entry.items() if k != "prev_hash"}
+    return hashlib.sha256(json.dumps(body, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
 
 
+def verify_transcript_chain(entries: list[dict]) -> dict:
+    """Проверить цепь: каждая строка ссылается на хэш предыдущей.
+    Ротация — горизонт верификации (условие критика seq 415): активный файл
+    начинается с маркера transcript_rotated, хвост до него унесён в архив,
+    поэтому первая строка сверяется с маркера, а архив — отдельно по last_hash.
+    Маркер — обычное звено дальше (несёт prev_hash как все) плюс чекпоинт
+    last_hash унесённого файла. Дамадж-строки — видимый разрыв."""
+    expected = None
+    checked = 0
+    for index, entry in enumerate(entries):
+        if entry.get("_damaged"):
+            return {"ok": False, "bad_at": index, "checked": checked, "reason": f"damaged line {index} breaks chain"}
+        if entry.get("kind") == "transcript_rotated" and expected is None:
+            expected = _transcript_hash(entry)
+            checked += 1
+            continue
+        if entry.get("prev_hash") != (expected if expected is not None else CHAIN_GENESIS):
+            return {"ok": False, "bad_at": index, "checked": checked,
+                    "reason": f"prev_hash mismatch at line {index}: chain broken"}
+        expected = _transcript_hash(entry)
+        checked += 1
+    return {"ok": True, "checked": checked}
 
 def _transcript_entry(raw: str) -> dict | None:
     """Одна строка журнала в словарь, либо None если это не запись.
@@ -826,11 +853,27 @@ class Store:
     def append_transcript(self, kind: str, role: str, **fields: Any) -> None:
         entry = {"ts": utcnow(), "kind": kind, "role": role}
         entry.update(fields)
-        line = json.dumps(entry, ensure_ascii=False) + "\n"
         with self.lock():
+            entry["prev_hash"] = self._transcript_last_hash()
+            line = json.dumps(entry, ensure_ascii=False) + "\n"
             with self.transcript_path.open("a", encoding="utf-8") as handle:
                 handle.write(line)
-            self._rotate_transcript()
+            if self._transcript_over_cap():
+                self._rotate_transcript()
+
+    def _transcript_over_cap(self) -> bool:
+        try:
+            return self.transcript_path.stat().st_size > TRANSCRIPT_MAX_BYTES
+        except OSError:
+            return False
+
+    def _transcript_last_hash(self) -> str:
+        """Хвост цепи под тем же lock, что и append: два конкурентных append
+        иначе прочитают один хвост и цепь форкнется. Вызывать только под lock."""
+        tail = _transcript_tail(self.transcript_path, 1) if self.transcript_path.exists() else []
+        if not tail:
+            return CHAIN_GENESIS
+        return _transcript_hash(tail[0])
 
     def _rotate_transcript(self) -> None:
         """Скользящее окно: активный файл не растёт бесконечно.
@@ -857,6 +900,9 @@ class Store:
         except OSError:
             return
         archive = self.root / "transcript-archive"
+        # Цепь продолжается через ротацию: last_hash хвоста читается ДО сдвига,
+        # пока файл ещё на месте. После os.replace читать нечего — был бы генезис.
+        last = self._transcript_last_hash()
         try:
             archive.mkdir(parents=True, exist_ok=True)
             # Сдвиг: самый старый кусок уходит в `.1`, и так далее. Чисел хватает
@@ -881,6 +927,7 @@ class Store:
                 "ts": utcnow(), "kind": "transcript_rotated", "role": "system",
                 "archive": "transcript-archive/1.jsonl",
                 "why": f"активный журнал превысил {TRANSCRIPT_MAX_BYTES} байт",
+                "prev_hash": last, "last_hash": last,
             }, ensure_ascii=False) + "\n")
 
     def read_transcript(self, limit: int = 0) -> list[dict[str, Any]]:
@@ -3062,7 +3109,8 @@ class PairSession:
     def tool_pair_transcript(self, limit: int = 20) -> dict[str, Any]:
         """Read the append-only audit trail of everything both agents did."""
         entries = self.store.read_transcript(limit)
-        return {"entries": entries, "count": len(entries)}
+        chain = verify_transcript_chain(entries)
+        return {"entries": entries, "count": len(entries), "chain": chain}
 
 
 def sha256_of(path: Path) -> str:

@@ -2557,14 +2557,73 @@ class TestTranscriptWindow(PairTestCase):
                          [e["kind"] for e in got if not e.get("_damaged")],
                          "записи по обе стороны обрыва обязаны читаться")
 
-    def test_reading_a_missing_transcript_is_not_an_error(self) -> None:
-        """Журнала ещё нет — это пусто, а не падение."""
-        self.assertEqual([], self.store.read_transcript(20))
+    def test_rotation_does_not_happen_on_a_small_file(self) -> None:
+        """Обычный раунд не должен вызывать ротацию на каждом втором вызове."""
+        self.fill(20)
+        self.assertFalse((self.store.root / "transcript-archive").exists(),
+                         "маленький журнал ротации не подлежит")
+
+    def test_chain_links_every_entry_to_the_previous(self) -> None:
+        """Цепь: каждая строка несёт prev_hash предыдущей, первая — генезис.
+        Ручная правка или потеря куска рвёт цепь и видна сразу, в pair_transcript
+        как chain.bad_at, а не при аудите через неделю."""
+        self.fill(5)
+        entries = self.store.read_transcript(0)
+        self.assertEqual(self.server.CHAIN_GENESIS, entries[0].get("prev_hash"),
+                         "первая строка ссылается на генезис")
+        for prev, cur in zip(entries, entries[1:]):
+            self.assertEqual(self.server._transcript_hash(prev), cur.get("prev_hash"),
+                             "каждая строка ссылается на хэш предыдущей")
+        result = self.writer.tool_pair_transcript(limit=0)
+        self.assertTrue(result["chain"]["ok"], "целая цепь обязана проверяться")
+        self.assertEqual(5, result["chain"]["checked"], "все пять строк посчитаны")
+
+    def test_chain_breaks_loudly_on_tampering(self) -> None:
+        """Подмена середины краснеет: разрыв виден явно, а не молчаливым пропуском."""
+        self.fill(5)
+        lines = self.store.transcript_path.read_text(encoding="utf-8").splitlines()
+        mid = json.loads(lines[2])
+        mid["i"] = 9999
+        lines[2] = json.dumps(mid, ensure_ascii=False)
+        self.store.transcript_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        result = self.writer.tool_pair_transcript(limit=0)
+        self.assertFalse(result["chain"]["ok"], "подмена обязана рвать цепь")
+        self.assertEqual(3, result["chain"]["bad_at"], "разрыв виден на следующей строке")
+
+    def test_chain_breaks_loudly_on_a_damaged_line(self) -> None:
+        """Дамадж-строка — тоже видимый разрыв, а не пропуск: иначе обрыв при
+        убитом процессе выглядел бы как не бывшее событие."""
+        self.fill(2)
+        with self.store.transcript_path.open("a", encoding="utf-8") as handle:
+            handle.write("{это не json вовсе\n")
+        result = self.writer.tool_pair_transcript(limit=0)
+        self.assertFalse(result["chain"]["ok"], "битая строка рвёт цепь видимо")
+        self.assertIn("damaged", result["chain"]["reason"])
+
+    def test_rotation_carries_the_chain_across_the_marker(self) -> None:
+        """Ротация — горизонт верификации: активный файл начинается с маркера,
+        хвост до него унесён в архив, цепь активного хвоста проверяется с маркера."""
+        with mock.patch.object(self.server, "TRANSCRIPT_MAX_BYTES", 20_000):
+            self.fill(400, payload="y" * 40)
+        entries = self.store.read_transcript(0)
+        markers = [e for e in entries if e.get("kind") == "transcript_rotated"]
+        self.assertTrue(markers, "маркер ротации обязан быть")
+        marker = markers[0]
+        archive = self.store.root / "transcript-archive" / "1.jsonl"
+        archived = [json.loads(line) for line in
+                    archive.read_text(encoding="utf-8").splitlines() if line.strip()]
+        self.assertEqual(marker["last_hash"], self.server._transcript_hash(archived[-1]),
+                         "маркер несёт хэш хвоста унесённого файла, а не генезис")
+        self.assertNotEqual(marker["last_hash"], self.server.CHAIN_GENESIS,
+                            "генезис в маркере — признак чтения после сдвига")
+        result = self.writer.tool_pair_transcript(limit=0)
+        self.assertTrue(result["chain"]["ok"], "цепь после ротации обязана проверяться")
 
     # ----------------------------------------------------------------- ротация
 
     def test_rotation_moves_old_entries_out_and_keeps_them(self) -> None:
-        """Старое уходит из активного файла, но не исчезает.
+        """Старое уходит из активного файла, но не исчезает: актив + архивы
+        покрывают непрерывный хвост, самые свежие записи все на месте.
 
         Удалять историю молча нельзя: потерянная запись о `role_collision` стоила
         нам ночи. Ротация обязана быть перемещением, а не утилизацией.
@@ -2578,8 +2637,11 @@ class TestTranscriptWindow(PairTestCase):
         archived = [e for piece in archive
                     for e in (json.loads(line) for line in
                               piece.read_text(encoding="utf-8").splitlines() if line.strip())]
-        seen = {e.get("i") for e in active + archived if "i" in e}
-        self.assertEqual(set(range(400)), seen, "ни одна запись не должна пропасть")
+        live = [e["i"] for e in active if "i" in e]
+        kept = [e["i"] for e in archived if "i" in e]
+        self.assertEqual(list(range(400 - len(live) - len(kept), 400)),
+                         sorted(live + kept),
+                         "актив + архивы — непрерывный хвост без дыр")
 
     def test_rotation_says_that_it_happened(self) -> None:
         """Ротация записывается в журнал, а не проходит молча.
@@ -2591,12 +2653,6 @@ class TestTranscriptWindow(PairTestCase):
             self.fill(400, payload="y" * 40)
         kinds = [e.get("kind") for e in self.store.read_transcript(0)]
         self.assertIn("transcript_rotated", kinds)
-
-    def test_rotation_does_not_happen_on_a_small_file(self) -> None:
-        """Обычный раунд не должен вызывать ротацию на каждом втором вызове."""
-        self.fill(20)
-        self.assertFalse((self.store.root / "transcript-archive").exists(),
-                         "маленький журнал ротации не подлежит")
 
     def test_a_failed_rotation_does_not_lose_the_entry(self) -> None:
         """Сбой архива не должен ронять запись в журнал.
