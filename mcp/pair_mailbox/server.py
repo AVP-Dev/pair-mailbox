@@ -2223,7 +2223,7 @@ class PairSession:
                 seen = len(files)
             fresh = files[seen : seen + max(0, int(limit))]
             out: list[dict[str, Any]] = []
-            successful_count = 0
+            consumed = 0
             for path in fresh:
                 try:
                     msg = json.loads(path.read_text(encoding="utf-8"))
@@ -2231,6 +2231,7 @@ class PairSession:
                     self.store.append_transcript("message_unreadable", self.role,
                                                  path=str(path), error=str(exc))
                     break
+                consumed += 1
                 try:  # проверка не роняет чтение; без ключа письмо отдаётся как раньше
                     import rolekeys as _keys3
                     env = msg.get("envelope")
@@ -2242,9 +2243,8 @@ class PairSession:
                 except Exception:  # noqa: BLE001
                     pass
                 out.append(msg)
-                successful_count += 1
-            if successful_count:
-                state.setdefault("seen", {})[self.role] = seen + successful_count
+            if consumed:
+                state.setdefault("seen", {})[self.role] = seen + consumed
             elif seen != int(state.get("seen", {}).get(self.role, 0)):
                 state.setdefault("seen", {})[self.role] = seen
             return out

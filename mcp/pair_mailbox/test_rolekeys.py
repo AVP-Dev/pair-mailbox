@@ -70,6 +70,25 @@ class TestRoleKeys(PairTestCase):
         self.assertIsNone(rolekeys.load_signing_key(self.store.root, "nobody"))
         self.assertIsNone(rolekeys.load_verify_key(self.store.root, "nobody"))
 
+    def test_bad_letter_is_consumed_not_redelivered(self) -> None:
+        """Подмена потребляется: seen идёт, дублей и спама bad_signature нет."""
+        import json
+        for role in ("writer-agent", "reviewer-agent"):
+            made = rolekeys.generate(self.store.root, self.store.project_root, role)
+            self.store.mutate(lambda s, r=role, m=made: s.setdefault("role_keys", {}).update(
+                {r: {"key_id": m["key_id"], "public": m["public"], "revoked": []}}))
+        self.writer.tool_pair_send(to="reviewer-agent", text="целое1")
+        self.writer.tool_pair_send(to="reviewer-agent", text="целое2")
+        files = sorted((self.store.mailbox_root / "reviewer-agent").glob("*.json"))
+        bad = json.loads(files[0].read_text(encoding="utf-8"))
+        bad["text"] = "подмена"
+        files[0].write_text(json.dumps(bad), encoding="utf-8")
+        first = self.peer.tool_pair_read(limit=10)
+        self.assertEqual(["целое2"], [m["text"] for m in first["messages"]])
+        self.assertEqual(0, self.peer.tool_pair_read(limit=10)["count"])
+        kinds = [e.get("kind") for e in self.store.read_transcript(0)]
+        self.assertEqual(1, kinds.count("bad_signature"))
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

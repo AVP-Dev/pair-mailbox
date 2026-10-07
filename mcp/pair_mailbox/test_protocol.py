@@ -1247,6 +1247,23 @@ class TestInputBoxCornerVsSideFrame(PairTestCase):
         self.assertIsNone(composer_line(panel),
                           "панель из рамок печатать некуда: это «занято», а не «свободно»")
 
+    def test_path_row_below_the_border_does_not_hide_the_input(self) -> None:
+        """Живой кадр opencode: под границей идёт строка пути, а не статус.
+
+        Измерено 2026-10-07: хвост '╹границы + ~/work/... + пусто' делал break
+        до границы, composer_line возвращал эхо '› pair_read', детектор говорил
+        «занят» — пилот копил outbox, критик писем не видел.
+        """
+        from composer import composer_line, is_composer_empty
+        panel = ["     › pair.pair_read [limit=10, wait_seconds=10]",
+                 "  ┃  Build · x", "  ┃", "  ╹" + "▀" * 30,
+                 "  ~/work/umputum:round-34  37.9K  ctrl+p commands", ""]
+        found = composer_line(panel)
+        self.assertIsNotNone(found)
+        self.assertTrue(found.strip().startswith("╹"),
+                        f"строка пути скрыла границу поля ввода: {found!r}")
+        self.assertTrue(is_composer_empty(found))
+
 class TestNoteTailReads(PairTestCase):
     """Заметки не читаются целиком: ни файловым инструментом, ни подавно.
 
