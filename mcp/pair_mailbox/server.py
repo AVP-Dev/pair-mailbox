@@ -1836,12 +1836,9 @@ class PairSession:
         # pair-mailbox: звонок по записанному номеру будил чужого агента.
         from composer import pane_is_foreign
         foreign, why_foreign = pane_is_foreign(tmux, pane, self.store.project_root)
-        if foreign:
-            self.store.append_transcript(
-                "ring_refused_foreign_pane", self.role, to=target,
-                pane=pane, reason=why_foreign,
-            )
-            return {"rung": False, "why": why_foreign}
+        # Недоказанная панель — не отказ, а фолбэк: печатаем короткий указатель
+        # без текста письма (секретов в нём нет — только «забери из mailbox»).
+        # Блокировать звонок здесь значило молчать, а молчание и есть затык.
         from composer import capture, composer_line, is_composer_empty
         # Single-shot без ожидания: звонок — оптимизация, а не условие.
         # Файл wake/*.json (пишется вызывающим по событию) — гарантия,
@@ -1993,14 +1990,13 @@ class PairSession:
         except ComposerBusy as exc:
             foreign, why_foreign = True, f"tmux недоступен: {exc}"
         if foreign:
-            # Панель чужая — в неё не печатаем. Сообщение уже в ящике, терять
-            # нечего, и причина отказа остаётся в транскрипте.
+            # Недоказанная панель — не отказ, а фолбэк: короткий указатель
+            # без текста (секретов нет). Сообщение уже в ящике, звонок —
+            # лучший шанс, что его заберут сейчас, а не опросом через минуты.
             self.store.append_transcript(
-                "deliver_pointer_refused_foreign_pane", self.role, to=to,
+                "deliver_pointer_fallback_foreign_pane", self.role, to=to,
                 pane=pane, reason=why_foreign, seq=seq,
             )
-            result["why"] = why_foreign
-            return result
 
         # 2. Указатель. Короткий намеренно: это строка в чужом TUI, а не текст.
         pointer = f"[pair] {self.role}: новое сообщение в ящике, прочитай pair_read"

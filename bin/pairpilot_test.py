@@ -747,6 +747,29 @@ class TestTmuxPaths(PilotCase):
         self.assertIn("pilot_pane_missing", self.transcript_kinds())
         self.assertNotIn("pane", self.pilot().store.read()["roles"]["codex"])
 
+    def test_provisional_pane_is_preferred_but_rechecked(self) -> None:
+        """Жизненный цикл pane_provisional: сервер видел панель, пилот
+        ставит её первой, но факторы перепроверяет — без server.py
+        не усыновляет даже её (вердикт раунда 33, seq 392)."""
+        self.write_state(roles={"codex": {"last_seen": ago(10), "pid": 1,
+                                          "pane_provisional": "%11"}})
+        pilot = self.fake_tmux()
+        real_belongs = pairpilot.pane_belongs_to_project
+        real_rolepid = pairpilot.pane_role_pid
+        real_run = pairpilot.subprocess.run
+        pairpilot.pane_belongs_to_project = lambda tmux, pane, root: (True, "")
+        pairpilot.pane_role_pid = lambda tmux, pane, role: 4242
+        pairpilot.subprocess.run = lambda *a, **k: type("R", (), {
+            "stdout": "%9\n%11\n", "returncode": 0})()
+        pilot.pane_key = lambda pane: str(pane)
+        try:
+            found = pilot.live_project_panes(self.pilot().store.read(), "codex")
+        finally:
+            pairpilot.pane_belongs_to_project = real_belongs
+            pairpilot.pane_role_pid = real_rolepid
+            pairpilot.subprocess.run = real_run
+        self.assertEqual("%11", found[0], "provisional — первая в очереди")
+
     def test_wake_placement_rings_the_pane_without_typing(self) -> None:
         """Постановка wake звонит в панель display-message, а не печатает
         в композер: звонок виден, строка ввода цела."""

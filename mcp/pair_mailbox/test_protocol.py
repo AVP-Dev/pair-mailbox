@@ -3725,28 +3725,30 @@ class TestPaneIdentityIsNotLiveness(PairTestCase):
         self.assertTrue(foreign)
         self.assertIn("другому проекту", why)
 
-    def test_ring_refuses_a_pane_of_another_project(self) -> None:
+    def test_ring_falls_back_to_a_pointer_on_another_projects_pane(self) -> None:
+        """Недоказанная панель — не отказ, а фолбэк: короткий указатель
+        без текста уходит, полный текст — только в ящике."""
         import composer
         self.store.mutate(lambda s: s.setdefault("roles", {})
                           .setdefault("reviewer-agent", {}).update({"pane": "%45"}))
         os.environ.pop("PAIR_DISABLE_RING", None)
-        orig_which = composer.shutil.which
+        orig_run = composer.subprocess.run
         orig_foreign = composer.pane_is_foreign
-        composer.shutil.which = lambda name: "/usr/bin/tmux"
         composer.pane_is_foreign = lambda tmux, pane, root: (
             True, "панель принадлежит другому проекту: /home/alexios/work/phronesis")
+        composer.subprocess.run = lambda *a, **k: type("R", (), {
+            "stdout": "0", "returncode": 0})()
         try:
             result = self.writer._ring("reviewer-agent", "заметка", "детали")
         finally:
-            composer.shutil.which = orig_which
+            composer.subprocess.run = orig_run
             composer.pane_is_foreign = orig_foreign
-        self.assertFalse(result["rung"], "в чужую панель не звоним")
-        self.assertIn("другому проекту", result["why"])
         kinds = [e.get("kind") for e in self.store.read_transcript(limit=0)]
-        self.assertIn("ring_refused_foreign_pane", kinds)
+        self.assertNotIn("ring_refused_foreign_pane", kinds)
 
-    def test_deliver_refuses_a_pane_of_another_project_and_keeps_the_message(self) -> None:
-        """Отказ не должен превращаться в потерю сообщения."""
+    def test_deliver_falls_back_to_a_pointer_on_another_projects_pane(self) -> None:
+        """Недоказанная панель — не отказ: указатель уходит, полный текст —
+        только в ящике. Изоляция держится текстом указателя, а не молчанием."""
         import composer
         self.store.mutate(lambda s: s.setdefault("roles", {}).setdefault(
             "reviewer-agent", {"pid": os.getpid(), "pane": "%55"}))
@@ -3757,21 +3759,19 @@ class TestPaneIdentityIsNotLiveness(PairTestCase):
         composer.shutil.which = lambda name: "/usr/bin/tmux"
         composer.pane_is_foreign = lambda tmux, pane, root: (
             True, "панель принадлежит другому проекту: /home/alexios/work/phronesis")
-        composer.deliver = lambda *a, **k: called.append(a) or {}
+        composer.deliver = lambda *a, **k: called.append(a) or {"delivered": True}
         try:
             res = self.writer.tool_pair_deliver(to="reviewer-agent", text="payload worth keeping")
         finally:
             composer.deliver = orig_deliver
             composer.shutil.which = orig_which
             composer.pane_is_foreign = orig_foreign
-        # Изоляция между проектами держится: в чужую панель не напечатано НИЧЕГО,
-        # даже указателя. Сообщение при этом доставлено — ящик не зависит от tmux,
-        # и отказ печати не должен отменять доставку. Прежде здесь требовалось
-        # `delivered: False` и `fallback_sent`, то есть проверялся старый порядок,
-        # где ящик был запасным путём.
+        # Указатель ушёл (фолбэк), полный текст — только в ящике.
         self.assertTrue(res["delivered"])
-        self.assertFalse(res["in_pane"])
-        self.assertEqual(called, [], "в чужую панель ничего не печатаем")
+        self.assertTrue(res["in_pane"])
+        self.assertEqual(1, len(called), "указатель печатаем, а не молчим")
+        self.assertNotIn("payload worth keeping", str(called[0]),
+                         "полный текст в чужую панель не уходит")
         read = self.peer.tool_pair_read(wait_seconds=0)
         self.assertEqual(read["count"], 1)
         self.assertIn("payload worth keeping", read["messages"][0]["text"])

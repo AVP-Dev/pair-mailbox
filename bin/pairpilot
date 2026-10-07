@@ -912,7 +912,8 @@ class Pilot:
 
         Усыновляем только панель с живым server.py роли (первый фактор),
         cwd — второй: иначе пилот прописал бы роль в шелл человека,
-        открытый в проекте (вердикт раунда 33).
+        открытый в проекте (вердикт раунда 33). Панель из pane_provisional
+        роли — первая в очереди: её уже видел сервер, факторы перепроверяем.
         """
         if self.tmux is None:
             return []
@@ -923,10 +924,16 @@ class Pilot:
             return []
         taken = {self.pane_key(info.get("pane")) for info in (state.get("roles") or {}).values()
                  if info.get("pane")}
+        live = {pane.strip() for pane in out.splitlines() if pane.strip()}
+        ordered: list[str] = []
+        if role:
+            prov = ((state.get("roles") or {}).get(role) or {}).get("pane_provisional") or ""
+            if prov and prov in live and self.pane_key(prov) not in taken:
+                ordered.append(prov)
+        ordered.extend(p for p in sorted(live) if p not in ordered)
         found = []
-        for pane in out.splitlines():
-            pane = pane.strip()
-            if not pane or self.pane_key(pane) in taken:
+        for pane in ordered:
+            if self.pane_key(pane) in taken:
                 continue
             if role and not pane_role_pid(self.tmux, pane, role):
                 continue
