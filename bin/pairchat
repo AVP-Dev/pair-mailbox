@@ -32,8 +32,13 @@ BOLD, DIM, RED, YELLOW, CYAN, MAGENTA, OFF = (
 )
 
 WIDTH = 100
-# Заметки, которые пишут агенты по протоколу. Показываются всегда.
-AGENT_NOTE_KINDS = frozenset({"plan", "finding", "decision", "review", "verdict", "handoff"})
+# Рабочий шум человека о самом pair-mailbox: куски кода, которым не место
+# в переписке агентов. Прячется по префиксу, а не белым списком видов:
+# иначе каждый новый вид из §9 (backlog, finding-<ID>) молча исчезал бы
+# из ленты (карточка pairchat-hides-prescribed-notes). Скрыты, а не
+# потеряны: `--all-notes` их показывает.
+NOISE_NOTE_PREFIXES = ("z",)
+NOISE_NOTE_SUFFIXES = ("-wrap",)
 
 KIND_COLOR = {
     "msg": BOLD,
@@ -193,11 +198,11 @@ class Feed:
             except Exception:
                 continue
             stem = path.stem
-            # Показываем заметки агентов по протоколу. Всё остальное — рабочие
-            # заметки человека о самом pair-mailbox: их много, они состоят из
-            # кусков кода, и в переписке агентов им не место. Скрыты, а не
-            # потеряны: `--all-notes` их показывает.
-            if not self.keep_noise and stem not in AGENT_NOTE_KINDS:
+            # Показываем всё, кроме рабочего шума (NOISE_* выше): белый список
+            # видов расходился с §9 в обе стороны — прятал backlog и finding-*,
+            # которые предписывают навыки, и показывал review, которого в §9 нет.
+            if not self.keep_noise and (stem.startswith(NOISE_NOTE_PREFIXES)
+                                        or stem.endswith(NOISE_NOTE_SUFFIXES)):
                 self.note_pos[path.name] = len(text)
                 continue
             pos = self.note_pos.get(path.name, 0)
