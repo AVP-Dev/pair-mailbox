@@ -511,6 +511,11 @@ class Pilot:
         которую агент видит краем глаза и сам решает, когда отвлечься.
         Троттл — по полю rung_at в wake-файле: не чаще раза в 5 мин,
         иначе это тот же спам, только без текста.
+
+        Для opencode после звонка идёт wake-адаптер (wake_opencode.wake):
+        инъекция указателя как user-ход по официальному session prompt API.
+        Fail-closed: двусмысленность или отказ API — тихо, mailbox остаётся
+        гарантией; throttle общий с display-message, спама нет.
         """
         if self.tmux is None or role in self.skip:
             return
@@ -520,13 +525,24 @@ class Pilot:
         pane = ((state.get("roles") or {}).get(role) or {}).get("pane")
         if not pane or not pane_alive(self.tmux, pane):
             return
+        pointer = f"[pair] {reason} — забери из mailbox через pair_read"
         try:
             subprocess.run([self.tmux, "display-message", "-t", pane,
-                            "-d", "4000",
-                            f"[pair] {reason} — забери из mailbox через pair_read"],
+                            "-d", "4000", pointer],
                            capture_output=True, timeout=5)
         except Exception:
             return
+        if role == "opencode":
+            try:
+                from wake_opencode import wake
+                result = wake(self.store.project_root, pointer)
+                self.store.append_transcript("pilot_wake_api", "pairpilot",
+                                             target=role, woken=result.get("woken"),
+                                             why=(result.get("why") or "")[:120])
+                log(f"{role}: wake-api {'принят' if result.get('woken') else 'отказ: ' + (result.get('why') or '')[:60]}")
+            except Exception as error:  # noqa: BLE001 - адаптер не должен ронять звонок
+                self.store.append_transcript("pilot_wake_api_failed", "pairpilot",
+                                             target=role, error=str(error)[:120])
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
             payload["rung_at"] = time.time()

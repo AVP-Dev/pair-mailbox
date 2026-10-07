@@ -41,6 +41,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import uuid
 
@@ -727,12 +728,42 @@ class Store:
         self.notes_root = root / "notes"
         self.patches_root = root / "patches"
         self.obligations_root = root / "obligations"
+        self.notifications_root = root / "notifications"
         self.state_path = root / "state.json"
         self.transcript_path = root / "transcript.jsonl"
         self.lock_path = root / ".lock"
         for directory in (self.root, self.mailbox_root, self.notes_root,
-                          self.patches_root, self.obligations_root):
+                          self.patches_root, self.obligations_root,
+                          self.notifications_root):
             directory.mkdir(parents=True, exist_ok=True)
+
+    @staticmethod
+    def _notification_role_dir(role: str) -> str:
+        """Hash role for a path component; roles never become filesystem paths."""
+        return hashlib.sha256(role.encode("utf-8")).hexdigest()[:16]
+
+    def publish_resource_update(self, role: str, uri: str) -> None:
+        """File-only cross-process hint. Mailbox remains the durable source of truth."""
+        folder = self.notifications_root / self._notification_role_dir(role)
+        folder.mkdir(parents=True, exist_ok=True)
+        atomic_write_json(folder / f"{uuid.uuid4().hex}.json",
+                          {"role": role, "uri": uri, "ts": utcnow()})
+
+    def drain_resource_updates(self, role: str) -> list[str]:
+        """Consume this role's event hints; one server per role owns the queue."""
+        folder = self.notifications_root / self._notification_role_dir(role)
+        if not folder.is_dir():
+            return []
+        uris = []
+        for path in sorted(folder.glob("*.json")):
+            try:
+                item = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                item = {}
+            path.unlink(missing_ok=True)
+            if item.get("role") == role and isinstance(item.get("uri"), str):
+                uris.append(item["uri"])
+        return uris
 
     @property
     def project_root(self) -> Path:
@@ -1128,6 +1159,9 @@ class PairSession:
         # пользуется, и импортируется лениво по той же причине, что и `composer`:
         # модуль импортирует `server`, и на верхнем уровне был бы цикл.
         from pairctl_panes import PIN_OK, PIN_UNKNOWN, pin_verdict
+        from composer import pane_belongs_to_project as _belongs
+        from composer import pane_identity as _ident
+        from composer import pane_key as _pane_key
 
         pin = entry.get("pane_pin")
         pin_why = ""
@@ -1155,10 +1189,45 @@ class PairSession:
                                              pin=pin, why=pin_why)
                 pin = ""
 
-        pane = pin or os.environ.get("TMUX_PANE")
+        # Маршрут: pin, затем env, затем ancestry. env — НЕ доказательство
+        # личности, а заявленный адрес: OpenCode MCP-дёмон наследует панель
+        # запускающей шелл (измерено 2026-10-07: opencode-дёмон с TMUX_PANE
+        # от панели omp). Поэтому env принимается только если:
+        # (1) панель жива и проектна — доказывает belongs_to_project,
+        # (2) в ней НЕ зарегистрирована другая ЖИВАЯ роль — иначе адрес чужой.
+        # Опровергнутый env маршрутом не становится (fail-closed): событие
+        # "pane_env_stale", активная доставка mailbox-only.
+        # События коллизий пишутся по заявленному env-адресу независимо от
+        # вердикта: столкновение — факт, даже когда маршрут не наш.
+        env_pane = os.environ.get("TMUX_PANE") or ""
+        pane = pin or ""
+        proved_env = ""
+        if env_pane and tmux and not pin:
+            try:
+                ours, _why = _belongs(tmux, env_pane, self.store.project_root)
+            except Exception:
+                ours = False
+            occupant_alive = False
+            if ours:
+                probe_key = _pane_key(tmux, env_pane)
+                for _rn, _ri in roles.items():
+                    if _rn == self.role or not _ri.get("pane"):
+                        continue
+                    if _pane_key(tmux, _ri["pane"]) != probe_key:
+                        continue
+                    _pid = _ri.get("pid")
+                    if isinstance(_pid, int) and _pid > 0 and _pid != current_pid \
+                            and is_pid_alive(_pid):
+                        occupant_alive = True
+                        break
+            if ours and not occupant_alive:
+                proved_env = env_pane
+                pane = proved_env
+            else:
+                self.store.append_transcript(
+                    "pane_env_stale", self.role, pane=env_pane, proved=proved_env,
+                    why="env-панель не подтверждена как маршрут (жива, проектна, без чужой живой роли)")
         if not pane and tmux:
-            # TMUX_PANE в окружении сервера может не быть, а ростер без панели
-            # делает deliver/unblock слепыми. Обратный путь — дерево процессов.
             from composer import find_own_pane
             pane = find_own_pane(tmux) or ""
         # Адрес, отвергнутый как чужой. Пуст, пока отвергать нечего: иначе при
@@ -1166,8 +1235,8 @@ class PairSession:
         # записей падала бы NameError на каждом вызове без панели.
         rejected = ""
 
-        # Панель из окружения проверяется на принадлежность проекту ДО записи в
-        # ростер, и это не паранойя, а воспроизведённый дефект.
+        # Панель ДОКАЗЫВАЕТСЯ до записи в ростер, и это не паранойя, а
+        # воспроизведённый дефект.
         #
         # `TMUX_PANE` приходит от tmux, а не от проекта: агент, запущенный из
         # панели чужого проекта, честно видит свою панель — и она была записана в
@@ -1394,36 +1463,49 @@ class PairSession:
         # писал бы в журнал (тот же потолок, что у pane_pin_honoured).
         if tmux:
             import roster_heal as _heal
-            from composer import pane_belongs_to_project as _belongs
-            from composer import pane_identity as _ident
             # Сверка по уникальному ID панели: открыл — живёт, закрыл — умерла.
             # Адрес `ml:0.2` плавает при сплитах, `%N` — при рестарте tmux;
             # `%2751` уникален и умирает вместе с панелью. Пришёл со своим
             # UID, а записан чужой — панель подменили, запись не трогаем.
+        try:
+            # UID берётся от ДОКАЗАННОЙ панели (pin/ancestry), а не от env:
+            # env у дёмона бывает чужим, и проверять чужую панель — мусор.
+            _uid_probe = (pane or env_pane) if tmux else ""
+            _here = _ident(tmux, _uid_probe) if _uid_probe else {}
+        except Exception:
+            _here = {}
+        _uid_here = (_here or {}).get("pane_uid") or ""
+        if _uid_here:
+            for _rn, _ri in list(roles.items()):
+                if _rn == self.role or not isinstance(_ri, dict):
+                    continue
+                _their_uid = str(_ri.get("pane_uid") or "")
+                if _their_uid and _their_uid == _uid_here:
+                    self.store.append_transcript(
+                        "pane_uid_collision", self.role, other_role=_rn,
+                        pane_uid=_uid_here,
+                        why="две роли на одной уникальной панели — доставка неразличима")
+                    break
+        if pane and not pin:
             try:
-                _here = _ident(tmux, os.environ.get("TMUX_PANE") or "") if os.environ.get("TMUX_PANE") else {}
+                _cur = _ident(tmux, pane) if tmux else {}
             except Exception:
-                _here = {}
-            _uid_here = (_here or {}).get("pane_uid") or ""
-            if _uid_here:
-                for _rn, _ri in list(roles.items()):
-                    if _rn == self.role or not isinstance(_ri, dict):
-                        continue
-                    _their_uid = str(_ri.get("pane_uid") or "")
-                    if _their_uid and _their_uid == _uid_here:
-                        self.store.append_transcript(
-                            "pane_uid_collision", self.role, other_role=_rn,
-                            pane_uid=_uid_here,
-                            why="две роли на одной уникальной панели — доставка неразличима")
-                        break
-            if pane and not pin:
-                try:
-                    _cur = _ident(tmux, pane)
-                except Exception:
-                    _cur = {}
-                if _cur and _cur.get("exists") and _cur.get("pane_uid"):
-                    entry["pane_uid"] = _cur["pane_uid"]
-                    entry["pane_session_id"] = _cur.get("session_id") or ""
+                _cur = {}
+            if _cur and _cur.get("exists") and _cur.get("pane_uid"):
+                entry["pane_uid"] = _cur["pane_uid"]
+                entry["pane_session_id"] = _cur.get("session_id") or ""
+        elif pane and pin and tmux and pane_exists(pane):
+            # Pin не обновлял UID — правлено 2026-10-07: stale env у дёмона
+            # оставлял pane_uid от чужой панели навсегда. Реальная панель
+            # доказывается тем же tmux-запросом, без наследованного env.
+            try:
+                _cur = _ident(tmux, pane)
+            except Exception:
+                _cur = {}
+            if _cur.get("exists") and _cur.get("pane_uid"):
+                entry["pane_uid"] = _cur["pane_uid"]
+                entry["pane_session_id"] = _cur.get("session_id") or ""
+        if tmux:
             for event in _heal.recheck_peers(
                     roles, self.role, self.store.project_root,
                     pid_alive=is_pid_alive, pane_exists=pane_exists,
@@ -2217,6 +2299,13 @@ class PairSession:
             self.store.append_transcript("wake_pending", self.role, to=to,
                                          reason="сообщение", seq=result["seq"])
         except Exception:  # noqa: BLE001 - wake-файл не должен ронять отправку
+            pass
+        try:
+            # Файловый hint подпискам получателя: живой MCP-сервер той роли
+            # подберёт его нитью-наблюдателем и уведомит клиента. Если подписок
+            # нет, файлы никому не мешают и разгребаются нулём.
+            self.store.publish_resource_update(to, f"mailbox://{to}")
+        except Exception:  # noqa: BLE001 - push не должен ронять отправку
             pass
         ring = self._ring(to, "сообщение")
         return {
@@ -3566,10 +3655,17 @@ class MCPServer:
     def __init__(self, session: PairSession) -> None:
         self.session = session
         self.initialized = False
+        self._subscriptions: dict[str, str] = {}
+        self._notify_lock = threading.Lock()
+        self._watch_stop = threading.Event()
+        self._watch_thread: threading.Thread | None = None
 
     def send(self, payload: dict[str, Any]) -> None:
-        sys.stdout.write(json.dumps(payload, ensure_ascii=False) + "\n")
-        sys.stdout.flush()
+        # stdout — общий ресурс главного цикла и нити-наблюдателя: без framing-lock
+        # два json.dumps вперемешку ломают поток, и клиент читает мусор.
+        with self._notify_lock:
+            sys.stdout.write(json.dumps(payload, ensure_ascii=False) + "\n")
+            sys.stdout.flush()
 
     def reply(self, request_id: Any, result: dict[str, Any]) -> None:
         self.send({"jsonrpc": "2.0", "id": request_id, "result": result})
@@ -3582,6 +3678,7 @@ class MCPServer:
 
     def run(self) -> None:
         log(f"ready role={self.session.role} state={self.session.store.root}")
+        self.start_watcher()
         # readline() rather than iteration: iterating sys.stdin uses a read-ahead
         # buffer that withholds complete lines until the buffer fills, which on a
         # pipe deadlocks against a client waiting for our reply.
@@ -3603,6 +3700,7 @@ class MCPServer:
                 continue
             self.dispatch(message)
         log("stdin closed, exiting")
+        self.stop_watcher()
 
     def dispatch(self, message: Any) -> None:
         if not isinstance(message, dict):
@@ -3682,12 +3780,65 @@ class MCPServer:
         text = json.dumps(result, ensure_ascii=False, indent=2)
         self.reply(request_id, {"content": [{"type": "text", "text": text}], "isError": False})
 
-    # Declared capabilities are tools only, but some clients probe the rest.
+    # Push — ускоритель, гарантия — mailbox (§7). Подписки — в памяти процесса,
+    # без durable: умер процесс — умерла и подписка, клиент переподписывается.
+    # Транспорт между процессами — только файлы: send пишет notify-файл,
+    # нить-наблюдатель своего процесса его подбирает и шлёт notification
+    # под framing-lock stdout. Нет listen у хоста — работает long-poll pair_read.
+    def notify(self, uri: str) -> None:
+        with self._notify_lock:
+            for sub_id, sub_uri in list(self._subscriptions.items()):
+                if sub_uri == uri:
+                    self.send({"jsonrpc": "2.0", "method": "notifications/resources/updated",
+                               "params": {"uri": uri, "subscriptionId": sub_id}})
+
+    def start_watcher(self) -> None:
+        """Нить-наблюдатель файлового транспорта: раз в 0.3с разбирает свою
+        очередь resource-update (notify-файлы от send любого процесса) и шлёт
+        notification живым подпискам. Демон-thread, без durable: умер сервер —
+        очередь в файлах остаётся, подписки нет, клиент переподписывается."""
+        def loop() -> None:
+            while not self._watch_stop.is_set():
+                try:
+                    uris = self.session.store.drain_resource_updates(self.session.role)
+                    for uri in uris:
+                        self.notify(uri)
+                except Exception as exc:  # noqa: BLE001 - наблюдатель не должен убить сервер
+                    log(f"notify watcher error: {exc!r}")
+                self._watch_stop.wait(0.3)
+        self._watch_thread = threading.Thread(target=loop, daemon=True)
+        self._watch_thread.start()
+
+    def stop_watcher(self) -> None:
+        self._watch_stop.set()
+
     def on_resources_list(self, request_id: Any, params: dict[str, Any]) -> None:
-        self.reply(request_id, {"resources": []})
+        role = self.session.role
+        self.reply(request_id, {"resources": [
+            {"uri": f"mailbox://{role}", "name": f"Входящие роли {role}",
+             "mimeType": "application/json"},
+            {"uri": "obligations://", "name": "Открытые ожидания ответов",
+             "mimeType": "application/json"},
+        ]})
 
     def on_resources_templates_list(self, request_id: Any, params: dict[str, Any]) -> None:
-        self.reply(request_id, {"resourceTemplates": []})
+        self.reply(request_id, {"resourceTemplates": [
+            {"uriTemplate": "mailbox://{role}", "name": "Входящие роли",
+             "mimeType": "application/json"},
+        ]})
+
+    def on_resources_subscribe(self, request_id: Any, params: dict[str, Any]) -> None:
+        uri = params.get("uri", "")
+        role = self.session.role
+        if uri not in (f"mailbox://{role}", "obligations://"):
+            raise ProtocolError(f"неизвестный ресурс {uri!r}: подписка только на mailbox://{role} и obligations://")
+        sub_id = f"sub-{uuid.uuid4().hex[:8]}"
+        self._subscriptions[sub_id] = uri
+        self.reply(request_id, {"subscriptionId": sub_id})
+
+    def on_resources_unsubscribe(self, request_id: Any, params: dict[str, Any]) -> None:
+        self._subscriptions.pop(params.get("id", ""), None)
+        self.reply(request_id, {})
 
     def on_prompts_list(self, request_id: Any, params: dict[str, Any]) -> None:
         self.reply(request_id, {"prompts": []})
