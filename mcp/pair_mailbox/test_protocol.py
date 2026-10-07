@@ -2118,6 +2118,23 @@ class TestMCPStdio(PairTestCase):
             process.stdin.close()
             process.wait(timeout=10)
 
+    def test_notify_with_a_match_does_not_deadlock(self) -> None:
+        """Дедлок критика seq 434: notify держал Lock и звал send с тем же
+        Lock — вотч вис на первом уведомлении, push мёртв. Мутация RLock->Lock
+        обязана виснуть (доказано таймаутом 6с живьём), этот тест — страж."""
+        import threading
+        import server as _srv
+        srv = _srv.MCPServer(self.writer)
+        srv._subscriptions["s"] = "mailbox://writer-agent"
+        done = threading.Event()
+        def call() -> None:
+            srv.notify("mailbox://writer-agent")
+            done.set()
+        worker = threading.Thread(target=call, daemon=True)
+        worker.start()
+        self.assertTrue(done.wait(timeout=5), "notify с матчем обязан вернуться, а не висеть")
+        worker.join(timeout=5)
+
     def test_malformed_input_gets_a_jsonrpc_error_not_a_crash(self) -> None:
         process = self._start("writer-agent")
         try:
@@ -3553,7 +3570,7 @@ class TestMailboxInvariants(PairTestCase):
             # Фантомная панель не доказана как своя, и в ростер не попадает
             self.assertNotIn("pane", state["roles"]["opencode-writer"])
             kinds = [e["kind"] for e in self.store.read_transcript()]
-            self.assertIn("pane_env_rejected", kinds)
+            self.assertIn("pane_env_stale", kinds)
 
             # Critic can also register without conflict
             os.environ["TMUX_PANE"] = "%100"

@@ -3656,7 +3656,7 @@ class MCPServer:
         self.session = session
         self.initialized = False
         self._subscriptions: dict[str, str] = {}
-        self._notify_lock = threading.Lock()
+        self._notify_lock = threading.RLock()
         self._watch_stop = threading.Event()
         self._watch_thread: threading.Thread | None = None
 
