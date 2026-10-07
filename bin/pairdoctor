@@ -62,7 +62,10 @@ if not srv.exists():
 else:
     r = subprocess.run([sys.executable, str(tests)], cwd=str(ROOT),
                        capture_output=True, text=True)
-    tail = [l for l in r.stdout.splitlines() if l.startswith("Ran ") or l.strip() in ("OK", "FAILED")]
+    # unittest пишет итог в stderr, а не stdout: читаем объединённый вывод,
+    # иначе строка с числом тестов не находится никогда (карточка pairdoctor-reads-stdout).
+    combined = r.stdout + r.stderr
+    tail = [l for l in combined.splitlines() if l.startswith("Ran ") or l.strip() in ("OK", "FAILED")]
     if r.returncode == 0:
         ok("тесты сервера: " + (tail[0] if tail else "OK"))
     else:
