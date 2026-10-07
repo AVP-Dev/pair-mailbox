@@ -442,6 +442,18 @@ class TestPilotLaunchMap(InstallCase):
         profiles = json.loads((ROOT / "cli-profiles.json").read_text(encoding="utf-8"))
         self.assertIn("--standalone", profiles["opencode"]["launch"])
 
+    def test_opencode_launch_paths_agree_on_auto(self) -> None:
+        """Оба пути запуска несут --auto: иначе они расходятся и один из них
+        встаёт на промпт при каждом рутинном прогоне (раунд 33, P0).
+
+        cli-profiles.json — рестарт пилота, bin/pair-duo — живой запуск.
+        """
+        profiles = json.loads((ROOT / "cli-profiles.json").read_text(encoding="utf-8"))
+        self.assertIn("--auto", profiles["opencode"]["launch"])
+        duo = (ROOT / "bin" / "pair-duo").read_text(encoding="utf-8")
+        self.assertIn("opencode --standalone --auto", duo)
+
+
     def test_launch_is_json_parseable(self) -> None:
         """Файл читается в том числе с --check, где любая ошибка JSON ломает
         установку целиком."""

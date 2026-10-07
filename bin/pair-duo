@@ -95,8 +95,10 @@ CRITIC_CMD="$CLI"
 if [[ "$CLI" == "opencode" ]]; then
   # opencode defaults to a shared background daemon per account;
   # --standalone ensures each window has its own local instance and MCP configuration.
-  WRITER_CMD="opencode --standalone"
-  CRITIC_CMD="opencode --standalone"
+  # --auto: §13c требует его в launch — без него allow-блок проектного конфига
+  # не применяется и каждый рутинный прогон встаёт на промпт (раунд 33, P0).
+  WRITER_CMD="opencode --standalone --auto"
+  CRITIC_CMD="opencode --standalone --auto"
 fi
 
 WRITER_ROLE="${CLI}-writer"
