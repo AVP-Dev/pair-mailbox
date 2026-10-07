@@ -164,4 +164,32 @@ assert names[:2]==["git-status","git-diff-check"], names
 assert names[2:]==cfg["checks_slots"], (names, cfg["checks_slots"])
 PY
 
+# --- MEDIUM: no-upstream unpushed visible via origin/<branch> fallback ---
+repo="$(trash "$(make_repo main)")"
+mock_remote "$repo" main >/dev/null
+git -C "$repo" checkout -qb feature
+printf 'f\n' >"$repo/f.txt"; git -C "$repo" add f.txt; git -C "$repo" commit -qm f
+git -C "$repo" push -q origin feature
+printf 'g\n' >>"$repo/f.txt"; git -C "$repo" commit -qam g
+git -C "$repo" branch --unset-upstream 2>/dev/null || git -C "$repo" branch --unset-upstream feature 2>/dev/null || true
+CKFILE="$(trash "$(mktemp "${TMPDIR}/ck.XXXXXX")")"
+( cd "$repo" && bash "$CHECK_BIN" >"$CKFILE" 2>/dev/null )
+python3 - "$CKFILE" <<'PY' 2>/dev/null && ok "MEDIUM-no-upstream-seen" || fail "MEDIUM-no-upstream-seen" "$(cat "$CKFILE")"
+import json,sys
+d=json.load(open(sys.argv[1]))
+assert len(d["unpushed"])==1, d["unpushed"]
+assert d["unpushed"][0]["subject"]=="g", d["unpushed"]
+assert d["blocked"], d["block_reasons"]
+PY
+# --- MEDIUM: protected branch without origin is normal local state, not UNKNOWN ---
+repo="$(trash "$(make_repo main)")"
+CKFILE="$(trash "$(mktemp "${TMPDIR}/ck.XXXXXX")")"
+( cd "$repo" && bash "$CHECK_BIN" >"$CKFILE" 2>/dev/null )
+python3 - "$CKFILE" <<'PY' 2>/dev/null && ok "MEDIUM-protected-local-clean" || fail "MEDIUM-protected-local-clean" "$(cat "$CKFILE")"
+import json,sys
+d=json.load(open(sys.argv[1]))
+assert d["unpushed_unknown"] is False, d
+assert not d["blocked"], d["block_reasons"]
+PY
+
 tally

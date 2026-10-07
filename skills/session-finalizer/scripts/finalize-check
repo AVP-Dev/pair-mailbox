@@ -61,8 +61,13 @@ def run(*a, timeout=20):
         return None
 porc_lines = [l for l in porc.splitlines() if l.strip()] if porc != "UNKNOWN" else []
 untracked = [l[3:] for l in porc_lines if l.startswith("?? ")]
-# Unpushed: commits in @{u}..HEAD; empty when no upstream is set.
+# Unpushed: commits in @{u}..HEAD. No upstream set, but origin carries
+# the branch (pushed without -u): fall back to origin/<branch>..HEAD.
+# Neither: on a non-protected branch push state is UNKNOWN, never assumed
+# clean. A protected/base branch with no origin is normal local state
+# (fresh clone, local-only main): not UNKNOWN, not a blocker.
 unpushed = []
+unpushed_unknown = False
 r = run("git", "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}")
 up = r.stdout.strip() if r and r.returncode == 0 else ""
 if up:
@@ -72,6 +77,19 @@ if up:
             if "\x01" in line:
                 sha, subj = line.split("\x01", 1)
                 unpushed.append({"sha": sha, "subject": subj})
+elif branch not in ("UNKNOWN", "HEAD", "") and not any(fnmatch.fnmatch(branch, p) for p in (cfg.get("protected_patterns", []) + cfg.get("protected_branches", []))):
+    r3 = run("git", "rev-parse", "--verify", "--quiet", "origin/" + branch)
+    if r3 is not None:
+        if r3.returncode == 0:
+            up = "origin/" + branch
+            r2 = run("git", "log", "--format=%H%x01%s", up + "..HEAD")
+            if r2 and r2.returncode == 0:
+                for line in r2.stdout.splitlines():
+                    if "\x01" in line:
+                        sha, subj = line.split("\x01", 1)
+                        unpushed.append({"sha": sha, "subject": subj})
+        else:
+            unpushed_unknown = True
 # Merged proof is git evidence only (ancestry or --merged listing);
 # without it merged_in_base stays false, never assumed.
 merged = False
@@ -201,6 +219,8 @@ if porc_lines:
     block_reasons.append("dirty tree: %d changed/untracked path(s)" % len(porc_lines))
 if unpushed:
     block_reasons.append("unpushed: %d commit(s) ahead of %s" % (len(unpushed), up))
+if unpushed_unknown:
+    block_reasons.append("unpushed UNKNOWN: branch %s has no upstream and no origin/%s, push state unproven" % (branch, branch))
 if branch in ("UNKNOWN", "HEAD", ""):
     block_reasons.append("unknown branch: no deletable name, merge unproven")
 elif fnprotected(branch):
@@ -213,7 +233,8 @@ for c in checks:
     if c.get("status") == "FAIL":
         block_reasons.append("check FAILED: %s (exit %s)" % (c.get("cmd", c.get("name", "?")), c.get("exit", "?")))
 doc = {"branch": branch, "base": base, "repo_root": root, "git_porcelain": porc_lines, "untracked": untracked,
-       "unpushed": unpushed, "upstream": "" if upstream == "null" else upstream,
+       "unpushed": unpushed, "unpushed_unknown": unpushed_unknown,
+       "upstream": "" if upstream == "null" else upstream,
        "merged_in_base": merged, "pr": pr, "todos_in_diff": todos[:20],
        "worktrees": worktrees, "temp_files": temps, "session_artifacts": artifacts,
        "checks": checks, "blocked": len(block_reasons) > 0, "block_reasons": block_reasons}
