@@ -93,6 +93,16 @@ default.
 
 ## 3. A read-only agent proposes patches, it does not apply them
 
+One command (preferred):
+
+```
+pair_propose(files=["a.py", "b.py"], subject="what it fixes")
+# the server builds the diff itself, seals it, and delivers path+hash
+# to the writer with a review request
+```
+
+Manual path (legacy, for exotic cases — e.g. a diff assembled by hand):
+
 ```
 pair_patch_reserve        # empty file 0600, exact path
 # write a unified diff into that path

@@ -400,6 +400,54 @@ class TestPatchFlow(PairTestCase):
         Path(path).write_text("x\n", encoding="utf-8")
         self.assertRefused(self.writer.tool_pair_patch_verify, path, contains="never sealed")
 
+    def test_propose_refuses_empty_globs_and_writer(self) -> None:
+        """Одна команда — те же границы, что у шести шагов: пусто, глобы,
+        выход из проекта и писатель со своим прямым доступом в дерево."""
+        self.assertRefused(self.peer.tool_pair_propose, [], contains="non-empty")
+        self.assertRefused(self.peer.tool_pair_propose, ["*.py"], contains="globs")
+        self.assertRefused(self.peer.tool_pair_propose, ["/abs/x.py"], contains="inside")
+        self.assertRefused(self.peer.tool_pair_propose, ["../x.py"], contains="inside")
+        self.assertRefused(self.writer.tool_pair_propose, ["x.py"], contains="must not")
+
+    def test_propose_builds_seals_and_delivers(self) -> None:
+        """Полный цикл одной командой: diff из worktree, seal, письмо писателю.
+
+        Живой git-корень во временном каталоге: состояние пары поднимается
+        прямо в нём (`repo/.pair`), критик правит файл, propose строит diff
+        сам. Проверяется всё, что обещает инструмент: файл патча с diff,
+        seal с hash, письмо писателю с path+hash и открытое obligation.
+        """
+        import subprocess
+
+        from server import PairSession
+
+        repo = Path(self._tmp.name) / "repo"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q"], cwd=str(repo), check=True)
+        subprocess.run(["git", "config", "user.email", "t@t"], cwd=str(repo), check=True)
+        subprocess.run(["git", "config", "user.name", "t"], cwd=str(repo), check=True)
+        target = repo / "note.txt"
+        target.write_text("one\n", encoding="utf-8")
+        subprocess.run(["git", "add", "note.txt"], cwd=str(repo), check=True)
+        subprocess.run(["git", "commit", "-qm", "base"], cwd=str(repo), check=True)
+        target.write_text("two\n", encoding="utf-8")
+        store_repo = __import__("server").Store(repo / ".pair")
+        critic = PairSession("reviewer-agent", store_repo)
+        writer = PairSession("writer-agent", store_repo)
+        critic.tool_pair_state()
+        writer.tool_pair_state()
+        writer.tool_pair_claim(reason="writer")
+        result = critic.tool_pair_propose(["note.txt"], subject="глянь")
+        body = Path(result["path"]).read_text(encoding="utf-8")
+        self.assertIn("-one", body)
+        self.assertIn("+two", body)
+        self.assertEqual(len(result["sha256"]), 64)
+        letter = writer.tool_pair_read(limit=10)["messages"][-1]
+        self.assertIn(result["path"], letter["text"])
+        self.assertIn(result["sha256"], letter["text"])
+        obligations = list(store_repo.obligations_root.glob("*.json"))
+        self.assertEqual(len(obligations), 1)
+
 
 
 class TestTaskList(PairTestCase):
@@ -1817,6 +1865,22 @@ class TestHeartbeatIsEveryCall(PairTestCase):
         self.assertRefused(self.writer.invoke, "pair_patch_reserve", {}, contains="must not")
         fresh = self.store.read()["roles"]["writer-agent"]["last_seen"]
         self.assertNotEqual(old, fresh)
+
+    def test_ping_moves_last_seen_with_a_short_answer(self) -> None:
+        """Пинг — тот же heartbeat ценой в три поля, а не 939 токенов.
+
+        Карточка pilot-heartbeat-not-just-silence: агент 20 минут пишет
+        код без вызовов — для пилота он мёртв, для дела жив. Пинг шлётся
+        сам каждые N минут; пилот различает «молчит, но пингует».
+        """
+        self.writer.invoke("pair_state", {})
+        old = self._backdate_writer()
+        answer = self.writer.invoke("pair_ping", {})
+        fresh = self.store.read()["roles"]["writer-agent"]["last_seen"]
+        self.assertNotEqual(old, fresh)
+        self.assertGreater(fresh, old)
+        self.assertEqual(set(answer), {"role", "last_seen", "pid"})
+        self.assertEqual(answer["role"], "writer-agent")
 
 class TestAuditTrail(PairTestCase):
     def test_every_action_is_recorded(self) -> None:

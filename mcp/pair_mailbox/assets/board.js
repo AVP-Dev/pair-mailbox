@@ -188,6 +188,39 @@
     return box;
   }
 
+  function renderDiscussion(snap) {
+    var box = panel("последнее обсуждение");
+    var letters = snap.discussion || [];
+    if (!letters.length) {
+      box.appendChild(el("p", "muted", "писем с текстом нет — только пинги или тишина"));
+      return box;
+    }
+    letters.forEach(function (letter) {
+      var line = el("div", "event chat-msg");
+      line.appendChild(el("span", "muted", clock(letter.ts)));
+      line.appendChild(el("span", "kind", (letter.from || "?") + " → " + (letter.to || "?")));
+      line.appendChild(el("div", "sum", (letter.subject ? letter.subject + " — " : "") + (letter.text || "")));
+      box.appendChild(line);
+    });
+    return box;
+  }
+
+  function renderWaiting(snap) {
+    var box = panel("кто кого ждёт");
+    var waiting = snap.waiting || [];
+    if (!waiting.length) {
+      box.appendChild(el("p", "tasks-clean", "никто никого не ждёт"));
+      return box;
+    }
+    waiting.forEach(function (ob) {
+      var line = el("div", "event");
+      line.appendChild(el("span", "muted", "#" + ob.seq));
+      line.appendChild(el("span", "sum", (ob.from || "?") + " ждёт " + (ob.to || "?") + " — " + (ob.subject || "")));
+      box.appendChild(line);
+    });
+    return box;
+  }
+
   function renderEvents(snap) {
     var box = panel("события");
     var list = el("div", "events");
@@ -206,6 +239,7 @@
     box.appendChild(list);
     return box;
   }
+
 
   function render(snap) {
     var app = document.getElementById("app");
@@ -236,6 +270,8 @@
     mainGrid.appendChild(colLeft);
 
     var colRight = el("div", "col-right");
+    colRight.appendChild(renderWaiting(snap));
+    colRight.appendChild(renderDiscussion(snap));
     colRight.appendChild(renderEvents(snap));
     mainGrid.appendChild(colRight);
 

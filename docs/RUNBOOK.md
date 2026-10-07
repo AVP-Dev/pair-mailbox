@@ -130,7 +130,7 @@ bin/pairctl autonomy observe   # only reports; the human is at the wheel
 ### 4a. Watch it without a server
 
 ```bash
-bin/pairboard                   # build .pair/board.html, print the file:// url
+bin/pairboard                   # build board.html in the repo root, print the file:// url
 bin/pairboard --watch 5         # rebuild every 5s, page reloads itself
 bin/pairboard --out /tmp/b.html # somewhere else
 bin/pairboard --print-json      # the snapshot alone, for a pipe
@@ -149,8 +149,8 @@ Two things are worth knowing before you open it:
   freshness has to come from the generator rewriting the file and the page reloading
   itself. `--watch` is what makes it live, not a decoration.
 - **It never writes to `.pair/`.** The only file it produces is the HTML itself, and
-  it defaults to `.pair/board.html`, which `pairctl reset` removes with the rest of
-  the disposable state.
+  it defaults to `board.html` in the repo root (ignored by git, disposable like
+  the rest of the state).
 
 Dark by default, light one click away; the choice and the pause are remembered in
 `localStorage`, and the pause button stops the reload while you read. If you want it

@@ -2,6 +2,10 @@
 # the audit trail. Disposable — `bin/pairctl reset --yes` rebuilds it.
 .pair/
 
+# Built board: `bin/pairboard` writes board.html in the repo root by default
+# (card board-to-root-and-live). Source is .pair/, the HTML is disposable.
+/board.html
+
 __pycache__/
 *.pyc
 .DS_Store

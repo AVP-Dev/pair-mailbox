@@ -64,6 +64,24 @@ class CliTestCase(unittest.TestCase):
 
 
 class BuildOnceTest(CliTestCase):
+    def test_default_out_is_the_repo_root(self):
+        """Витрина по умолчанию — в корне репо, а не глубоко в .pair.
+
+        Карточка board-to-root-and-live п.1: про витрину забывают, потому
+        что она лежит глубоко и открывается руками. Дефолт в корень —
+        однострочник, и этот тест его держит.
+        """
+        import importlib.machinery
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "pairboard_mod", str(PAIRBOARD),
+            loader=importlib.machinery.SourceFileLoader(
+                "pairboard_mod", str(PAIRBOARD)))
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        self.assertEqual(module.DEFAULT_OUT, "board.html")
+        self.assertFalse(module.DEFAULT_OUT.startswith(".pair/"))
+
     def test_writes_page_and_prints_openable_url(self):
         proc = self.run_cli("--state", str(self.state), "--out", str(self.out))
         self.assertTrue(self.out.exists())

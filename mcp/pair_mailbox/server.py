@@ -2615,6 +2615,52 @@ class PairSession:
             ),
         }
 
+    def tool_pair_propose(self, files: list[str], subject: str = "") -> dict[str, Any]:
+        """Одна команда вместо шести шагов reserve→seal→send→verify→applied.
+
+        Сервер сам строит unified diff по worktree (`git diff HEAD -- files`),
+        сам резервирует и запечатывает патч, сам кладёт письмо писателю
+        с path+hash через `pair_send` с `expects_reply`. Критик только
+        называет файлы — церемония с 0600 и sha вручную исчезает.
+        Только для не-писателя: писатель правит дерево напрямую.
+        Ручной путь (reserve→seal) остаётся для экзотики, в протоколе
+        помечен legacy.
+        """
+        self._require_fix_mode("propose a patch")
+        self._require_not_writer("propose patches")
+        if not isinstance(files, list) or not files:
+            raise ProtocolError("`files` is required: non-empty list of paths.")
+        clean = [str(item).strip() for item in files if str(item or "").strip()]
+        if not clean:
+            raise ProtocolError("`files` is required: non-empty list of paths.")
+        if any(char in item for item in clean for char in GLOB_CHARS):
+            raise ProtocolError("exact paths only, no globs.")
+        if any(item.startswith("/") or ".." in item.split("/") for item in clean):
+            raise ProtocolError("paths stay inside the project: no absolute, no `..`.")
+        proc = subprocess.run(
+            ["git", "diff", "--no-ext-diff", "HEAD", "--", *clean],
+            cwd=str(self.store.project_root), capture_output=True, text=True,
+            timeout=30)
+        if proc.returncode != 0:
+            raise ProtocolError(f"git diff failed: {(proc.stderr or '').strip()[:200]}")
+        diff = proc.stdout
+        if not diff.strip():
+            raise ProtocolError("no changes in these files: nothing to propose.")
+        reserved = self.tool_pair_patch_reserve()
+        path = reserved["path"]
+        Path(path).write_text(diff, encoding="utf-8")
+        sealed = self.tool_pair_patch_seal(path)
+        writer = self.store.read().get("writer")
+        sent = self.tool_pair_send(
+            to=str(writer or ""), subject=subject or f"propose: {', '.join(clean)}",
+            text=f"Патч {path} sha256 {sealed['sha256']}: diff по {', '.join(clean)}. "
+                 f"Проверь pair_patch_verify и примени.",
+            expects_reply=True)
+        return {"path": path, "sha256": sealed["sha256"],
+                "size": sealed.get("size"), "files": clean,
+                "seq": sent.get("seq"), "to": sent.get("known_target")}
+
+
     def tool_pair_patch_applied(self, path: str, ok: bool = True, note: str = "") -> dict[str, Any]:
         """Record the outcome of applying a sealed patch. Writer only.
 
@@ -2769,6 +2815,21 @@ class PairSession:
         self.store.append_transcript(
             "note_rotated", self.role, note_kind=kind,
             archived_lines=len(archived), kept_lines=len(lines) - target)
+
+    def tool_pair_ping(self) -> dict[str, Any]:
+        """Дешёвый признак жизни: только `last_seen` (+`pid`), короткий ответ.
+
+        Любой `pair_*`-вызов уже двигает `last_seen` (heartbeat в `invoke`),
+        но полный ответ `pair_state` стоит ~939 токенов. Агент, который
+        20 минут пишет код без вызовов, для пилота мёртв, для дела жив —
+        отсюда ложные ALARM в момент глубокой работы. Пинг — тот же
+        heartbeat ценой в три поля: CLI шлют его сами каждые N минут,
+        пилот различает «молчит, но пингует» и «молчит и не пингует».
+        """
+        state = self.store.read()
+        entry = (state.get("roles") or {}).get(self.role) or {}
+        return {"role": self.role, "last_seen": entry.get("last_seen"),
+                "pid": entry.get("pid")}
 
     def tool_pair_note_index(self) -> dict[str, Any]:
         """Список заметок с размером и свежестью — чтобы увидеть кучу, не читая её.
@@ -3032,6 +3093,37 @@ def tool_definitions() -> list[dict[str, Any]]:
                 "phase, the roster of participating roles, and how many messages you have unread."
             ),
             "inputSchema": {"type": "object", "properties": {}, "required": []},
+        },
+        {
+            "name": "pair_ping",
+            "description": (
+                "Cheap sign of life: moves last_seen like any call, but answers "
+                "with three fields instead of the full ~939-token state. "
+                "Send it yourself every few minutes while working quietly; "
+                "the supervisor then tells 'silent but pinging' (working) "
+                "apart from 'silent and not pinging' (stuck)."
+            ),
+            "inputSchema": {"type": "object", "properties": {}, "required": []},
+        },
+        {
+            "name": "pair_propose",
+            "description": (
+                "Propose a change in one call instead of six steps "
+                "(reserve, write diff, seal, send path+hash, verify, applied). "
+                "The server builds the unified diff itself (git diff HEAD over "
+                "your worktree files), seals it, and delivers path+hash to the "
+                "writer with a review request. Non-writers only; the writer "
+                "edits files directly. The manual path stays for exotic cases."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "files": {"type": "array", "items": {"type": "string"},
+                              "description": "Worktree paths with your changes."},
+                    "subject": {"type": "string", "description": "Optional review subject."},
+                },
+                "required": ["files"],
+            },
         },
         {
             "name": "pair_claim",
@@ -3349,6 +3441,7 @@ def tool_definitions() -> list[dict[str, Any]]:
 
 HANDLERS = {
     "pair_state": lambda session, args: session.tool_pair_state(),
+    "pair_ping": lambda session, args: session.tool_pair_ping(),
     "pair_deliver": lambda session, args: session.tool_pair_deliver(**args),
     "pair_claim": lambda session, args: session.tool_pair_claim(**args),
     "pair_release": lambda session, args: session.tool_pair_release(**args),
@@ -3358,6 +3451,7 @@ HANDLERS = {
     "pair_patch_reserve": lambda session, args: session.tool_pair_patch_reserve(),
     "pair_patch_seal": lambda session, args: session.tool_pair_patch_seal(**args),
     "pair_patch_verify": lambda session, args: session.tool_pair_patch_verify(**args),
+    "pair_propose": lambda session, args: session.tool_pair_propose(**args),
     "pair_patch_release": lambda session, args: session.tool_pair_patch_release(**args),
     "pair_patch_applied": lambda session, args: session.tool_pair_patch_applied(**args),
     "pair_task": lambda session, args: session.tool_pair_task(**args),

@@ -150,17 +150,69 @@ def _task_rows(state: dict[str, Any]) -> list[dict[str, Any]]:
     return rows
 
 
+def _discussion_rows(store: "Store", limit: int = 5) -> list[dict[str, Any]]:
+    """Последнее обсуждение: письма с текстом, а не пинги.
+
+    Ящик лежит по ролям, общих seq нет — порядок восстанавливаем по `ts`.
+    Пустой subject при содержательном тексте — пинг-антипаттерн (§9a):
+    в обсуждение не попадает, в ленте событий остаётся.
+    """
+    letters: list[dict[str, Any]] = []
+    root = store.mailbox_root
+    try:
+        paths = list(root.glob("*/*.json")) if root.is_dir() else []
+    except OSError:
+        return []
+    for path in paths:
+        try:
+            body = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        text = str(body.get("text") or "").strip()
+        if not text:
+            continue
+        letters.append({
+            "ts": body.get("ts"),
+            "from": str(body.get("from") or ""),
+            "to": str(body.get("to") or ""),
+            "subject": _clip(body.get("subject")),
+            "text": _clip(text, TASK_TEXT_CHARS),
+        })
+    letters.sort(key=lambda row: str(row["ts"] or ""))
+    return letters[-limit:]
+
+
+def _obligation_rows(store: "Store") -> list[dict[str, Any]]:
+    """Открытые обязательства: кто кого ждёт и с каким вопросом."""
+    rows: list[dict[str, Any]] = []
+    root = store.obligations_root
+    try:
+        paths = sorted(root.glob("*.json")) if root.is_dir() else []
+    except OSError:
+        return []
+    for path in paths:
+        try:
+            record = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        rows.append({
+            "seq": record.get("seq"),
+            "from": str(record.get("from") or ""),
+            "to": str(record.get("to") or ""),
+            "subject": _clip(record.get("subject")),
+        })
+    return rows
+
+
 def _event_rows(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Лента событий: факты без слов о них, словарь живёт в клиенте."""
     rows = []
     for entry in entries:
-        # `Store._transcript_entry` не выбрасывает битую строку, а отдаёт её как
-        # {_damaged, _raw}, и это правильно: молча пропустить строку значило бы
-        # сделать вид, будто события не было. Такая строка становится событием со
-        # своим видом, а не фантомом с именем «?».
+        # Битая строка журнала — событие со своим видом, а не пропуск:
+        # молча пропустить значило бы сделать вид, будто события не было.
         if entry.get("_damaged"):
-            rows.append({"ts": None, "kind": "damaged", "role": "", "to": "",
-                         "summary": _clip(entry.get("_raw"))})
+            rows.append({"ts": None, "kind": "damaged", "role": "",
+                         "to": "", "summary": _clip(entry.get("_raw"))})
             continue
         rows.append({
             "ts": entry.get("ts"),
@@ -228,6 +280,8 @@ def build_snapshot(state_dir: Path, *, limit: int = DEFAULT_EVENTS,
         "watch": False,
         "round": _round_section(state, event_age),
         "roles": _role_rows(state),
+        "waiting": _obligation_rows(store),
+        "discussion": _discussion_rows(store),
         "pilot": pilot_section(state_dir, entries),
         "tasks": tasks,
         "events": _event_rows(entries),

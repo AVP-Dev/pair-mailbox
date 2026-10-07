@@ -3,7 +3,7 @@
 
 Запуск:
 
-    bin/pairboard                     раз собрать .pair/board.html и напечатать путь
+    bin/pairboard                     раз собрать board.html в корень и напечатать путь
     bin/pairboard --watch 5           пересобирать каждые 5 секунд
     bin/pairboard --out /tmp/x.html   собрать в другое место
     bin/pairboard --print-json        вывести снимок в stdout, HTML не писать
@@ -19,8 +19,9 @@
 дублировать чтение `.pair/` здесь означало бы завести вторую арифметику, которая
 разъедется с первой при первом же изменении формата.
 
-Ничего не пишется в `.pair/`, кроме самого `board.html`. Наблюдатель, который
-меняет состояние, которым наблюдает, — худший вид инструмента для наблюдения.
+В `.pair/` не пишется ничего: витрина живёт в корне репо, источник — только
+`.pair/`. Наблюдатель, который меняет состояние, которым наблюдает, — худший
+вид инструмента для наблюдения.
 """
 from __future__ import annotations
 
@@ -37,7 +38,7 @@ sys.path.insert(0, str(ROOT / "mcp" / "pair_mailbox"))
 from board_render import AssetError, write_page  # noqa: E402
 from board_snapshot import DEFAULT_EVENTS, DEFAULT_STALE_AFTER, build_snapshot  # noqa: E402
 
-DEFAULT_OUT = ".pair/board.html"
+DEFAULT_OUT = "board.html"
 MIN_WATCH = 1
 MAX_WATCH = 3600
 # На сколько секунд засыпать за раз между проверками флага остановки. Мало —

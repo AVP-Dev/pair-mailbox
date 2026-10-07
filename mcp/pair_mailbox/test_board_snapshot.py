@@ -51,6 +51,32 @@ class SnapshotFactsTest(PairTestCase):
         self.store.mutate(lambda state: state.__setitem__("phase", "done"))
         self.assertTrue(build_snapshot(self.root)["round"]["closed"])
 
+    def test_discussion_shows_letters_with_text_only(self):
+        """Обсуждение — письма с текстом, хвост из 5; пинг без текста не попадает."""
+        self.writer.tool_pair_send(to="reviewer-agent", text="первое слово",
+                                   subject="план")
+        ping = self.store.mailbox_root / "reviewer-agent" / "000000-ping.json"
+        ping.parent.mkdir(parents=True, exist_ok=True)
+        ping.write_text(json.dumps({"ts": _iso(), "from": "writer-agent",
+                                    "to": "reviewer-agent", "subject": "",
+                                    "text": "   "}), encoding="utf-8")
+        self.writer.tool_pair_send(to="reviewer-agent", text="второе слово",
+                                   subject="")
+        snap = build_snapshot(self.root)
+        texts = [row["text"] for row in snap["discussion"]]
+        self.assertEqual(len(snap["discussion"]), 2)
+        self.assertEqual(set(texts), {"первое слово", "второе слово"})
+
+    def test_waiting_lists_open_obligations(self):
+        """Кто кого ждёт — открытые обязательства с вопросом."""
+        self.writer.tool_pair_send(to="reviewer-agent", text="проверь",
+                                   subject="ревью", expects_reply=True)
+        snap = build_snapshot(self.root)
+        self.assertEqual(len(snap["waiting"]), 1)
+        self.assertEqual(snap["waiting"][0]["from"], "writer-agent")
+        self.assertEqual(snap["waiting"][0]["to"], "reviewer-agent")
+        self.assertEqual(snap["waiting"][0]["subject"], "ревью")
+
     def test_roles_carry_writer_flag_and_writer_comes_first(self):
         self.store.mutate(lambda state: state.update(writer="writer-agent", roles={
             "zeta": {"pid": 0, "last_seen": _iso(5)},
