@@ -141,8 +141,9 @@ def extract_state(argv: list[str]) -> tuple[Path, list[str]]:
     # Один резолвер для всех: явный --state выигрывает, затем PAIR_STATE,
     # затем walk-up до .pair/state.json (иначе сервер из вложенного каталога
     # молча создаёт второе независимое состояние — state-dir-not-pinned).
-    explicit = [a for a in (os.environ.get("PAIR_STATE") or "").strip().split()]
-    raw = explicit[0] if explicit else ""
+    # PAIR_STATE берётся строкой целиком, как у плагина: split резал бы путь
+    # с пробелом, и резолверы расходились бы на экзотике.
+    raw = (os.environ.get("PAIR_STATE") or "").strip()
     rest: list[str] = []
     index = 0
     while index < len(argv):
