@@ -16,7 +16,7 @@
 # попадает в гейт.
 
 # --- static: быстрые проверки перед каждой правкой ---
-shell-syntax	static	1	bash -n scripts/verify-project.sh scripts/security-scan.sh scripts/file-size-gate.sh scripts/comment-lint.sh scripts/comment-lint_test.sh bin/pair-duo bin/pairctl mcp/pair_mailbox/serve.sh
+shell-syntax	static	1	bash -n scripts/verify-project.sh scripts/security-scan.sh scripts/file-size-gate.sh scripts/comment-lint.sh scripts/comment-lint_test.sh scripts/eye-of-sauron.sh scripts/eye-of-sauron_test.sh bin/pair-duo bin/pairctl mcp/pair_mailbox/serve.sh
 file-size	static	1	./scripts/file-size-gate.sh
 comment-lint	static	1	bash scripts/comment-lint.sh
 

@@ -213,13 +213,39 @@ class TestFindOwnPane(PaneOwnershipBase):
     def test_own_process_tree_resolves_to_a_live_pane(self) -> None:
         """Без TMUX_PANE ростер оставался без панели и deliver/unblock слепли.
         Обратный путь — цепочка предков до pane_pid: находит живую панель."""
-        import os
-        if not os.path.exists(f"/proc/{os.getpid()}/stat"):
-            self.skipTest("нет /proc — дереву предков негде жить")
         found = composer.find_own_pane(TMUX)
-        if not found:
-            self.skipTest("набор запущен вне tmux — предков панели нет")
+        self.assertTrue(found, "процесс набора живёт в панели — её надо найти")
         self.assertTrue(composer.pane_alive(TMUX, found))
+
+    def test_chain_meets_pane_pid_in_stub_tmux(self) -> None:
+        """Hermetic: цепочка предков встречается с pane_pid стаба — панель
+        находится без живого tmux. Скип здесь маскировал бы поломку."""
+        import os
+        real_run = composer.subprocess.run
+
+        def stub(cmd, **kw):
+            class R:
+                stdout = f"%99 {os.getpid()}\n%100 1\n"
+            return R()
+        composer.subprocess.run = stub
+        try:
+            self.assertEqual(composer.find_pane_of_pid("tmux", os.getpid()), "%99")
+        finally:
+            composer.subprocess.run = real_run
+
+    def test_empty_pane_list_gives_empty(self) -> None:
+        """Стаб без панелей — честный "", а не выдуманная панель."""
+        real_run = composer.subprocess.run
+
+        def stub(cmd, **kw):
+            class R:
+                stdout = ""
+            return R()
+        composer.subprocess.run = stub
+        try:
+            self.assertEqual(composer.find_own_pane("tmux"), "")
+        finally:
+            composer.subprocess.run = real_run
 
     def test_unknown_tmux_binary_gives_empty(self) -> None:
         """Нет tmux — честный "", а не выдуманная панель."""

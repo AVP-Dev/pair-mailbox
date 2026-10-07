@@ -277,59 +277,37 @@ def pane_identity(tmux: str, pane: str) -> dict:
             "pane_uid": extra[1].strip() if len(extra) > 1 else ""}
 
 
-def find_own_pane(tmux: str) -> str:
-    """Панель, из чьего дерева процессов зовут — или "".
+def _ancestor_chain(pid: int) -> set:
+    """Цепочка предков pid по /proc — общий корень обоих поисков панели.
 
-    TMUX_PANE в окружении MCP-сервера может не быть (наследует от CLI), а
-    ростер без панели делает deliver/unblock слепыми: роль жива, а будить
-    некуда. Обратный путь: цепочка предков своего pid до pane_pid одной из
-    живых панелей. Вне Linux дерева /proc нет — честный "".
+    Пустое множество вместо [""] : различие «не знаю» и «знаю, что нет»
+    здесь не нужно, оба означают «панель не найдена». pid<=1 отпадает сам:
+    у init нет предков в панелях, и цикл не стартует.
     """
+    chain: set = set()
     try:
-        chain: set = set()
-        me = os.getpid()
-        while me > 1 and me not in chain:
-            chain.add(me)
-            try:
-                stat = Path(f"/proc/{me}/stat").read_text()
-                me = int(stat.rsplit(")", 1)[1].split()[1])
-            except (OSError, IndexError, ValueError):
-                break
-    except Exception:
-        return ""
-    try:
-        out = subprocess.run([tmux, "list-panes", "-a", "-F", "#{pane_id} #{pane_pid}"],
-                             capture_output=True, text=True, timeout=5).stdout
-    except Exception:
-        return ""
-    for line in out.splitlines():
-        parts = line.split()
-        if len(parts) == 2 and parts[1].isdigit() and int(parts[1]) in chain:
-            return parts[0]
-    return ""
-
+        me = int(pid)
+    except (TypeError, ValueError):
+        return chain
+    while me > 1 and me not in chain:
+        chain.add(me)
+        try:
+            stat = Path(f"/proc/{me}/stat").read_text()
+            me = int(stat.rsplit(")", 1)[1].split()[1])
+        except (OSError, IndexError, ValueError):
+            break
+    return chain
 
 
 def find_pane_of_pid(tmux: str, pid: int) -> str:
     """Панель, в чьём дереве живёт pid — или "".
 
-    find_own_pane ищет себя; пилоту нужно найти ЧУЖУЮ роль по pid из ростера:
-    цепочка предков pid до pane_pid одной из живых панелей. Тот же честный ""
-    вне Linux или когда процесса нет в панелях.
+    Обратный путь: цепочка предков pid до pane_pid одной из живых панелей.
+    Нужен дважды: роль ищет себя без TMUX_PANE (find_own_pane), пилот ищет
+    чужую роль по pid из ростера. Вне Linux или без панели — честный "".
     """
-    if not pid or pid <= 1:
-        return ""
-    try:
-        chain: set = set()
-        me = int(pid)
-        while me > 1 and me not in chain:
-            chain.add(me)
-            try:
-                stat = Path(f"/proc/{me}/stat").read_text()
-                me = int(stat.rsplit(")", 1)[1].split()[1])
-            except (OSError, IndexError, ValueError):
-                break
-    except Exception:
+    chain = _ancestor_chain(pid)
+    if not chain:
         return ""
     try:
         out = subprocess.run([tmux, "list-panes", "-a", "-F", "#{pane_id} #{pane_pid}"],
@@ -341,6 +319,17 @@ def find_pane_of_pid(tmux: str, pid: int) -> str:
         if len(parts) == 2 and parts[1].isdigit() and int(parts[1]) in chain:
             return parts[0]
     return ""
+
+
+def find_own_pane(tmux: str) -> str:
+    """Панель, из чьего дерева процессов зовут — или "".
+
+    TMUX_PANE в окружении MCP-сервера может не быть (наследует от CLI), а
+    ростер без панели делает deliver/unblock слепыми: роль жива, а будить
+    некуда. Тонкий вызов find_pane_of_pid на своём pid.
+    """
+    return find_pane_of_pid(tmux, os.getpid())
+
 
 def pane_is_foreign(tmux: str, pane: str, project_root) -> tuple:
     """Панель доказуемо не наша? Fail-closed: не доказали своё — не печатаем.
