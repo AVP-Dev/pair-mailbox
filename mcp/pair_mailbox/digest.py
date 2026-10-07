@@ -292,10 +292,9 @@ def build_digest(store: "Any", role: str = "", budget: int = DIGEST_TOKEN_BUDGET
     dropped = False
     if dropped or cut:
         marker = DIGEST_MARKER if estimate_tokens(DIGEST_MARKER) < budget else "…"
-        # Место под пометку освобождается ДО её добавления, причём проверяется
-        # рендер вместе с пометкой. Иначе второй проход вычищал бы её обратно:
-        # места нет, строка добавлена, места нет — и дайджест заканчивался без
-        # единого слова о том, что половина содержимого потеряна.
+        # Место под пометку резервируем заранее и проверяем рендер вместе
+        # с ней. Иначе второй проход вычищает её обратно — и дайджест
+        # заканчивается без единого слова о потерянной половине содержимого.
         while len(lines) > 1 and estimate_tokens(_render_digest(lines + [marker])) > budget:
             lines.pop()
         lines.append(marker)
