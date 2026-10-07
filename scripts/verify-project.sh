@@ -2,11 +2,12 @@
 set -euo pipefail
 
 usage() {
-  printf '%s\n' "Использование: $0 [--profile PATH] [--only LAYER[,LAYER...]] [--list] [--dry-run]" \
+  printf '%s\n' "Использование: $0 [--profile PATH] [--only LAYER[,LAYER...]] [--list] [--dry-run] [--jobs N]" \
     "  --profile PATH  профиль команд относительно корня проекта" \
     "  --only LAYERS   запустить только указанные слои" \
     "  --list          показать профиль без запуска" \
-    "  --dry-run       показать выбранные проверки без запуска"
+    "  --dry-run       показать выбранные проверки без запуска" \
+    "  --jobs N        параллельные проверки (по умолчанию 1; сюиты изолированы: temp-state, уникальные tmux-имена)"
 }
 
 fail() {
@@ -18,6 +19,7 @@ PROFILE_PATH="scripts/verification-profile.tsv"
 ONLY=""
 LIST_ONLY=0
 DRY_RUN=0
+JOBS=1
 seen_names=""
 
 while [ "$#" -gt 0 ]; do
@@ -39,6 +41,12 @@ while [ "$#" -gt 0 ]; do
     --dry-run)
       DRY_RUN=1
       shift
+      ;;
+    --jobs)
+      [ "$#" -ge 2 ] || fail "--jobs требует число"
+      [[ "$2" =~ ^[1-9][0-9]*$ ]] || fail "--jobs: нужно положительное число, получили '$2'"
+      JOBS="$2"
+      shift 2
       ;;
     --help|-h)
       usage
@@ -96,6 +104,8 @@ selected=0
 failures=0
 warnings=0
 line_number=0
+running=0
+rm -f "$PROJECT_ROOT/.pair/verify-results.txt" "$PROJECT_ROOT/.pair/verify-"*.log
 
 while IFS=$'\t' read -r name layer required command extra || [ -n "${name:-}${layer:-}${required:-}${command:-}${extra:-}" ]; do
   line_number=$((line_number + 1))
@@ -135,26 +145,43 @@ while IFS=$'\t' read -r name layer required command extra || [ -n "${name:-}${la
 
   selected_layer "$layer" || continue
   selected=1
-  printf '[verify] %s (%s)\n' "$name" "$layer"
 
   if [ "$DRY_RUN" -eq 1 ]; then
     printf '[verify] dry-run: %s\n' "$command"
     continue
   fi
 
-  if bash -c "$command"; then
-    printf '[verify] %s: passed\n' "$name"
-  else
-    status=$?
-    if [ "$required" -eq 1 ]; then
+  # Параллельность пачками по JOBS: каждая проверка пишет в свой лог,
+  # итог собирается после wait. Вывод сюиты не перемежается с чужой.
+  printf '[verify] %s (%s)\n' "$name" "$layer"
+  log="$PROJECT_ROOT/.pair/verify-$name.log"
+  ( bash -c "$command" >"$log" 2>&1; echo "$? $required $name" >>"$PROJECT_ROOT/.pair/verify-results.txt" ) &
+  running=$((running + 1))
+  if [ "$running" -ge "$JOBS" ]; then
+    wait -n
+    running=$((running - 1))
+  fi
+done <"$PROFILE_FILE"
+
+# Добираем хвост пачки и сводим итоги из файла результатов.
+wait
+if [ -f "$PROJECT_ROOT/.pair/verify-results.txt" ]; then
+  while read -r status required name; do
+    if [ "$status" -eq 0 ]; then
+      printf '[verify] %s: passed\n' "$name"
+    elif [ "$required" -eq 1 ]; then
       failures=$((failures + 1))
       printf '[verify] %s: failed (exit %s, required)\n' "$name" "$status" >&2
+      printf '[verify] %s: --- tail %s ---\n' "$name" "$PROJECT_ROOT/.pair/verify-$name.log" >&2
+      tail -15 "$PROJECT_ROOT/.pair/verify-$name.log" >&2
     else
       warnings=$((warnings + 1))
       printf '[verify] %s: warning (exit %s, optional)\n' "$name" "$status" >&2
+      tail -5 "$PROJECT_ROOT/.pair/verify-$name.log" >&2
     fi
-  fi
-done <"$PROFILE_FILE"
+  done <"$PROJECT_ROOT/.pair/verify-results.txt"
+  rm -f "$PROJECT_ROOT/.pair/verify-results.txt"
+fi
 
 [ "$found" -eq 1 ] || fail "профиль не содержит проверок"
 

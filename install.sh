@@ -470,12 +470,16 @@ def main():
         if not ok:
             failed.append(name)
 
-    print("\nтесты сервера")
-    env = dict(os.environ, PAIR_DISABLE_RING="1")
-    t_res = subprocess.run([sys.executable, str(ROOT / "mcp/pair_mailbox/test_protocol.py")], cwd=str(ROOT), env=env)
-    if t_res.returncode != 0:
-        print("\nТЕСТЫ НЕ ПРОШЛИ")
-        return 1
+    # Вложенная сюита (~3 мин) в тестах установщика пропускается через
+    # PAIR_INSTALL_SKIP_SUITE: её гоняет verify-слой отдельно, а каждый
+    # тестовый install нёс бы её заново (698с на install_test.py целиком).
+    if not os.environ.get("PAIR_INSTALL_SKIP_SUITE"):
+        print("\nтесты сервера")
+        env = dict(os.environ, PAIR_DISABLE_RING="1")
+        t_res = subprocess.run([sys.executable, str(ROOT / "mcp/pair_mailbox/test_protocol.py")], cwd=str(ROOT), env=env)
+        if t_res.returncode != 0:
+            print("\nТЕСТЫ НЕ ПРОШЛИ")
+            return 1
 
     if failed:
         print("\nНЕ СДЕЛАНО для: " + ", ".join(failed))
