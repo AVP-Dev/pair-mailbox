@@ -135,7 +135,7 @@ cd pair-mailbox
 
 **Панель 1 (напр. OpenCode / Писатель):**
 ```bash
-opencode
+opencode --standalone --auto
 ```
 
 **Панель 2 (напр. Codex / Критик):**
@@ -183,6 +183,8 @@ bin/pairdoctor             # Диагностика окружения и про
 bin/pair-duo opencode "задача" # Запуск дуо-режима для одного CLI (сплит writer/critic в tmux)
 bin/pair-duo --worktree claude # Запуск с изолированным git worktree для критика
 ```
+
+### 🧭 Насколько далеко пара идёт сама
 
 `bin/pairctl autonomy <уровень>` (по умолчанию `auto`). Это **отдельная** ось от режима
 раунда выше: режим отвечает на вопрос «что делает раунд», автономность — «насколько далеко

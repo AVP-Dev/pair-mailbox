@@ -135,13 +135,11 @@ Open two tmux panes in your project directory:
 
 **Pane 1 (e.g. OpenCode / Writer):**
 ```bash
-# Start your CLI
-opencode
+opencode --standalone --auto
 ```
 
 **Pane 2 (e.g. Codex / Critic):**
 ```bash
-# Start second CLI
 codex
 ```
 

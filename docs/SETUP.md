@@ -3,15 +3,16 @@
 ## Prerequisites
 
 - `python3` 10 or newer on `PATH` (the server has no third-party dependencies)
-- Two agent CLIs. The pairing is configured for **OpenCode** and **Antigravity CLI (`agy`)**; the
-  same server works for anything else that speaks MCP — see *Another CLI* below.
+- Two agent CLIs. The pairing ships 6 profiles in `cli-profiles.json` (opencode, agy,
+  codex, claude, pi, omp); the same server works for anything else that speaks MCP —
+  see *Another CLI* below. `bin/pair-duo` launches the first four.
 - Both agents working the same repository, in the same project directory, so they resolve the same
   `.pair` state directory.
 
 Check the server runs before wiring anything to it:
 
 ```sh
-python3 mcp/pair_mailbox/server.py ctl status
+bin/pairctl status
 ./scripts/verify-project.sh          # the gate; see scripts/verification-profile.tsv
 ```
 
@@ -19,7 +20,7 @@ python3 mcp/pair_mailbox/server.py ctl status
 
 ```sh
 bin/pairctl task "fix the retry storm: clients re-send on 502 instead of on 503"
-bin/pairctl assign <роль>        # роль = имя CLI: opencode, agy, codex, claude
+bin/pairctl assign <role>        # role = CLI name: opencode, agy, codex, claude
 bin/pairctl status
 ```
 
