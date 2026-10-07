@@ -81,6 +81,7 @@ arrangement safe rather than merely clever.
 - **Report what is true.** A proposed patch is not a merged one. A plan is not a result. If it is
   unverified, say it is unverified.
 - **Cite locations.** `file:line` for every claim about code.
+- **Recheck backlog locations.** A backlog card's `file:line` rots; before working one, open the files and confirm the lines still say what the card claims.
 - **Finish the loop.** Read the peer's findings and open the files it cited before reporting done.
 - **One test file per source file.** `foo.go` → `foo_test.go`, never a third.
 - **Leave the tree clean.** No stray patch files, no scratch notes outside `.pair/`.
