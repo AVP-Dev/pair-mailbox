@@ -835,6 +835,32 @@ class Store:
                 Store._Lock._holders[self.path] = (depth - 1, handle)
             return False
 
+    def role_lock_path(self, role: str) -> Path:
+        """Файл синглтона на роль: живой процесс держит LOCK_EX, второй падает."""
+        return self.root / f".server-{role}.lock"
+
+    def acquire_role_lock(self, role: str) -> Any:
+        """Занять слот роли: второй живой процесс той же роли — отказ, а не
+        молчаливая коллизия pid. Неблокирующий LOCK_EX|LOCK_NB: блокироваться
+        здесь — значит встать намертво, а отказ виден сразу и пишется в журнал.
+        Хэндл живёт пока жив процесс: закрытие = отпускание, мёртвый lock
+        не залипает по построению (ядро отпускает за умершим)."""
+        path = self.role_lock_path(role)
+        handle = path.open("a+")
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as exc:
+            handle.close()
+            if exc.errno in (errno.EACCES, errno.EAGAIN):
+                raise ProtocolError(
+                    f"роль {role!r} уже занята живым сервером; "
+                    "второй процесс на той же роли не запускается.",
+                    "Одна живая роль — один живой процесс: убей дубль и "
+                    "перезапусти. Пересадка — волей человека.",
+                )
+            raise
+        return handle
+
     def lock(self) -> "Store._Lock":
         return Store._Lock(self.lock_path)
 
@@ -3694,6 +3720,7 @@ def main(argv: list[str] | None = None) -> int:
         print("error: --role is required when running as an MCP server", file=sys.stderr)
         return 2
     store = Store(state_dir)
+    _role_handle = store.acquire_role_lock(args.role)
     MCPServer(PairSession(args.role, store)).run()
     return 0
 

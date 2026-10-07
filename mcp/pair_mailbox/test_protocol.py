@@ -2410,6 +2410,31 @@ class TestSingleLiveProcessPerRole(PairTestCase):
         self.store.mutate(lambda s: s.setdefault("roles", {}).setdefault(role, {}).update(
             {"pane": pane, "pid": pid}))
 
+    def test_second_server_process_on_the_same_role_is_refused(self) -> None:
+        """Синглтон: два живых server.py на одной роли — второй падает отказом.
+        Старый guard держался на pid+is_pid_alive (флипает при рестарте, измерено:
+        два живых процесса делили слот opencode). flock на .server-<role>.lock
+        отбивает дубль сразу, без разбора кто чей pid."""
+        first = self.store.acquire_role_lock("agy")
+        with self.assertRaises(ProtocolError):
+            self.store.acquire_role_lock("agy")
+        first.close() if hasattr(first, "close") else None
+
+    def test_role_lock_is_released_when_the_process_dies(self) -> None:
+        """Мёртвый lock не залипает: закрытие хэндла отпускает, новый процесс
+        той же роли занимает слот без ручной чистки."""
+        first = self.store.acquire_role_lock("agy")
+        first.close()
+        second = self.store.acquire_role_lock("agy")
+        second.close() if hasattr(second, "close") else None
+
+    def test_different_roles_do_not_block_each_other(self) -> None:
+        """Слоты независимы: omp и agy держат свои lock параллельно."""
+        omp = self.store.acquire_role_lock("omp")
+        agy = self.store.acquire_role_lock("agy")
+        omp.close() if hasattr(omp, "close") else None
+        agy.close() if hasattr(agy, "close") else None
+
     def test_second_live_process_on_another_pane_is_refused(self) -> None:
         """Дубль: живой pid, живая удержанная панель, другая пришедшая — отказ."""
         self.register("agy", "%20", 999999)
