@@ -661,6 +661,21 @@ class TestTmuxPaths(PilotCase):
         pilot.tick()
         self.assertIn("pilot_pane_missing", self.transcript_kinds())
 
+    def test_live_pid_without_pane_heals_the_roster(self) -> None:
+        """Панели нет в ростере, но процесс роли жив и сидит в панели:
+        чиним запись, а не хороним роль. Иначе deliver слеп при живом соседе."""
+        import os
+        self.write_state(roles={"codex": {"last_seen": ago(10), "pid": os.getpid()}})
+        pilot = self.fake_tmux()
+        real_find = pairpilot.find_pane_of_pid
+        pairpilot.find_pane_of_pid = lambda tmux, pid: "%7"
+        try:
+            pilot.tick()
+        finally:
+            pairpilot.find_pane_of_pid = real_find
+        self.assertIn("pilot_pane_healed", self.transcript_kinds())
+        self.assertEqual(self.pilot().store.read()["roles"]["codex"]["pane"], "%7")
+
     def test_dead_pane_is_recorded_once(self) -> None:
         self.write_state(roles={"agy": {"last_seen": ago(10), "pane": "%9"}})
         pilot = self.fake_tmux(alive=False)

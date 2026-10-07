@@ -56,6 +56,7 @@ try:
         deliver,
         is_composer_empty,
         _tmux,
+        find_pane_of_pid,
         load_allow_patterns,
         pane_alive,
         pane_key,
@@ -868,6 +869,21 @@ class Pilot:
             if role in self.skip:
                 continue
             if not pane:
+                # Ростер без панели, но процесс роли может жить в панели:
+                # TMUX_PANE в окружении MCP-сервера бывает пуст. Обратный путь
+                # по pid из ростера — и запись чинится, будить снова есть куда.
+                healed = ""
+                pid = info.get("pid")
+                if isinstance(pid, int) and pid > 0 and is_pid_alive(pid):
+                    healed = find_pane_of_pid(self.tmux, pid)
+                if healed:
+                    def heal(st):
+                        st.get("roles", {}).get(role, {})["pane"] = healed
+                    self.store.mutate(heal)
+                    self.store.append_transcript("pilot_pane_healed", "pairpilot",
+                                                 target=role, pane=healed)
+                    log(f"{role}: панель {healed} найдена по процессу — чиню ростер")
+                    continue
                 if self.remember(f"nopane-{role}"):
                     self.store.append_transcript("pilot_pane_missing", "pairpilot", target=role)
                     log(f"{role}: панели нет, он вне tmux — подтолкнуть нечем")

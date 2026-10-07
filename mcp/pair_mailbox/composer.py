@@ -309,6 +309,39 @@ def find_own_pane(tmux: str) -> str:
     return ""
 
 
+
+def find_pane_of_pid(tmux: str, pid: int) -> str:
+    """Панель, в чьём дереве живёт pid — или "".
+
+    find_own_pane ищет себя; пилоту нужно найти ЧУЖУЮ роль по pid из ростера:
+    цепочка предков pid до pane_pid одной из живых панелей. Тот же честный ""
+    вне Linux или когда процесса нет в панелях.
+    """
+    if not pid or pid <= 1:
+        return ""
+    try:
+        chain: set = set()
+        me = int(pid)
+        while me > 1 and me not in chain:
+            chain.add(me)
+            try:
+                stat = Path(f"/proc/{me}/stat").read_text()
+                me = int(stat.rsplit(")", 1)[1].split()[1])
+            except (OSError, IndexError, ValueError):
+                break
+    except Exception:
+        return ""
+    try:
+        out = subprocess.run([tmux, "list-panes", "-a", "-F", "#{pane_id} #{pane_pid}"],
+                             capture_output=True, text=True, timeout=5).stdout
+    except Exception:
+        return ""
+    for line in out.splitlines():
+        parts = line.split()
+        if len(parts) == 2 and parts[1].isdigit() and int(parts[1]) in chain:
+            return parts[0]
+    return ""
+
 def pane_is_foreign(tmux: str, pane: str, project_root) -> tuple:
     """Панель доказуемо не наша? Fail-closed: не доказали своё — не печатаем.
 
