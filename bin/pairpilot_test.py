@@ -1552,6 +1552,22 @@ class TestOperatorSafety(PilotCase):
         pilot.tick()
         self.assertTrue(self.wake(pilot, "agy"), "чужая панель — наша работа")
 
+    def test_daemon_ignores_inherited_tmux_pane(self) -> None:
+        """Демон без PAIR_PILOT_PANE не усыновляет панель из окружения.
+
+        Измерено 2026-10-07: пилот, запущенный из панели агента (%3332),
+        наследовал TMUX_PANE и вечно пропускал роль этой панели через
+        own_pane-skip — надзор за ней молча стоял. Демон стартует с чистым
+        окружением, своя панель задаётся только явно через PAIR_PILOT_PANE.
+        """
+        os.environ["TMUX_PANE"] = "%20"
+        os.environ.pop("PAIR_PILOT_PANE", None)
+        try:
+            pilot = self.pilot()
+            self.assertIsNone(pilot.own_pane)
+        finally:
+            os.environ.pop("TMUX_PANE", None)
+
     def test_own_pane_recorded_as_a_session_address_is_still_own(self) -> None:
         """Панель человека может быть записана адресом сессии, а не `%N`.
 
