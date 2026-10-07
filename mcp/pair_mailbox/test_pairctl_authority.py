@@ -235,6 +235,24 @@ class TestStateFlagPlacement(PairTestCase):
         self.assertEqual(Store(other).read()["task"], "unrelated")
         self.assertEqual(Store(self.root).read()["task"], "resolve the retry storm")
 
+class TestKeysCommand(PairTestCase):
+    """`pairctl keys gen` даёт роли стабильного подписанта вместо pid/pane."""
+
+    def _ctl(self, *args: str) -> int:
+        return main(["--state", str(self.root), *args])
+
+    def test_gen_registers_key_id_and_rekey_revokes(self) -> None:
+        self.assertEqual(self._ctl("keys", "gen", "writer-agent"), 0)
+        state = self.store.read()
+        first = state["role_keys"]["writer-agent"]
+        self.assertTrue(first["key_id"])
+        self.assertEqual(self._ctl("keys", "gen", "writer-agent"), 0)
+        second = self.store.read()["role_keys"]["writer-agent"]
+        self.assertEqual(first["key_id"], second["key_id"])
+        self.assertEqual(1, len(second["revoked"]))
+
+    def test_gen_without_role_is_usage_error(self) -> None:
+        self.assertEqual(self._ctl("keys", "gen"), 2)
 
 class TestRoundMode(PairTestCase):
     """`mode` decides what a round is for, so it has to survive both agents.

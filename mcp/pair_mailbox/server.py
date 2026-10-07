@@ -2114,6 +2114,15 @@ class PairSession:
                 "label": f"Chat from {self.role}: ",
                 "text": text.strip(),
             }
+            try:  # без ключа письмо уходит без подписи, подпись не роняет отправку
+                import rolekeys as _keys
+                sk = _keys.load_signing_key(self.store.root, self.role)
+                if sk is not None:
+                    body["envelope"] = _keys.sign_envelope(
+                        sk, _keys.key_id_for(self.store.project_root, self.role),
+                        seq, self.role, to, body["ts"], body["text"])
+            except Exception:  # noqa: BLE001
+                pass
             atomic_write_json(inbox / filename, body)
             return {"seq": seq, "known_target": to in roles}
 
@@ -2217,12 +2226,23 @@ class PairSession:
             successful_count = 0
             for path in fresh:
                 try:
-                    out.append(json.loads(path.read_text(encoding="utf-8")))
-                    successful_count += 1
+                    msg = json.loads(path.read_text(encoding="utf-8"))
                 except (OSError, json.JSONDecodeError) as exc:
                     self.store.append_transcript("message_unreadable", self.role,
                                                  path=str(path), error=str(exc))
                     break
+                try:  # проверка не роняет чтение; без ключа письмо отдаётся как раньше
+                    import rolekeys as _keys3
+                    env = msg.get("envelope")
+                    vk = _keys3.load_verify_key(self.store.root, msg.get("from", "")) if isinstance(env, dict) else None
+                    if vk is not None and not _keys3.verify_envelope(vk, env, msg.get("text", "")):
+                        self.store.append_transcript("bad_signature", self.role,
+                                                     path=str(path), seq=msg.get("seq"))
+                        continue
+                except Exception:  # noqa: BLE001
+                    pass
+                out.append(msg)
+                successful_count += 1
             if successful_count:
                 state.setdefault("seen", {})[self.role] = seen + successful_count
             elif seen != int(state.get("seen", {}).get(self.role, 0)):

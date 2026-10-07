@@ -343,3 +343,26 @@ def cmd_reset(store: Store, args: argparse.Namespace) -> int:
     print(f"archived {old_lines} transcript lines; mode returns to 'fix' — "
           "audit guard is off until `pairctl mode audit` again.")
     return 0
+
+def cmd_keys(store: Store, args: argparse.Namespace) -> int:
+    """Сгенерить Ed25519-пару роли: `pairctl keys gen <role>`."""
+    if getattr(args, "keys_command", "") != "gen" or not getattr(args, "role", ""):
+        print("usage: pairctl keys gen <role>", file=sys.stderr)
+        return 2
+    import base64
+    import rolekeys
+    role = args.role
+    pub = rolekeys.keys_dir(store.root) / f"{role}.pub"
+    old = base64.b64encode(pub.read_bytes()).decode("ascii") if pub.exists() else ""
+    made = rolekeys.generate(store.root, store.project_root, role)
+
+    def apply(state):
+        entry = state.setdefault("role_keys", {}).setdefault(role, {"revoked": []})
+        if old and old not in entry["revoked"]:
+            entry["revoked"].append(old)
+        entry.update({"key_id": made["key_id"], "public": made["public"]})
+
+    store.mutate(apply)
+    store.append_transcript("keys_gen", "human", target_role=role, key_id=made["key_id"], rekey=bool(old))
+    print(f"{role}: key_id {made['key_id']}" + (" (старый ключ отозван)" if old else ""))
+    return 0
