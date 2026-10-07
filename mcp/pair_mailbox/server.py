@@ -1480,10 +1480,12 @@ class PairSession:
                     "sealed patches, git ends in a branch and a PR."
                 ),
                 "audit": (
-                    "Nothing in the project gets changed on purpose. Do not edit project "
-                    "files. Findings go to pair_note; each one is checked by the peer, "
-                    "confirmed ones become docs/backlog entries, and the deliverable is "
-                    "evidence rather than a diff."
+                    "No code gets changed on purpose. Do not edit code, do not open "
+                    "a branch, do not propose a patch. Findings go to pair_note; "
+                    "each one is checked by the peer, confirmed ones become "
+                    "docs/backlog entries (a new file there is an allowed result, "
+                    "not a code change), and the deliverable is evidence rather "
+                    "than a diff."
                 ),
             }[mode],
             "writer": writer,

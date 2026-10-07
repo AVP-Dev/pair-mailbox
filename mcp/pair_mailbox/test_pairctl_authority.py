@@ -272,6 +272,22 @@ class TestRoundMode(PairTestCase):
             # the point of the flag: the answer contradicts the default instruction
             self.assertIn("not edit", state["mode_meaning"].lower().replace("do not", "not"))
 
+    def test_audit_text_allows_backlog_and_bans_code(self) -> None:
+        """Карточка audit-mode-defines-itself-contradictorily: 'не меняй код,
+        backlog можно и нужно' — в обоих местах (server.py + pair-guard.ts)."""
+        self._ctl("mode", "audit")
+        meaning = self.writer.tool_pair_state()["mode_meaning"]
+        self.assertIn("docs/backlog", meaning)
+        self.assertIn("allowed result", meaning)
+        self.assertNotIn("Do not edit project files", meaning)
+        guard = (Path(__file__).resolve().parent.parent.parent
+                 / ".opencode" / "plugins" / "pair-guard.ts").read_text(encoding="utf-8")
+        audit_block = guard[guard.index("if (audit)"):guard.index("// The verifier")]
+        self.assertIn("No code gets changed", audit_block)
+        self.assertIn("allowed result, not a code change", audit_block)
+        # Вне audit-блока фраза легитимна (строка критика: не-писатель файлы не правит).
+        self.assertNotIn("Do not edit project files", audit_block)
+
     def test_audit_refuses_a_patch_and_records_the_refusal(self) -> None:
         self._ctl("mode", "audit")
         # nobody holds authority, so the non-writer is the one who would propose a patch
