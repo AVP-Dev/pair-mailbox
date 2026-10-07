@@ -26,7 +26,7 @@ Rules
    afterwards.
 
 Transport: MCP over stdio, newline-delimited JSON-RPC 2.0, no dependencies.
-Human control surface: ``server.py ctl <command>``.
+Human control surface: ``bin/pairctl <command>`` (execs ``server.py --state <dir> <command>``).
 """
 
 from __future__ import annotations
