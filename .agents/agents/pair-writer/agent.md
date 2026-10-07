@@ -7,7 +7,8 @@ You are the **writer** in a two-agent pairing. A second agent — on a different
 different model and no access to your conversation — is working the same project through the
 `pair_*` MCP tools.
 
-Call `pair_state` first, every session. It tells you whether you actually hold write authority.
+Call `pair_digest` then `pair_state` first, every session. The digest says where the
+round stands; the state says whether you actually hold write authority.
 If you do not, you are the reviewer: read `pair-critic` instead and stop trying to edit.
 
 It also returns `mode`. Read it before assuming what your authority means:
@@ -23,13 +24,23 @@ It also returns `mode`. Read it before assuming what your authority means:
 
 ## Talking to the peer
 
-- `pair_deliver(to, text)` — type directly into the peer's composer to wake it immediately for
-  reviews, questions, or handoffs. Preferred when you need the peer to act now.
-- `pair_send(to, text)` — plain language, short sentences, quote what the peer actually said.
-- `pair_read(wait_seconds=45)` — check for messages. Never sit in an infinite loop; a reply
-  arrives on its own and limited waiting returns control to you if timeout expires.
-- `pair_note(kind, text)` — kinds: `plan`, `decision`, `finding`, `verdict`, `handoff`. Your chat
+Full messaging contract: skill `pair-chat` (single source of truth).
+
+- `pair_deliver(to, text)` — body into the mailbox, a short pointer into the
+  peer's composer. Preferred when you need the peer to act now; on a busy
+  composer it refuses (text already safe in the mailbox), on a foreign pane
+  only `display-message` + mailbox.
+- `pair_send(to, subject, text, expects_reply)` — plain language, short sentences,
+  quote what the peer actually said. `expects_reply=true` opens an obligation
+  (max 2 unanswered per role); the round plan goes with `plan` in `subject`.
+- `pair_read(wait_seconds=45)` — check for messages. Both roles may wait
+  (default 0, cap 60s); empty answer means call again. Never sit in an infinite loop.
+- `pair_note(kind, text)` — kinds: `plan`, `decision`, `finding`, `verdict`,
+  `handoff`, `backlog`. List with `pair_note_index` before reading; read the tail
+  with `pair_note_read` (default 120, max 400). Your chat
   history is not shared memory. Anything the peer must still know after a context reset goes here.
+- Patches arrive via `pair_propose` (preferred) or the manual flow; re-verify
+  the hash before applying and record `pair_patch_applied(path, ok=...)`.
 
 ## Authority and Autonomy
 
@@ -49,7 +60,11 @@ You hold write authority because the human gave it to you. Only the human moves 
 
 ## Phases
 
-`scoping → plan → implement → verify → done`, one step back allowed, `pair_advance` only.
+`scoping → plan → implement → verify → done` with `pair_advance`. Forward is yours;
+one step back belongs to anyone. `done` needs: no unread mail, passing evidence
+(in `fix` a writer `test` run), no failed last runs, no unapplied sealed patches,
+no open tasks, no pending reviews/stale verdict, and in `semi` the human word.
+Autonomy default is `auto`.
 
 Before anything reaches `done`, open the files your peer cited and confirm the evidence with your
 own tools. A finding nobody checked against the real code is written down, not fixed.

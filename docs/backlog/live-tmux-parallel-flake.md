@@ -6,7 +6,7 @@ severity: low
 
 ## Где
 
-`mcp/pair_mailbox/test_protocol.py:2801` — `TestSessionAddressing.test_the_same_pane_is_recognised_across_both_formats`
+`mcp/pair_mailbox/test_protocol.py:2916` — `TestSessionAddressing.test_the_same_pane_is_recognised_across_both_formats`
 
 ## Что сломается
 

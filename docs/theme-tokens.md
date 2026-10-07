@@ -6,11 +6,17 @@
 > (`mcp/pair_mailbox/assets/board.css`), обязан лежать рядом с той вёрсткой, иначе
 > «соглашения нет» выглядит как «соглашение другое».
 >
-> **Кто его соблюдает.** `mcp/pair_mailbox/assets/board.css` объявляет ровно этот
-> набор семантических переменных в `:root` и в `[data-theme="dark"]`. Главный
+> **Кто его соблюдает.** `mcp/pair_mailbox/assets/board.css` объявляет набор §1
+> в `:root` и в `[data-theme="dark"]` (плюс служебные `--ok/--warn/--bad/--unknown`
+> для статусов и `--gap/--pad/--row` для раскладки — они вне контракта и вёрстке
+> разрешены). Расхождение: контракт требует `--input` (граница полей ввода, §1),
+> а `board.css` его не объявляет и не использует — дашборд не рендерит полей
+> ввода. Код требует только 7 токенов (`REQUIRED_TOKENS`, `board_render.py:44`:
+> `--background --foreground --card --muted --border --destructive --primary`),
+> тест — ноль жёстких цветов плюс объявленность каждого `var(--x)`
+> (`test_board_render.py:15`). Главный
 > инвариант тот же: **Zero Hardcoded Colors in Components** — ни одного
-> `#hex`/`rgb()` вне блока объявления токенов. Проверяется тестом
-> `mcp/pair_mailbox/test_board_render.py`.
+> `#hex`/`rgb()` вне блока объявления токенов.
 
 # Контракт дизайн-токенов и визуальных тем (Theme Tokens Specification)
 

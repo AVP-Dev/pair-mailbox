@@ -16,13 +16,14 @@ there is nothing left to say, not because something broke.
 roster entries, starts the supervisor, and starts the pair. The steps below are here
 so you know what it does and what to fix by hand.
 
-Useful flags:
-
 | flag | effect |
 |---|---|
-| `--task "..."` | record the task in the shared list before starting |
-| `--autonomy observe\|semi\|auto` | how far the pair may go alone |
+| `--task "..."` | record the task in the shared list before starting (the only way to pass a task; there is no positional argument) |
+| `--autonomy observe\|semi\|auto` | how far the pair may go alone (default `auto`) |
 | `--duo` | two copies of one CLI instead of the standing pair (see below) |
+| `--cli <name>` | which CLI to duplicate; only with `--duo` (one of `opencode`, `agy`, `codex`, `claude`) |
+| `--roles writer,critic` | set the standing arrangement before starting |
+| `--state <dir>` | state directory (default `.pair`) |
 | `--no-pair` | install and verify only, start no agents |
 | `--no-prune` | leave the roster alone |
 
@@ -33,16 +34,17 @@ the critic on their own CLIs**:
 
 ```bash
 bin/pairctl roles --writer opencode --critic agy --global   # set it once
-./finish.sh "задача"                                         # honours it
+./finish.sh --task "задача"                                  # honours it
 ```
 
 `--duo` is for running two instances of the *same* CLI, which is occasionally useful
-and is not the default, because `bin/pair-duo` hands write authority to
-`<cli>-writer`:
+and is not the default. `bin/pair-duo` appoints `<cli>-writer` as writer **only**
+when there is no standing `policy.writer` and no live writer holds authority
+already — otherwise it leaves authority alone and says so out loud:
 
 ```bash
-./finish.sh --duo "задача"        # writer becomes opencode-writer, and it says so
-bin/pair-duo claude "задача"      # the same thing, directly
+./finish.sh --duo --task "задача"   # writer becomes opencode-writer only if nobody writes yet
+bin/pair-duo claude "задача"        # the same thing, directly
 ```
 
 Authority moves only through the human, so `--duo` states out loud that it is
@@ -77,10 +79,13 @@ What it does and does not do:
 Check that nothing broke:
 
 ```bash
-python3 install_test.py                        # 13 tests: installing causes no harm
-python3 mcp/pair_mailbox/test_protocol.py      # the protocol's invariants
-python3 bin/pairpilot_test.py                  # the supervisor's behaviour
+./scripts/verify-project.sh --list   # what is checked
+./scripts/verify-project.sh          # the gate itself
 ```
+
+The gate is defined in `scripts/verification-profile.tsv`: static checks first,
+then one suite per module, then the installer. Do not quote test counts here —
+they grow with the code; the TSV is the source of truth.
 
 ### 2. Fix the standing arrangement
 
@@ -96,22 +101,10 @@ bin/pairctl roster --prune                        # drop the dead ones
 enough — after a crash a live pane may be a shell you opened. It refuses to remove
 whoever holds write authority.
 
-### 3. Start the pair
+### 3. Start the supervisor
 
-```bash
-./finish.sh                 # respects the standing arrangement
-```
-
-Or by hand, in two panes:
-
-```bash
-# writer pane
-PAIR_ROLE=opencode PAIR_STATE=.pair opencode --standalone --auto
-# critic pane
-PAIR_ROLE=agy PAIR_STATE=.pair agy
-```
-
-### 4. Start the supervisor
+The supervisor starts **before** the agents (`finish.sh` step 5 before step 6):
+otherwise it never sees the pair's first minutes.
 
 ```bash
 bin/pairpilot &                  # in the background, it watches
@@ -126,6 +119,27 @@ bin/pairctl autonomy auto      # default: works alone, closes the round given pr
 bin/pairctl autonomy semi      # works alone, but closes only on your word
 bin/pairctl autonomy observe   # only reports; the human is at the wheel
 ```
+
+### 4. Start the pair
+
+```bash
+./finish.sh --task "..."        # respects the standing arrangement
+```
+
+Or by hand, in two panes:
+
+```bash
+# writer pane
+PAIR_ROLE=opencode PAIR_STATE=.pair opencode --standalone --auto
+# critic pane
+PAIR_ROLE=agy PAIR_STATE=.pair agy
+```
+
+The opencode launch is `opencode --standalone --auto`, never bare `opencode`:
+`--standalone` gives each pane its own local instance and MCP config, `--auto`
+lets everything the protocol already allows confirm itself. This matches
+`launch: opencode --standalone --auto` in `cli-profiles.json` and the `WRITER_CMD`
+in `bin/pair-duo`.
 
 ### 4a. Watch it without a server
 
@@ -145,10 +159,10 @@ transcript.
 Two things are worth knowing before you open it:
 
 - **Without `--watch` it is a photograph, not a live view.** The page cannot read
-  `.pair/` itself — a browser on `file://` is not allowed to fetch local files — so
+  `.pair` itself — a browser on `file://` is not allowed to fetch local files — so
   freshness has to come from the generator rewriting the file and the page reloading
   itself. `--watch` is what makes it live, not a decoration.
-- **It never writes to `.pair/`.** The only file it produces is the HTML itself, and
+- **It never writes to `.pair`.** The only file it produces is the HTML itself, and
   it defaults to `board.html` in the repo root (ignored by git, disposable like
   the rest of the state).
 

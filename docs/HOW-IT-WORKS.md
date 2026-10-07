@@ -43,25 +43,26 @@ so one writes and one breaks. Which is which is decided by the standing arrangem
 (`bin/pairctl roles`) or, failing that, by a claim — and the agent must give a reason
 ("I already found where to fix it"), not "because I was first".
 
-## What is inside
-
 ```sh
 bin/pairctl           # the human's authority surface: task, mode, autonomy, ok, status
 bin/pair-duo          # starts a pair inside one CLI, two panes
 bin/pairpilot         # the supervisor: restarts a dead agent, confirms allowlisted
                       # prompts, nudges a role with unread mail, writes the report
 bin/pairchat          # the conversation of this pair, live
+bin/pairboard         # a self-contained HTML snapshot of the state, no server
 bin/pairctl all       # every project at once: who writes, who is silent
 bin/pairwatch         # catches a stuck agent
 bin/pairdoctor        # checks that everything is in place
 ```
 
+Launch commands live in `cli-profiles.json`: six profiles (`opencode`, `agy`,
+`codex`, `claude`, `pi`, `omp`); `bin/pair-duo` supports the first four. The
+server exposes 22 `pair_*` MCP tools. The pair's state lives in `.pair`:
+`state.json`, `transcript.jsonl`, and the `mailbox/`, `notes/`, `patches/`,
+`obligations/`, `notifications/` stores.
+
 `bin/pairpilot` cannot move phases, grant or revoke write authority, commit, or touch
 project files. It watches, and it reports.
-
-The pair's state lives in `.pair/` in the project folder: who writes, the task, the
-phase, every message and every refusal. It is a file, not a database — you can read it
-with your eyes.
 
 `.pair/tasks.md` is the session journal, generated from state so it cannot drift from
 the facts: what was asked, what was done, what was proven, what is left.

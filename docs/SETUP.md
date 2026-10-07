@@ -3,23 +3,24 @@
 ## Prerequisites
 
 - `python3` 10 or newer on `PATH` (the server has no third-party dependencies)
-- Two agent CLIs. The pairing is configured for **OpenCode** and **Antigravity CLI (`agy`)**; the
-  same server works for anything else that speaks MCP — see *Another CLI* below.
+- Two agent CLIs. The pairing ships 6 profiles in `cli-profiles.json` (opencode, agy,
+  codex, claude, pi, omp); the same server works for anything else that speaks MCP —
+  see *Another CLI* below. `bin/pair-duo` launches the first four.
 - Both agents working the same repository, in the same project directory, so they resolve the same
-  `.pair/` state directory.
+  `.pair` state directory.
 
 Check the server runs before wiring anything to it:
 
 ```sh
-python3 mcp/pair_mailbox/server.py ctl status
-python3 mcp/pair_mailbox/test_protocol.py     # 247 tests, ~27s (327 in the full suite)
+bin/pairctl status
+./scripts/verify-project.sh          # the gate; see scripts/verification-profile.tsv
 ```
 
 ## 1. Initialise the pairing
 
 ```sh
 bin/pairctl task "fix the retry storm: clients re-send on 502 instead of on 503"
-bin/pairctl assign <роль>        # роль = имя CLI: opencode, agy, codex, claude
+bin/pairctl assign <role>        # role = CLI name: opencode, agy, codex, claude
 bin/pairctl status
 ```
 
@@ -31,11 +32,13 @@ case neither agent may edit — which is a safe default, not a bug.
 
 ## 2. Start both agents
 
-In **agterm**, one pane per agent, same working directory:
+In **agterm**, one pane per agent, same working directory. Never bare `opencode`:
+the launch is always `opencode --standalone --auto` (see `cli-profiles.json`
+and `bin/pair-duo`), so each pane gets its own local instance and MCP config:
 
 ```
-opencode                                    # pane 1
-agy                                         # pane 2
+opencode --standalone --auto          # pane 1
+agy                                   # pane 2
 ```
 
 Any two different CLIs, in any order. Roles come from the standing arrangement if you set
@@ -63,8 +66,7 @@ approval. Allow the whole server once:
 
 and add `mcp(pair/*)`. Without this, the pairing technically works and practically does not.
 
-Antigravity picks up `.agents/mcp_config.json` from the workspace. Verify with `/mcp` that `pair`
-is connected, and that its nineteen tools are listed.
+is connected, and that its 22 tools are listed.
 
 The three agents — `pair-writer`, `pair-critic`, `pair-explorer` — appear under `/agents`.
 
@@ -121,16 +123,16 @@ Normal collaboration from here. The things worth doing deliberately:
 
 ```
 mcp/pair_mailbox/server.py       the protocol, enforced
-mcp/pair_mailbox/test_protocol.py 247 tests (327 with pilot + installer)
+mcp/pair_mailbox/test_*.py       one suite per module — see scripts/verification-profile.tsv
 bin/pairctl                      the human's authority surface
 .opencode/                       OpenCode: config, writer + verifier agents, plugin, commands, skill
 .agents/                         Antigravity: mcp_config, writer/critic/explorer, skill
 docs/PROTOCOL.md                 the contract
-.pair/                           runtime state (git-ignored)
+.pair                            runtime state (git-ignored)
 ```
 
-`.pair/` holds `state.json`, `pair-transcript.jsonl`, the mailboxes, shared notes, and in-flight
-patches. It is runtime, and it is disposable.
+`.pair` holds `state.json`, `transcript.jsonl`, the `mailbox/`, `notes/`,
+`patches/`, `obligations/` and `notifications/` stores. It is runtime, and it is disposable.
 
 ## Another CLI
 
@@ -202,36 +204,39 @@ Validate rather than trust, especially after an OpenCode upgrade:
 The live shape of any field is in `https://opencode.ai/config.json` under `$defs`. If a config
 change seems to do nothing, that file is where the answer is.
 
-## Чужие CLI читают наши конфиги (ROLE-BUG 2026-10-07)
+## ROLE-BUG 2026-10-07: foreign CLIs read our configs
 
-`omp`/`pi` (один движок `pi-coding-agent`, разные дома `~/.omp/` vs `~/.pi/`) грузят чужие
-MCP через discovery-провайдеры: OpenCode (`~/.config/opencode/opencode.json[c]` + project's
-`opencode.json[c]` + `.opencode/` с мёржем project поверх user), Claude (`.claude.json`),
-Codex (`config.toml [mcp_servers.*]`), Cursor, Gemini, VSCode, Windsurf.
+`omp`/`pi` (one `pi-coding-agent` engine, different homes `~/.omp/` vs `~/.pi/`)
+load foreign MCP through discovery providers: OpenCode (`~/.config/opencode/opencode.json[c]`
++ project's `opencode.json[c]` + `.opencode/`, project merged over user),
+Claude (`.claude.json`), Codex (`config.toml [mcp_servers.*]`), Cursor, Gemini,
+VSCode, Windsurf.
 
-Ключ сервера один — `pair`. Чей конфиг последний в мёрже, тот и поднимается. Измерено
-вживую 2026-10-07: процесс `omp` (PID 207528), запущенный из корня репо, поднял
-`server.py --role opencode` из проектного `.opencode/opencode.jsonc` — и `pair_state`
-отдал `you_are_writer=false`, то есть агент послушно отказался писать и редактировать.
-Никакой смены модели/провайдера не было: роль — это аргумент `serve.sh <role>`, а не API.
+The server key is one — `pair`. Whichever config is last in the merge wins.
+Measured live on 2026-10-07: an `omp` process (PID 207528), started from the repo
+root, picked up `server.py --role opencode` from the project's
+`.opencode/opencode.jsonc` — and `pair_state` returned `you_are_writer=false`,
+so the agent dutifully refused to write and edit. No model/provider switch was
+involved: the role is the `serve.sh <role>` argument, not an API.
 
-Отсюда три правила, все уже применены:
+Hence three rules, all already applied:
 
-1. **Проектный конфиг не несёт identity.** В `.opencode/opencode.jsonc` нет блока `mcp`
-   (только комментарий почему). Роль раздаёт лишь user-конфиг, который ставит install.sh.
-   То же касается любого проектного файла, который читает чужой движок.
-2. **У каждого движка свой дом.** Профиль `omp` в `cli-profiles.json` указывает на
-   `~/.omp/agent/mcp.json` с ключом `pair-omp`, а не на `~/.pi/agent/mcp.json`.
-   Тест `test_no_two_profiles_share_one_config_home` это сторожит.
-3. **Чужой discovery глушится в самом CLI.** Для `omp`:
+1. **The project config carries no identity.** `.opencode/opencode.jsonc` has no
+   `mcp` block (only a comment saying why). Only the user config written by
+   install.sh hands out roles. Same for any project file a foreign engine reads.
+2. **Each engine has its own home.** The `omp` profile in `cli-profiles.json`
+   points at `~/.omp/agent/mcp.json` with key `pair-omp`, not at
+   `~/.pi/agent/mcp.json`. The test `test_no_two_profiles_share_one_config_home`
+   guards this.
+3. **Foreign discovery is muted inside the CLI itself.** For `omp`:
    `omp config set disabledProviders '["opencode"]'` +
    `omp config set commands.enableOpencodeProject false`.
-   Без этого даже без проектного конфига подхватится `pair => opencode` из юзерского
-   `~/.config/opencode/opencode.jsonc`.
+   Without this, even with no project config, `pair => opencode` is picked up
+   from the user-level `~/.config/opencode/opencode.jsonc`.
 
-Дополнительно `serve.sh` отказывается стартовать, если `PAIR_ROLE` из окружения
-противоречит роли из argv (exit 3): роль приходит из конфига, никогда из env —
-теперь это отказ, а не комментарий.
+Additionally `serve.sh` refuses to start when `PAIR_ROLE` from the environment
+contradicts the argv role (exit 3): the role comes from the config, never from
+env — now a refusal, not a comment.
 
 ## The plugin guide disagrees with this build too
 
@@ -289,7 +294,7 @@ live pane will make the supervisor skip a living peer.
 | if this changed | re-verify |
 |---|---|
 | agent definitions | `.opencode/agents/*.md`, `.agents/agents/*/agent.md` frontmatter |
-| MCP config | `mcp.servers` in `opencode.jsonc`, `mcpServers` in `.agents/mcp_config.json` |
+| MCP config | `mcp` in `opencode.jsonc`, `mcpServers` in `.agents/mcp_config.json` |
 | permissions | `permission.edit: deny` on `verifier`; `mcp(pair/*)` in Antigravity |
 | plugin API | `pair-guard.ts` against `node_modules/@opencode-ai/plugin/dist/v2/promise/context.d.ts` |
 
