@@ -371,6 +371,22 @@ def verify(argv):
         "params": {"protocolVersion": "2024-11-05", "clientInfo": {"name": "pair-install"}},
     }) + "\n"
     scratch = tempfile.mkdtemp(prefix="pair-verify-")
+    # --state в argv (явный pin проекта) побеждает PAIR_STATE, поэтому для
+    # проверки он переписывается на временный: иначе handshake пишет в живой
+    # ростер (регрессия pin, ловит TestVerifyDoesNotTouchTheRoster).
+    clean = []
+    skip_next = False
+    for a in argv:
+        if skip_next:
+            skip_next = False
+            continue
+        if a == "--state":
+            skip_next = True
+            continue
+        if a.startswith("--state="):
+            continue
+        clean.append(a)
+    argv = clean + ["--state", scratch]
     try:
         env = {k: v for k, v in os.environ.items()
                if k not in ("PAIR_STATE", "PAIR_ROLE", "PAIR_DISABLE_RING")}
