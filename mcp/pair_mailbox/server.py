@@ -1836,9 +1836,20 @@ class PairSession:
         # pair-mailbox: звонок по записанному номеру будил чужого агента.
         from composer import pane_is_foreign
         foreign, why_foreign = pane_is_foreign(tmux, pane, self.store.project_root)
-        # Недоказанная панель — не отказ, а фолбэк: печатаем короткий указатель
-        # без текста письма (секретов в нём нет — только «забери из mailbox»).
-        # Блокировать звонок здесь значило молчать, а молчание и есть затык.
+        if foreign:
+            # Недоказанная панель: typed-печать (send-keys) запрещена —
+            # это инъекция в чужой композер. Фолбэк — только display-message
+            # (всплывашка без печати) + mailbox. Молчания нет, инъекции нет.
+            try:
+                subprocess.run([tmux, "display-message", "-t", pane,
+                                "-d", "4000",
+                                f"[pair] {kind} от {self.role} — забери из mailbox"],
+                               capture_output=True, text=True, timeout=5)
+            except Exception as exc:  # noqa: BLE001 - панель исчезла между проверками
+                return {"rung": False, "why": f"панель не прочиталась: {exc}"}
+            self.store.append_transcript("doorbell_fallback", self.role, to=target,
+                                         bell_kind=kind, pane=pane, reason=why_foreign)
+            return {"rung": True, "pane": pane, "fallback": "display-message"}
         from composer import capture, composer_line, is_composer_empty
         # Single-shot без ожидания: звонок — оптимизация, а не условие.
         # Файл wake/*.json (пишется вызывающим по событию) — гарантия,
@@ -1990,13 +2001,25 @@ class PairSession:
         except ComposerBusy as exc:
             foreign, why_foreign = True, f"tmux недоступен: {exc}"
         if foreign:
-            # Недоказанная панель — не отказ, а фолбэк: короткий указатель
-            # без текста (секретов нет). Сообщение уже в ящике, звонок —
-            # лучший шанс, что его заберут сейчас, а не опросом через минуты.
+            # Недоказанная панель: typed-печать запрещена (инъекция в чужой
+            # композер). Фолбэк — только display-message + mailbox.
+            import subprocess as _sp
+            try:
+                _sp.run([_tmux(), "display-message", "-t", pane,
+                         "-d", "4000",
+                         f"[pair] {self.role}: новое сообщение в ящике, прочитай pair_read"],
+                        capture_output=True, text=True, timeout=5)
+            except Exception as exc:  # noqa: BLE001 - панель исчезла между проверками
+                result["why"] = f"панель не прочиталась: {exc}"
+                return result
             self.store.append_transcript(
                 "deliver_pointer_fallback_foreign_pane", self.role, to=to,
                 pane=pane, reason=why_foreign, seq=seq,
             )
+            result["in_pane"] = True
+            result["fallback"] = "display-message"
+            result["delivered_to_pane"] = pane
+            return result
 
         # 2. Указатель. Короткий намеренно: это строка в чужом TUI, а не текст.
         pointer = f"[pair] {self.role}: новое сообщение в ящике, прочитай pair_read"

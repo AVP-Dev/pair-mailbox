@@ -3726,51 +3726,65 @@ class TestPaneIdentityIsNotLiveness(PairTestCase):
         self.assertIn("другому проекту", why)
 
     def test_ring_falls_back_to_a_pointer_on_another_projects_pane(self) -> None:
-        """Недоказанная панель — не отказ, а фолбэк: короткий указатель
-        без текста уходит, полный текст — только в ящике."""
+        """Недоказанная панель: typed-печать запрещена, фолбэк —
+        display-message без текста. Молчания нет, инъекции нет."""
         import composer
+        import subprocess as _sp
         self.store.mutate(lambda s: s.setdefault("roles", {})
                           .setdefault("reviewer-agent", {}).update({"pane": "%45"}))
         os.environ.pop("PAIR_DISABLE_RING", None)
-        orig_run = composer.subprocess.run
+        orig_run = _sp.run
         orig_foreign = composer.pane_is_foreign
+        called = []
         composer.pane_is_foreign = lambda tmux, pane, root: (
             True, "панель принадлежит другому проекту: /home/alexios/work/phronesis")
-        composer.subprocess.run = lambda *a, **k: type("R", (), {
+        _sp.run = lambda *a, **k: called.append(a[0]) or type("R", (), {
             "stdout": "0", "returncode": 0})()
         try:
             result = self.writer._ring("reviewer-agent", "заметка", "детали")
         finally:
-            composer.subprocess.run = orig_run
+            _sp.run = orig_run
             composer.pane_is_foreign = orig_foreign
+        self.assertTrue(result["rung"])
+        self.assertEqual("display-message", result.get("fallback"))
+        self.assertFalse(any("send-keys" in c for c in called),
+                         "typed-печать в чужую панель запрещена")
         kinds = [e.get("kind") for e in self.store.read_transcript(limit=0)]
-        self.assertNotIn("ring_refused_foreign_pane", kinds)
+        self.assertIn("doorbell_fallback", kinds)
 
     def test_deliver_falls_back_to_a_pointer_on_another_projects_pane(self) -> None:
-        """Недоказанная панель — не отказ: указатель уходит, полный текст —
-        только в ящике. Изоляция держится текстом указателя, а не молчанием."""
+        """Недоказанная панель — не отказ: display-message без текста уходит,
+        полный текст — только в ящике. Typed-печать запрещена (инъекция)."""
         import composer
+        import subprocess as _sp
         self.store.mutate(lambda s: s.setdefault("roles", {}).setdefault(
             "reviewer-agent", {"pid": os.getpid(), "pane": "%55"}))
-        orig_deliver = composer.deliver
-        orig_which = composer.shutil.which
         orig_foreign = composer.pane_is_foreign
+        orig_belongs = composer.pane_belongs_to_project
+        orig_run = _sp.run
         called = []
-        composer.shutil.which = lambda name: "/usr/bin/tmux"
+        # Sweep в _register сносит панель через pane_belongs_to_project:
+        # удерживаем %55 для него, а pane_is_foreign даёт фолбэк-ветку в deliver.
+        composer.pane_belongs_to_project = lambda tmux, pane, root: (True, "")
         composer.pane_is_foreign = lambda tmux, pane, root: (
             True, "панель принадлежит другому проекту: /home/alexios/work/phronesis")
-        composer.deliver = lambda *a, **k: called.append(a) or {"delivered": True}
+        _sp.run = lambda *a, **k: called.append(a[0]) or type("R", (), {
+            "stdout": "", "returncode": 0})()
         try:
             res = self.writer.tool_pair_deliver(to="reviewer-agent", text="payload worth keeping")
         finally:
-            composer.deliver = orig_deliver
-            composer.shutil.which = orig_which
             composer.pane_is_foreign = orig_foreign
-        # Указатель ушёл (фолбэк), полный текст — только в ящике.
+            composer.pane_belongs_to_project = orig_belongs
+            _sp.run = orig_run
+        # Указатель ушёл display-message (фолбэк), полный текст — только в ящике.
         self.assertTrue(res["delivered"])
         self.assertTrue(res["in_pane"])
-        self.assertEqual(1, len(called), "указатель печатаем, а не молчим")
-        self.assertNotIn("payload worth keeping", str(called[0]),
+        self.assertEqual("display-message", res.get("fallback"))
+        self.assertTrue(any("display-message" in c for c in called),
+                        "фолбэк идёт через display-message, а не send-keys")
+        self.assertFalse(any("send-keys" in c for c in called),
+                         "typed-печать в чужую панель запрещена")
+        self.assertNotIn("payload worth keeping", str(called),
                          "полный текст в чужую панель не уходит")
         read = self.peer.tool_pair_read(wait_seconds=0)
         self.assertEqual(read["count"], 1)
