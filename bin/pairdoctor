@@ -51,6 +51,23 @@ def argv_from_toml(text):
         raise KeyError("command")
     return [cmd] + args
 
+def unittest_tail(stdout: str, stderr: str) -> list:
+    """Строки итога unittest из объединённого вывода.
+
+    unittest пишет Ran/OK в stderr, а не stdout: чтение только stdout
+    давало пустой tail навсегда (карточка pairdoctor-reads-stdout).
+    Итог бывает с хвостом — `OK (skipped=1)`, `FAILED (failures=1)` —
+    поэтому ловим по префиксу, а не точным совпадением.
+    """
+    combined = (stdout or "") + (stderr or "")
+    out = []
+    for line in combined.splitlines():
+        stripped = line.strip()
+        if line.startswith("Ran ") or stripped == "OK" or stripped.startswith("OK ") \
+                or stripped == "FAILED" or stripped.startswith("FAILED "):
+            out.append(line)
+    return out
+
 
 print("pairdoctor, корень " + str(ROOT))
 
@@ -62,7 +79,8 @@ if not srv.exists():
 else:
     r = subprocess.run([sys.executable, str(tests)], cwd=str(ROOT),
                        capture_output=True, text=True)
-    tail = [l for l in r.stdout.splitlines() if l.startswith("Ran ") or l.strip() in ("OK", "FAILED")]
+    # unittest пишет итог в stderr: читаем объединённый вывод через unittest_tail.
+    tail = unittest_tail(r.stdout, r.stderr)
     if r.returncode == 0:
         ok("тесты сервера: " + (tail[0] if tail else "OK"))
     else:

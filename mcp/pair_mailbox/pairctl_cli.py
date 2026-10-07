@@ -61,6 +61,7 @@ def _commands() -> dict[str, str]:
         "task": "pairctl_authority",
         "tasks": "pairctl_authority",
         "reset": "pairctl_authority",
+        "keys": "pairctl_authority",
         "pane": "pairctl_panes",
         "roster": "pairctl_panes",
         "digest": "pairctl_read",
@@ -70,7 +71,6 @@ def _commands() -> dict[str, str]:
         "all": "pairctl_read",
         "notes": "pairctl_read",
     }
-
 
 def run_ctl(args: argparse.Namespace, state_dir: Path) -> int:
     """Разобрать команду и позвать её реализацию.
@@ -209,6 +209,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     reset = sub.add_parser("reset", help="wipe shared state")
     reset.add_argument("--yes", action="store_true")
+
+    keys = sub.add_parser("keys", help="human: Ed25519-ключи ролей (gen)")
+    keys.add_argument("keys_command", nargs="?", help="'gen'")
+    keys.add_argument("role", nargs="?", default="", help="роль для gen")
 
     return parser
 

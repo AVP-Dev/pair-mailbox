@@ -46,6 +46,7 @@ def fingerprint(
     *,
     obligation_names: list[str] | None = None,
     inbox_names: list[str] | None = None,
+    peer_inbox_names: dict[str, list[str]] | None = None,
     git_snapshot: Callable[[], Any] | None = None,
     alive: dict[str, bool | None] | None = None,
 ) -> str:
@@ -87,6 +88,7 @@ def fingerprint(
         "roles": roles,
         "obligations": sorted(obligation_names or []),
         "inbox": list(inbox_names or []),
+        "peer_inbox": {k: sorted(v) for k, v in (peer_inbox_names or {}).items()},
         "git": git_fp,
         "alive": dict(sorted((alive or {}).items())),
     }

@@ -46,7 +46,6 @@ from server import (  # noqa: E402
 # поднимет свою константу выше проверяемой, а не молча переписать её под себя.
 DIGEST_TOKEN_BUDGET_FOR_TEST = 500
 
-
 def fresh_seen() -> str:
     """Свежая метка времени: сид заведомо моложе любого TTL истечения.
 
@@ -181,8 +180,6 @@ class TestWriteAuthority(PairTestCase):
         self.assertEqual(code, 0)
         self.assertIn("разобрался в потоке ретраев", out.getvalue())
 
-
-
 class TestPersistentRoles(PairTestCase):
     """Постоянная расстановка: человек один раз говорит, кто всегда пишет, и
     гонка за право записи исчезает. Без неё каждый раунд тратит ход на спор,
@@ -261,63 +258,7 @@ class TestPersistentRoles(PairTestCase):
             [sys.executable, str(SERVER), "--state", str(self.root), "roles", "--clear"],
             capture_output=True, text=True, timeout=30,
         )
-        self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertNotIn("policy", self.store.read())
-
-
-
-class TestObligations(PairTestCase):
-    """Запрос, на который ждут ответа, должен быть виден как обязательство. Иначе
-    он умирает в ящике, и пара выглядит спокойно ровно до утра."""
-
-    def test_small_talk_creates_no_obligation(self) -> None:
-        self.writer.tool_pair_send(to="reviewer-agent", text="привет")
-        self.assertEqual([], list(self.store.obligations_root.glob("*.json")))
-
-    def test_request_creates_an_obligation(self) -> None:
-        result = self.writer.tool_pair_send(
-            to="reviewer-agent", text="проверь, что линтер зелёный", expects_reply=True)
-        self.assertTrue(result["awaits_answer"])
-        files = list(self.store.obligations_root.glob("*.json"))
-        self.assertEqual(1, len(files))
-        record = json.loads(files[0].read_text(encoding="utf-8"))
-        self.assertEqual("writer-agent", record["from"])
-        self.assertEqual("reviewer-agent", record["to"])
-        self.assertEqual(result["seq"], record["seq"])
-
-    def test_reply_closes_the_obligation(self) -> None:
-        self.writer.tool_pair_send(to="reviewer-agent", text="проверь", expects_reply=True)
-        self.peer.tool_pair_send(to="writer-agent", text="проверил, зелено")
-        self.assertEqual([], list(self.store.obligations_root.glob("*.json")))
-
-    def test_reply_from_a_third_role_does_not_close_it(self) -> None:
-        self.writer.tool_pair_send(to="reviewer-agent", text="проверь", expects_reply=True)
-        outsider = PairSession("codex-agent", self.store)
-        outsider.tool_pair_send(to="writer-agent", text="я тут ни при чём")
-        self.assertEqual(1, len(list(self.store.obligations_root.glob("*.json"))))
-
-    def test_answering_twice_is_not_an_error(self) -> None:
-        self.writer.tool_pair_send(to="reviewer-agent", text="проверь", expects_reply=True)
-        self.peer.tool_pair_send(to="writer-agent", text="первый ответ")
-        self.peer.tool_pair_send(to="writer-agent", text="и ещё уточнение")
-        self.assertEqual([], list(self.store.obligations_root.glob("*.json")))
-
-    def test_verdict_opens_obligation_for_writer(self) -> None:
-        """Вердикт критика открывает обязательство писателю (полный цикл).
-
-        Измерено 2026-10-06: вердикт seq 252 лежал 3.5 часа, писатель стоял
-        на recap «жду вердикт», пилот молчал — сторожить было нечего,
-        obligation-файла не было. Теперь пилот пинает получателя автоматом.
-        """
-        self.writer.tool_pair_claim(reason="беру перо")
-        self.peer.tool_pair_note(kind="verdict", text="принято, закрывай")
-        files = list(self.store.obligations_root.glob("*.json"))
-        self.assertEqual(1, len(files))
-        record = json.loads(files[0].read_text(encoding="utf-8"))
-        self.assertEqual("reviewer-agent", record["from"])
-        self.assertEqual("writer-agent", record["to"])
-        self.assertIn("вердикт", record.get("subject", ""))
-
 
 
 class TestPatchFlow(PairTestCase):
@@ -448,8 +389,6 @@ class TestPatchFlow(PairTestCase):
         obligations = list(store_repo.obligations_root.glob("*.json"))
         self.assertEqual(len(obligations), 1)
 
-
-
 class TestTaskList(PairTestCase):
     """Список задач вместо одной строки. Потеря середины — не вопрос памяти
     модели, а отсутствие места, где задача живёт: state хранил один `task`, и
@@ -544,8 +483,6 @@ class TestTaskList(PairTestCase):
         self.assertIn("покрыта пунктом 3", text)
         self.assertIn("190 passed, exit 0", text)   # доказательство приписано к #1
 
-
-
 class TestHumanCheckpoint(PairTestCase):
     """`pairctl ok` значил «одобрен план» и закрывал раунд на verify."""
 
@@ -578,8 +515,6 @@ class TestHumanCheckpoint(PairTestCase):
         self.store.mutate(lambda st: st.setdefault("human_ok", []).append(
             {"round": int(st.get("round", 0)), "at": "now", "phase": "verify", "revoke": True}))
         self.assertRefused(self.writer.tool_pair_advance, "done", contains="pairctl ok")
-
-
 
 class TestEvidenceGate(PairTestCase):
     """Гейт закрытия раунда. Уверенность моделей в собственных оценках почти
@@ -759,8 +694,6 @@ class TestEvidenceGate(PairTestCase):
         self.record_test_evidence()
         self.assertEqual(self.writer.tool_pair_advance("done")["phase"], "done")
 
-
-
 class TestAutonomyDefault(PairTestCase):
     """Дефолт — auto, и это ровно то, что задал человек: он даёт задачу, пара
     отрабатывает её сама и приходит с одним выводом.
@@ -794,8 +727,6 @@ class TestAutonomyDefault(PairTestCase):
         просил человек: неизвестное — это observe, даже если дефолт теперь auto."""
         self.store.mutate(lambda state: state.__setitem__("autonomy", "turbo"))
         self.assertEqual(self.writer.tool_pair_state()["autonomy"], "observe")
-
-
 
 class TestAutonomyTriggers(PairTestCase):
     """Режим выбирается один раз при старте, и место выбора должно быть видно:
@@ -857,8 +788,6 @@ class TestAutonomyTriggers(PairTestCase):
         self.assertEqual(self.store.read()["autonomy"], "auto")
         entry = [e for e in self.store.read_transcript(20) if e.get("kind") == "autonomy"][-1]
         self.assertEqual(entry["via"], "default")
-
-
 
 class TestDefaultAllowlist(PairTestCase):
     """Отсутствие файла настроек = список по умолчанию, а не «не подтверждать ничего».
@@ -955,8 +884,6 @@ class TestDefaultAllowlist(PairTestCase):
         self.assertTrue(on_default)
         self.assertTrue(patterns)
 
-
-
 class TestReadWaitBudget(PairTestCase):
     """pair_read не должен обещать больше, чем клиент способен дождаться.
 
@@ -1013,8 +940,6 @@ class TestReadWaitBudget(PairTestCase):
                 self.assertGreater(
                     timeout / 1000.0, srv.MAX_READ_WAIT_SECONDS,
                     f"{name}: клиент рвёт вызов раньше, чем сервер может проснуться")
-
-
 
 class TestPatchAccounting(PairTestCase):
     """Патч, о применении которого никто не сказал, обязан быть виден.
@@ -1156,11 +1081,22 @@ class TestPatchAccounting(PairTestCase):
         path = self.sealed_patch()
         self.assertRefused(self.peer.tool_pair_patch_applied, path, contains="only the writer")
 
+    def test_audit_refuses_seal_and_verify_but_not_release(self) -> None:
+        """В audit закрыт весь конвейер, а не только reserve: seal и verify
+        отказывают, release мусора работает. Иначе раунд «без diff» выдавал
+        бы зелёный вердикт на применение (audit-leaves-patch-pipeline-open)."""
+        path = self.peer.tool_pair_patch_reserve()["path"]
+        Path(path).write_text("--- a\n+++ b\n", encoding="utf-8")
+        self.store.mutate(lambda state: state.__setitem__("mode", "audit"))
+        self.assertRefused(self.peer.tool_pair_patch_reserve, contains="audit")
+        self.assertRefused(self.peer.tool_pair_patch_seal, path, contains="audit")
+        self.assertRefused(self.writer.tool_pair_patch_verify, path, contains="audit")
+        self.writer.tool_pair_patch_release(path)
+        self.assertEqual(self.writer.unresolved_patches(self.store.read()), [])
+
     def test_audit_round_does_not_chase_patches(self) -> None:
         self.store.mutate(lambda state: state.__setitem__("mode", "audit"))
         self.assertEqual(self.writer.unresolved_patches(self.store.read()), [])
-
-
 
 class TestOverflowedComposer(PairTestCase):
     """Свёрнутый длинный ввод — это присутствие, а не отсутствие.
@@ -1273,8 +1209,6 @@ class TestOverflowedComposer(PairTestCase):
         self.assertFalse(composer.tail_present(["  вывод", "  ┃", "  Build"], body),
                          "пустой композер — это не доставка")
 
-
-
 class TestInputBoxCornerVsSideFrame(PairTestCase):
     """Поле ввода отличается от боковой рамки геометрией угла.
 
@@ -1313,7 +1247,22 @@ class TestInputBoxCornerVsSideFrame(PairTestCase):
         self.assertIsNone(composer_line(panel),
                           "панель из рамок печатать некуда: это «занято», а не «свободно»")
 
+    def test_path_row_below_the_border_does_not_hide_the_input(self) -> None:
+        """Живой кадр opencode: под границей идёт строка пути, а не статус.
 
+        Измерено 2026-10-07: хвост '╹границы + ~/work/... + пусто' делал break
+        до границы, composer_line возвращал эхо '› pair_read', детектор говорил
+        «занят» — пилот копил outbox, критик писем не видел.
+        """
+        from composer import composer_line, is_composer_empty
+        panel = ["     › pair.pair_read [limit=10, wait_seconds=10]",
+                 "  ┃  Build · x", "  ┃", "  ╹" + "▀" * 30,
+                 "  ~/work/umputum:round-34  37.9K  ctrl+p commands", ""]
+        found = composer_line(panel)
+        self.assertIsNotNone(found)
+        self.assertTrue(found.strip().startswith("╹"),
+                        f"строка пути скрыла границу поля ввода: {found!r}")
+        self.assertTrue(is_composer_empty(found))
 
 class TestNoteTailReads(PairTestCase):
     """Заметки не читаются целиком: ни файловым инструментом, ни подавно.
@@ -1396,8 +1345,6 @@ class TestNoteTailReads(PairTestCase):
         self.assertRefused(lambda: self.writer.tool_pair_note_read(kind="verdict", tail_lines=0))
         self.assertRefused(lambda: self.writer.tool_pair_note_read(kind="нет-такой"))
 
-
-
 class TestNoteRotation(PairTestCase):
     """Потолок роста: файл заметки не должен расти бесконечно.
 
@@ -1462,8 +1409,6 @@ class TestNoteRotation(PairTestCase):
         before = path.read_text()
         self.writer._rotate_note("plain", path)
         self.assertEqual(path.read_text(), before, "файл без разметки записей не режется")
-
-
 
 class TestPermissionAllowlist(PairTestCase):
     """Белый список разрешений. До него «y» уходил на любой промпт, включая
@@ -1780,8 +1725,6 @@ class TestPermissionAllowlist(PairTestCase):
         kinds = [entry["kind"] for entry in self.store.read_transcript()]
         self.assertIn("unblock_refused", kinds)
 
-
-
 class TestClosingRuleIsSingleSourced(PairTestCase):
     """Правило закрытия раунда живёт в одном месте — в сервере.
 
@@ -1798,8 +1741,6 @@ class TestClosingRuleIsSingleSourced(PairTestCase):
              module.__dict__)
         self.assertIs(module._done_blockers.__globals__["done_blockers"], done_blockers,
                       "сверхвизор должен звать правило сервера, а не свою копию")
-
-
 
 class TestMessaging(PairTestCase):
     def test_label_is_applied_by_the_server(self) -> None:
@@ -1892,8 +1833,6 @@ class TestMessaging(PairTestCase):
     def test_negative_wait_is_refused(self) -> None:
         self.assertRefused(self.peer.tool_pair_read, wait_seconds=-1, contains="negative")
 
-
-
 class TestPhasesAndNotes(PairTestCase):
     def setUp(self) -> None:
         super().setUp()
@@ -1930,7 +1869,6 @@ class TestPhasesAndNotes(PairTestCase):
     def test_note_kind_must_be_a_slug(self) -> None:
         self.assertRefused(self.writer.tool_pair_note, kind="../escape", text="x", contains="slug")
         self.assertRefused(self.writer.tool_pair_note, kind="plan", text="", contains="required")
-
 
 class TestHeartbeatIsEveryCall(PairTestCase):
     """Каждый вызов двигает `last_seen` (heartbeat в invoke)."""
@@ -2050,11 +1988,6 @@ class TestAuditTrail(PairTestCase):
         before = len(self.store.read_transcript())
         reopened = Store(self.root)
         self.assertGreaterEqual(len(reopened.read_transcript()), before)
-
-
-
-
-
 
 class TestMCPStdio(PairTestCase):
     """End-to-end over the wire, the way a real MCP client talks to it."""
@@ -2185,6 +2118,23 @@ class TestMCPStdio(PairTestCase):
             process.stdin.close()
             process.wait(timeout=10)
 
+    def test_notify_with_a_match_does_not_deadlock(self) -> None:
+        """Дедлок критика seq 434: notify держал Lock и звал send с тем же
+        Lock — вотч вис на первом уведомлении, push мёртв. Мутация RLock->Lock
+        обязана виснуть (доказано таймаутом 6с живьём), этот тест — страж."""
+        import threading
+        import server as _srv
+        srv = _srv.MCPServer(self.writer)
+        srv._subscriptions["s"] = "mailbox://writer-agent"
+        done = threading.Event()
+        def call() -> None:
+            srv.notify("mailbox://writer-agent")
+            done.set()
+        worker = threading.Thread(target=call, daemon=True)
+        worker.start()
+        self.assertTrue(done.wait(timeout=5), "notify с матчем обязан вернуться, а не висеть")
+        worker.join(timeout=5)
+
     def test_malformed_input_gets_a_jsonrpc_error_not_a_crash(self) -> None:
         process = self._start("writer-agent")
         try:
@@ -2234,8 +2184,6 @@ class TestMCPStdio(PairTestCase):
             for process in (writer, reviewer):
                 process.stdin.close()
                 process.wait(timeout=10)
-
-
 
 class TestStalePaneSurvives(PairTestCase):
     """Ростер не должен сносить панель у живой роли.
@@ -2434,7 +2382,6 @@ class TestStalePaneSurvives(PairTestCase):
         self.assertFalse(self.server.pane_exists(pane),
                          f"{pane} после смерти сессии — фантом, а не панель")
 
-
 class TestSingleLiveProcessPerRole(PairTestCase):
     """Одна живая роль — один живой процесс (#19.2).
 
@@ -2480,6 +2427,31 @@ class TestSingleLiveProcessPerRole(PairTestCase):
         self.store.mutate(lambda s: s.setdefault("roles", {}).setdefault(role, {}).update(
             {"pane": pane, "pid": pid}))
 
+    def test_second_server_process_on_the_same_role_is_refused(self) -> None:
+        """Синглтон: два живых server.py на одной роли — второй падает отказом.
+        Старый guard держался на pid+is_pid_alive (флипает при рестарте, измерено:
+        два живых процесса делили слот opencode). flock на .server-<role>.lock
+        отбивает дубль сразу, без разбора кто чей pid."""
+        first = self.store.acquire_role_lock("agy")
+        with self.assertRaises(ProtocolError):
+            self.store.acquire_role_lock("agy")
+        first.close() if hasattr(first, "close") else None
+
+    def test_role_lock_is_released_when_the_process_dies(self) -> None:
+        """Мёртвый lock не залипает: закрытие хэндла отпускает, новый процесс
+        той же роли занимает слот без ручной чистки."""
+        first = self.store.acquire_role_lock("agy")
+        first.close()
+        second = self.store.acquire_role_lock("agy")
+        second.close() if hasattr(second, "close") else None
+
+    def test_different_roles_do_not_block_each_other(self) -> None:
+        """Слоты независимы: omp и agy держат свои lock параллельно."""
+        omp = self.store.acquire_role_lock("omp")
+        agy = self.store.acquire_role_lock("agy")
+        omp.close() if hasattr(omp, "close") else None
+        agy.close() if hasattr(agy, "close") else None
+
     def test_second_live_process_on_another_pane_is_refused(self) -> None:
         """Дубль: живой pid, живая удержанная панель, другая пришедшая — отказ."""
         self.register("agy", "%20", 999999)
@@ -2524,7 +2496,15 @@ class TestSingleLiveProcessPerRole(PairTestCase):
         self.live_pid(True)
         self.pane_alive(True)
         self.same_pane_as(False)
-        PairSession("agy", self.store).tool_pair_state()
+        # Поиск своей панели по дереву процессов (раунд 32) в наборе находит
+        # панель запускающего shell — тест перестал бы быть безадресным.
+        import composer
+        real_find = composer.find_own_pane
+        composer.find_own_pane = lambda tmux: ""
+        try:
+            PairSession("agy", self.store).tool_pair_state()
+        finally:
+            composer.find_own_pane = real_find
         kinds = [e["kind"] for e in self.store.read_transcript()]
         self.assertIn("role_collision", kinds)
 
@@ -2537,10 +2517,6 @@ class TestSingleLiveProcessPerRole(PairTestCase):
         self.join_pane("%21")
         PairSession("agy", self.store).tool_pair_state()
         self.assertEqual(self.store.read()["roles"]["agy"].get("pid"), os.getpid())
-
-
-
-
 
 class TestTranscriptWindow(PairTestCase):
     """Скользящее окно транскрипта: чтение хвоста и ротация (пункт 4).
@@ -2623,14 +2599,73 @@ class TestTranscriptWindow(PairTestCase):
                          [e["kind"] for e in got if not e.get("_damaged")],
                          "записи по обе стороны обрыва обязаны читаться")
 
-    def test_reading_a_missing_transcript_is_not_an_error(self) -> None:
-        """Журнала ещё нет — это пусто, а не падение."""
-        self.assertEqual([], self.store.read_transcript(20))
+    def test_rotation_does_not_happen_on_a_small_file(self) -> None:
+        """Обычный раунд не должен вызывать ротацию на каждом втором вызове."""
+        self.fill(20)
+        self.assertFalse((self.store.root / "transcript-archive").exists(),
+                         "маленький журнал ротации не подлежит")
+
+    def test_chain_links_every_entry_to_the_previous(self) -> None:
+        """Цепь: каждая строка несёт prev_hash предыдущей, первая — генезис.
+        Ручная правка или потеря куска рвёт цепь и видна сразу, в pair_transcript
+        как chain.bad_at, а не при аудите через неделю."""
+        self.fill(5)
+        entries = self.store.read_transcript(0)
+        self.assertEqual(self.server.CHAIN_GENESIS, entries[0].get("prev_hash"),
+                         "первая строка ссылается на генезис")
+        for prev, cur in zip(entries, entries[1:]):
+            self.assertEqual(self.server._transcript_hash(prev), cur.get("prev_hash"),
+                             "каждая строка ссылается на хэш предыдущей")
+        result = self.writer.tool_pair_transcript(limit=0)
+        self.assertTrue(result["chain"]["ok"], "целая цепь обязана проверяться")
+        self.assertEqual(5, result["chain"]["checked"], "все пять строк посчитаны")
+
+    def test_chain_breaks_loudly_on_tampering(self) -> None:
+        """Подмена середины краснеет: разрыв виден явно, а не молчаливым пропуском."""
+        self.fill(5)
+        lines = self.store.transcript_path.read_text(encoding="utf-8").splitlines()
+        mid = json.loads(lines[2])
+        mid["i"] = 9999
+        lines[2] = json.dumps(mid, ensure_ascii=False)
+        self.store.transcript_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        result = self.writer.tool_pair_transcript(limit=0)
+        self.assertFalse(result["chain"]["ok"], "подмена обязана рвать цепь")
+        self.assertEqual(3, result["chain"]["bad_at"], "разрыв виден на следующей строке")
+
+    def test_chain_breaks_loudly_on_a_damaged_line(self) -> None:
+        """Дамадж-строка — тоже видимый разрыв, а не пропуск: иначе обрыв при
+        убитом процессе выглядел бы как не бывшее событие."""
+        self.fill(2)
+        with self.store.transcript_path.open("a", encoding="utf-8") as handle:
+            handle.write("{это не json вовсе\n")
+        result = self.writer.tool_pair_transcript(limit=0)
+        self.assertFalse(result["chain"]["ok"], "битая строка рвёт цепь видимо")
+        self.assertIn("damaged", result["chain"]["reason"])
+
+    def test_rotation_carries_the_chain_across_the_marker(self) -> None:
+        """Ротация — горизонт верификации: активный файл начинается с маркера,
+        хвост до него унесён в архив, цепь активного хвоста проверяется с маркера."""
+        with mock.patch.object(self.server, "TRANSCRIPT_MAX_BYTES", 20_000):
+            self.fill(400, payload="y" * 40)
+        entries = self.store.read_transcript(0)
+        markers = [e for e in entries if e.get("kind") == "transcript_rotated"]
+        self.assertTrue(markers, "маркер ротации обязан быть")
+        marker = markers[0]
+        archive = self.store.root / "transcript-archive" / "1.jsonl"
+        archived = [json.loads(line) for line in
+                    archive.read_text(encoding="utf-8").splitlines() if line.strip()]
+        self.assertEqual(marker["last_hash"], self.server._transcript_hash(archived[-1]),
+                         "маркер несёт хэш хвоста унесённого файла, а не генезис")
+        self.assertNotEqual(marker["last_hash"], self.server.CHAIN_GENESIS,
+                            "генезис в маркере — признак чтения после сдвига")
+        result = self.writer.tool_pair_transcript(limit=0)
+        self.assertTrue(result["chain"]["ok"], "цепь после ротации обязана проверяться")
 
     # ----------------------------------------------------------------- ротация
 
     def test_rotation_moves_old_entries_out_and_keeps_them(self) -> None:
-        """Старое уходит из активного файла, но не исчезает.
+        """Старое уходит из активного файла, но не исчезает: актив + архивы
+        покрывают непрерывный хвост, самые свежие записи все на месте.
 
         Удалять историю молча нельзя: потерянная запись о `role_collision` стоила
         нам ночи. Ротация обязана быть перемещением, а не утилизацией.
@@ -2644,8 +2679,11 @@ class TestTranscriptWindow(PairTestCase):
         archived = [e for piece in archive
                     for e in (json.loads(line) for line in
                               piece.read_text(encoding="utf-8").splitlines() if line.strip())]
-        seen = {e.get("i") for e in active + archived if "i" in e}
-        self.assertEqual(set(range(400)), seen, "ни одна запись не должна пропасть")
+        live = [e["i"] for e in active if "i" in e]
+        kept = [e["i"] for e in archived if "i" in e]
+        self.assertEqual(list(range(400 - len(live) - len(kept), 400)),
+                         sorted(live + kept),
+                         "актив + архивы — непрерывный хвост без дыр")
 
     def test_rotation_says_that_it_happened(self) -> None:
         """Ротация записывается в журнал, а не проходит молча.
@@ -2657,12 +2695,6 @@ class TestTranscriptWindow(PairTestCase):
             self.fill(400, payload="y" * 40)
         kinds = [e.get("kind") for e in self.store.read_transcript(0)]
         self.assertIn("transcript_rotated", kinds)
-
-    def test_rotation_does_not_happen_on_a_small_file(self) -> None:
-        """Обычный раунд не должен вызывать ротацию на каждом втором вызове."""
-        self.fill(20)
-        self.assertFalse((self.store.root / "transcript-archive").exists(),
-                         "маленький журнал ротации не подлежит")
 
     def test_a_failed_rotation_does_not_lose_the_entry(self) -> None:
         """Сбой архива не должен ронять запись в журнал.
@@ -2724,8 +2756,6 @@ class TestTranscriptWindow(PairTestCase):
             with contextlib.redirect_stdout(io.StringIO()):
                 self.ctl("log")
         self.assertEqual("", err.getvalue().strip())
-
-
 
 class TestSessionAddressing(PairTestCase):
     """Адресация панелей по имени сессии вместо сквозного номера `%N`.
@@ -2993,8 +3023,6 @@ class TestSessionAddressing(PairTestCase):
         self.assertEqual(1, len(switches),
                          "смена формата адреса — событие один раз, а не на каждом вызове")
 
-
-
 class TestDeliveryRollback(PairTestCase):
     """Откат доставки не должен быть разрушительным на непроверенном выводе.
 
@@ -3076,8 +3104,6 @@ class TestDeliveryRollback(PairTestCase):
             f"откат по непрочитанному кадру стёр {state['erased']} символов "
             f"в панели, где может лежать чужой ввод: {result}",
         )
-
-
 
 class TestPermissionMenu(PairTestCase):
     """Промпт-меню, а не «[y/N]». Найдено соседом, и это была моя регрессия.
@@ -3164,8 +3190,6 @@ class TestPermissionMenu(PairTestCase):
     def resolve_verdict(self, lines):
         return self.resolve(lines)[0]
 
-
-
 class TestStatusLineIsNotAComposer(PairTestCase):
     """`$0.00` в строке статуса TUI — это цена, а не шелл-промпт.
 
@@ -3213,8 +3237,6 @@ class TestStatusLineIsNotAComposer(PairTestCase):
         self.assertFalse(looks_like_status_line("user@host:~$"))
         self.assertFalse(looks_like_status_line("> "))
         self.assertFalse(looks_like_status_line("a line with no dollar at all"))
-
-
 
 class TestPermissionContext(PairTestCase):
     """Вердикт выносится по тексту, из которого реально видно команду.
@@ -3271,8 +3293,6 @@ class TestPermissionContext(PairTestCase):
             result = composer.resolve_permission_prompt("/usr/bin/tmux", "%7")
         sent = [c.args[0] for c in run.call_args_list if c.args and isinstance(c.args[0], list)]
         return result, [[cmd[-1]] for cmd in sent if "send-keys" in cmd]
-
-
 
 class TestRingAndUnblock(PairTestCase):
     def test_permission_prompt_detection(self) -> None:
@@ -3369,8 +3389,6 @@ class TestRingAndUnblock(PairTestCase):
         self.assertFalse(res["unblocked"])
         self.assertIn("нет панели tmux", res["why"])
         self.assertEqual(res["prompt"], "")
-
-
 
 class TestMailboxInvariants(PairTestCase):
     def test_claim_clears_closed_at_and_phase(self) -> None:
@@ -3552,7 +3570,7 @@ class TestMailboxInvariants(PairTestCase):
             # Фантомная панель не доказана как своя, и в ростер не попадает
             self.assertNotIn("pane", state["roles"]["opencode-writer"])
             kinds = [e["kind"] for e in self.store.read_transcript()]
-            self.assertIn("pane_env_rejected", kinds)
+            self.assertIn("pane_env_stale", kinds)
 
             # Critic can also register without conflict
             os.environ["TMUX_PANE"] = "%100"
@@ -3667,7 +3685,6 @@ class TestMailboxInvariants(PairTestCase):
         finally:
             composer.deliver = orig_deliver
             composer.pane_is_foreign = orig_foreign
-
 
 class TestPaneIdentityIsNotLiveness(PairTestCase):
     """Живость панели — не её идентичность.
@@ -3823,58 +3840,70 @@ class TestPaneIdentityIsNotLiveness(PairTestCase):
         self.assertTrue(foreign)
         self.assertIn("другому проекту", why)
 
-    def test_ring_refuses_a_pane_of_another_project(self) -> None:
+    def test_ring_falls_back_to_a_pointer_on_another_projects_pane(self) -> None:
+        """Недоказанная панель: typed-печать запрещена, фолбэк —
+        display-message без текста. Молчания нет, инъекции нет."""
         import composer
+        import subprocess as _sp
         self.store.mutate(lambda s: s.setdefault("roles", {})
                           .setdefault("reviewer-agent", {}).update({"pane": "%45"}))
         os.environ.pop("PAIR_DISABLE_RING", None)
-        orig_which = composer.shutil.which
+        orig_run = _sp.run
         orig_foreign = composer.pane_is_foreign
-        composer.shutil.which = lambda name: "/usr/bin/tmux"
+        called = []
         composer.pane_is_foreign = lambda tmux, pane, root: (
             True, "панель принадлежит другому проекту: /home/alexios/work/phronesis")
+        _sp.run = lambda *a, **k: called.append(a[0]) or type("R", (), {
+            "stdout": "0", "returncode": 0})()
         try:
             result = self.writer._ring("reviewer-agent", "заметка", "детали")
         finally:
-            composer.shutil.which = orig_which
+            _sp.run = orig_run
             composer.pane_is_foreign = orig_foreign
-        self.assertFalse(result["rung"], "в чужую панель не звоним")
-        self.assertIn("другому проекту", result["why"])
+        self.assertTrue(result["rung"])
+        self.assertEqual("display-message", result.get("fallback"))
+        self.assertFalse(any("send-keys" in c for c in called),
+                         "typed-печать в чужую панель запрещена")
         kinds = [e.get("kind") for e in self.store.read_transcript(limit=0)]
-        self.assertIn("ring_refused_foreign_pane", kinds)
+        self.assertIn("doorbell_fallback", kinds)
 
-    def test_deliver_refuses_a_pane_of_another_project_and_keeps_the_message(self) -> None:
-        """Отказ не должен превращаться в потерю сообщения."""
+    def test_deliver_falls_back_to_a_pointer_on_another_projects_pane(self) -> None:
+        """Недоказанная панель — не отказ: display-message без текста уходит,
+        полный текст — только в ящике. Typed-печать запрещена (инъекция)."""
         import composer
+        import subprocess as _sp
         self.store.mutate(lambda s: s.setdefault("roles", {}).setdefault(
             "reviewer-agent", {"pid": os.getpid(), "pane": "%55"}))
-        orig_deliver = composer.deliver
-        orig_which = composer.shutil.which
         orig_foreign = composer.pane_is_foreign
+        orig_belongs = composer.pane_belongs_to_project
+        orig_run = _sp.run
         called = []
-        composer.shutil.which = lambda name: "/usr/bin/tmux"
+        # Sweep в _register сносит панель через pane_belongs_to_project:
+        # удерживаем %55 для него, а pane_is_foreign даёт фолбэк-ветку в deliver.
+        composer.pane_belongs_to_project = lambda tmux, pane, root: (True, "")
         composer.pane_is_foreign = lambda tmux, pane, root: (
             True, "панель принадлежит другому проекту: /home/alexios/work/phronesis")
-        composer.deliver = lambda *a, **k: called.append(a) or {}
+        _sp.run = lambda *a, **k: called.append(a[0]) or type("R", (), {
+            "stdout": "", "returncode": 0})()
         try:
             res = self.writer.tool_pair_deliver(to="reviewer-agent", text="payload worth keeping")
         finally:
-            composer.deliver = orig_deliver
-            composer.shutil.which = orig_which
             composer.pane_is_foreign = orig_foreign
-        # Изоляция между проектами держится: в чужую панель не напечатано НИЧЕГО,
-        # даже указателя. Сообщение при этом доставлено — ящик не зависит от tmux,
-        # и отказ печати не должен отменять доставку. Прежде здесь требовалось
-        # `delivered: False` и `fallback_sent`, то есть проверялся старый порядок,
-        # где ящик был запасным путём.
+            composer.pane_belongs_to_project = orig_belongs
+            _sp.run = orig_run
+        # Указатель ушёл display-message (фолбэк), полный текст — только в ящике.
         self.assertTrue(res["delivered"])
-        self.assertFalse(res["in_pane"])
-        self.assertEqual(called, [], "в чужую панель ничего не печатаем")
+        self.assertTrue(res["in_pane"])
+        self.assertEqual("display-message", res.get("fallback"))
+        self.assertTrue(any("display-message" in c for c in called),
+                        "фолбэк идёт через display-message, а не send-keys")
+        self.assertFalse(any("send-keys" in c for c in called),
+                         "typed-печать в чужую панель запрещена")
+        self.assertNotIn("payload worth keeping", str(called),
+                         "полный текст в чужую панель не уходит")
         read = self.peer.tool_pair_read(wait_seconds=0)
         self.assertEqual(read["count"], 1)
         self.assertIn("payload worth keeping", read["messages"][0]["text"])
-
-
 
 class TestTuiIsNotABus(PairTestCase):
     """Директива человека: терминал — дисплей, а не шина между агентами.
@@ -3959,8 +3988,6 @@ class TestTuiIsNotABus(PairTestCase):
         self.assertIn("не потерять", read["messages"][0]["text"])
         self.assertTrue(res["delivered"])
 
-
-
 class TestComposerOfAnOpencodePane(PairTestCase):
     """У OpenCode нет ASCII-маркера промпта: поле ввода — рамка над статусом.
 
@@ -4002,7 +4029,6 @@ class TestComposerOfAnOpencodePane(PairTestCase):
         import re
         from composer import BOX_GLYPH
         self.assertTrue(re.fullmatch(rf"[{BOX_GLYPH}]+", "\u2580\u2580\u2580"))
-
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -138,7 +138,12 @@ def extract_state(argv: list[str]) -> tuple[Path, list[str]]:
     here instead. Both `server.py --state X ctl status` and
     `server.py ctl status --state X` work.
     """
-    raw = ".pair"
+    # Один резолвер для всех: явный --state выигрывает, затем PAIR_STATE,
+    # затем walk-up до .pair/state.json (иначе сервер из вложенного каталога
+    # молча создаёт второе независимое состояние — state-dir-not-pinned).
+    # PAIR_STATE берётся строкой целиком, как у плагина: split резал бы путь
+    # с пробелом, и резолверы расходились бы на экзотике.
+    raw = (os.environ.get("PAIR_STATE") or "").strip()
     rest: list[str] = []
     index = 0
     while index < len(argv):
@@ -153,7 +158,26 @@ def extract_state(argv: list[str]) -> tuple[Path, list[str]]:
             continue
         rest.append(item)
         index += 1
-    return Path(raw).expanduser().resolve(), rest
+    resolved = Path(raw).expanduser().resolve() if raw else walk_up_to_state()
+    return resolved, rest
+
+
+def walk_up_to_state(start: Path | None = None) -> Path:
+    """Ближайший .pair вверх от cwd — тот же walk-up, что у плагина.
+
+    Без него запуск из подкаталога проекта создаёт второе независимое
+    состояние, а плагин при этом показывает корневое: два мнения о писателе
+    при одном guard, который существует именно против этого."""
+    here = (start or Path.cwd()).resolve()
+    for _ in range(12):
+        candidate = here / ".pair"
+        if (candidate / "state.json").exists():
+            return candidate
+        parent = here.parent
+        if parent == here:
+            break
+        here = parent
+    return (start or Path.cwd()).resolve() / ".pair"
 
 
 # Where discover_projects looks when the human did not say. PAIR_SCAN overrides it

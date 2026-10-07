@@ -132,6 +132,15 @@ class TestFingerprintSeesEverythingTheAnswerReads(unittest.TestCase):
             statecache.fingerprint(state, inbox_names=[]),
         )
 
+    def test_a_new_peer_inbox_file_changes_it(self) -> None:
+        """Чужое письмо тоже сдвигает отпечаток: иначе вызыватель получал
+        `unchanged` без новых unread соседа (P1 — затык виден за секунды)."""
+        state = self.base_state()
+        self.assertNotEqual(
+            statecache.fingerprint(state, peer_inbox_names={"pi": ["1-x.json"]}),
+            statecache.fingerprint(state, peer_inbox_names={"pi": []}),
+        )
+
 
     def test_obligation_order_does_not_change_it(self) -> None:
         """Порядок имён не содержание: два вызова не должны различаться из-за него."""

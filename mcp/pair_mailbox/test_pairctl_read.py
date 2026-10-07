@@ -290,7 +290,10 @@ class TestMultiProject(PairTestCase):
     def test_agent_notes_are_shown_by_default_and_work_notes_are_not(self) -> None:
         # Заметки агентов (plan, finding...) — часть работы, их видно.
         # Мои рабочие заметки о самом pair-mailbox — нет, их сотни строк кода.
-        for kind in ("plan", "finding", "verdict", "z-scratch"):
+        # backlog и finding-<ID> предписаны §9 и навыками: их отсутствие
+        # в выдаче — тот же дефект, что чинился в pairchat (вердикт раунда 33).
+        for kind in ("plan", "finding", "finding-12", "backlog", "verdict",
+                     "z-scratch", "x-wrap"):
             path = self.root / "notes" / f"{kind}.md"
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(f"содержимое заметки {kind}\n", encoding="utf-8")
@@ -309,7 +312,10 @@ class TestMultiProject(PairTestCase):
         self.assertEqual(done.returncode, 0, done.stderr)
         self.assertIn("содержимое заметки plan", done.stdout)
         self.assertIn("содержимое заметки verdict", done.stdout)
+        self.assertIn("содержимое заметки backlog", done.stdout)
+        self.assertIn("содержимое заметки finding-12", done.stdout)
         self.assertNotIn("z-scratch", done.stdout, "рабочая заметка попала в выдачу")
+        self.assertNotIn("x-wrap", done.stdout, "рабочая заметка попала в выдачу")
         self.assertIn("содержимое заметки z-scratch", loud.stdout,
                       "--all-notes должен показывать и рабочие заметки")
 
@@ -343,6 +349,44 @@ class TestMultiProject(PairTestCase):
         )
         self.assertEqual(done.returncode, 1)
         self.assertIn("нет", done.stdout + done.stderr)
+
+    def test_state_resolution_prefers_flag_over_env_over_cwd(self) -> None:
+        """Три компонента разрешали путь по-разному — второе состояние в одном
+        проекте (state-dir-not-pinned). Приоритет: --state, затем PAIR_STATE."""
+        from pairctl_read import extract_state
+        explicit = str(self.root)
+        self.assertEqual(extract_state(["--state", explicit, "status"])[0], Path(explicit))
+        env = dict(os.environ, PAIR_STATE=explicit)
+        old = os.environ.get("PAIR_STATE")
+        os.environ["PAIR_STATE"] = explicit
+        try:
+            self.assertEqual(extract_state(["status"])[0], Path(explicit))
+        finally:
+            if old is None:
+                os.environ.pop("PAIR_STATE", None)
+            else:
+                os.environ["PAIR_STATE"] = old
+        self.assertNotEqual(explicit, str(Path(".pair").resolve()))
+
+    def test_nested_cwd_resolves_to_project_root_state(self) -> None:
+        """Запуск из подкаталога не создаёт второй .pair: walk-up до
+        .pair/state.json (state-dir-not-pinned, ВОЗРАЖАЮ-2)."""
+        from pairctl_read import extract_state, walk_up_to_state
+        proj = Path(self._tmp.name) / "proj"
+        (proj / ".pair").mkdir(parents=True)
+        (proj / ".pair" / "state.json").write_text("{}")
+        deep = proj / "a" / "b"
+        deep.mkdir(parents=True)
+        old_env = os.environ.pop("PAIR_STATE", None)
+        cwd = os.getcwd()
+        os.chdir(deep)
+        try:
+            self.assertEqual(walk_up_to_state(), (proj / ".pair").resolve())
+            self.assertEqual(extract_state(["status"])[0], (proj / ".pair").resolve())
+        finally:
+            os.chdir(cwd)
+            if old_env is not None:
+                os.environ["PAIR_STATE"] = old_env
 
 
 if __name__ == "__main__":

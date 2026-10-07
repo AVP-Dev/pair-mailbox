@@ -1,0 +1,50 @@
+# file<TAB>suite — какая проверка покрывает файл. Точное совпадение или префикс каталога.
+# Использует scripts/verify-changed.sh: после правки гоняет static + только
+# затронутые сюиты вместо всего слоя (5.5 мин → секунды).
+# Формат имён сюит — из scripts/verification-profile.tsv.
+mcp/pair_mailbox/composer.py	composer
+mcp/pair_mailbox/test_composer.py	composer
+mcp/pair_mailbox/liveness.py	liveness
+mcp/pair_mailbox/test_liveness.py	liveness
+mcp/pair_mailbox/statecache.py	statecache
+mcp/pair_mailbox/test_statecache.py	statecache
+mcp/pair_mailbox/server.py	protocol
+mcp/pair_mailbox/test_protocol.py	protocol
+mcp/pair_mailbox/test_obligations.py	obligations
+mcp/pair_mailbox/rolekeys.py	rolekeys
+mcp/pair_mailbox/test_rolekeys.py	rolekeys
+mcp/pair_mailbox/obligations.py	obligations
+mcp/pair_mailbox/test_pairctl_authority.py	pairctl-authority
+mcp/pair_mailbox/pairctl_authority.py	pairctl-authority
+mcp/pair_mailbox/test_pairctl_panes.py	pairctl-panes
+mcp/pair_mailbox/panes.py	pairctl-panes
+mcp/pair_mailbox/pairctl_panes.py	pairctl-panes
+mcp/pair_mailbox/test_pairctl_read.py	pairctl-read
+mcp/pair_mailbox/pairctl_read.py	pairctl-read
+mcp/pair_mailbox/test_panes.py	panes
+mcp/pair_mailbox/test_roster_heal.py	roster-heal
+mcp/pair_mailbox/roster_heal.py	roster-heal
+mcp/pair_mailbox/test_wake.py	wake
+mcp/pair_mailbox/wake.py	wake
+mcp/pair_mailbox/test_review.py	review
+mcp/pair_mailbox/review.py	review
+mcp/pair_mailbox/test_digest.py	digest
+mcp/pair_mailbox/digest.py	digest
+mcp/pair_mailbox/test_board_hosts.py	board-hosts
+mcp/pair_mailbox/test_board_snapshot.py	board-snapshot
+mcp/pair_mailbox/test_board_render.py	board-render
+bin/pairpilot	supervisor
+bin/pairpilot_test.py	supervisor
+bin/pairboard	board-cli
+bin/pairboard_test.py	board-cli
+bin/pairchat	pairchat-check
+bin/pairdoctor	doctor
+bin/pairdoctor_test.py	doctor
+install.sh	installer-subset
+cli-profiles.json	installer-subset
+.opencode/plugins/pair-guard.ts	guard-check
+.opencode/opencode.jsonc	composer
+scripts/	scripts-check
+docs/	docs-check
+mcp/pair_mailbox/wake_opencode.py	wake-api
+mcp/pair_mailbox/test_wake_opencode.py	wake-api

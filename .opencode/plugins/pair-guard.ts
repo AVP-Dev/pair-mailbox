@@ -81,7 +81,7 @@ interface PairState {
  * sides agree on which directory is "theirs".
  */
 function findStateDir(options: Record<string, unknown> | undefined): string | null {
-  const explicit = options?.stateDir ?? process.env.PAIR_STATE_DIR
+  const explicit = options?.stateDir ?? process.env.PAIR_STATE_DIR ?? process.env.PAIR_STATE
   if (typeof explicit === "string" && explicit.length > 0) {
     const direct = resolve(explicit)
     return existsSync(join(direct, "state.json")) ? direct : null
@@ -136,11 +136,12 @@ function brief(stateDir: string, state: PairState | null, who: AgentId): string 
   // single most expensive thing to leave in place when it is false.
   if (audit) {
     out.push(
-      `- Round mode: AUDIT. Nothing in this project gets changed on purpose, whoever holds`,
-      "  authority. Do not edit project files, do not open a branch, do not propose a patch —",
+      `- Round mode: AUDIT. No code gets changed on purpose, whoever holds`,
+      "  authority. Do not edit code, do not open a branch, do not propose a patch —",
       "  the server refuses patch reservations in this mode. Findings go to pair_note, each one",
       "  is checked by the peer, and confirmed findings become docs/backlog entries written by",
-      "  the writer. The deliverable is evidence, not a diff. `bin/pairctl mode fix` changes this.",
+      "  the writer (a new file there is an allowed result, not a code change).",
+      "  The deliverable is evidence, not a diff. `bin/pairctl mode fix` changes this.",
     )
   }
 

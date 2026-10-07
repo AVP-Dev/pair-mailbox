@@ -21,9 +21,28 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 INSTALL = ROOT / "install.sh"
 
+sys.path.insert(0, str(ROOT))
+import importlib.util as _ilu
+
+
+def _install_mod():
+    from importlib.machinery import SourceFileLoader
+    loader = SourceFileLoader("install_sh", str(INSTALL))
+    spec = _ilu.spec_from_loader("install_sh", loader)
+    mod = _ilu.module_from_spec(spec)
+    mod.__dict__["__file__"] = str(INSTALL)
+    loader.exec_module(mod)
+    return mod
+
+
+_INSTALL = _install_mod()
 
 def run_install(home: Path, *args: str) -> subprocess.CompletedProcess:
-    env = dict(os.environ, HOME=str(home))
+    # Вложенный прогон test_protocol.py (~3 мин) здесь не нужен: сюиту гоняет
+    # verify-слой отдельно, а каждый install нёс бы её заново (698с на файл).
+    # Один тест ниже проверяет, что пропуск работает, и один — что сюита
+    # реально запускается без пропуска.
+    env = dict(os.environ, HOME=str(home), PAIR_INSTALL_SKIP_SUITE="1")
     return subprocess.run([sys.executable, str(INSTALL), *args], capture_output=True,
                           text=True, env=env, cwd=str(ROOT), timeout=300)
 
@@ -91,7 +110,8 @@ class TestForeignFilesSurvive(InstallCase):
         result = run_install(self.home, "opencode")
         self.assertNotIn("не читается", result.stdout,
                          "комментарий в jsonc не должен ронять установку")
-        self.assertEqual(self.read_jsonc().get("model"), "test-model")
+        cfg = _INSTALL.parse_jsonc(self.jsonc.read_text(encoding="utf-8"))
+        self.assertEqual(cfg.get("model"), "test-model")
 
     def test_urls_inside_strings_are_not_mangled(self) -> None:
         """Комментарии снимаются конечным автоматом, а не регуляркой: иначе
@@ -99,6 +119,35 @@ class TestForeignFilesSurvive(InstallCase):
         self.write_jsonc(json.dumps({"server": "https://example.com/a//b"}, indent=2))
         run_install(self.home, "opencode")
         self.assertEqual(self.read_jsonc()["server"], "https://example.com/a//b")
+
+    def test_jsonc_comments_survive_the_install(self) -> None:
+        """json.dumps переписывал файл целиком и стирал комментарии человека —
+        вопреки обещанию «чужие ключи не трогает». Правится только блок pair."""
+        self.write_jsonc(
+            '{\n  // мой комментарий\n  "model": "test-model",\n'
+            '  /* блочный */\n  "mcp": {\n    // внутри mcp\n    "context7": {"url": "https://x/a//b"},\n  },\n}\n')
+        run_install(self.home, "opencode")
+        raw = self.jsonc.read_text(encoding="utf-8")
+        self.assertIn("// мой комментарий", raw)
+        self.assertIn("/* блочный */", raw)
+        self.assertIn("// внутри mcp", raw)
+        self.assertIn("https://x/a//b", raw)
+        cfg = _INSTALL.parse_jsonc(self.jsonc.read_text(encoding="utf-8"))
+        self.assertEqual(cfg["model"], "test-model")
+        self.assertIn("pair", cfg["mcp"])
+        self.assertIn("context7", cfg["mcp"])
+
+    def test_second_install_keeps_comments_and_replaces_pair(self) -> None:
+        """Повтор не дублирует блок и не ест комментарии: замена, не вставка."""
+        self.write_jsonc('{\n  // держи меня\n  "model": "m",\n}\n')
+        run_install(self.home, "opencode")
+        first = self.jsonc.read_text(encoding="utf-8")
+        run_install(self.home, "opencode")
+        second = self.jsonc.read_text(encoding="utf-8")
+        self.assertIn("// держи меня", second)
+        self.assertEqual(second.count('"pair"'), 1)
+        self.assertEqual(first, second)
+
 
     def test_instructions_tail_after_the_marker_is_kept(self) -> None:
         """Прежний код делал split(MARK)[0] и удалял всё после маркера — тихо и
@@ -160,8 +209,20 @@ class TestMcpRegistration(InstallCase):
         self.assertEqual(argv[2], "opencode", "роль зашивается в конфиг, а не в память процесса")
 
     def test_the_suite_runs_as_part_of_the_install(self) -> None:
-        result = run_install(self.home, "opencode")
+        if os.environ.get("PAIR_INSTALL_FAST"):
+            self.skipTest("быстрый режим: живую сюиту гоняет integration-слой")
+        env = dict(os.environ, HOME=str(self.home))
+        env.pop("PAIR_INSTALL_SKIP_SUITE", None)
+        result = subprocess.run([sys.executable, str(INSTALL), "opencode"],
+                                capture_output=True, text=True, env=env,
+                                cwd=str(ROOT), timeout=600)
         self.assertNotIn("ТЕСТЫ НЕ ПРОШЛИ", result.stdout)
+
+    def test_test_installs_skip_the_nested_suite(self) -> None:
+        """run_install ставит PAIR_INSTALL_SKIP_SUITE: вложенные ~3 мин
+        на каждый тестовый install не повторяются (было 698с на файл)."""
+        result = run_install(self.home, "opencode")
+        self.assertNotIn("тесты сервера", result.stdout)
 
 
 class TestVerifyDoesNotTouchTheRoster(InstallCase):
@@ -396,6 +457,18 @@ class TestPilotLaunchMap(InstallCase):
         экземпляра получили бы один конфиг — то есть одну роль на двоих."""
         profiles = json.loads((ROOT / "cli-profiles.json").read_text(encoding="utf-8"))
         self.assertIn("--standalone", profiles["opencode"]["launch"])
+
+    def test_opencode_launch_paths_agree_on_auto(self) -> None:
+        """Оба пути запуска несут --auto: иначе они расходятся и один из них
+        встаёт на промпт при каждом рутинном прогоне (раунд 33, P0).
+
+        cli-profiles.json — рестарт пилота, bin/pair-duo — живой запуск.
+        """
+        profiles = json.loads((ROOT / "cli-profiles.json").read_text(encoding="utf-8"))
+        self.assertIn("--auto", profiles["opencode"]["launch"])
+        duo = (ROOT / "bin" / "pair-duo").read_text(encoding="utf-8")
+        self.assertIn("opencode --standalone --auto", duo)
+
 
     def test_launch_is_json_parseable(self) -> None:
         """Файл читается в том числе с --check, где любая ошибка JSON ломает

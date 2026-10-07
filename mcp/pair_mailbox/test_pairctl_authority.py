@@ -150,6 +150,21 @@ class TestControlSurface(PairTestCase):
         self.assertEqual(self._ctl("reset", "--yes"), 0)
         self.assertEqual(self.store.read()["task"], "")
 
+    def test_reset_archives_the_transcript_and_warns_about_fix(self) -> None:
+        """reset стирал append-only транскрипт (§11) и молча возвращал fix.
+        Теперь архив transcript-<дата>.jsonl, новый журнал начинается с reset,
+        а вывод предупреждает о выключенном audit-гарде."""
+        self._ctl("task", "something to lose")
+        before = len(self.store.read_transcript(1000))
+        self.assertGreater(before, 0)
+        self._ctl("reset", "--yes")
+        archived = list((self.root / "transcript-archive").glob("transcript-*.jsonl"))
+        self.assertEqual(len(archived), 1)
+        self.assertGreaterEqual(sum(1 for _ in archived[0].open(encoding="utf-8")), before)
+        fresh = self.store.read_transcript(1000)
+        self.assertEqual([e["kind"] for e in fresh], ["reset"])
+        self.assertEqual(self.store.read().get("mode"), "fix")
+
     def test_task_wakes_the_writer(self) -> None:
         """#16: задача от человека обязана будить держателя записи.
 
@@ -220,6 +235,24 @@ class TestStateFlagPlacement(PairTestCase):
         self.assertEqual(Store(other).read()["task"], "unrelated")
         self.assertEqual(Store(self.root).read()["task"], "resolve the retry storm")
 
+class TestKeysCommand(PairTestCase):
+    """`pairctl keys gen` даёт роли стабильного подписанта вместо pid/pane."""
+
+    def _ctl(self, *args: str) -> int:
+        return main(["--state", str(self.root), *args])
+
+    def test_gen_registers_key_id_and_rekey_revokes(self) -> None:
+        self.assertEqual(self._ctl("keys", "gen", "writer-agent"), 0)
+        state = self.store.read()
+        first = state["role_keys"]["writer-agent"]
+        self.assertTrue(first["key_id"])
+        self.assertEqual(self._ctl("keys", "gen", "writer-agent"), 0)
+        second = self.store.read()["role_keys"]["writer-agent"]
+        self.assertEqual(first["key_id"], second["key_id"])
+        self.assertEqual(1, len(second["revoked"]))
+
+    def test_gen_without_role_is_usage_error(self) -> None:
+        self.assertEqual(self._ctl("keys", "gen"), 2)
 
 class TestRoundMode(PairTestCase):
     """`mode` decides what a round is for, so it has to survive both agents.
@@ -256,6 +289,22 @@ class TestRoundMode(PairTestCase):
             self.assertEqual(state["mode"], "audit")
             # the point of the flag: the answer contradicts the default instruction
             self.assertIn("not edit", state["mode_meaning"].lower().replace("do not", "not"))
+
+    def test_audit_text_allows_backlog_and_bans_code(self) -> None:
+        """Карточка audit-mode-defines-itself-contradictorily: 'не меняй код,
+        backlog можно и нужно' — в обоих местах (server.py + pair-guard.ts)."""
+        self._ctl("mode", "audit")
+        meaning = self.writer.tool_pair_state()["mode_meaning"]
+        self.assertIn("docs/backlog", meaning)
+        self.assertIn("allowed result", meaning)
+        self.assertNotIn("Do not edit project files", meaning)
+        guard = (Path(__file__).resolve().parent.parent.parent
+                 / ".opencode" / "plugins" / "pair-guard.ts").read_text(encoding="utf-8")
+        audit_block = guard[guard.index("if (audit)"):guard.index("// The verifier")]
+        self.assertIn("No code gets changed", audit_block)
+        self.assertIn("allowed result, not a code change", audit_block)
+        # Вне audit-блока фраза легитимна (строка критика: не-писатель файлы не правит).
+        self.assertNotIn("Do not edit project files", audit_block)
 
     def test_audit_refuses_a_patch_and_records_the_refusal(self) -> None:
         self._ctl("mode", "audit")

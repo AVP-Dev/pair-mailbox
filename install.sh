@@ -123,12 +123,141 @@ def parse_jsonc(text):
     cleaned = re.sub(r",(\s*[}\]])", r"\1", strip_jsonc(text))
     return json.loads(cleaned)
 
+def _json_skip_value(text, i):
+    """Конец JSON-значения с позиции i: строки, комментарии и висячие
+    запятые учитываются, иначе замена блока режет URL или // в строке."""
+    n = len(text)
+    while i < n and text[i] in " \t\r\n":
+        i += 1
+    if text.startswith("//", i):
+        nl = text.find("\n", i)
+        return _json_skip_value(text, n if nl == -1 else nl + 1)
+    if text.startswith("/*", i):
+        end = text.find("*/", i + 2)
+        return _json_skip_value(text, n if end == -1 else end + 2)
+    if i < n and text[i] in "{[":
+        open_c, close_c = text[i], "}" if text[i] == "{" else "]"
+        depth, j, instr, esc = 0, i, False, False
+        while j < n:
+            ch = text[j]
+            if instr:
+                if esc:
+                    esc = False
+                elif ch == "\\":
+                    esc = True
+                elif ch == '"':
+                    instr = False
+            elif ch == '"':
+                instr = True
+            elif text.startswith("//", j):
+                nl = text.find("\n", j)
+                j = n if nl == -1 else nl
+            elif text.startswith("/*", j):
+                end = text.find("*/", j + 2)
+                j = n - 1 if end == -1 else end + 1
+            elif ch == open_c:
+                depth += 1
+            elif ch == close_c:
+                depth -= 1
+                if depth == 0:
+                    return j + 1
+            j += 1
+        return n
+    if i < n and text[i] == '"':
+        j = i + 1
+        while j < n:
+            if text[j] == "\\":
+                j += 2
+                continue
+            if text[j] == '"':
+                return j + 1
+            j += 1
+        return n
+    j = i
+    while j < n and text[j] not in ",}]":
+        j += 1
+    return j
+
+
+def _json_find_key(text, start, end, key):
+    """Диапазон значения ключа в объекте [start, end): позиция ключа вне
+    строк и комментариев плюс конец его значения. Нет ключа — None."""
+    i = start
+    while i < end:
+        if text[i] == '"':
+            j = i + 1
+            while j < end:
+                if text[j] == "\\":
+                    j += 2
+                    continue
+                if text[j] == '"':
+                    break
+                j += 1
+            word = text[i + 1:j]
+            k = j + 1
+            while k < end and text[k] in " \t\r\n":
+                k += 1
+            if k < end and text[k] == ":" and word == key:
+                v = _json_skip_value(text, k + 1)
+                return (i, v)
+            i = j + 1
+            continue
+        if text.startswith("//", i):
+            nl = text.find("\n", i)
+            i = end if nl == -1 or nl >= end else nl + 1
+            continue
+        if text.startswith("/*", i):
+            close = text.find("*/", i + 2)
+            i = end if close == -1 or close + 2 >= end else close + 2
+            continue
+        i += 1
+    return None
+
+
+def splice_json_block(text, root_key, server_key, entry_json):
+    """Вставить entry в сырой текст конфига, не трогая остальное.
+
+    json.dumps переписывал бы файл целиком и стирал комментарии человека,
+    поэтому правится только диапазон значения mcp.<server>: замена при
+    наличии, вставка перед закрывающей скобкой объекта при отсутствии.
+    Возвращает (новый_текст, действие): replaced|inserted|created."""
+    stripped = text.strip()
+    if not stripped:
+        return ('{\n  "%s": {\n    "%s": %s\n  }\n}\n' % (root_key, server_key, entry_json), "created")
+    found = _json_find_key(text, 0, len(text), root_key)
+    if found is None:
+        # Вставка перед закрывающей скобкой корня в сырой текст: висячая
+        # запятая перед ней снимается, иначе получится ",," и битый JSON.
+        close = text.rfind("}")
+        inner = text[:close].rstrip()
+        if inner.endswith(","):
+            inner = inner[:-1]
+        sep = "," if inner.strip().strip("{}").strip() else ""
+        tail = text[close:]
+        return ("%s%s\n  \"%s\": {\n    \"%s\": %s\n  }\n%s" % (inner, sep, root_key, server_key, entry_json, tail), "inserted-root")
+    _, root_end = found
+    inner_start = text.find("{", found[0] + len(root_key) + 2)
+    inner_end = root_end - 1
+    pair = _json_find_key(text, inner_start + 1, inner_end, server_key)
+    if pair is not None:
+        return (text[:pair[0]] + '"%s": %s' % (server_key, entry_json) + text[pair[1]:], "replaced")
+    before = text[inner_start + 1:inner_end]
+    # Висячая запятая перед } снимается, иначе вставка даёт ",," и битый JSON.
+    head = text[:inner_end].rstrip()
+    if head.endswith(","):
+        head = head[:-1]
+    sep = "" if not head[inner_start + 1:].strip() else ","
+    return (head + "%s\n    \"%s\": %s\n" % (sep, server_key, entry_json) + text[inner_end:], "inserted")
 
 def write_mcp(profile, role):
     spec = profile["mcp"]
     path = expand(spec["path"])
     path.parent.mkdir(parents=True, exist_ok=True)
+    # Без --state by design: в общие конфиги (~/.config) абсолютный pin
+    # проекта нельзя — все проекты делили бы одно состояние. Резолв на
+    # рантайме: walk-up до .pair/state.json в serve.sh и extract_state.
     argv = ["sh", str(SERVER), role]
+    path.parent.mkdir(parents=True, exist_ok=True)
 
     if spec["format"] == "toml":
         text = path.read_text(encoding="utf-8") if path.exists() else ""
@@ -147,10 +276,10 @@ def write_mcp(profile, role):
         path.write_text("\n".join(lines).rstrip() + "\n\n" + block, encoding="utf-8")
         return argv
 
-    cfg = {}
-    if path.exists():
+    raw = path.read_text(encoding="utf-8") if path.exists() else ""
+    if raw.strip():
         try:
-            cfg = parse_jsonc(path.read_text(encoding="utf-8"))
+            parse_jsonc(raw)
         except Exception as exc:
             print("    !! не читается: " + str(exc))
             print("       " + str(path) + " не тронут. Правь конфиг руками или")
@@ -161,9 +290,14 @@ def write_mcp(profile, role):
         entry["command"] = argv
     else:
         entry["command"], entry["args"] = argv[0], argv[1:]
-    server_key = spec.get("server_key", "pair")
-    cfg.setdefault(spec["root_key"], {})[server_key] = entry
-    path.write_text(json.dumps(cfg, indent=2, ensure_ascii=False), encoding="utf-8")
+    entry_json = json.dumps(entry, indent=2, ensure_ascii=False)
+    # Правка по месту, а не json.dumps всего файла: иначе комментарии
+    # и форматирование человека стираются при каждой установке.
+    backup = path.with_suffix(path.suffix + ".bak")
+    if raw.strip():
+        backup.write_text(raw, encoding="utf-8")
+    new_text, _action = splice_json_block(raw, spec["root_key"], spec.get("server_key", "pair"), entry_json)
+    path.write_text(new_text if new_text.endswith("\n") else new_text + "\n", encoding="utf-8")
     return argv
 
 
@@ -238,6 +372,22 @@ def verify(argv):
         "params": {"protocolVersion": "2024-11-05", "clientInfo": {"name": "pair-install"}},
     }) + "\n"
     scratch = tempfile.mkdtemp(prefix="pair-verify-")
+    # --state в argv (явный pin проекта) побеждает PAIR_STATE, поэтому для
+    # проверки он переписывается на временный: иначе handshake пишет в живой
+    # ростер (регрессия pin, ловит TestVerifyDoesNotTouchTheRoster).
+    clean = []
+    skip_next = False
+    for a in argv:
+        if skip_next:
+            skip_next = False
+            continue
+        if a == "--state":
+            skip_next = True
+            continue
+        if a.startswith("--state="):
+            continue
+        clean.append(a)
+    argv = clean + ["--state", scratch]
     try:
         env = {k: v for k, v in os.environ.items()
                if k not in ("PAIR_STATE", "PAIR_ROLE", "PAIR_DISABLE_RING")}
@@ -320,12 +470,16 @@ def main():
         if not ok:
             failed.append(name)
 
-    print("\nтесты сервера")
-    env = dict(os.environ, PAIR_DISABLE_RING="1")
-    t_res = subprocess.run([sys.executable, str(ROOT / "mcp/pair_mailbox/test_protocol.py")], cwd=str(ROOT), env=env)
-    if t_res.returncode != 0:
-        print("\nТЕСТЫ НЕ ПРОШЛИ")
-        return 1
+    # Вложенная сюита (~3 мин) в тестах установщика пропускается через
+    # PAIR_INSTALL_SKIP_SUITE: её гоняет verify-слой отдельно, а каждый
+    # тестовый install нёс бы её заново (698с на install_test.py целиком).
+    if not os.environ.get("PAIR_INSTALL_SKIP_SUITE"):
+        print("\nтесты сервера")
+        env = dict(os.environ, PAIR_DISABLE_RING="1")
+        t_res = subprocess.run([sys.executable, str(ROOT / "mcp/pair_mailbox/test_protocol.py")], cwd=str(ROOT), env=env)
+        if t_res.returncode != 0:
+            print("\nТЕСТЫ НЕ ПРОШЛИ")
+            return 1
 
     if failed:
         print("\nНЕ СДЕЛАНО для: " + ", ".join(failed))

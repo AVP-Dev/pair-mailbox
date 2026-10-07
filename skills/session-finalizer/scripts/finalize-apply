@@ -1,0 +1,296 @@
+#!/usr/bin/env bash
+# finalize-apply - argv <plan.json> [--yes], cwd=<repo>, stdout=apply.json.
+# The only deleter in the cycle (marker is written by finalize-report).
+# Without --yes it is a dry-run: prints {applied:[],skipped:[all SAFE],
+# blocked from plan}, asks nothing, deletes nothing. With --yes each SAFE action
+# recheck plus an in-code proof before a single narrow deletion
+# (branch: only `git branch -d`; file: only unlink of a still-untracked
+# guarded path; anything else skipped). A blocked plan short-circuits to
+# zero deletions. Marker fast-path (marker.head==HEAD) prints
+# "Nothing to clean" first. --force does not exist.
+set -u
+HERE="$(cd "$(dirname "$0")" && pwd)"
+SKILL="$(cd "$HERE/.." && pwd)"
+usage() {
+  echo "Usage: finalize-apply <plan.json> [--yes]"
+  echo "  Without --yes: dry-run, deletes nothing. With --yes: deletes only"
+  echo "  SAFE actions that pass recheck. PRESERVE is always skipped."
+}
+if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then usage; exit 0; fi
+PLAN=""; YES=0
+for a in "$@"; do
+  case "$a" in
+    --yes) YES=1;;
+    --help|-h) usage; exit 0;;
+    --*) echo "unknown arg: $a" >&2; usage >&2; exit 2;;
+    *) if [ -z "$PLAN" ]; then PLAN="$a"; else echo "too many args" >&2; usage >&2; exit 2; fi;;
+  esac
+done
+if [ -z "$PLAN" ]; then usage >&2; exit 2; fi
+if [ ! -f "$PLAN" ]; then echo "no such plan file: $PLAN" >&2; exit 2; fi
+export PLAN SKILL
+# Marker fast-path first: same HEAD means a previous finalize already
+# closed this state, so succeed without deleting anything.
+FASTPATH=$(python3 - <<'PY' 2>/dev/null
+import json, os, subprocess
+skill = os.environ["SKILL"]
+try:
+    cfg = json.load(open(os.path.join(skill, "config", "defaults.json")))
+except Exception:
+    cfg = {}
+marker = cfg.get("marker", ".session/finalized")
+try:
+    root = subprocess.run(["git", "rev-parse", "--show-toplevel"],
+                          capture_output=True, text=True, timeout=20).stdout.strip()
+except Exception:
+    root = os.getcwd()
+mpath = os.path.join(root or os.getcwd(), marker)
+try:
+    m = json.load(open(mpath))
+    head = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True,
+                          text=True, timeout=20).stdout.strip()
+    # Same HEAD alone is not enough: a dirty tree means new work landed
+    # on top, so the fast-path requires a clean tree as well.
+    # Our own seal is not new work: ask git for dirt EXCLUDING the
+    # marker path (pathspec magic), so ?? .session/ containing only the
+    # marker still counts as clean. Any other line means full cycle.
+    porc = subprocess.run(["git", "status", "--porcelain=v1", "--", ".",
+                           ":(exclude)" + marker],
+                          capture_output=True, text=True, timeout=20)
+    dirt = [l for l in (porc.stdout.splitlines() if porc.returncode == 0 else ["?"]) if l.strip()]
+    if m.get("head") and m.get("head") == head and porc.returncode == 0 and not dirt:
+        print("FASTPATH")
+except Exception:
+    pass
+PY
+)
+if [ "$FASTPATH" = "FASTPATH" ]; then
+  echo "Nothing to clean" >&2
+  printf '{"applied":[],"skipped":[],"blocked":false,"details":[]}\n'
+  exit 0
+fi
+# Dry-run without --yes: no prompt, no deletion; skipped mirrors every
+# SAFE action so the report shows what --yes would attempt; blocked is
+# copied from the plan.
+if [ "$YES" -ne 1 ]; then
+  python3 - <<'PY'
+import json, os
+plan = json.load(open(os.environ["PLAN"]))
+skipped = [a.get("target", "?") for a in plan.get("actions", []) if a.get("kind") == "SAFE"]
+details = [{"target": t, "outcome": "skipped", "reason": "dry-run: confirmation not given (--yes absent)",
+            "evidence": ""} for t in skipped]
+print(json.dumps({"applied": [], "skipped": skipped,
+                  "blocked": plan.get("blocked", True), "details": details}, indent=2))
+PY
+  exit 0
+fi
+python3 - <<'PY'
+import fnmatch, json, os, subprocess, sys
+try:
+    plan = json.load(open(os.environ["PLAN"]))
+    assert isinstance(plan, dict) and isinstance(plan.get("actions", []), list)
+except Exception as e:
+    print("bad plan.json: %s" % e, file=sys.stderr)
+    sys.exit(2)
+try:
+    cfg = json.load(open(os.path.join(os.environ["SKILL"], "config", "defaults.json")))
+except Exception:
+    cfg = {}
+base = plan.get("base", "UNKNOWN") or "UNKNOWN"
+if base == "UNKNOWN":
+    # Plans written by hand may omit base; fall back to live detection
+    # (local refs first, never hardcoded) so ancestry proof still works.
+    try:
+        ref = subprocess.run(["git", "symbolic-ref", "refs/remotes/origin/HEAD"],
+                             capture_output=True, text=True, timeout=20).stdout.strip()
+        if ref:
+            import posixpath as _pp
+            base = _pp.basename(ref)
+    except Exception:
+        pass
+pats = cfg.get("protected_patterns", []) + cfg.get("protected_branches", [])
+exempt = cfg.get("marker_exempt", [".session/finalized"])
+secrets = cfg.get("secrets_guards", [])
+def prot(br):
+    return any(fnmatch.fnmatch(br, p) for p in pats)
+def secret_hit(path):
+    for g in secrets:
+        if g in path or fnmatch.fnmatch(path, g) or fnmatch.fnmatch(os.path.basename(path), g):
+            return True
+    return False
+applied = []   # strings (bare targets)
+skipped = []   # strings (bare targets)
+details = []   # {target,outcome,reason,evidence<=300ch}
+blocked = bool(plan.get("blocked", False))
+def skip(tgt, reason, ev="", taint=True):
+    # Routine PRESERVE skips are informational (taint=False): the plan
+    # was already evaluated, its blocked flag is stored, and a worktree
+    # or UNKNOWN-pr note must not make a clean session unclosable.
+    # blocked=True comes only from SAFE-path refusals (recheck fail,
+    # proof fail, deletion fail, unsupported type).
+    global blocked
+    skipped.append(tgt)
+    details.append({"target": tgt, "outcome": "skipped",
+                    "reason": reason, "evidence": (ev or "")[:300]})
+    if taint:
+        blocked = True
+# Short-circuit: tree-state taint (dirty, unpushed, unmerged branch,
+# failing check at plan time) authorises zero deletions — every SAFE is
+# listed skipped without running rechecks. Routine PRESERVE reasons
+# (protected branch, worktree, artifact, UNKNOWN pr) do NOT taint: a SAFE
+# temp file is still deletable alongside them.
+import re as _re
+# Untracked-only dirt never taints: the temp files ARE the dirt, and
+# deleting them is the cleanup. Tracked modifications, unpushed/unmerged
+# state, or failing checks taint the whole plan (zero deletions).
+_taint = ("unpushed", "unmerged", "has-unpushed",
+          "FAILED", "FAIL", "unknown branch", "unproven", "not merged")
+_reasons = " ".join(plan.get("block_reasons", []) or [])
+if plan.get("blocked", False) and (plan.get("tracked_dirty", True) or any(t in _reasons for t in _taint)):
+    for a in plan.get("actions", []):
+        if a.get("kind") == "SAFE":
+            skip(a.get("target", "?"), "plan blocked: %s" % (_reasons[:200] or "blocked plan"))
+        else:
+            skip(a.get("target", "?"),
+                 "PRESERVE %s: %s" % (a.get("id", "?"), a.get("reason", "")))
+    print(json.dumps({"applied": applied, "skipped": skipped, "blocked": True, "details": details}, indent=2))
+    raise SystemExit(0)
+for a in plan.get("actions", []):
+    aid = a.get("id", "?")
+    tgt = a.get("target", "?")
+    ttype = a.get("type", "")
+    name = a.get("target_name", "") or ""
+    if not ttype and ":" in str(tgt) and str(tgt).split(":", 1)[0] in ("branch", "file", "worktree", "artifact", "note"):
+        # Compat: prefixed plans ("branch:feature") written by hand.
+        ttype = tgt.split(":", 1)[0]
+        if not name:
+            name = str(tgt).split(":", 1)[1]
+    if not name:
+        name = str(tgt)
+    if not ttype:
+        # Unknown kinds are never deletable; classify by safe guess.
+        ttype = "branch" if name and not name.endswith((".tmp", ".bak", ".orig", ".rej")) and "/" not in name else "file"
+    if a.get("kind") != "SAFE":
+        skip(tgt, "PRESERVE %s: %s" % (aid, a.get("reason", "")), "", taint=False)
+        continue
+    rc = (a.get("recheck_cmd", "") or "").strip()
+    if not rc:
+        skip(tgt, "%s: empty recheck_cmd, refused" % aid)
+        blocked = True
+        continue
+    # Never execute plan strings in a shell (RCE via crafted plan):
+    # only the three known recheck shapes run, with argv built here.
+    import shlex as _shlex
+    allowed = False
+    try:
+        parts = _shlex.split(rc)
+    except Exception:
+        parts = []
+    if len(parts) >= 2 and parts[0] == "git" and parts[1] == "status" \
+            and any(x == "--porcelain" or x.startswith("--porcelain=") for x in parts) \
+            and not any(c in rc for c in (";", "&", "|", "$", "`", ">", "<", "\n")):
+        # Status rechecks only report; the code below re-derives the real
+        # decision from live git state with argv built here.
+        allowed = ["git", "status", "--porcelain=v1", "--", name] if ttype == "file" else \
+                  ["git", "status", "--porcelain=v1"]
+    elif len(parts) == 5 and parts[:3] == ["git", "merge-base", "--is-ancestor"]:
+        # Exact shape only: anything appended (;, &&, extra args) refuses.
+        # Runs verbatim (no rebuild) so the log reflects the plan's claim;
+        # the ancestry proof below still decides deletion independently.
+        if ttype != "branch" or base == "UNKNOWN":
+            skip(tgt, "%s: recheck not applicable (unknown base), refused" % aid)
+            blocked = True
+            continue
+        allowed = parts
+    elif parts[:3] == ["git", "branch", "--show-current"]:
+        allowed = ["git", "branch", "--show-current"]
+    elif parts == ["true"]:
+        # Hand-written test fixtures use bare `true`; it proves nothing
+        # but is harmless — the in-code proofs below still decide.
+        allowed = ["true"]
+    if allowed is False:
+        skip(tgt, "%s: recheck not in allowlist, refused: %s" % (aid, rc[:120]))
+        blocked = True
+        continue
+    try:
+        r = subprocess.run(allowed, shell=False, capture_output=True, text=True, timeout=60)
+        if r.returncode != 0:
+            skip(tgt, "%s: recheck failed: %s" % (aid, rc[:120]), (r.stderr or r.stdout or "").strip()[:300])
+            blocked = True
+            continue
+    except Exception as e:
+        skip(tgt, "%s: recheck error: %s" % (aid, e))
+        blocked = True
+        continue
+    if ttype == "branch":
+        br = name or ""
+        if not br or br in ("HEAD", "UNKNOWN"):
+            skip(tgt, "%s: no deletable branch name, refused" % aid)
+            blocked = True
+            continue
+        cur = subprocess.run(["git", "branch", "--show-current"],
+                             capture_output=True, text=True, timeout=20)
+        if cur.returncode == 0 and cur.stdout.strip() == br:
+            skip(tgt, "%s: branch %s is checked out, refused (checkout base first)" % (aid, br))
+            blocked = True
+            continue
+        if prot(br):
+            skip(tgt, "%s: branch %s is protected, refused" % (aid, br))
+            blocked = True
+            continue
+        # In-code proof, right now (not trusting the plan's old merged
+        # flag): ancestry must hold at delete time.
+        ok, ev = False, ""
+        if base != "UNKNOWN":
+            for ref in (base, "origin/" + base):
+                rr = subprocess.run(["git", "merge-base", "--is-ancestor", br, ref],
+                                    capture_output=True, text=True, timeout=20)
+                if rr.returncode == 0:
+                    ok, ev = True, "merge-base --is-ancestor %s %s" % (br, ref)
+                    break
+        if not ok:
+            skip(tgt, "%s: branch %s not proven merged in %s, refused" % (aid, br, base))
+            blocked = True
+            continue
+        rr = subprocess.run(["git", "branch", "-d", br], capture_output=True, text=True, timeout=20)
+        if rr.returncode == 0:
+            applied.append(tgt)
+            details.append({"target": tgt, "outcome": "applied",
+                            "reason": "deleted merged branch %s" % br,
+                            "evidence": ("%s %s" % (ev, (rr.stdout or "").strip()))[:300]})
+        else:
+            skip(tgt, "%s: git branch -d %s failed" % (aid, br), (rr.stderr or "").strip()[:300])
+            blocked = True
+    elif ttype == "file":
+        f = name or ""
+        if not f or f.startswith("/") or ".." in f.split("/") or f == ".git" or f.startswith(".git/"):
+            skip(tgt, "%s: out of scope path, refused" % aid)
+            blocked = True
+            continue
+        if any(fnmatch.fnmatch(f, p) or f == p for p in exempt):
+            skip(tgt, "%s: under marker_exempt, refused" % aid)
+            blocked = True
+            continue
+        if secret_hit(f):
+            skip(tgt, "%s: possible secret path, refused" % aid)
+            blocked = True
+            continue
+        rr = subprocess.run(["git", "status", "--porcelain=v1", "--", f],
+                            capture_output=True, text=True, timeout=20)
+        if rr.returncode != 0 or not rr.stdout.strip().startswith("??"):
+            skip(tgt, "%s: %s is no longer untracked, refused" % (aid, f),
+                 (rr.stdout or "").strip()[:300])
+            blocked = True
+            continue
+        try:
+            os.unlink(f)
+            applied.append(tgt)
+            details.append({"target": tgt, "outcome": "applied",
+                            "reason": "removed untracked temp file %s" % f, "evidence": "?? %s" % f})
+        except Exception as e:
+            skip(tgt, "%s: unlink %s failed: %s" % (aid, f, e))
+            blocked = True
+    else:
+        skip(tgt, "%s: unsupported target type (only branch/file are deletable), kept" % aid, "", taint=False)
+print(json.dumps({"applied": applied, "skipped": skipped, "blocked": blocked, "details": details}, indent=2))
+PY

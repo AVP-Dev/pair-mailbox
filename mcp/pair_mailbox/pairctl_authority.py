@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import argparse
+from datetime import datetime, timezone
 import json
 import shutil
 import sys
@@ -313,10 +314,20 @@ def cmd_reset(store: Store, args: argparse.Namespace) -> int:
         print("refusing to reset without --yes", file=sys.stderr)
         return 2
 
+    # §11 называет транскрипт землёй, по которой прогон восстанавливается:
+    # append-only относится к файлу, и молчаливое удаление стирает аудит.
+    # Поэтому архив (transcript-<дата>.jsonl), а не unlink; снос считается
+    # с чтением счётчиков, чтобы человек видел масштаб уничтожения.
+    archive_dir = store.root / "transcript-archive"
+    archive_dir.mkdir(parents=True, exist_ok=True)
+    old_lines = 0
+    if store.transcript_path.exists():
+        old_lines = sum(1 for _ in store.transcript_path.open(encoding="utf-8"))
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        store.transcript_path.rename(archive_dir / f"transcript-{stamp}.jsonl")
     for path in (store.mailbox_root, store.notes_root, store.patches_root):
         shutil.rmtree(path, ignore_errors=True)
     store.state_path.unlink(missing_ok=True)
-    store.transcript_path.unlink(missing_ok=True)
     fresh = Store(store.root)
     # Стирание состояния не должно повышать права — но права измеряются
     # относительно дефолта, а дефолт теперь auto, то есть ровно то, что человек
@@ -329,4 +340,29 @@ def cmd_reset(store: Store, args: argparse.Namespace) -> int:
     print("state reset; autonomy is now 'auto' — the pair works to the end and "
           "comes back with the result. Narrow it with `pairctl autonomy semi` "
           "or `pairctl autonomy observe`.")
+    print(f"archived {old_lines} transcript lines; mode returns to 'fix' — "
+          "audit guard is off until `pairctl mode audit` again.")
+    return 0
+
+def cmd_keys(store: Store, args: argparse.Namespace) -> int:
+    """Сгенерить Ed25519-пару роли: `pairctl keys gen <role>`."""
+    if getattr(args, "keys_command", "") != "gen" or not getattr(args, "role", ""):
+        print("usage: pairctl keys gen <role>", file=sys.stderr)
+        return 2
+    import base64
+    import rolekeys
+    role = args.role
+    pub = rolekeys.keys_dir(store.root) / f"{role}.pub"
+    old = base64.b64encode(pub.read_bytes()).decode("ascii") if pub.exists() else ""
+    made = rolekeys.generate(store.root, store.project_root, role)
+
+    def apply(state):
+        entry = state.setdefault("role_keys", {}).setdefault(role, {"revoked": []})
+        if old and old not in entry["revoked"]:
+            entry["revoked"].append(old)
+        entry.update({"key_id": made["key_id"], "public": made["public"]})
+
+    store.mutate(apply)
+    store.append_transcript("keys_gen", "human", target_role=role, key_id=made["key_id"], rekey=bool(old))
+    print(f"{role}: key_id {made['key_id']}" + (" (старый ключ отозван)" if old else ""))
     return 0

@@ -1,0 +1,49 @@
+"""Тесты диагностики (`bin/pairdoctor`).
+
+Проверяется то, ради чего чинился парсинг: итог unittest лежит в stderr,
+и чтение только stdout давало пустой tail навсегда.
+
+Функция грузится через AST без исполнения файла: на верхнем уровне
+pairdoctor сразу гоняет проверки (print + subprocess), и exec всего
+файла виснет на прогоне test_protocol внутри импорта.
+"""
+from __future__ import annotations
+
+import ast
+import unittest
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+
+
+def _load_tail_fn():
+    tree = ast.parse((ROOT / "bin" / "pairdoctor").read_text(encoding="utf-8"))
+    for node in tree.body:
+        if isinstance(node, ast.FunctionDef) and node.name == "unittest_tail":
+            mod = ast.Module(body=[node], type_ignores=[])
+            ns: dict = {}
+            exec(compile(mod, "pairdoctor_fn", "exec"), ns)
+            return ns["unittest_tail"]
+    raise AssertionError("unittest_tail не найден в bin/pairdoctor")
+
+
+unittest_tail = _load_tail_fn()
+
+
+class TestUnittestTail(unittest.TestCase):
+    def test_stderr_carries_the_count(self) -> None:
+        """unittest пишет Ran/OK в stderr: tail находится в объединённом."""
+        self.assertEqual(["Ran 3 tests in 0.011s", "OK"],
+                         unittest_tail("", "Ran 3 tests in 0.011s\nOK\n"))
+
+    def test_stdout_alone_is_not_enough(self) -> None:
+        """Чтение только stdout — пустой tail: исходный дефект карточки."""
+        self.assertEqual([], unittest_tail("", ""))
+
+    def test_failure_tail_is_found(self) -> None:
+        self.assertIn("FAILED (failures=1)",
+                      unittest_tail("", "Ran 3 tests in 0.011s\nFAILED (failures=1)\n"))
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)

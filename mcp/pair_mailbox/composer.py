@@ -40,6 +40,13 @@ VERIFY_PAUSE = 0.4
 # что у разных CLI между командой и вопросом иногда есть ещё и рамка.
 OVERSCAN_LINES = 3
 
+# Угловые глифы НИЖНЕЙ границы поля ввода. Боковые рамки панели используют
+# вертикаль `┃`/`│` и в этот набор намеренно не входят: по вертикали панель
+# отличить нельзя, по нижнему углу — можно.
+INPUT_BOX_CORNERS_LOWER = "\u2579\u258c\u2588"
+
+INPUT_BOX_CORNERS = "\u2579\u257a\u2578\u2576\u257b\u2502\u2503\u2551\u2552"
+
 # Что считаем приглашением ввести текст. Универсально: последняя строка, где
 # после маркера пусто или почти пусто.
 PROMPT_MARKERS = (">", "\u203a", "$", "#", "::", "ask>")
@@ -57,6 +64,8 @@ def looks_like_status_line(line: str) -> bool:
     text = line.strip()
     if not text:
         return True
+    if text[0] in INPUT_BOX_CORNERS_LOWER:
+        return False
     if re.fullmatch(r"[\u2500-\u259f\s═─━╹▀_-]+", text):
         return True
     if text.startswith("$"):
@@ -277,6 +286,60 @@ def pane_identity(tmux: str, pane: str) -> dict:
             "pane_uid": extra[1].strip() if len(extra) > 1 else ""}
 
 
+def _ancestor_chain(pid: int) -> set:
+    """Цепочка предков pid по /proc — общий корень обоих поисков панели.
+
+    Пустое множество вместо [""] : различие «не знаю» и «знаю, что нет»
+    здесь не нужно, оба означают «панель не найдена». pid<=1 отпадает сам:
+    у init нет предков в панелях, и цикл не стартует.
+    """
+    chain: set = set()
+    try:
+        me = int(pid)
+    except (TypeError, ValueError):
+        return chain
+    while me > 1 and me not in chain:
+        chain.add(me)
+        try:
+            stat = Path(f"/proc/{me}/stat").read_text()
+            me = int(stat.rsplit(")", 1)[1].split()[1])
+        except (OSError, IndexError, ValueError):
+            break
+    return chain
+
+
+def find_pane_of_pid(tmux: str, pid: int) -> str:
+    """Панель, в чьём дереве живёт pid — или "".
+
+    Обратный путь: цепочка предков pid до pane_pid одной из живых панелей.
+    Нужен дважды: роль ищет себя без TMUX_PANE (find_own_pane), пилот ищет
+    чужую роль по pid из ростера. Вне Linux или без панели — честный "".
+    """
+    chain = _ancestor_chain(pid)
+    if not chain:
+        return ""
+    try:
+        out = subprocess.run([tmux, "list-panes", "-a", "-F", "#{pane_id} #{pane_pid}"],
+                             capture_output=True, text=True, timeout=5).stdout
+    except Exception:
+        return ""
+    for line in out.splitlines():
+        parts = line.split()
+        if len(parts) == 2 and parts[1].isdigit() and int(parts[1]) in chain:
+            return parts[0]
+    return ""
+
+
+def find_own_pane(tmux: str) -> str:
+    """Панель, из чьего дерева процессов зовут — или "".
+
+    TMUX_PANE в окружении MCP-сервера может не быть (наследует от CLI), а
+    ростер без панели делает deliver/unblock слепыми: роль жива, а будить
+    некуда. Тонкий вызов find_pane_of_pid на своём pid.
+    """
+    return find_pane_of_pid(tmux, os.getpid())
+
+
 def pane_is_foreign(tmux: str, pane: str, project_root) -> tuple:
     """Панель доказуемо не наша? Fail-closed: не доказали своё — не печатаем.
 
@@ -440,16 +503,6 @@ def capture(tmux: str, pane: str) -> list:
 BOX_GLYPH = r"\u2500-\u259f"
 
 
-# Угловые глифы рамки поля ввода: вертикаль и повороты. Строка поля ввода
-# начинается с одного из них и у пустой рамки, и у рамки с набранным текстом.
-# Угловые глифы НИЖНЕЙ границы поля ввода. Боковые рамки панели используют
-# вертикаль `┃`/`│` и в этот набор намеренно не входят: по вертикали панель
-# отличить нельзя, по нижнему углу — можно.
-INPUT_BOX_CORNERS_LOWER = "\u2579\u258c\u2588"
-
-INPUT_BOX_CORNERS = "\u2579\u257a\u2578\u2576\u257b\u2502\u2503\u2551\u2552"
-
-
 def is_input_box_row(line: str) -> bool:
     """Строка поля ввода TUI — и пустая, и с набранным текстом.
 
@@ -520,14 +573,10 @@ def composer_line(lines: list) -> str | None:
     панель из одной рамки печатать некуда, и сообщить о ней как о свободной
     значит отправить keystrokes в никуда. Вызывающий обязан считать None занятой.
     """
-    # Поле ввода-рамка проверяется первым: это единственный структурный признак,
-    # который нельзя спутать с выводом TUI.
-    #
-    # Отличается оно геометрией УГЛА, а не просто «рамкой». Боковые рамки панели
-    # начинаются с вертикали `┃`, а нижняя граница поля ввода — с угла `╹` или
-    # `▌`. Сверху вниз идёт: строка статуса, под ней нижняя граница поля ввода,
-    # под ней боковые рамки. Поэтому идём снизу вверх, перепрыгивая строку
-    # статуса, и берём первую строку с угловым глифом.
+    # Геометрия opencode снизу вверх: строка пути/статуса, над ней нижняя
+    # граница поля ввода (угол `╹`/`▌`), над ней боковые рамки. Хвост после
+    # границы — обстановка, а не контент: пропускаем строки статуса и чистые
+    # рамки, пока не встретим границу. Всё остальное внизу — не поле ввода.
     for line in reversed(lines):
         stripped = line.rstrip()
         if not stripped.strip():
@@ -536,6 +585,10 @@ def composer_line(lines: list) -> str | None:
         if text and text[0] in INPUT_BOX_CORNERS_LOWER:
             return line
         if looks_like_status_line(stripped):
+            continue
+        if text and text[0] in INPUT_BOX_CORNERS and is_input_box_border(stripped):
+            continue
+        if text.startswith("~/") or text.startswith("/"):
             continue
         break
 

@@ -73,6 +73,38 @@ except Exception:
     discuss = "unknown"
 line = f"{time.strftime('%m-%d %H:%M')} ph={phase} r={rnd} w_sil={ws}s c_sil={cs}s obl={obl} verdict={fresh} discuss={discuss}"
 alarm = (phase != "done" and ws > 1200 and obl == 0)
-print(("ALARM " if alarm else "ok ") + line)
+# Затык — это наоборот: ОБЕ стороны молчат по MCP, а обязательства висят.
+# last_seen меряет вызовы, а не работу (возражение критика: 31 мин молчания
+# при активной работе в панели), поэтому второй фактор — хэш хвоста панели:
+# изменился — работает, стоит — висит. Дешево: capture-pane + tail + sha256.
+deadlock = ""
+if phase != "done" and obl > 0 and ws > 600 and cs > 600:
+    import hashlib as _hl
+    _hashes, _changed = {}, False
+    _hashfile = root + "/.pair/eye-pane-hashes.json"
+    try:
+        _hashes = json.load(open(_hashfile))
+    except Exception:
+        _hashes = {}
+    for _role, _info in roles.items():
+        _pane = (_info or {}).get("pane") or ""
+        if not _pane:
+            continue
+        try:
+            _cap = subprocess.run(["tmux", "capture-pane", "-p", "-t", _pane],
+                                  capture_output=True, text=True, timeout=5).stdout
+            _h = _hl.sha256("\n".join(_cap.splitlines()[-3:]).encode()).hexdigest()[:16]
+        except Exception:
+            continue
+        if _role in _hashes and _hashes[_role] != _h:
+            _changed = True
+        _hashes[_role] = _h
+    try:
+        json.dump(_hashes, open(_hashfile, "w"))
+    except Exception:
+        pass
+    if not _changed:
+        deadlock = " DEADLOCK" if (ws > 1200 and cs > 1200) else " warn-deadlock"
+print(("ALARM " if alarm else "ok ") + line + deadlock)
 EOF
 exit 0

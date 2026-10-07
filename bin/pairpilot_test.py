@@ -107,16 +107,17 @@ class PilotCase(unittest.TestCase):
             return {}
         return json.loads(path.read_text(encoding="utf-8"))
 
-    def assert_printed_nothing(self, pilot: "pairpilot.Pilot", role: str) -> None:
-        """Пробуждение обязано остаться тихим.
+    def assert_enqueued_for_push(self, pilot: "pairpilot.Pilot", role: str) -> None:
+        """Почтальон толкает сразу: очередь НЕ пуста после непрочитанного.
 
-        До этой правки печать в композер была первым шагом, и «не напечатать»
-        означало «не знаю, когда ещё можно». Теперь молчание — норма, и именно
-        поэтому утверждение здесь отрицательное: пустая очередь печати и есть
-        тот результат, ради которого механизм менялся.
+        Старый контракт требовал тишины до эскалации (wake-файл, опрос через
+        4 мин, потом печать) — спящий агент узнавал о письме через минуты,
+        и пара работала только пока человек толкал вручную. Новый контракт:
+        память (wake) и толчок (outbox) пишутся вместе, flush этого же тика
+        вбивает толчок в свободный композер.
         """
-        self.assertEqual("", pilot.pending(role),
-                         "пробуждение не должно печатать в композер до эскалации")
+        self.assertTrue(pilot.pending(role),
+                        "непрочитанное обязано лечь в очередь толчка сразу")
 
     def inbox(self, role: str, count: int) -> None:
         path = self.state_dir / "mailbox" / role
@@ -245,7 +246,7 @@ class TestLiveness(PilotCase):
         self.assertTrue(wake, "молчащий писатель должен получить пробуждение")
         self.assertIn("фазу", wake["reason"])
         self.assertIn("право записи", wake["text"])
-        self.assert_printed_nothing(pilot, "agy")
+        self.assert_enqueued_for_push(pilot, "agy")
 
     def test_a_writer_who_woke_up_is_not_printed_at(self) -> None:
         """Проснувшийся не будится второй раз — и об этом есть запись.
@@ -264,7 +265,7 @@ class TestLiveness(PilotCase):
         self.assertEqual({}, self.wake(pilot, "agy"), "пробуждение снято")
         kinds = [e.get("kind") for e in self.transcript_entries()]
         self.assertIn("pilot_wake_acknowledged", kinds)
-        self.assert_printed_nothing(pilot, "agy")
+        self.assert_enqueued_for_push(pilot, "agy")
 
     def test_a_writer_who_ignores_the_wake_is_printed_at_once(self) -> None:
         """Эскалация: печать становится исключением, а не первым шагом.
@@ -388,8 +389,8 @@ class TestLiveness(PilotCase):
         self.assertEqual("", pilot.pending("codex"))
 
     def test_unread_nudge_is_sent_once_and_not_every_tick(self) -> None:
-        """Напоминание о непрочитанном — ускоритель, а не основа: агент
-        заканчивает ход сам (PROTOCOL §7), и напоминание не должно превращаться в
+        """Напоминание о непрочитанном — толчок сразу, но один раз: агент
+        заканчивает ход сам (PROTOCOL §7), и толчок не должен превращаться в
         поток, который сам и будит, и засыпает."""
         self.inbox("codex", 2)
         self.write_state(writer="agy", roles={"codex": {"last_seen": ago(60), "pane": "%1"}},
@@ -404,7 +405,7 @@ class TestLiveness(PilotCase):
         nudges = [e for e in self.transcript_entries() if e.get("kind") == "pilot_unread_nudge"]
         self.assertEqual(1, len(nudges),
                          "напоминание не должно повторяться каждый тик")
-        self.assert_printed_nothing(pilot, "codex")
+        self.assert_enqueued_for_push(pilot, "codex")
 
     def test_unread_nudge_does_not_touch_a_role_with_nothing_unread(self) -> None:
         """Напоминание без письма — шум, а помощь."""
@@ -416,14 +417,13 @@ class TestLiveness(PilotCase):
 
 
 class TestUnread(PilotCase):
-    def test_unread_mail_produces_a_silent_wake(self) -> None:
-        """Письмо есть — пробуждение есть, и в композер при этом ничего не уходит.
+    def test_unread_mail_produces_a_wake_and_a_push(self) -> None:
+        """Письмо есть — память и толчок есть: wake-файл и очередь вбивки.
 
-        Проверка поменяла знак намеренно. Прежняя требовала текста в очереди печати,
-        то есть чтобы сверхвизор залез в чужое окно; новая требует, чтобы он этого
-        НЕ сделал, и ещё чтобы факт пробуждения остался наблюдаемым. Обе части
-        нужны: без первой механизм ничего не делает, без второй — делает всё
-        молча, и по журналу нечем понять, что будили вообще.
+        Старый контракт требовал тишины до эскалации — спящий агент узнавал
+        о письме через минуты опроса, и пара работала только пока человек
+        толкал вручную. Новый контракт почтальона: толчок сразу, память
+        рядом, flush этого же тика вбивает его в свободный композер.
         """
         self.inbox("agy", 3)
         self.write_state(roles={"agy": {"last_seen": ago(60), "pane": "%1"}}, seen={"agy": 0})
@@ -434,7 +434,7 @@ class TestUnread(PilotCase):
         self.assertIn("непрочитанных", wake["reason"])
         self.assertIn("непрочитанных", wake["text"])
         self.assertEqual(3, wake["unread_at_ask"], "сколько именно не прочитано")
-        self.assert_printed_nothing(pilot, "agy")
+        self.assert_enqueued_for_push(pilot, "agy")
 
     def test_read_mail_is_not_reminded(self) -> None:
         self.inbox("agy", 3)
@@ -660,6 +660,151 @@ class TestTmuxPaths(PilotCase):
         pilot = self.fake_tmux()
         pilot.tick()
         self.assertIn("pilot_pane_missing", self.transcript_kinds())
+
+    def test_live_pid_without_pane_heals_the_roster(self) -> None:
+        """Панели нет в ростере, но процесс роли жив и сидит в панели:
+        чиним запись, а не хороним роль. Иначе deliver слеп при живом соседе."""
+        import os
+        self.write_state(roles={"codex": {"last_seen": ago(10), "pid": os.getpid()}})
+        pilot = self.fake_tmux()
+        real_find = pairpilot.find_pane_of_pid
+        pairpilot.find_pane_of_pid = lambda tmux, pid: "%7"
+        try:
+            pilot.tick()
+        finally:
+            pairpilot.find_pane_of_pid = real_find
+        self.assertIn("pilot_pane_healed", self.transcript_kinds())
+        self.assertEqual(self.pilot().store.read()["roles"]["codex"]["pane"], "%7")
+
+    def test_live_project_pane_heals_roster_without_pid(self) -> None:
+        """pid мёртв/пуст, но в проекте есть живая свободная панель: чиним
+        запись по cwd, а не хороним роль (P1, критик seq 381)."""
+        self.write_state(roles={"codex": {"last_seen": ago(10), "pid": 1}})
+        pilot = self.fake_tmux()
+        real_find = pairpilot.find_pane_of_pid
+        real_belongs = pairpilot.pane_belongs_to_project
+        real_rolepid = pairpilot.pane_role_pid
+        real_run = pairpilot.subprocess.run
+        pairpilot.find_pane_of_pid = lambda tmux, pid: ""
+        pairpilot.pane_belongs_to_project = (
+            lambda tmux, pane, root: (pane == "%11", ""))
+        pairpilot.pane_role_pid = lambda tmux, pane, role: 4242 if pane == "%11" else 0
+        pairpilot.subprocess.run = lambda *a, **k: type("R", (), {
+            "stdout": "%9\n%11\n", "returncode": 0})()
+        pilot.pane_key = lambda pane: str(pane)
+        try:
+            pilot.tick()
+        finally:
+            pairpilot.find_pane_of_pid = real_find
+            pairpilot.pane_belongs_to_project = real_belongs
+            pairpilot.pane_role_pid = real_rolepid
+            pairpilot.subprocess.run = real_run
+        self.assertIn("pilot_pane_healed", self.transcript_kinds())
+        self.assertEqual(self.pilot().store.read()["roles"]["codex"]["pane"], "%11")
+
+    def test_foreign_pane_does_not_heal_the_roster(self) -> None:
+        """Чужая панель не чинит ростер: принадлежность не доказана —
+        роль остаётся без панели, fail-closed."""
+        self.write_state(roles={"codex": {"last_seen": ago(10), "pid": 1}})
+        pilot = self.fake_tmux()
+        real_find = pairpilot.find_pane_of_pid
+        real_belongs = pairpilot.pane_belongs_to_project
+        real_run = pairpilot.subprocess.run
+        pairpilot.find_pane_of_pid = lambda tmux, pid: ""
+        pairpilot.pane_belongs_to_project = lambda tmux, pane, root: (False, "чужой")
+        pairpilot.subprocess.run = lambda *a, **k: type("R", (), {"stdout": "%9\n", "returncode": 0})()
+        pilot.pane_key = lambda pane: str(pane)
+        try:
+            pilot.tick()
+        finally:
+            pairpilot.find_pane_of_pid = real_find
+            pairpilot.pane_belongs_to_project = real_belongs
+            pairpilot.subprocess.run = real_run
+        self.assertIn("pilot_pane_missing", self.transcript_kinds())
+        self.assertNotIn("pane", self.pilot().store.read()["roles"]["codex"])
+
+    def test_human_shell_is_not_adopted_without_role_server(self) -> None:
+        """Панель проекта без server.py роли (шелл человека) не усыновляется:
+        cwd второй фактор, первый — живой процесс роли (вердикт раунда 33)."""
+        self.write_state(roles={"codex": {"last_seen": ago(10), "pid": 1}})
+        pilot = self.fake_tmux()
+        real_find = pairpilot.find_pane_of_pid
+        real_belongs = pairpilot.pane_belongs_to_project
+        real_rolepid = pairpilot.pane_role_pid
+        real_run = pairpilot.subprocess.run
+        pairpilot.find_pane_of_pid = lambda tmux, pid: ""
+        pairpilot.pane_belongs_to_project = lambda tmux, pane, root: (True, "")
+        pairpilot.pane_role_pid = lambda tmux, pane, role: 0
+        pairpilot.subprocess.run = lambda *a, **k: type("R", (), {"stdout": "%9\n", "returncode": 0})()
+        pilot.pane_key = lambda pane: str(pane)
+        try:
+            pilot.tick()
+        finally:
+            pairpilot.find_pane_of_pid = real_find
+            pairpilot.pane_belongs_to_project = real_belongs
+            pairpilot.pane_role_pid = real_rolepid
+            pairpilot.subprocess.run = real_run
+        self.assertIn("pilot_pane_missing", self.transcript_kinds())
+        self.assertNotIn("pane", self.pilot().store.read()["roles"]["codex"])
+
+    def test_provisional_pane_is_preferred_but_rechecked(self) -> None:
+        """Жизненный цикл pane_provisional: сервер видел панель, пилот
+        ставит её первой, но факторы перепроверяет — без server.py
+        не усыновляет даже её (вердикт раунда 33, seq 392)."""
+        self.write_state(roles={"codex": {"last_seen": ago(10), "pid": 1,
+                                          "pane_provisional": "%11"}})
+        pilot = self.fake_tmux()
+        real_belongs = pairpilot.pane_belongs_to_project
+        real_rolepid = pairpilot.pane_role_pid
+        real_run = pairpilot.subprocess.run
+        pairpilot.pane_belongs_to_project = lambda tmux, pane, root: (True, "")
+        pairpilot.pane_role_pid = lambda tmux, pane, role: 4242
+        pairpilot.subprocess.run = lambda *a, **k: type("R", (), {
+            "stdout": "%9\n%11\n", "returncode": 0})()
+        pilot.pane_key = lambda pane: str(pane)
+        try:
+            found = pilot.live_project_panes(self.pilot().store.read(), "codex")
+        finally:
+            pairpilot.pane_belongs_to_project = real_belongs
+            pairpilot.pane_role_pid = real_rolepid
+            pairpilot.subprocess.run = real_run
+        self.assertEqual("%11", found[0], "provisional — первая в очереди")
+
+    def test_wake_placement_rings_the_pane_without_typing(self) -> None:
+        """Постановка wake звонит в панель display-message, а не печатает
+        в композер: звонок виден, строка ввода цела."""
+        self.write_state(roles={"codex": {"last_seen": ago(10), "pane": "%9"}})
+        pilot = self.fake_tmux()
+        calls = []
+        real_run = pairpilot.subprocess.run
+        pairpilot.subprocess.run = lambda *a, **k: calls.append(a[0]) or type("R", (), {
+            "stdout": "", "returncode": 0})()
+        try:
+            pilot.mark_wake(self.pilot().store.read(), "codex", "сообщение", "текст")
+        finally:
+            pairpilot.subprocess.run = real_run
+        self.assertIn("pilot_ring", self.transcript_kinds())
+        self.assertTrue(any("display-message" in c for c in calls),
+                        "звонок идёт через display-message, а не send-keys")
+        self.assertFalse(any("send-keys" in c for c in calls),
+                         "печать в композер запрещена")
+
+    def test_ring_is_throttled_to_five_minutes(self) -> None:
+        """Второй звонок подряд — молчание: чаще раза в 5 мин не звоним."""
+        self.write_state(roles={"codex": {"last_seen": ago(10), "pane": "%9"}})
+        pilot = self.fake_tmux()
+        real_run = pairpilot.subprocess.run
+        pairpilot.subprocess.run = lambda *a, **k: type("R", (), {
+            "stdout": "", "returncode": 0})()
+        try:
+            state = self.pilot().store.read()
+            pilot.mark_wake(state, "codex", "сообщение", "текст")
+            before = self.transcript_kinds().count("pilot_ring")
+            pilot.mark_wake(self.pilot().store.read(), "codex", "сообщение", "текст")
+            after = self.transcript_kinds().count("pilot_ring")
+        finally:
+            pairpilot.subprocess.run = real_run
+        self.assertEqual(before, after, "повторный звонок в пределах 5 мин запрещён")
 
     def test_dead_pane_is_recorded_once(self) -> None:
         self.write_state(roles={"agy": {"last_seen": ago(10), "pane": "%9"}})
@@ -1407,6 +1552,22 @@ class TestOperatorSafety(PilotCase):
         pilot.tick()
         self.assertTrue(self.wake(pilot, "agy"), "чужая панель — наша работа")
 
+    def test_daemon_ignores_inherited_tmux_pane(self) -> None:
+        """Демон без PAIR_PILOT_PANE не усыновляет панель из окружения.
+
+        Измерено 2026-10-07: пилот, запущенный из панели агента (%3332),
+        наследовал TMUX_PANE и вечно пропускал роль этой панели через
+        own_pane-skip — надзор за ней молча стоял. Демон стартует с чистым
+        окружением, своя панель задаётся только явно через PAIR_PILOT_PANE.
+        """
+        os.environ["TMUX_PANE"] = "%20"
+        os.environ.pop("PAIR_PILOT_PANE", None)
+        try:
+            pilot = self.pilot()
+            self.assertIsNone(pilot.own_pane)
+        finally:
+            os.environ.pop("TMUX_PANE", None)
+
     def test_own_pane_recorded_as_a_session_address_is_still_own(self) -> None:
         """Панель человека может быть записана адресом сессии, а не `%N`.
 
@@ -1474,7 +1635,7 @@ class TestVisibleWork(PilotCase):
         self.patch_composer(">", empty=True)
         pilot.tick()
         self.assertTrue(self.wake(pilot, "agy"), "пустой композер — вот это дефект")
-        self.assert_printed_nothing(pilot, "agy")
+        self.assert_enqueued_for_push(pilot, "agy")
 
     def test_missing_composer_counts_as_busy(self) -> None:
         """TUI перерисовывается, композера нет. Бить в этот момент — значит
@@ -1505,6 +1666,17 @@ class TestObligations(PilotCase):
         pilot = self.pilot()
         pilot.tick()
         self.assertEqual("", pilot.pending("agy"), "только что спросили — ждём")
+
+    def test_recipient_poked_within_five_minutes(self) -> None:
+        """P1: затык будится за <5 мин. Граница 180с: 60с — молчим, 200с — будим."""
+        self.obligation(8, "opencode", "agy", age=60)
+        self.write_state(roles={"agy": {"last_seen": ago(30), "pane": "%20"}})
+        pilot = self.pilot()
+        pilot.tick()
+        self.assertEqual("", pilot.pending("agy"), "минута — ещё ждём")
+        self.obligation(9, "opencode", "agy", age=200)
+        pilot.tick()
+        self.assertIn("ответа в его почте нет", pilot.pending("agy"))
 
     def test_recipient_is_poked_first(self) -> None:
         self.obligation(7, "opencode", "agy", age=1000)

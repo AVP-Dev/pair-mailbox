@@ -147,3 +147,25 @@ def open_count(obligations_root: Path, frm: str) -> int:
 def queue_full(obligations_root: Path, frm: str,
                limit: int = MAX_OPEN_REVIEWS) -> bool:
     return open_count(obligations_root, frm) >= limit
+
+
+def pin_verdict(store: Any, role: str, kind: str, text: str, utcnow: Any) -> dict[str, Any]:
+    """Привязать вердикт к ревизии: HEAD + dirty-hash + файлы.
+
+    Вынесено из server.tool_pair_note (server-py-still-a-monolith): привязка
+    живёт рядом со snapshot, который её строит. Молчаливое применение вердикта
+    к уехавшей ревизии хуже отсутствия вердикта. Fail-open: без git пишется
+    пустой снимок, снимок не роняет вердикт.
+    """
+    rev = snapshot(store.project_root)
+
+    def remember_verdict(state: dict[str, Any]) -> None:
+        verdicts = state.setdefault("verdicts", [])
+        verdicts.append({"role": role, "kind": kind,
+                         "at": utcnow(), "rev": rev,
+                         "chars": len(text)})
+        del verdicts[: max(0, len(verdicts) - 20)]
+    store.mutate(remember_verdict)
+    store.append_transcript("verdict_pinned", role,
+                            note_kind=kind, head=(rev.get("head") or "")[:12])
+    return rev

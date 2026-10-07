@@ -341,6 +341,8 @@ Default, not a prompt ornament. Applies in every round unless §12 fires:
   next step yourself.
 - The critic is silent for 15+ minutes — resend `pair_send` with
   `expects_reply` and keep working, the pilot catches them up.
+- A critic with no objections does not go silent: a clean review names the
+  next piece of work (open tasks, `docs/backlog/`), or says what is done.
 - A verdict opens an obligation to the writer automatically — take `done`
   yourself when blockers are zero. Closed the round — take the next card
   from `docs/backlog/` yourself, the writer opens the new round.

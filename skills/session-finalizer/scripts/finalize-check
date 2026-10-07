@@ -1,0 +1,242 @@
+#!/usr/bin/env bash
+# finalize-check - read-only session audit. No arguments; cwd=<repo>;
+# stdout=check.json. Always read-only: no git verb that writes appears
+# in this file (no branch -d/checkout/push/commit/merge/worktree
+# add-remove), no redirection into the repo (captures stay in memory),
+# detected project commands run bounded and only their exit is trusted.
+set -u
+HERE="$(cd "$(dirname "$0")" && pwd)"
+SKILL="$(cd "$HERE/.." && pwd)"
+usage() {
+  echo "Usage: finalize-check"
+  echo "  Read-only audit of the current repo (cwd). Prints check.json."
+  echo "  Never writes git state, markers, or worktrees. Fail closed on doubt."
+}
+if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then usage; exit 0; fi
+if [ $# -gt 0 ]; then usage >&2; exit 2; fi
+# shellcheck disable=SC1091
+. "$SKILL/lib/git.sh"
+ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+cd "$ROOT" || { echo "cannot cd $ROOT" >&2; exit 1; }
+CFG="$SKILL/config/defaults.json"
+BRANCH="$(git_branch)"
+BASE="$(git_base)"
+if [ "$BASE" = "UNKNOWN" ]; then
+  HB="$("$SKILL/adapters/hosting.sh" base 2>/dev/null || echo UNKNOWN)"
+  if [ -n "${HB:-}" ] && [ "$HB" != "UNKNOWN" ]; then BASE="$HB"; fi
+fi
+UPSTREAM="$(git_upstream)"
+PORC="$(git status --porcelain=v1 2>/dev/null || echo UNKNOWN)"
+DIFFCHECK_OUT=""; DIFFCHECK_EXIT=0
+DIFFCHECK_OUT=$(git diff --check 2>&1) || DIFFCHECK_EXIT=$?
+STATUS_EXIT=0; git status --porcelain=v1 >/dev/null 2>&1 || STATUS_EXIT=$?
+DETECT_JSON="$("$SKILL/adapters/commands.sh" detect "$ROOT" 2>/dev/null || echo '{}')"
+PR_RAW="$("$SKILL/adapters/hosting.sh" pr "$BRANCH" 2>/dev/null || echo UNKNOWN)"
+ARTS="$("$SKILL/adapters/agent.sh" artifacts "$ROOT" 2>/dev/null || true)"
+export ROOT BRANCH BASE UPSTREAM CFG PORC DIFFCHECK_OUT DIFFCHECK_EXIT STATUS_EXIT DETECT_JSON PR_RAW ARTS
+python3 - <<'PY'
+import fnmatch, json, os, re, subprocess
+root = os.environ["ROOT"]; branch = os.environ["BRANCH"]; base = os.environ["BASE"]
+upstream = os.environ.get("UPSTREAM", "null"); cfg_path = os.environ["CFG"]
+porc = os.environ.get("PORC", ""); dc_out = os.environ.get("DIFFCHECK_OUT", "")
+dc_exit = int(os.environ.get("DIFFCHECK_EXIT", "0") or 0)
+st_exit = int(os.environ.get("STATUS_EXIT", "0") or 0)
+try:
+    detect = json.loads(os.environ.get("DETECT_JSON") or "{}")
+except Exception:
+    detect = {}
+pr_raw = (os.environ.get("PR_RAW") or "UNKNOWN").strip()
+artifacts = sorted([l for l in (os.environ.get("ARTS") or "").splitlines() if l.strip()])
+try:
+    cfg = json.load(open(cfg_path))
+except Exception:
+    cfg = {}
+todos_markers = cfg.get("todos_markers", ["TODO", "FIXME"])
+temp_pats = cfg.get("temp_patterns", ["*.tmp"])
+slots = cfg.get("checks_slots", ["test", "lint", "build", "typecheck"])
+def run(*a, timeout=20):
+    try:
+        return subprocess.run(list(a), cwd=root, capture_output=True, text=True, timeout=timeout)
+    except Exception:
+        return None
+porc_lines = [l for l in porc.splitlines() if l.strip()] if porc != "UNKNOWN" else []
+untracked = [l[3:] for l in porc_lines if l.startswith("?? ")]
+# Unpushed: commits in @{u}..HEAD. No upstream set, but origin carries
+# the branch (pushed without -u): fall back to origin/<branch>..HEAD.
+# Neither: on a non-protected branch push state is UNKNOWN, never assumed
+# clean. A protected/base branch with no origin is normal local state
+# (fresh clone, local-only main): not UNKNOWN, not a blocker.
+unpushed = []
+unpushed_unknown = False
+r = run("git", "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}")
+up = r.stdout.strip() if r and r.returncode == 0 else ""
+if up:
+    r2 = run("git", "log", "--format=%H%x01%s", up + "..HEAD")
+    if r2 and r2.returncode == 0:
+        for line in r2.stdout.splitlines():
+            if "\x01" in line:
+                sha, subj = line.split("\x01", 1)
+                unpushed.append({"sha": sha, "subject": subj})
+elif branch not in ("UNKNOWN", "HEAD", "") and not any(fnmatch.fnmatch(branch, p) for p in (cfg.get("protected_patterns", []) + cfg.get("protected_branches", []))):
+    r3 = run("git", "rev-parse", "--verify", "--quiet", "origin/" + branch)
+    if r3 is not None:
+        if r3.returncode == 0:
+            up = "origin/" + branch
+            r2 = run("git", "log", "--format=%H%x01%s", up + "..HEAD")
+            if r2 and r2.returncode == 0:
+                for line in r2.stdout.splitlines():
+                    if "\x01" in line:
+                        sha, subj = line.split("\x01", 1)
+                        unpushed.append({"sha": sha, "subject": subj})
+        else:
+            unpushed_unknown = True
+# Merged proof is git evidence only (ancestry or --merged listing);
+# without it merged_in_base stays false, never assumed.
+merged = False
+if base != "UNKNOWN" and branch != "UNKNOWN":
+    for ref in ("origin/" + base, base):
+        r = run("git", "merge-base", "--is-ancestor", branch, ref)
+        if r and r.returncode == 0:
+            merged = True
+            break
+    if not merged:
+        for ref in (base, "origin/" + base):
+            r = run("git", "branch", "--merged", ref)
+            if r and r.returncode == 0 and re.search(r"(^|\s)" + re.escape(branch) + r"\s*$", r.stdout, re.M):
+                merged = True
+                break
+# PR normalises to one of three shapes: "UNKNOWN" (no provider),
+# {unknown,reason} (provider present, no PR proof), or the PR object.
+pr = "UNKNOWN"
+if pr_raw and pr_raw != "UNKNOWN":
+    try:
+        d = json.loads(pr_raw)
+    except Exception:
+        d = None
+    if isinstance(d, dict) and d.get("number") not in (None, "UNKNOWN"):
+        pr = {"provider": d.get("provider", "gh"), "number": d.get("number"),
+              "state": d.get("state"), "url": d.get("url")}
+    elif isinstance(d, dict) and "reason" in d:
+        pr = {"unknown": True, "reason": d.get("reason", "no PR proof")}
+    else:
+        pr = {"unknown": True, "reason": "no PR proof for branch %s" % branch}
+todos = []
+try:
+    diff_txt = ""
+    r = run("git", "diff", "HEAD", "--unified=0")
+    if r and r.returncode == 0:
+        diff_txt += r.stdout or ""
+    if base != "UNKNOWN":
+        r2 = run("git", "diff", base + "...HEAD", "--unified=0")
+        if r2 and r2.returncode == 0 and (r2.stdout or "").strip():
+            diff_txt += "\n" + r2.stdout
+    for line in diff_txt.splitlines():
+        if line.startswith("+") and not line.startswith("+++"):
+            for m in todos_markers:
+                if m in line:
+                    todos.append(line.strip()[:200])
+                    break
+        if len(todos) >= 20:
+            break
+except Exception:
+    pass
+worktrees = []
+r = run("git", "worktree", "list", "--porcelain")
+if r and r.returncode == 0:
+    cur = {}
+    for line in r.stdout.splitlines():
+        if line.startswith("worktree "):
+            cur = {"path": line[9:], "branch": ""}
+        elif line.startswith("branch "):
+            cur["branch"] = line[7:]
+        elif line.strip() == "" and cur:
+            worktrees.append(cur)
+            cur = {}
+    if cur:
+        worktrees.append(cur)
+temps = []
+seen_abs = set()
+for td in cfg.get("temp_dirs", []) or []:
+    # Optional scratch dirs (absolute only, usually outside the repo):
+    # list temp-pattern files found there (bounded, read-only listing).
+    # Missing dir -> skip silently.
+    if not isinstance(td, str) or not td.startswith("/"):
+        continue
+    try:
+        for _dp, _dn, _fn in os.walk(td):
+            _dn[:] = [d for d in _dn if d != ".git"]
+            for _f in _fn:
+                for _p in temp_pats:
+                    if fnmatch.fnmatch(_f, _p):
+                        _fp = os.path.join(_dp, _f)
+                        if _fp not in seen_abs:
+                            temps.append(_fp)
+                            seen_abs.add(_fp)
+                        break
+            if len(temps) > 50:
+                break
+    except Exception:
+        pass
+r = run("git", "ls-files", "--others", "--exclude-standard")
+others = list((r.stdout.splitlines() if r and r.returncode == 0 else [])) + untracked
+seen = set()
+for f in others:
+    for p in temp_pats:
+        if fnmatch.fnmatch(os.path.basename(f), p) or fnmatch.fnmatch(f, p):
+            if f not in seen:
+                temps.append(f)
+                seen.add(f)
+            break
+checks = [
+    {"name": "git-status", "cmd": "git status --porcelain=v1",
+     "status": "OK" if st_exit == 0 else "FAIL", "exit": st_exit, "log_tail": porc[:500]},
+    {"name": "git-diff-check", "cmd": "git diff --check",
+     "status": "OK" if dc_exit == 0 else "FAIL", "exit": dc_exit, "log_tail": dc_out[:500]},
+]
+# Project commands come from the detect matrix (slots from config);
+# UNKNOWN slots record absence of evidence (never a failure), real runs
+# decide by exit code.
+for name in slots if isinstance(slots, list) and slots else ("test", "lint", "build", "typecheck"):
+    cmd = detect.get(name, "UNKNOWN")
+    if not cmd or cmd == "UNKNOWN":
+        checks.append({"name": name, "cmd": "UNKNOWN",
+                       "status": "UNKNOWN", "exit": -1, "log_tail": ""})
+    else:
+        rr = run("bash", "-c", cmd, timeout=120)
+        if rr is None:
+            checks.append({"name": name, "cmd": cmd, "status": "UNKNOWN", "exit": -1, "log_tail": ""})
+        else:
+            checks.append({"name": name, "cmd": cmd,
+                           "status": "OK" if rr.returncode == 0 else "FAIL",
+                           "exit": rr.returncode, "log_tail": ((rr.stdout or "") + (rr.stderr or ""))[-500:]})
+def fnprotected(br):
+    pats = cfg.get("protected_patterns", []) + cfg.get("protected_branches", [])
+    return any(fnmatch.fnmatch(br, p) for p in pats)
+# Blocked is a JSON signal, never an exit code: dirty tree, unpushed
+# commits, unmerged non-base branch, or any real check failure.
+block_reasons = []
+if porc_lines:
+    block_reasons.append("dirty tree: %d changed/untracked path(s)" % len(porc_lines))
+if unpushed:
+    block_reasons.append("unpushed: %d commit(s) ahead of %s" % (len(unpushed), up))
+if unpushed_unknown:
+    block_reasons.append("unpushed UNKNOWN: branch %s has no upstream and no origin/%s, push state unproven" % (branch, branch))
+if branch in ("UNKNOWN", "HEAD", ""):
+    block_reasons.append("unknown branch: no deletable name, merge unproven")
+elif fnprotected(branch):
+    pass  # protected/base branches are never deleted; sitting on one is fine
+elif base != "UNKNOWN" and branch != base and not merged:
+    block_reasons.append("branch %s not merged in base %s" % (branch, base))
+elif base == "UNKNOWN" and not merged:
+    block_reasons.append("base UNKNOWN: merge of branch %s unproven" % branch)
+for c in checks:
+    if c.get("status") == "FAIL":
+        block_reasons.append("check FAILED: %s (exit %s)" % (c.get("cmd", c.get("name", "?")), c.get("exit", "?")))
+doc = {"branch": branch, "base": base, "repo_root": root, "git_porcelain": porc_lines, "untracked": untracked,
+       "unpushed": unpushed, "unpushed_unknown": unpushed_unknown,
+       "upstream": "" if upstream == "null" else upstream,
+       "merged_in_base": merged, "pr": pr, "todos_in_diff": todos[:20],
+       "worktrees": worktrees, "temp_files": temps, "session_artifacts": artifacts,
+       "checks": checks, "blocked": len(block_reasons) > 0, "block_reasons": block_reasons}
+print(json.dumps(doc, indent=2))
+PY

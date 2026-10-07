@@ -16,16 +16,18 @@
 # попадает в гейт.
 
 # --- static: быстрые проверки перед каждой правкой ---
-shell-syntax	static	1	bash -n scripts/verify-project.sh scripts/security-scan.sh scripts/file-size-gate.sh scripts/comment-lint.sh scripts/comment-lint_test.sh bin/pair-duo bin/pairctl mcp/pair_mailbox/serve.sh
+shell-syntax	static	1	bash -n scripts/verify-project.sh scripts/security-scan.sh scripts/file-size-gate.sh scripts/comment-lint.sh scripts/comment-lint_test.sh scripts/eye-of-sauron.sh scripts/eye-of-sauron_test.sh bin/pair-duo bin/pairctl mcp/pair_mailbox/serve.sh
 file-size	static	1	./scripts/file-size-gate.sh
 comment-lint	static	1	bash scripts/comment-lint.sh
 
 # --- positive: поведение, которое обязано работать ---
-# Наборов стало четыре после разбора `server.py`: по одному тест-файлу на
+# Наборов стало пять после выноса obligations из `server.py`: по одному тест-файлу на
 # исходник. Каждый запускается отдельно, потому что `python3 test_protocol.py`
 # больше не выполняет тесты соседних модулей, а молчаливо исключённый набор
 # выглядел бы как зелёный.
 protocol	positive	1	python3 mcp/pair_mailbox/test_protocol.py
+obligations	positive	1	python3 mcp/pair_mailbox/test_obligations.py
+rolekeys	positive	1	python3 mcp/pair_mailbox/test_rolekeys.py
 pairctl-authority	positive	1	python3 mcp/pair_mailbox/test_pairctl_authority.py
 pairctl-panes	positive	1	python3 mcp/pair_mailbox/test_pairctl_panes.py
 pairctl-read	positive	1	python3 mcp/pair_mailbox/test_pairctl_read.py
@@ -34,17 +36,21 @@ board-hosts	positive	1	python3 mcp/pair_mailbox/test_board_hosts.py
 board-snapshot	positive	1	python3 mcp/pair_mailbox/test_board_snapshot.py
 board-render	positive	1	python3 mcp/pair_mailbox/test_board_render.py
 board-cli	positive	1	python3 bin/pairboard_test.py
+doctor	positive	1	python3 bin/pairdoctor_test.py
 wake	positive	1	python3 mcp/pair_mailbox/test_wake.py
 review	positive	1	python3 mcp/pair_mailbox/test_review.py
 statecache	positive	1	python3 mcp/pair_mailbox/test_statecache.py
 liveness	positive	1	python3 mcp/pair_mailbox/test_liveness.py
 digest	positive	1	python3 mcp/pair_mailbox/test_digest.py
 panes	positive	1	python3 mcp/pair_mailbox/test_panes.py
+composer	positive	1	python3 mcp/pair_mailbox/test_composer.py
 roster-heal	positive	1	python3 mcp/pair_mailbox/test_roster_heal.py
 file-size-gate-tests	positive	1	bash scripts/file-size-gate_test.sh
+eye-deadlock	positive	1	bash scripts/eye-of-sauron_test.sh
 
 # --- integration: медленное, но обязательное перед финализацией ---
 installer	integration	1	python3 install_test.py
 
 # --- security: базовая линия без внешних зависимостей ---
 secret-baseline	security	1	./scripts/security-scan.sh
+wake-api	positive	1	python3 mcp/pair_mailbox/test_wake_opencode.py

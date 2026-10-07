@@ -41,6 +41,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import uuid
 
@@ -54,6 +55,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import digest  # noqa: E402 - требует sys.path выше
 import liveness  # noqa: E402 - требует sys.path выше
+import obligations  # noqa: E402 - требует sys.path выше
 import statecache  # noqa: E402 - требует sys.path выше
 
 # Имена дайджеста переотдаются из `digest`: их читает `pairctl_read`, и держать
@@ -609,6 +611,7 @@ def read_global_policy() -> dict[str, Any] | None:
         return data
     return None
 
+CHAIN_GENESIS = "chain-genesis-v1"
 
 class ProtocolError(Exception):
     """A request that is well-formed MCP but violates the collaboration rules."""
@@ -623,8 +626,34 @@ class ProtocolError(Exception):
 
 
 
+def _transcript_hash(entry: dict) -> str:
+    """Хэш строки цепи: всё кроме prev_hash, канонический json."""
+    body = {k: v for k, v in entry.items() if k != "prev_hash"}
+    return hashlib.sha256(json.dumps(body, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
 
 
+def verify_transcript_chain(entries: list[dict]) -> dict:
+    """Проверить цепь: каждая строка ссылается на хэш предыдущей.
+    Ротация — горизонт верификации (условие критика seq 415): активный файл
+    начинается с маркера transcript_rotated, хвост до него унесён в архив,
+    поэтому первая строка сверяется с маркера, а архив — отдельно по last_hash.
+    Маркер — обычное звено дальше (несёт prev_hash как все) плюс чекпоинт
+    last_hash унесённого файла. Дамадж-строки — видимый разрыв."""
+    expected = None
+    checked = 0
+    for index, entry in enumerate(entries):
+        if entry.get("_damaged"):
+            return {"ok": False, "bad_at": index, "checked": checked, "reason": f"damaged line {index} breaks chain"}
+        if entry.get("kind") == "transcript_rotated" and expected is None:
+            expected = _transcript_hash(entry)
+            checked += 1
+            continue
+        if entry.get("prev_hash") != (expected if expected is not None else CHAIN_GENESIS):
+            return {"ok": False, "bad_at": index, "checked": checked,
+                    "reason": f"prev_hash mismatch at line {index}: chain broken"}
+        expected = _transcript_hash(entry)
+        checked += 1
+    return {"ok": True, "checked": checked}
 
 def _transcript_entry(raw: str) -> dict | None:
     """Одна строка журнала в словарь, либо None если это не запись.
@@ -699,12 +728,42 @@ class Store:
         self.notes_root = root / "notes"
         self.patches_root = root / "patches"
         self.obligations_root = root / "obligations"
+        self.notifications_root = root / "notifications"
         self.state_path = root / "state.json"
         self.transcript_path = root / "transcript.jsonl"
         self.lock_path = root / ".lock"
         for directory in (self.root, self.mailbox_root, self.notes_root,
-                          self.patches_root, self.obligations_root):
+                          self.patches_root, self.obligations_root,
+                          self.notifications_root):
             directory.mkdir(parents=True, exist_ok=True)
+
+    @staticmethod
+    def _notification_role_dir(role: str) -> str:
+        """Hash role for a path component; roles never become filesystem paths."""
+        return hashlib.sha256(role.encode("utf-8")).hexdigest()[:16]
+
+    def publish_resource_update(self, role: str, uri: str) -> None:
+        """File-only cross-process hint. Mailbox remains the durable source of truth."""
+        folder = self.notifications_root / self._notification_role_dir(role)
+        folder.mkdir(parents=True, exist_ok=True)
+        atomic_write_json(folder / f"{uuid.uuid4().hex}.json",
+                          {"role": role, "uri": uri, "ts": utcnow()})
+
+    def drain_resource_updates(self, role: str) -> list[str]:
+        """Consume this role's event hints; one server per role owns the queue."""
+        folder = self.notifications_root / self._notification_role_dir(role)
+        if not folder.is_dir():
+            return []
+        uris = []
+        for path in sorted(folder.glob("*.json")):
+            try:
+                item = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                item = {}
+            path.unlink(missing_ok=True)
+            if item.get("role") == role and isinstance(item.get("uri"), str):
+                uris.append(item["uri"])
+        return uris
 
     @property
     def project_root(self) -> Path:
@@ -807,6 +866,32 @@ class Store:
                 Store._Lock._holders[self.path] = (depth - 1, handle)
             return False
 
+    def role_lock_path(self, role: str) -> Path:
+        """Файл синглтона на роль: живой процесс держит LOCK_EX, второй падает."""
+        return self.root / f".server-{role}.lock"
+
+    def acquire_role_lock(self, role: str) -> Any:
+        """Занять слот роли: второй живой процесс той же роли — отказ, а не
+        молчаливая коллизия pid. Неблокирующий LOCK_EX|LOCK_NB: блокироваться
+        здесь — значит встать намертво, а отказ виден сразу и пишется в журнал.
+        Хэндл живёт пока жив процесс: закрытие = отпускание, мёртвый lock
+        не залипает по построению (ядро отпускает за умершим)."""
+        path = self.role_lock_path(role)
+        handle = path.open("a+")
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as exc:
+            handle.close()
+            if exc.errno in (errno.EACCES, errno.EAGAIN):
+                raise ProtocolError(
+                    f"роль {role!r} уже занята живым сервером; "
+                    "второй процесс на той же роли не запускается.",
+                    "Одна живая роль — один живой процесс: убей дубль и "
+                    "перезапусти. Пересадка — волей человека.",
+                )
+            raise
+        return handle
+
     def lock(self) -> "Store._Lock":
         return Store._Lock(self.lock_path)
 
@@ -825,11 +910,27 @@ class Store:
     def append_transcript(self, kind: str, role: str, **fields: Any) -> None:
         entry = {"ts": utcnow(), "kind": kind, "role": role}
         entry.update(fields)
-        line = json.dumps(entry, ensure_ascii=False) + "\n"
         with self.lock():
+            entry["prev_hash"] = self._transcript_last_hash()
+            line = json.dumps(entry, ensure_ascii=False) + "\n"
             with self.transcript_path.open("a", encoding="utf-8") as handle:
                 handle.write(line)
-            self._rotate_transcript()
+            if self._transcript_over_cap():
+                self._rotate_transcript()
+
+    def _transcript_over_cap(self) -> bool:
+        try:
+            return self.transcript_path.stat().st_size > TRANSCRIPT_MAX_BYTES
+        except OSError:
+            return False
+
+    def _transcript_last_hash(self) -> str:
+        """Хвост цепи под тем же lock, что и append: два конкурентных append
+        иначе прочитают один хвост и цепь форкнется. Вызывать только под lock."""
+        tail = _transcript_tail(self.transcript_path, 1) if self.transcript_path.exists() else []
+        if not tail:
+            return CHAIN_GENESIS
+        return _transcript_hash(tail[0])
 
     def _rotate_transcript(self) -> None:
         """Скользящее окно: активный файл не растёт бесконечно.
@@ -856,6 +957,9 @@ class Store:
         except OSError:
             return
         archive = self.root / "transcript-archive"
+        # Цепь продолжается через ротацию: last_hash хвоста читается ДО сдвига,
+        # пока файл ещё на месте. После os.replace читать нечего — был бы генезис.
+        last = self._transcript_last_hash()
         try:
             archive.mkdir(parents=True, exist_ok=True)
             # Сдвиг: самый старый кусок уходит в `.1`, и так далее. Чисел хватает
@@ -880,6 +984,7 @@ class Store:
                 "ts": utcnow(), "kind": "transcript_rotated", "role": "system",
                 "archive": "transcript-archive/1.jsonl",
                 "why": f"активный журнал превысил {TRANSCRIPT_MAX_BYTES} байт",
+                "prev_hash": last, "last_hash": last,
             }, ensure_ascii=False) + "\n")
 
     def read_transcript(self, limit: int = 0) -> list[dict[str, Any]]:
@@ -1054,6 +1159,9 @@ class PairSession:
         # пользуется, и импортируется лениво по той же причине, что и `composer`:
         # модуль импортирует `server`, и на верхнем уровне был бы цикл.
         from pairctl_panes import PIN_OK, PIN_UNKNOWN, pin_verdict
+        from composer import pane_belongs_to_project as _belongs
+        from composer import pane_identity as _ident
+        from composer import pane_key as _pane_key
 
         pin = entry.get("pane_pin")
         pin_why = ""
@@ -1081,14 +1189,54 @@ class PairSession:
                                              pin=pin, why=pin_why)
                 pin = ""
 
-        pane = pin or os.environ.get("TMUX_PANE")
+        # Маршрут: pin, затем env, затем ancestry. env — НЕ доказательство
+        # личности, а заявленный адрес: OpenCode MCP-дёмон наследует панель
+        # запускающей шелл (измерено 2026-10-07: opencode-дёмон с TMUX_PANE
+        # от панели omp). Поэтому env принимается только если:
+        # (1) панель жива и проектна — доказывает belongs_to_project,
+        # (2) в ней НЕ зарегистрирована другая ЖИВАЯ роль — иначе адрес чужой.
+        # Опровергнутый env маршрутом не становится (fail-closed): событие
+        # "pane_env_stale", активная доставка mailbox-only.
+        # События коллизий пишутся по заявленному env-адресу независимо от
+        # вердикта: столкновение — факт, даже когда маршрут не наш.
+        env_pane = os.environ.get("TMUX_PANE") or ""
+        pane = pin or ""
+        proved_env = ""
+        if env_pane and tmux and not pin:
+            try:
+                ours, _why = _belongs(tmux, env_pane, self.store.project_root)
+            except Exception:
+                ours = False
+            occupant_alive = False
+            if ours:
+                probe_key = _pane_key(tmux, env_pane)
+                for _rn, _ri in roles.items():
+                    if _rn == self.role or not _ri.get("pane"):
+                        continue
+                    if _pane_key(tmux, _ri["pane"]) != probe_key:
+                        continue
+                    _pid = _ri.get("pid")
+                    if isinstance(_pid, int) and _pid > 0 and _pid != current_pid \
+                            and is_pid_alive(_pid):
+                        occupant_alive = True
+                        break
+            if ours and not occupant_alive:
+                proved_env = env_pane
+                pane = proved_env
+            else:
+                self.store.append_transcript(
+                    "pane_env_stale", self.role, pane=env_pane, proved=proved_env,
+                    why="env-панель не подтверждена как маршрут (жива, проектна, без чужой живой роли)")
+        if not pane and tmux:
+            from composer import find_own_pane
+            pane = find_own_pane(tmux) or ""
         # Адрес, отвергнутый как чужой. Пуст, пока отвергать нечего: иначе при
         # `pane == ""` переменная осталась бы неопределённой и уборка устаревших
         # записей падала бы NameError на каждом вызове без панели.
         rejected = ""
 
-        # Панель из окружения проверяется на принадлежность проекту ДО записи в
-        # ростер, и это не паранойя, а воспроизведённый дефект.
+        # Панель ДОКАЗЫВАЕТСЯ до записи в ростер, и это не паранойя, а
+        # воспроизведённый дефект.
         #
         # `TMUX_PANE` приходит от tmux, а не от проекта: агент, запущенный из
         # панели чужого проекта, честно видит свою панель — и она была записана в
@@ -1102,6 +1250,7 @@ class PairSession:
         # Fail-closed, как в `pane_is_foreign`: доказать своё нельзя — не пишем.
         # Пустая панель безопаснее неверной, потому что неверная адресует чужой
         # композер, а пустая просто лишает доставку.
+        provisional = ""
         if pane and not pin:
             from composer import pane_belongs_to_project
 
@@ -1111,13 +1260,12 @@ class PairSession:
                 self.store.append_transcript(
                     "pane_env_rejected", self.role, pane=pane, why=why_not_ours,
                 )
-                # Адрес сохраняется для уборки, но не как своя панель: дальше он
-                # нужен, чтобы проверить, не осталась ли запись ЗА ПРЕДЕЛАМИ этой
-                # панели — те самые устаревшие, которые снимаются по двум
-                # независимым фактам.
+                # Недоказанная панель хранится как provisional, а не сносится:
+                # печать в неё запрещена (fail-closed держит), но адрес живёт
+                # и чинится следующим доказательством, а не руками человека.
+                provisional = pane
                 rejected = pane
                 pane = ""
-
         # Одна живая роль — один живой процесс (#19.2). Второй процесс на том же
         # имени роли с другой панели — не рестарт, а дубль: молчаливое
         # перезаписывание pid делило слот между двумя агентами, и доставка била
@@ -1255,15 +1403,20 @@ class PairSession:
                     pane=pane,
                     why="имя сессии получить не удалось, адресация на %N неустойчива")
             entry["pane"] = address or pane
+            entry.pop("pane_provisional", None)
+        elif provisional:
+            # Недоказанная, но живая панель: держим как provisional — доставка
+            # печатью запрещена, опросом работает, адрес чинится следующим
+            # доказательством. Снос здесь возвращал слепоту каждый тик.
+            entry["pane_provisional"] = provisional
+            entry.pop("pane", None)
         else:
-            # Ни закрепления, ни своей панели — а в ростере уже стоит адрес.
-            # Это ровно тот заражённый случай: панель была записана, когда
-            # проверки ещё не было, и без явного снятия она жила бы вечно,
-            # потому что писать её больше нечем. `pair_state` продолжал бы
-            # показывать соседа с чужой панелью, а `pair_deliver` — бить туда.
-            #
-            # Снимается с записью в транскрипт, потому что молчаливую починку
-            # нельзя отличить от того, что панели не было никогда.
+            # Ни закрепления, ни своей панели, ни provisional — а в ростере
+            # уже стоит адрес. Это ровно тот заражённый случай: панель была
+            # записана, когда проверки ещё не было, и без явного снятия она
+            # жила бы вечно. Снимается с записью в транскрипт, потому что
+            # молчаливую починку нельзя отличить от того, что панели не было
+            # никогда.
             stale = entry.get("pane")
             if stale:
                 entry.pop("pane", None)
@@ -1310,36 +1463,49 @@ class PairSession:
         # писал бы в журнал (тот же потолок, что у pane_pin_honoured).
         if tmux:
             import roster_heal as _heal
-            from composer import pane_belongs_to_project as _belongs
-            from composer import pane_identity as _ident
             # Сверка по уникальному ID панели: открыл — живёт, закрыл — умерла.
             # Адрес `ml:0.2` плавает при сплитах, `%N` — при рестарте tmux;
             # `%2751` уникален и умирает вместе с панелью. Пришёл со своим
             # UID, а записан чужой — панель подменили, запись не трогаем.
+        try:
+            # UID берётся от ДОКАЗАННОЙ панели (pin/ancestry), а не от env:
+            # env у дёмона бывает чужим, и проверять чужую панель — мусор.
+            _uid_probe = (pane or env_pane) if tmux else ""
+            _here = _ident(tmux, _uid_probe) if _uid_probe else {}
+        except Exception:
+            _here = {}
+        _uid_here = (_here or {}).get("pane_uid") or ""
+        if _uid_here:
+            for _rn, _ri in list(roles.items()):
+                if _rn == self.role or not isinstance(_ri, dict):
+                    continue
+                _their_uid = str(_ri.get("pane_uid") or "")
+                if _their_uid and _their_uid == _uid_here:
+                    self.store.append_transcript(
+                        "pane_uid_collision", self.role, other_role=_rn,
+                        pane_uid=_uid_here,
+                        why="две роли на одной уникальной панели — доставка неразличима")
+                    break
+        if pane and not pin:
             try:
-                _here = _ident(tmux, os.environ.get("TMUX_PANE") or "") if os.environ.get("TMUX_PANE") else {}
+                _cur = _ident(tmux, pane) if tmux else {}
             except Exception:
-                _here = {}
-            _uid_here = (_here or {}).get("pane_uid") or ""
-            if _uid_here:
-                for _rn, _ri in list(roles.items()):
-                    if _rn == self.role or not isinstance(_ri, dict):
-                        continue
-                    _their_uid = str(_ri.get("pane_uid") or "")
-                    if _their_uid and _their_uid == _uid_here:
-                        self.store.append_transcript(
-                            "pane_uid_collision", self.role, other_role=_rn,
-                            pane_uid=_uid_here,
-                            why="две роли на одной уникальной панели — доставка неразличима")
-                        break
-            if pane and not pin:
-                try:
-                    _cur = _ident(tmux, pane)
-                except Exception:
-                    _cur = {}
-                if _cur and _cur.get("exists") and _cur.get("pane_uid"):
-                    entry["pane_uid"] = _cur["pane_uid"]
-                    entry["pane_session_id"] = _cur.get("session_id") or ""
+                _cur = {}
+            if _cur and _cur.get("exists") and _cur.get("pane_uid"):
+                entry["pane_uid"] = _cur["pane_uid"]
+                entry["pane_session_id"] = _cur.get("session_id") or ""
+        elif pane and pin and tmux and pane_exists(pane):
+            # Pin не обновлял UID — правлено 2026-10-07: stale env у дёмона
+            # оставлял pane_uid от чужой панели навсегда. Реальная панель
+            # доказывается тем же tmux-запросом, без наследованного env.
+            try:
+                _cur = _ident(tmux, pane)
+            except Exception:
+                _cur = {}
+            if _cur.get("exists") and _cur.get("pane_uid"):
+                entry["pane_uid"] = _cur["pane_uid"]
+                entry["pane_session_id"] = _cur.get("session_id") or ""
+        if tmux:
             for event in _heal.recheck_peers(
                     roles, self.role, self.store.project_root,
                     pid_alive=is_pid_alive, pane_exists=pane_exists,
@@ -1429,6 +1595,7 @@ class PairSession:
                 obligation_names=[p.name for p in
                                   self.store.obligations_root.glob("*.json")],
                 inbox_names=[p.name for p in self._inbox_files()],
+                peer_inbox_names=self._peer_inbox_names(state),
                 git_snapshot=self._git_fingerprint,
                 alive=alive,
             )
@@ -1473,10 +1640,12 @@ class PairSession:
                     "sealed patches, git ends in a branch and a PR."
                 ),
                 "audit": (
-                    "Nothing in the project gets changed on purpose. Do not edit project "
-                    "files. Findings go to pair_note; each one is checked by the peer, "
-                    "confirmed ones become docs/backlog entries, and the deliverable is "
-                    "evidence rather than a diff."
+                    "No code gets changed on purpose. Do not edit code, do not open "
+                    "a branch, do not propose a patch. Findings go to pair_note; "
+                    "each one is checked by the peer, confirmed ones become "
+                    "docs/backlog entries (a new file there is an allowed result, "
+                    "not a code change), and the deliverable is evidence rather "
+                    "than a diff."
                 ),
             }[mode],
             "writer": writer,
@@ -1540,12 +1709,42 @@ class PairSession:
 
     def _peer_status(self, state: dict[str, Any], writer: str | None) -> dict[str, Any]:
         """Живость соседей. Логика — в `liveness`: её читают оба агента, и она
-        проверяется там без поднятия сервера."""
-        return liveness.peer_status(state, role=self.role, writer=writer)
+        проверяется там без поднятия сервера. Непрочитанные считаем здесь:
+        mailbox виден только серверу (P1 — затык виден за секунды)."""
+        unread = self._peer_mailbox(state)[1]
+        return liveness.peer_status(state, role=self.role, writer=writer, unread=unread)
 
     def _unread_count(self, state: dict[str, Any]) -> int:
         seen = int(state.get("seen", {}).get(self.role, 0))
         return max(0, len(self._inbox_files()) - seen)
+
+    def _peer_mailbox(self, state: dict[str, Any]) -> tuple[dict[str, list[str]], dict[str, int]]:
+        """Чужие ящики за один проход: имена — для отпечатка кэша, счётчики — для peers.
+
+        Без имён письмо соседу не сдвигало отпечаток: вызыватель получал
+        `unchanged` без новых unread соседа, и затык оставался невидимым.
+        """
+        seen = state.get("seen") or {}
+        names: dict[str, list[str]] = {}
+        unread: dict[str, int] = {}
+        for name in (state.get("roles") or {}):
+            if name == self.role:
+                continue
+            try:
+                files = [p.name for p in (self.store.mailbox_root / name).glob("*.json")]
+            except OSError:
+                files = []
+            names[name] = files
+            try:
+                read = int((seen.get(name) or 0))
+            except (TypeError, ValueError):
+                read = 0
+            unread[name] = max(0, len(files) - min(read, len(files)))
+        return names, unread
+
+    def _peer_inbox_names(self, state: dict[str, Any]) -> dict[str, list[str]]:
+        return self._peer_mailbox(state)[0]
+
 
     # ------------------------------------------------------------- evidence
 
@@ -1793,11 +1992,19 @@ class PairSession:
         from composer import pane_is_foreign
         foreign, why_foreign = pane_is_foreign(tmux, pane, self.store.project_root)
         if foreign:
-            self.store.append_transcript(
-                "ring_refused_foreign_pane", self.role, to=target,
-                pane=pane, reason=why_foreign,
-            )
-            return {"rung": False, "why": why_foreign}
+            # Недоказанная панель: typed-печать (send-keys) запрещена —
+            # это инъекция в чужой композер. Фолбэк — только display-message
+            # (всплывашка без печати) + mailbox. Молчания нет, инъекции нет.
+            try:
+                subprocess.run([tmux, "display-message", "-t", pane,
+                                "-d", "4000",
+                                f"[pair] {kind} от {self.role} — забери из mailbox"],
+                               capture_output=True, text=True, timeout=5)
+            except Exception as exc:  # noqa: BLE001 - панель исчезла между проверками
+                return {"rung": False, "why": f"панель не прочиталась: {exc}"}
+            self.store.append_transcript("doorbell_fallback", self.role, to=target,
+                                         bell_kind=kind, pane=pane, reason=why_foreign)
+            return {"rung": True, "pane": pane, "fallback": "display-message"}
         from composer import capture, composer_line, is_composer_empty
         # Single-shot без ожидания: звонок — оптимизация, а не условие.
         # Файл wake/*.json (пишется вызывающим по событию) — гарантия,
@@ -1949,13 +2156,24 @@ class PairSession:
         except ComposerBusy as exc:
             foreign, why_foreign = True, f"tmux недоступен: {exc}"
         if foreign:
-            # Панель чужая — в неё не печатаем. Сообщение уже в ящике, терять
-            # нечего, и причина отказа остаётся в транскрипте.
+            # Недоказанная панель: typed-печать запрещена (инъекция в чужой
+            # композер). Фолбэк — только display-message + mailbox.
+            import subprocess as _sp
+            try:
+                _sp.run([_tmux(), "display-message", "-t", pane,
+                         "-d", "4000",
+                         f"[pair] {self.role}: новое сообщение в ящике, прочитай pair_read"],
+                        capture_output=True, text=True, timeout=5)
+            except Exception as exc:  # noqa: BLE001 - панель исчезла между проверками
+                result["why"] = f"панель не прочиталась: {exc}"
+                return result
             self.store.append_transcript(
-                "deliver_pointer_refused_foreign_pane", self.role, to=to,
+                "deliver_pointer_fallback_foreign_pane", self.role, to=to,
                 pane=pane, reason=why_foreign, seq=seq,
             )
-            result["why"] = why_foreign
+            result["in_pane"] = True
+            result["fallback"] = "display-message"
+            result["delivered_to_pane"] = pane
             return result
 
         # 2. Указатель. Короткий намеренно: это строка в чужом TUI, а не текст.
@@ -1978,69 +2196,14 @@ class PairSession:
         return result
 
     def _obligations_where(self, side: str, role: str | None) -> list[dict[str, Any]]:
-        """Open obligations, optionally filtered to one role.
-
-        Kept small on purpose: a long list of stale obligations is noise, and the
-        supervisor is what actually chases them.
-        """
-        out: list[dict[str, Any]] = []
-        if not self.store.obligations_root.is_dir():
-            return out
-        for path in sorted(self.store.obligations_root.glob("*.json")):
-            try:
-                record = json.loads(path.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError):
-                continue
-            if role is not None and record.get(side) != role:
-                continue
-            out.append({"seq": record.get("seq"), "from": record.get("from"),
-                        "to": record.get("to"), "opened_at": record.get("opened_at"),
-                        "subject": record.get("subject", "")})
-        return out[:20]
+        # Тонкий вызов: логика в obligations.py (server-py-still-a-monolith).
+        return obligations.list_obligations(self.store, side, role)
 
     def _open_obligation(self, frm: str, to: str, seq: int, subject: str = "") -> dict[str, Any]:
-        """Record that `frm` is waiting for an answer from `to`.
-
-        The protocol's blind spot was exactly this: a message asking for a decision was
-        indistinguishable from small talk, so a request nobody answered looked like a quiet
-        evening. An obligation is a plain file, so the supervisor can read it without
-        understanding any of the conversation.
-        """
-        self.store.obligations_root.mkdir(parents=True, exist_ok=True)
-        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-        path = self.store.obligations_root / f"{seq:06d}-{stamp}-{frm}-{to}.json"
-        record = {"seq": seq, "from": frm, "to": to, "opened_at": utcnow(), "subject": subject}
-        # Привязка запроса к ревизии (review-queue): HEAD + dirty-hash + файлы.
-        # Без неё вердикт, пришедший после новых коммитов, молча ложился бы
-        # на непроверенный код. Fail-open: без git пишется пустой снимок.
-        try:
-            from review import snapshot
-            record["rev"] = snapshot(self.store.project_root)
-        except Exception:  # noqa: BLE001 - снимок не должен ронять запрос
-            record["rev"] = {"head": "", "dirty": "", "files": []}
-        atomic_write_json(path, record)
-        self.store.append_transcript("obligation_opened", frm, to=to, seq=seq, subject=subject)
-        return record
+        return obligations.open_obligation(self.store, frm, to, seq, subject)
 
     def _answer_obligations(self, answerer: str, author: str) -> list[int]:
-        """Called when `answerer` writes to `author`: whatever they owed each other closes.
-
-        Any later message counts as the answer, including a fresh request, because two agents
-        talking have by definition stopped waiting on each other. Judging the content would be
-        guesswork, and a wrong guess here means a real request gets nagged about at 3am.
-        """
-        closed: list[int] = []
-        for path in sorted(self.store.obligations_root.glob("*.json")) if self.store.obligations_root.is_dir() else []:
-            try:
-                record = json.loads(path.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError):
-                continue
-            if record.get("from") == answerer and record.get("to") == author:
-                path.unlink(missing_ok=True)
-                closed.append(int(record.get("seq", 0)))
-        if closed:
-            self.store.append_transcript("obligation_answered", answerer, author=author, seqs=closed)
-        return closed
+        return obligations.answer_obligations(self.store, answerer, author)
 
     def tool_pair_send(self, to: str, text: str, subject: str = "",
                         expects_reply: bool = False) -> dict[str, Any]:
@@ -2106,6 +2269,15 @@ class PairSession:
                 "label": f"Chat from {self.role}: ",
                 "text": text.strip(),
             }
+            try:  # без ключа письмо уходит без подписи, подпись не роняет отправку
+                import rolekeys as _keys
+                sk = _keys.load_signing_key(self.store.root, self.role)
+                if sk is not None:
+                    body["envelope"] = _keys.sign_envelope(
+                        sk, _keys.key_id_for(self.store.project_root, self.role),
+                        seq, self.role, to, body["ts"], body["text"])
+            except Exception:  # noqa: BLE001
+                pass
             atomic_write_json(inbox / filename, body)
             return {"seq": seq, "known_target": to in roles}
 
@@ -2127,6 +2299,13 @@ class PairSession:
             self.store.append_transcript("wake_pending", self.role, to=to,
                                          reason="сообщение", seq=result["seq"])
         except Exception:  # noqa: BLE001 - wake-файл не должен ронять отправку
+            pass
+        try:
+            # Файловый hint подпискам получателя: живой MCP-сервер той роли
+            # подберёт его нитью-наблюдателем и уведомит клиента. Если подписок
+            # нет, файлы никому не мешают и разгребаются нулём.
+            self.store.publish_resource_update(to, f"mailbox://{to}")
+        except Exception:  # noqa: BLE001 - push не должен ронять отправку
             pass
         ring = self._ring(to, "сообщение")
         return {
@@ -2206,17 +2385,28 @@ class PairSession:
                 seen = len(files)
             fresh = files[seen : seen + max(0, int(limit))]
             out: list[dict[str, Any]] = []
-            successful_count = 0
+            consumed = 0
             for path in fresh:
                 try:
-                    out.append(json.loads(path.read_text(encoding="utf-8")))
-                    successful_count += 1
+                    msg = json.loads(path.read_text(encoding="utf-8"))
                 except (OSError, json.JSONDecodeError) as exc:
                     self.store.append_transcript("message_unreadable", self.role,
                                                  path=str(path), error=str(exc))
                     break
-            if successful_count:
-                state.setdefault("seen", {})[self.role] = seen + successful_count
+                consumed += 1
+                try:  # проверка не роняет чтение; без ключа письмо отдаётся как раньше
+                    import rolekeys as _keys3
+                    env = msg.get("envelope")
+                    vk = _keys3.load_verify_key(self.store.root, msg.get("from", "")) if isinstance(env, dict) else None
+                    if vk is not None and not _keys3.verify_envelope(vk, env, msg.get("text", "")):
+                        self.store.append_transcript("bad_signature", self.role,
+                                                     path=str(path), seq=msg.get("seq"))
+                        continue
+                except Exception:  # noqa: BLE001
+                    pass
+                out.append(msg)
+            if consumed:
+                state.setdefault("seen", {})[self.role] = seen + consumed
             elif seen != int(state.get("seen", {}).get(self.role, 0)):
                 state.setdefault("seen", {})[self.role] = seen
             return out
@@ -2546,6 +2736,7 @@ class PairSession:
 
     def tool_pair_patch_seal(self, path: str) -> dict[str, Any]:
         """Compute and record the hash of a patch this role reserved."""
+        self._require_fix_mode("seal a patch")
         if any(char in path for char in GLOB_CHARS):
             raise ProtocolError(f"{path} contains a glob character; exact paths only.")
 
@@ -2576,6 +2767,7 @@ class PairSession:
     def tool_pair_patch_verify(self, path: str) -> dict[str, Any]:
         """Re-check a sealed patch against its recorded hash. The writer calls this
         immediately before applying; anything other than a match means stop."""
+        self._require_fix_mode("verify a patch")
         if any(char in path for char in GLOB_CHARS):
             raise ProtocolError(f"{path} contains a glob character; exact paths only.")
         current = self.store.read()
@@ -2933,22 +3125,12 @@ class PairSession:
                 self._rotate_note(kind, target)
         self.store.append_transcript("note", self.role, note_kind=kind, chars=len(text))
         if kind == "verdict" or kind.startswith("verdict-"):
-            # Привязка вердикта к ревизии: HEAD + dirty-hash + файлы.
+            # Привязка вердикта к ревизии живёт в review рядом со snapshot.
             # Молчаливое применение вердикта к уехавшей ревизии хуже
             # отсутствия вердикта. Fail-open: без git пишется пустой снимок.
             try:
-                from review import snapshot as review_snapshot
-                rev = review_snapshot(self.store.project_root)
-
-                def remember_verdict(state: dict[str, Any]) -> None:
-                    verdicts = state.setdefault("verdicts", [])
-                    verdicts.append({"role": self.role, "kind": kind,
-                                     "at": utcnow(), "rev": rev,
-                                     "chars": len(text)})
-                    del verdicts[: max(0, len(verdicts) - 20)]
-                self.store.mutate(remember_verdict)
-                self.store.append_transcript("verdict_pinned", self.role,
-                                             note_kind=kind, head=(rev.get("head") or "")[:12])
+                from review import pin_verdict
+                pin_verdict(self.store, self.role, kind, text, utcnow)
             except Exception:  # noqa: BLE001 - снимок не роняет вердикт
                 pass
             # Вердикт без обязательства — тупик: критик сдал, писатель ждёт,
@@ -3042,7 +3224,8 @@ class PairSession:
     def tool_pair_transcript(self, limit: int = 20) -> dict[str, Any]:
         """Read the append-only audit trail of everything both agents did."""
         entries = self.store.read_transcript(limit)
-        return {"entries": entries, "count": len(entries)}
+        chain = verify_transcript_chain(entries)
+        return {"entries": entries, "count": len(entries), "chain": chain}
 
 
 def sha256_of(path: Path) -> str:
@@ -3472,10 +3655,17 @@ class MCPServer:
     def __init__(self, session: PairSession) -> None:
         self.session = session
         self.initialized = False
+        self._subscriptions: dict[str, str] = {}
+        self._notify_lock = threading.RLock()
+        self._watch_stop = threading.Event()
+        self._watch_thread: threading.Thread | None = None
 
     def send(self, payload: dict[str, Any]) -> None:
-        sys.stdout.write(json.dumps(payload, ensure_ascii=False) + "\n")
-        sys.stdout.flush()
+        # stdout — общий ресурс главного цикла и нити-наблюдателя: без framing-lock
+        # два json.dumps вперемешку ломают поток, и клиент читает мусор.
+        with self._notify_lock:
+            sys.stdout.write(json.dumps(payload, ensure_ascii=False) + "\n")
+            sys.stdout.flush()
 
     def reply(self, request_id: Any, result: dict[str, Any]) -> None:
         self.send({"jsonrpc": "2.0", "id": request_id, "result": result})
@@ -3488,6 +3678,7 @@ class MCPServer:
 
     def run(self) -> None:
         log(f"ready role={self.session.role} state={self.session.store.root}")
+        self.start_watcher()
         # readline() rather than iteration: iterating sys.stdin uses a read-ahead
         # buffer that withholds complete lines until the buffer fills, which on a
         # pipe deadlocks against a client waiting for our reply.
@@ -3509,6 +3700,7 @@ class MCPServer:
                 continue
             self.dispatch(message)
         log("stdin closed, exiting")
+        self.stop_watcher()
 
     def dispatch(self, message: Any) -> None:
         if not isinstance(message, dict):
@@ -3588,12 +3780,65 @@ class MCPServer:
         text = json.dumps(result, ensure_ascii=False, indent=2)
         self.reply(request_id, {"content": [{"type": "text", "text": text}], "isError": False})
 
-    # Declared capabilities are tools only, but some clients probe the rest.
+    # Push — ускоритель, гарантия — mailbox (§7). Подписки — в памяти процесса,
+    # без durable: умер процесс — умерла и подписка, клиент переподписывается.
+    # Транспорт между процессами — только файлы: send пишет notify-файл,
+    # нить-наблюдатель своего процесса его подбирает и шлёт notification
+    # под framing-lock stdout. Нет listen у хоста — работает long-poll pair_read.
+    def notify(self, uri: str) -> None:
+        with self._notify_lock:
+            for sub_id, sub_uri in list(self._subscriptions.items()):
+                if sub_uri == uri:
+                    self.send({"jsonrpc": "2.0", "method": "notifications/resources/updated",
+                               "params": {"uri": uri, "subscriptionId": sub_id}})
+
+    def start_watcher(self) -> None:
+        """Нить-наблюдатель файлового транспорта: раз в 0.3с разбирает свою
+        очередь resource-update (notify-файлы от send любого процесса) и шлёт
+        notification живым подпискам. Демон-thread, без durable: умер сервер —
+        очередь в файлах остаётся, подписки нет, клиент переподписывается."""
+        def loop() -> None:
+            while not self._watch_stop.is_set():
+                try:
+                    uris = self.session.store.drain_resource_updates(self.session.role)
+                    for uri in uris:
+                        self.notify(uri)
+                except Exception as exc:  # noqa: BLE001 - наблюдатель не должен убить сервер
+                    log(f"notify watcher error: {exc!r}")
+                self._watch_stop.wait(0.3)
+        self._watch_thread = threading.Thread(target=loop, daemon=True)
+        self._watch_thread.start()
+
+    def stop_watcher(self) -> None:
+        self._watch_stop.set()
+
     def on_resources_list(self, request_id: Any, params: dict[str, Any]) -> None:
-        self.reply(request_id, {"resources": []})
+        role = self.session.role
+        self.reply(request_id, {"resources": [
+            {"uri": f"mailbox://{role}", "name": f"Входящие роли {role}",
+             "mimeType": "application/json"},
+            {"uri": "obligations://", "name": "Открытые ожидания ответов",
+             "mimeType": "application/json"},
+        ]})
 
     def on_resources_templates_list(self, request_id: Any, params: dict[str, Any]) -> None:
-        self.reply(request_id, {"resourceTemplates": []})
+        self.reply(request_id, {"resourceTemplates": [
+            {"uriTemplate": "mailbox://{role}", "name": "Входящие роли",
+             "mimeType": "application/json"},
+        ]})
+
+    def on_resources_subscribe(self, request_id: Any, params: dict[str, Any]) -> None:
+        uri = params.get("uri", "")
+        role = self.session.role
+        if uri not in (f"mailbox://{role}", "obligations://"):
+            raise ProtocolError(f"неизвестный ресурс {uri!r}: подписка только на mailbox://{role} и obligations://")
+        sub_id = f"sub-{uuid.uuid4().hex[:8]}"
+        self._subscriptions[sub_id] = uri
+        self.reply(request_id, {"subscriptionId": sub_id})
+
+    def on_resources_unsubscribe(self, request_id: Any, params: dict[str, Any]) -> None:
+        self._subscriptions.pop(params.get("id", ""), None)
+        self.reply(request_id, {})
 
     def on_prompts_list(self, request_id: Any, params: dict[str, Any]) -> None:
         self.reply(request_id, {"prompts": []})
@@ -3626,6 +3871,7 @@ def main(argv: list[str] | None = None) -> int:
         print("error: --role is required when running as an MCP server", file=sys.stderr)
         return 2
     store = Store(state_dir)
+    _role_handle = store.acquire_role_lock(args.role)
     MCPServer(PairSession(args.role, store)).run()
     return 0
 

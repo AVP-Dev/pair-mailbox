@@ -56,12 +56,14 @@ try:
         deliver,
         is_composer_empty,
         _tmux,
+        find_pane_of_pid,
         load_allow_patterns,
         pane_alive,
         pane_key,
         pane_role_pid,
         resolve_permission_prompt,
     )
+    from panes import pane_belongs_to_project  # noqa: E402 - принадлежность панели проекту
 except Exception as error:  # noqa: BLE001 - причина должна быть видна сразу
     print(f"pairpilot: не удалось подключить composer: {error}", file=sys.stderr)
     raise SystemExit(1)
@@ -81,8 +83,9 @@ from server import (  # noqa: E402  - после sys.path
 DEFAULT_INTERVAL = 15.0
 DEFAULT_SILENCE = 600.0
 # Сколько ждать ответа на запрос, прежде чем дёрнуть получателя, и сколько —
-# прежде чем сказать об этом автору запроса.
-DEFAULT_REPLY_GRACE = 900.0
+# прежде чем сказать об этом автору запроса. 180с: затык «оба молчат +
+# обязательство висит» будится пилотом за <5 мин без человека (раунд 33, P1).
+DEFAULT_REPLY_GRACE = 180.0
 # Срок жизни отложенного напоминания. Переживающая доставка полезна, пока
 # вопрос жив: пока композер занят, минута-другая ожидания уместна. Но вопрос,
 # провисевший дольше, уже не помогает — он только отвлекает. Наблюдалось
@@ -203,7 +206,12 @@ class Pilot:
         # Панель, в которой живёт сам сверхвизор. Это, обычно, панель оператора,
         # а иногда и панель агента, который его запустил. Вбивать туда что-либо
         # нельзя: там ждёт ввод человека, и мы бы съели его текст.
-        self.own_pane = os.environ.get("TMUX_PANE") or None
+        # Демон обязан стартовать БЕЗ TMUX_PANE в окружении: наследованный адрес
+        # панели агента превращает его роль в «свою» и молча выкидывает её из
+        # обслуживания (измерено 2026-10-07: пилот с TMUX_PANE=%3332 вечно
+        # пропускал omp через own_pane-skip). Запуск из панели агента без
+        # очистки окружения — это тихая остановка надзора за этой ролью.
+        self.own_pane = os.environ.get("PAIR_PILOT_PANE") or None
         self._explicit_launch = dict(launch or {})
 
     # ------------------------------------------------------------- restart map
@@ -494,6 +502,64 @@ class Pilot:
         self.store.append_transcript("pilot_wake_pending", "pairpilot",
                                      target=role, reason=reason)
         log(f"{role}: {reason}, жду пробуждения молча (в печать не бью)")
+        self.ring(state, role, reason)
+
+    def ring(self, state: dict, role: str, reason: str) -> None:
+        """Позвонить в панель роли: display-message, не печать в композер.
+
+        Печать в занятый TUI — мусор в строке ввода; звонок — всплывашка,
+        которую агент видит краем глаза и сам решает, когда отвлечься.
+        Троттл — по полю rung_at в wake-файле: не чаще раза в 5 мин,
+        иначе это тот же спам, только без текста.
+
+        Для opencode после звонка идёт wake-адаптер (wake_opencode.wake):
+        инъекция указателя как user-ход по официальному session prompt API.
+        Fail-closed: двусмысленность или отказ API — тихо, mailbox остаётся
+        гарантией; throttle общий с display-message, спама нет.
+        """
+        if self.tmux is None or role in self.skip:
+            return
+        path = self.wake_root / f"{role}.json"
+        if time.time() - self._last_ring(path) < 300:
+            return
+        pane = ((state.get("roles") or {}).get(role) or {}).get("pane")
+        if not pane or not pane_alive(self.tmux, pane):
+            return
+        pointer = f"[pair] {reason} — забери из mailbox через pair_read"
+        try:
+            subprocess.run([self.tmux, "display-message", "-t", pane,
+                            "-d", "4000", pointer],
+                           capture_output=True, timeout=5)
+        except Exception:
+            return
+        if role == "opencode":
+            try:
+                from wake_opencode import wake
+                result = wake(self.store.project_root, pointer)
+                self.store.append_transcript("pilot_wake_api", "pairpilot",
+                                             target=role, woken=result.get("woken"),
+                                             why=(result.get("why") or "")[:120])
+                log(f"{role}: wake-api {'принят' if result.get('woken') else 'отказ: ' + (result.get('why') or '')[:60]}")
+            except Exception as error:  # noqa: BLE001 - адаптер не должен ронять звонок
+                self.store.append_transcript("pilot_wake_api_failed", "pairpilot",
+                                             target=role, error=str(error)[:120])
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            payload["rung_at"] = time.time()
+            path.write_text(json.dumps(payload, ensure_ascii=False, indent=2),
+                            encoding="utf-8")
+        except (OSError, ValueError):
+            pass
+        self.store.append_transcript("pilot_ring", "pairpilot", target=role,
+                                     reason=reason)
+        log(f"{role}: позвонил в панель ({reason})")
+
+    @staticmethod
+    def _last_ring(path) -> float:
+        try:
+            return float(json.loads(path.read_text(encoding="utf-8")).get("rung_at") or 0)
+        except (OSError, ValueError):
+            return 0.0
 
     def poll_wakes(self, state: dict) -> None:
         """Опросить висящие пробуждения и решить по каждому: проснулся или нет.
@@ -751,8 +817,11 @@ class Pilot:
         return len(list(inbox.glob("*.json"))) if inbox.exists() else 0
 
     def unread_peers(self, state: dict) -> list[str]:
-        """Кого разбудить из-за непрочитанного. Молчание в этом случае НЕ дефект:
-        агент не читает потому, что не знает, что есть письмо. Сообщаем один раз."""
+        """Кого разбудить из-за непрочитанного. Почтальон на чеку: письмо в ящике
+        без толчка не лежит — память (wake) и толчок (outbox) пишутся вместе.
+        Память — чтобы было видно, кого будили и когда, толчок — чтобы спящий
+        узнал сейчас: следующий flush (этот же тик) вбивает его в композер.
+        """
         out = []
         for role in state.get("roles", {}):
             if role in self.skip:
@@ -766,18 +835,11 @@ class Pilot:
                 text = (f"[pairpilot] У тебя {missing} непрочитанных сообщений. "
                         f"Вызови pair_read и ответь соседу. Если всё сделано — "
                         f"предложи следующий кусок работы через pair_note.")
-                # Не печатаем: пишем факт пробуждения и ждём опроса. Раньше печать
-                # в композер была первым шагом, и «не печатать» означало «не
-                # знать», когда ещё можно. Теперь «не печатать» — это норма, и
-                # вопрос «будил или проснулся сам» имеет наблюдаемый ответ.
                 self.mark_wake(state, role, f"{missing} непрочитанных", text)
-                # Напоминание попадает в журнал: §11 требует, чтобы по журналу
-                # было видно, что происходило, а этот шаг раньше не оставлял следа.
-                # Без записи повторяющийся поток был бы невидим, и «один раз» нечем
-                # было бы проверить.
+                self.enqueue(role, text)
                 self.store.append_transcript("pilot_unread_nudge", "pairpilot",
                                              target=role, unread=missing)
-                log(f"{role}: {missing} непрочитанных, жду молча")
+                log(f"{role}: {missing} непрочитанных, толкаю сразу")
         return out
 
     def stale_writer(self, state: dict) -> None:
@@ -810,8 +872,9 @@ class Pilot:
                 f"либо пиши в заметку, что заблокировано и чем. Помечать «делаю» "
                 f"не считается: нужен реальный шаг или явная блокировка.")
         self.mark_wake(state, writer, f"молчит {int(age // 60)} мин и держит фазу", text)
+        self.enqueue(writer, text)
         log(f"{writer} молчит {int(age // 60)} мин и держит фазу {state.get('phase')!r} "
-            f"— жду молча")
+            f"— толкаю сразу")
 
     def pending_answers(self, state: dict) -> None:
         """Отправили запрос, ответа нет. Это хуже молчания: молчание может означать
@@ -857,6 +920,50 @@ class Pilot:
                     self.enqueue(sender, text)
                     log(f"{sender} ждёт ответа на запрос {seq} уже {int(age // 60)} мин")
 
+    def live_project_panes(self, state: dict, role: str = "") -> list[str]:
+        """Живые панели этого проекта, не занятые ролями — кандидаты для wake.
+
+        Ростер знает только записанные панели, а агент мог открыть терминал
+        внутри проекта мимо него (критик seq 381: pane None в ростере при
+        живых панелях с cwd проекта). Ищем напрямую через list-panes
+        и доказываем принадлежность через panes-модуль, а не строкой.
+
+        Усыновляем только панель с живым server.py роли (первый фактор),
+        cwd — второй: иначе пилот прописал бы роль в шелл человека,
+        открытый в проекте (вердикт раунда 33). Панель из pane_provisional
+        роли — первая в очереди: её уже видел сервер, факторы перепроверяем.
+        """
+        if self.tmux is None:
+            return []
+        try:
+            out = subprocess.run([self.tmux, "list-panes", "-a", "-F", "#{pane_id}"],
+                                 capture_output=True, text=True, timeout=5).stdout
+        except Exception:
+            return []
+        taken = {self.pane_key(info.get("pane")) for info in (state.get("roles") or {}).values()
+                 if info.get("pane")}
+        live = {pane.strip() for pane in out.splitlines() if pane.strip()}
+        ordered: list[str] = []
+        if role:
+            prov = ((state.get("roles") or {}).get(role) or {}).get("pane_provisional") or ""
+            if prov and prov in live and self.pane_key(prov) not in taken:
+                ordered.append(prov)
+        ordered.extend(p for p in sorted(live) if p not in ordered)
+        found = []
+        for pane in ordered:
+            if self.pane_key(pane) in taken:
+                continue
+            if role and not pane_role_pid(self.tmux, pane, role):
+                continue
+            try:
+                ours, _why = pane_belongs_to_project(self.tmux, pane,
+                                                     self.store.project_root)
+            except Exception:
+                continue
+            if ours:
+                found.append(pane)
+        return found
+
     def dead_pane(self, state: dict) -> None:
         """Окно агента исчезло. Подтолкнуть нечем — это тот случай, где человек
         нужен по-настоящему. Но сказать об этом надо громко и один раз, а не
@@ -868,6 +975,26 @@ class Pilot:
             if role in self.skip:
                 continue
             if not pane:
+                # Ростер без панели, но процесс роли может жить в панели:
+                # TMUX_PANE в окружении MCP-сервера бывает пуст. Обратный путь
+                # по pid из ростера — и запись чинится, будить снова есть куда.
+                healed = ""
+                pid = info.get("pid")
+                if isinstance(pid, int) and pid > 0 and is_pid_alive(pid):
+                    healed = find_pane_of_pid(self.tmux, pid)
+                if not healed:
+                    # pid не помог, но агент мог открыть терминал внутри проекта
+                    # мимо ростера: первая свободная панель с его server.py.
+                    live = self.live_project_panes(state, role)
+                    healed = live[0] if live else ""
+                if healed:
+                    def heal(st):
+                        st.get("roles", {}).get(role, {})["pane"] = healed
+                    self.store.mutate(heal)
+                    self.store.append_transcript("pilot_pane_healed", "pairpilot",
+                                                 target=role, pane=healed)
+                    log(f"{role}: панель {healed} найдена в проекте — чиню ростер")
+                    continue
                 if self.remember(f"nopane-{role}"):
                     self.store.append_transcript("pilot_pane_missing", "pairpilot", target=role)
                     log(f"{role}: панели нет, он вне tmux — подтолкнуть нечем")
@@ -1239,9 +1366,9 @@ class Pilot:
         self.poll_wakes(state)
         self.pending_answers(state)
         self.stalled_patches(state)
+        self.stale_writer(state)
         self.drop_stale_outbox(state)
         self.flush_outbox(state)
-        self.stale_writer(state)
         self.checkpoint(state)
         self.report_once(state)
         return state
