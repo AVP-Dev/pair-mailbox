@@ -1,0 +1,139 @@
+#!/usr/bin/env bash
+# finalize-report - argv <check.json> <apply.json> [plan.json], stdout text,
+# exit 0 (exit 1 only if the Cleanup/Final state sections are missing).
+# Runs with cwd=<repo> (no flags for inputs). First line is
+# SESSION FINALIZED iff (apply.blocked==false AND the live tree is clean),
+# else SESSION BLOCKED. Sections: Task/Implementation/Git/Issues&PR/
+# Cleanup/Final state/Agents + STATUS; when BLOCKED also Reason/Cleanup
+# performed/Cleanup NOT performed/Action required, with ✓/!/?
+# markers. Marker owner: writes <repo>/.session/finalized
+# {head,session,closed_at} tmp+rename only at the end of a successful
+# apply (blocked==false AND tree clean); same HEAD prints
+# "Nothing to clean" and changes nothing.
+set -u
+HERE="$(cd "$(dirname "$0")" && pwd)"
+SKILL="$(cd "$HERE/.." && pwd)"
+usage() {
+  echo "Usage: finalize-report <check.json> <apply.json> [plan.json]"
+  echo "  Prints the session report. Marker is written only when the apply"
+  echo "  is unblocked and the tree is clean; same HEAD is a no-op."
+}
+if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then usage; exit 0; fi
+if [ $# -lt 2 ] || [ $# -gt 3 ]; then usage >&2; exit 2; fi
+CHECK="$1"; APPLY="$2"; PLANF="${3:-}"
+if [ ! -f "$CHECK" ]; then echo "no such check file: $CHECK" >&2; exit 2; fi
+if [ ! -f "$APPLY" ]; then echo "no such apply file: $APPLY" >&2; exit 2; fi
+if [ -n "$PLANF" ] && [ ! -f "$PLANF" ]; then echo "no such plan file: $PLANF" >&2; exit 2; fi
+SESSION="$(git -C "$(git rev-parse --show-toplevel 2>/dev/null || pwd)" branch --show-current 2>/dev/null || echo session)"
+export CHECK APPLY PLANF SKILL SESSION
+MARKER="$(python3 -c 'import json; print(json.load(open("'"$SKILL"'/config/defaults.json")).get("marker",".session/finalized"))')"
+ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+export MARKER ROOT
+REPORT=$(python3 - <<'PY'
+import json, os, subprocess, sys
+try:
+    chk = json.load(open(os.environ["CHECK"]))
+    ap = json.load(open(os.environ["APPLY"]))
+    assert isinstance(chk, dict) and isinstance(ap, dict)
+except Exception as e:
+    print("bad input JSON: %s" % e, file=sys.stderr)
+    sys.exit(2)
+plan = {}
+if os.environ.get("PLANF"):
+    try:
+        plan = json.load(open(os.environ["PLANF"]))
+    except Exception:
+        plan = {}
+blocked = ap.get("blocked", True)
+branch = chk.get("branch"); base = chk.get("base")
+r = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True, timeout=20)
+head = r.stdout.strip() if r.returncode == 0 else "UNKNOWN"
+r2 = subprocess.run(["git", "status", "--porcelain=v1"], capture_output=True, text=True, timeout=20)
+clean = (r2.returncode == 0 and r2.stdout.strip() == "")
+title = "SESSION BLOCKED" if (blocked or not clean) else "SESSION FINALIZED"
+status = "BLOCKED" if (blocked or not clean) else "COMPLETE"
+unpushed = chk.get("unpushed", []) or []
+pr = chk.get("pr", "UNKNOWN")
+applied = ap.get("applied", []) or []
+skipped = ap.get("skipped", []) or []
+details = {d.get("target", "?"): d for d in (ap.get("details", []) or []) if isinstance(d, dict)}
+def mark_applied():
+    return "\u2713"
+def mark_skipped():
+    return "!"
+def mark_unknown():
+    return "?"
+def tgt(e):
+    t = e if isinstance(e, str) else (e.get("target", "?") if isinstance(e, dict) else "?")
+    return t if isinstance(t, str) else "?"
+def rsn(t):
+    d = details.get(t, {})
+    x = d.get("reason", "") if isinstance(d, dict) else ""
+    return x if isinstance(x, str) else ""
+lines = [title, "",
+         "Task: session %s finalization (%s)" % (os.environ.get("SESSION", "session"), head),
+         "Implementation: check->plan->apply cycle; HEAD %s" % head,
+         "Git: branch %s, base %s, unpushed=%d, merged_in_base=%s, upstream=%s"
+         % (branch, base, len(unpushed), chk.get("merged_in_base"), chk.get("upstream")),
+         "Issues&PR: %s" % json.dumps(pr),
+         "Cleanup:"]
+for a in applied:
+    t = tgt(a)
+    lines.append("  %s applied %s%s" % (mark_applied(), t, (": " + rsn(t)[:150]) if rsn(t) else ""))
+for s in skipped:
+    t = tgt(s)
+    lines.append("  %s skipped %s%s" % (mark_skipped(), t, (": " + rsn(t)[:150]) if rsn(t) else ""))
+if not applied and not skipped:
+    lines.append("  %s nothing to clean" % mark_unknown())
+if plan.get("actions"):
+    kinds = {}
+    for a in plan["actions"]:
+        kinds[a.get("kind", "?")] = kinds.get(a.get("kind", "?"), 0) + 1
+    lines.append("Plan: %s" % (", ".join("%s=%d" % kv for kv in sorted(kinds.items())) or "empty"))
+lines += ["Final state: %s" % ("clean tree at %s" % head if clean else "dirty: " + r2.stdout.strip()[:300]),
+          "Agents: close order critic, explorer, writer; UNKNOWN roles preserved",
+          "",
+          "STATUS: %s" % status]
+if status == "BLOCKED":
+    lines += ["Reason: %s" % ("apply blocked" if blocked else "tree not clean"),
+              "Cleanup performed: %d safe action(s)" % len(applied),
+              "Cleanup NOT performed: %d preserved action(s)" % len(skipped),
+              "Action required: resolve the reasons above, then re-run finalize-check"]
+print("\n".join(lines))
+PY
+)
+RC=$?
+if [ "$RC" -eq 2 ]; then exit 2; fi
+if [ "$RC" -ne 0 ]; then exit 1; fi
+printf '%s\n' "$REPORT"
+# Contract exit: 1 only if a required section is missing (report bug),
+# never for BLOCKED content itself.
+if ! printf '%s' "$REPORT" | grep -q "^Cleanup:" || ! printf '%s' "$REPORT" | grep -q "^Final state:"; then
+  echo "report: missing required section" >&2
+  exit 1
+fi
+# Marker gate: successful apply (blocked==false) AND clean tree, else no
+# file. Same HEAD is a no-op ("Nothing to clean").
+BLOCKED="$(printf '%s' "$REPORT" | head -1 | grep -q BLOCKED && echo yes || echo no)"
+TREE_CLEAN="$(git status --porcelain=v1 2>/dev/null | grep -q . && echo no || echo yes)"
+HEAD_NOW="$(git rev-parse HEAD 2>/dev/null || echo UNKNOWN)"
+if [ "$BLOCKED" = "yes" ] || [ "$TREE_CLEAN" = "no" ]; then
+  exit 0
+fi
+mkdir -p "$ROOT/$(dirname "$MARKER")"
+EXIST_HEAD=""
+if [ -f "$ROOT/$MARKER" ]; then EXIST_HEAD="$(python3 -c 'import json; print(json.load(open("'"$ROOT/$MARKER"'")).get("head",""))' 2>/dev/null || echo "")"; fi
+if [ -n "$EXIST_HEAD" ] && [ "$EXIST_HEAD" = "$HEAD_NOW" ]; then
+  echo "Nothing to clean" >&2
+  exit 0
+fi
+CLOSED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+TMP_M="$(mktemp "${TMPDIR:-/tmp}/finalize-marker.XXXXXX")"
+python3 - "$TMP_M" "$HEAD_NOW" "$SESSION" "$CLOSED_AT" <<'PY'
+import json, sys
+path, head, sess, closed = sys.argv[1:5]
+json.dump({"head": head, "session": sess, "closed_at": closed},
+          open(path, "w"), indent=2)
+PY
+mv "$TMP_M" "$ROOT/$MARKER"
+exit 0

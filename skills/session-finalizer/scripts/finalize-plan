@@ -1,0 +1,154 @@
+#!/usr/bin/env bash
+# finalize-plan - argv <check.json>, stdout=plan.json. Pure function:
+# reads check.json and config, prints the plan; never calls git or the
+# network, so the plan cannot change repo state and is reproducible.
+# Targets are BARE names (branch/file name, worktree path, artifact path,
+# note name); the "type" field says which kind it is. UNKNOWN input means
+# PRESERVE, never SAFE. Bad input exits 2.
+set -u
+HERE="$(cd "$(dirname "$0")" && pwd)"
+SKILL="$(cd "$HERE/.." && pwd)"
+usage() {
+  echo "Usage: finalize-plan <check.json>"
+  echo "  Pure function of check.json. Prints plan.json. UNKNOWN means PRESERVE."
+}
+if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then usage; exit 0; fi
+if [ $# -ne 1 ]; then usage >&2; exit 2; fi
+CHECK="$1"
+if [ ! -f "$CHECK" ]; then echo "no such check file: $CHECK" >&2; exit 2; fi
+CFG="$SKILL/config/defaults.json"
+export CHECK CFG
+python3 - <<'PY' || exit 2
+import fnmatch, json, os, sys
+try:
+    chk = json.load(open(os.environ["CHECK"]))
+    assert isinstance(chk, dict)
+except Exception:
+    print("bad check.json: not a JSON object", file=sys.stderr)
+    sys.exit(2)
+try:
+    cfg = json.load(open(os.environ["CFG"]))
+except Exception:
+    cfg = {}
+branch = chk.get("branch", "UNKNOWN") or "UNKNOWN"
+base = chk.get("base", "UNKNOWN") or "UNKNOWN"
+porc = chk.get("git_porcelain", []) or []
+unpushed = chk.get("unpushed", []) or []
+merged = chk.get("merged_in_base", False)
+pr = chk.get("pr", "UNKNOWN")
+temps = chk.get("temp_files", []) or []
+wts = chk.get("worktrees", []) or []
+checks = chk.get("checks", []) or []
+blocked = chk.get("blocked", False)
+block_reasons = chk.get("block_reasons", []) or []
+exempt = cfg.get("marker_exempt", [".session/finalized"])
+secrets = cfg.get("secrets_guards", [])
+pats = cfg.get("protected_patterns", []) + cfg.get("protected_branches", [])
+def protected(br):
+    return any(fnmatch.fnmatch(br, p) for p in pats)
+def secret_hit(path):
+    for g in secrets:
+        if g in path or fnmatch.fnmatch(path, g) or fnmatch.fnmatch(os.path.basename(path), g):
+            return True
+    return False
+acts = []
+n = 0
+# Target is the bare name (branch name, file path, worktree path,
+# artifact path, note name); "type" carries the kind for selection.
+def add(tp, name, kind, reason, recmd):
+    global n
+    n += 1
+    acts.append({"id": "A%02d" % n, "type": tp, "target": name,
+                 "target_name": name, "kind": kind, "reason": reason, "recheck_cmd": recmd})
+dirty = len(porc) > 0
+has_unpushed = len(unpushed) > 0
+# Branch: SAFE only with all proofs (known non-protected name, merged,
+# no unpushed, clean tree); otherwise PRESERVE naming each missing proof.
+# Detached/UNKNOWN plans as target HEAD PRESERVE (no deletable name).
+if branch == "UNKNOWN" or branch in ("HEAD", ""):
+    add("branch", "HEAD", "PRESERVE", "keep: detached or unknown branch, no deletable name",
+        "git status --porcelain=v1")
+elif protected(branch):
+    add("branch", branch, "PRESERVE", "keep: protected branch",
+        "git status --porcelain=v1")
+elif merged is True and not has_unpushed and not dirty:
+    add("branch", branch, "SAFE", "merged in %s, clean tree, nothing unpushed" % base,
+        "git merge-base --is-ancestor %s %s" % (branch, base))
+else:
+    why = []
+    if merged is not True:
+        why.append("unmerged-or-UNKNOWN")
+    if has_unpushed:
+        why.append("has-unpushed")
+    if dirty:
+        why.append("tree-dirty")
+    add("branch", branch, "PRESERVE", "keep: " + ",".join(why) if why else "keep: default",
+        "git status --porcelain=v1")
+# Temp files: SAFE only inside the guards (relative, no .., outside .git/
+# and marker_exempt, not matching secrets_guards); anything else PRESERVE.
+for t in temps:
+    bad = None
+    if t.startswith("/") or ".." in t.split("/"):
+        bad = "outside scope or absolute/parent path"
+    elif t == ".git" or t.startswith(".git/"):
+        bad = "inside .git/"
+    elif any(fnmatch.fnmatch(t, p) or t == p for p in exempt):
+        bad = "under marker_exempt"
+    elif secret_hit(t):
+        bad = "possible secret path"
+    if bad:
+        add("file", t, "PRESERVE", "keep: " + bad, "git status --porcelain=v1 -- " + t)
+    else:
+        add("file", t, "SAFE", "matches temp pattern, untracked",
+            "git status --porcelain=v1 -- " + t)
+# Worktrees always need human confirmation (removal drops a whole
+# checkout), so every entry is PRESERVE regardless of branch state.
+import os as _os
+_root = _os.path.realpath(chk.get("repo_root", "") or "")
+for w in wts:
+    if isinstance(w, dict):
+        p, b = w.get("path", "?"), w.get("branch", "")
+    else:
+        p, b = str(w), ""
+    # Self-worktree (the repo we run in) is not cleanup: skip it, so a
+    # clean session's plan holds no routine self-reference.
+    if _root and _os.path.realpath(p) == _root:
+        continue
+    if b and protected(b):
+        add("worktree", p, "PRESERVE", "keep: protected branch worktree",
+            "git worktree list --porcelain")
+    else:
+        add("worktree", p, "PRESERVE", "keep: worktree removal needs human confirm",
+            "git worktree list --porcelain")
+# Failing project checks surface as PRESERVE note blockers naming the
+# command; UNKNOWN commands are absence-of-evidence, so no action.
+for c in checks:
+    if isinstance(c, dict) and c.get("status") == "FAIL":
+        add("note", str(c.get("name", "check")), "PRESERVE",
+            "keep: check FAILED: %s (exit %s)" % (c.get("cmd", "?"), c.get("exit", "?")),
+            str(c.get("cmd", "git status --porcelain=v1")))
+# Session artifacts are audit trail: always PRESERVE, known agent or not
+# (strings or objects both accepted; target is the path string).
+arts = chk.get("session_artifacts", []) or []
+if isinstance(arts, list) and len(arts) > 50:
+    rest = len(arts) - 50
+    arts = arts[:50]
+else:
+    rest = 0
+for a in arts:
+    p = a if isinstance(a, str) else (a.get("path", "?") if isinstance(a, dict) else "?")
+    add("artifact", p, "PRESERVE", "keep: session artifact kept for audit",
+        "git status --porcelain=v1")
+if rest:
+    add("note", "artifacts", "PRESERVE", "keep: %d more artifacts truncated from plan" % rest,
+        "git status --porcelain=v1")
+# UNKNOWN hosting state is absence of merge proof, recorded explicitly so
+# the report names it instead of implying a clean PR state.
+if pr == "UNKNOWN" or (isinstance(pr, dict) and "UNKNOWN" in list(pr.values())) or \
+   (isinstance(pr, dict) and pr.get("unknown") is True):
+    add("note", "pr", "PRESERVE", "keep: hosting state UNKNOWN, no merge proof assumed",
+        "git log --oneline -5")
+porc_tracked = [l for l in porc if not l.startswith("?? ")]
+print(json.dumps({"blocked": blocked, "block_reasons": block_reasons, "tracked_dirty": len(porc_tracked) > 0,
+                  "base": base, "branch": branch, "actions": acts}, indent=2))
+PY
