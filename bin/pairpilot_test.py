@@ -415,6 +415,73 @@ class TestLiveness(PilotCase):
         pilot.tick()
         self.assertEqual("", pilot.pending("codex"))
 
+    def test_second_letter_after_reading_wakes_again(self) -> None:
+        """Прочитал — штамп сброшен: второе письмо будит заново.
+
+        Регрессия раунда 43: штамп unread-{role} жил вечно, и второе письмо
+        агента уже не будило никогда.
+        """
+        self.inbox("codex", 2)
+        self.write_state(writer="agy", roles={"codex": {"last_seen": ago(60), "pane": "%1"}},
+                         seen={"codex": 0})
+        pilot = self.pilot()
+        pilot.tick()
+        first = [e for e in self.transcript_entries() if e.get("kind") == "pilot_unread_nudge"]
+        self.assertEqual(1, len(first))
+        # Агент прочитал всё: ящик пуст, seen сброшен — как после pair_read.
+        for f in (self.state_dir / "mailbox" / "codex").glob("*.json"):
+            f.unlink()
+        self.write_state(writer="agy", roles={"codex": {"last_seen": ago(60), "pane": "%1"}},
+                         seen={"codex": 0})
+        pilot.tick()
+        # Пришло новое письмо — штамп уже сброшен, будит заново.
+        self.inbox("codex", 1)
+        pilot.tick()
+        nudges = [e for e in self.transcript_entries() if e.get("kind") == "pilot_unread_nudge"]
+        self.assertEqual(2, len(nudges),
+                         "второе письмо после прочтения обязано будить заново")
+
+    def test_enqueue_replacement_leaves_a_trace(self) -> None:
+        """Вытеснение из очереди пишется в журнал, а не исчезает молча."""
+        self.write_state(writer="agy", roles={"codex": {"last_seen": ago(60), "pane": "%1"}})
+        pilot = self.pilot()
+        pilot.enqueue("codex", "первое напоминание")
+        pilot.enqueue("codex", "второе напоминание")
+        replaced = [e for e in self.transcript_entries()
+                    if e.get("kind") == "pilot_outbox_replaced"]
+        self.assertEqual(1, len(replaced))
+        self.assertIn("первое", replaced[0].get("old", ""))
+        self.assertEqual("второе напоминание", pilot.pending("codex"))
+
+    def test_hanging_request_repeats_after_repeat_interval(self) -> None:
+        """Зависший запрос напоминает снова, но не чаще раза в reply_repeat."""
+        roles = {"codex": {"last_seen": ago(60), "pane": "%1"},
+                 "agy": {"last_seen": ago(60), "pane": "%2"}}
+        self.write_state(writer="agy", roles=roles)
+        pilot = self.pilot()
+        pilot.reply_grace = 0
+        pilot.reply_repeat = 3600.0
+        root = self.state_dir / "obligations"
+        root.mkdir(parents=True, exist_ok=True)
+        (root / "000007-q.json").write_text(json.dumps({
+            "seq": 7, "from": "agy", "to": "codex",
+            "opened_at": ago(120), "subject": "вопрос 7",
+        }), encoding="utf-8")
+        pilot.tick()
+        first_text = pilot.pending("codex")
+        self.assertIn("запрос 7", first_text,
+                      "первое напоминание о зависшем запросе обязательно")
+        pilot.tick()
+        self.assertEqual(first_text, pilot.pending("codex"),
+                         "повтор раньше reply_repeat запрещён")
+        # Состариваем штамп за предел повтора — напоминание повторяется.
+        stamp = pilot.state_dir / "pilot" / f".{pairpilot.stamp_name('reply-7-codex')}"
+        old = time.time() - 3700.0
+        os.utime(stamp, (old, old))
+        pilot.tick()
+        self.assertIn("уже 2 мин", pilot.pending("codex"),
+                      "просроченный штамп обязан дать повторное напоминание")
+
 
 class TestUnread(PilotCase):
     def test_unread_mail_produces_a_wake_and_a_push(self) -> None:
