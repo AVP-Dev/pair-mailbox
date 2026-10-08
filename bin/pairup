@@ -27,9 +27,14 @@ STATE_DIR=""
 if [ -n "${PAIR_STATE:-}" ]; then
   STATE_DIR="$PAIR_STATE"
 else
+  # Граница — git-top, а не корень ФС: иначе из galatour цепляется чужой
+  # ~/work/.pair (каталог проектов — не проект), и пара работает не в том
+  # состоянии. Тот же предел, что в serve.sh и walk_up_to_state.
+  _top="$(git rev-parse --show-toplevel 2>/dev/null || true)"
   dir="$(pwd -P)"
   for _ in 1 2 3 4 5 6 7 8 9 10 11 12; do
     if [ -f "$dir/.pair/state.json" ]; then STATE_DIR="$dir/.pair"; break; fi
+    if [ -n "$_top" ] && [ "$dir" = "$_top" ]; then break; fi
     parent="$(dirname -- "$dir")"
     if [ "$parent" = "$dir" ]; then break; fi
     dir="$parent"
