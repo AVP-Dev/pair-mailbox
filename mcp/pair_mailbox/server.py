@@ -632,28 +632,52 @@ def _transcript_hash(entry: dict) -> str:
     return hashlib.sha256(json.dumps(body, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
 
 
-def verify_transcript_chain(entries: list[dict]) -> dict:
+def verify_transcript_chain(entries: list[dict], anchored: bool = False) -> dict:
     """Проверить цепь: каждая строка ссылается на хэш предыдущей.
     Ротация — горизонт верификации (условие критика seq 415): активный файл
     начинается с маркера transcript_rotated, хвост до него унесён в архив,
     поэтому первая строка сверяется с маркера, а архив — отдельно по last_hash.
     Маркер — обычное звено дальше (несёт prev_hash как все) плюс чекпоинт
-    last_hash унесённого файла. Дамадж-строки — видимый разрыв."""
+    last_hash унесённого файла. Дамадж-строки — видимый разрыв.
+    Срез (anchored=True, раунд 42): tool_pair_transcript отдаёт хвост limit,
+    первая строка среза — якорь из середины журнала, её prev_hash сверить
+    не с чем; проверяется цепь внутри среза. Подмена первой строки среза
+    всё равно видна: её хэш не сойдётся со второй строкой.
+    Legacy (раунд 42): строки старше цепи без prev_hash — не разрыв, а
+    доцепная эпоха; пропускаются со счётчиком pre_chain, цепь строится
+    с первой подписанной строки."""
     expected = None
     checked = 0
+    pre_chain = 0
     for index, entry in enumerate(entries):
         if entry.get("_damaged"):
-            return {"ok": False, "bad_at": index, "checked": checked, "reason": f"damaged line {index} breaks chain"}
+            return {"ok": False, "bad_at": index, "checked": checked, "pre_chain": pre_chain,
+                    "reason": f"damaged line {index} breaks chain"}
         if entry.get("kind") == "transcript_rotated" and expected is None:
             expected = _transcript_hash(entry)
             checked += 1
             continue
-        if entry.get("prev_hash") != (expected if expected is not None else CHAIN_GENESIS):
-            return {"ok": False, "bad_at": index, "checked": checked,
+        if "prev_hash" not in entry:
+            # Доцепная эпоха: подписи не было, проверить нечего — но цепь
+            # дальше строится от неё, иначе первая подписанная строка после
+            # legacy-головы всегда рвала бы цепь (fail-open, раунд 42).
+            pre_chain += 1
+            expected = _transcript_hash(entry)
+            continue
+        if anchored and index == 0 and expected is None:
+            # Якорь среза: первая строка из середины журнала, её prev_hash
+            # сверить не с чем — принимаем, цепь строится дальше от неё.
+            # Подмена якоря всё равно видна: его хэш не сойдётся со второй строкой.
+            expected = _transcript_hash(entry)
+            checked += 1
+            continue
+        want = expected if expected is not None else CHAIN_GENESIS
+        if entry.get("prev_hash") != want:
+            return {"ok": False, "bad_at": index, "checked": checked, "pre_chain": pre_chain,
                     "reason": f"prev_hash mismatch at line {index}: chain broken"}
         expected = _transcript_hash(entry)
         checked += 1
-    return {"ok": True, "checked": checked}
+    return {"ok": True, "checked": checked, "pre_chain": pre_chain}
 
 def _transcript_entry(raw: str) -> dict | None:
     """Одна строка журнала в словарь, либо None если это не запись.
@@ -3263,7 +3287,7 @@ class PairSession:
     def tool_pair_transcript(self, limit: int = 20) -> dict[str, Any]:
         """Read the append-only audit trail of everything both agents did."""
         entries = self.store.read_transcript(limit)
-        chain = verify_transcript_chain(entries)
+        chain = verify_transcript_chain(entries, anchored=bool(limit))
         return {"entries": entries, "count": len(entries), "chain": chain}
 
 

@@ -2709,6 +2709,39 @@ class TestTranscriptWindow(PairTestCase):
         result = self.writer.tool_pair_transcript(limit=0)
         self.assertTrue(result["chain"]["ok"], "цепь после ротации обязана проверяться")
 
+    def test_chain_slice_from_the_middle_verifies(self) -> None:
+        """Срез limit=N — не разрыв: первая строка среза якорь, цепь внутри цела.
+        До раунда 42 tool_pair_transcript(limit=20) всегда отдавал chain broken,
+        потому что срез сверялся с генезиса."""
+        self.fill(10)
+        result = self.writer.tool_pair_transcript(limit=4)
+        self.assertEqual(4, result["count"], "срез отдан хвостом")
+        self.assertTrue(result["chain"]["ok"], "цепь внутри среза обязана проверяться")
+        self.assertEqual(4, result["chain"]["checked"], "все четыре строки среза посчитаны")
+
+    def test_chain_slice_tampering_is_visible(self) -> None:
+        """Подмена внутри среза рвёт цепь: хэш якоря не сходится со второй строкой."""
+        self.fill(10)
+        lines = self.store.transcript_path.read_text(encoding="utf-8").splitlines()
+        mid = json.loads(lines[8])
+        mid["i"] = 9999
+        lines[8] = json.dumps(mid, ensure_ascii=False)
+        self.store.transcript_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        result = self.writer.tool_pair_transcript(limit=4)
+        self.assertFalse(result["chain"]["ok"], "подмена внутри среза обязана рвать цепь")
+
+    def test_chain_legacy_head_without_prev_hash_is_pre_chain(self) -> None:
+        """Строки старше цепи без prev_hash — доцепная эпоха, а не разрыв."""
+        self.store.transcript_path.write_text(
+            json.dumps({"ts": "2020-01-01T00:00:00+00:00", "kind": "test", "role": "writer", "i": -1},
+                       ensure_ascii=False) + "\n", encoding="utf-8")
+        self.fill(3)
+        result = self.writer.tool_pair_transcript(limit=0)
+        self.assertTrue(result["chain"]["ok"], "legacy-голова не рвёт цепь")
+        self.assertEqual(1, result["chain"]["pre_chain"], "одна доцепная строка посчитана")
+        self.assertEqual(3, result["chain"]["checked"], "три цепные строки проверены")
+
+
     # ----------------------------------------------------------------- ротация
 
     def test_rotation_moves_old_entries_out_and_keeps_them(self) -> None:
