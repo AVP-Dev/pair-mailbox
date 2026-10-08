@@ -56,11 +56,10 @@ Any two **different** names can pair up. So `codex` + `claude` works exactly lik
 `opencode` + `agy`: the same server, the same protocol, only the names differ. You will see your
 own role name in `pair_state` under `you`, and your peer's in `writer` or `peers`.
 
-`bin/pair-duo` supports all six profiles (`opencode`, `agy`, `codex`, `claude`,
-`pi`, `omp`). It launches two panes of the *same* CLI as `<cli>-writer` and
-`<cli>-critic`, e.g. `opencode-writer` + `opencode-critic`.
-`install.sh`, in contrast, wires the bare CLI name as the role. Do not confuse the two:
-`opencode` (install) and `opencode-writer` (duo pane) are different role strings.
+`pairup --swap` supports all six profiles (`opencode`, `agy`, `codex`, `claude`,
+`pi`, `omp`). The pair is always two *different* CLIs: two copies of one CLI
+fight over the MCP role lock and both fail. `install.sh` wires the bare CLI
+name as the role.
 
 To add a CLI: append an object to `cli-profiles.json` and run `./install.sh <name>`.
 

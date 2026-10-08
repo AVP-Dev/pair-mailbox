@@ -5,7 +5,7 @@
 - `python3` 10 or newer on `PATH` (the server has no third-party dependencies)
 - Two agent CLIs. The pairing ships 6 profiles in `cli-profiles.json` (opencode, agy,
   codex, claude, pi, omp); the same server works for anything else that speaks MCP —
-  see *Another CLI* below. `bin/pair-duo` launches all six.
+  see *Another CLI* below. `pairup --swap` switches the critic to any of them.
 - Both agents working the same repository, in the same project directory, so they resolve the same
   `.pair` state directory.
 
@@ -41,8 +41,8 @@ cd ~/work/<project> && pairup
 ```
 
 Manual form, in **agterm**, one pane per agent, same working directory. Never bare `opencode`:
-the launch is always `opencode --standalone --auto` (see `cli-profiles.json`
-and `bin/pair-duo`), so each pane gets its own local instance and MCP config:
+the launch is always `opencode --standalone --auto` (see `cli-profiles.json`),
+so each pane gets its own local instance and MCP config:
 
 ```
 opencode --standalone --auto          # pane 1

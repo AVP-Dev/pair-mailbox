@@ -127,7 +127,7 @@ cd pair-mailbox
 | `pi` | Pi Coding Agent | `~/.pi/agent/mcp.json` | `~/.pi/agent/AGENTS.md` |
 | `omp` | OMP Coding Agent | `~/.omp/agent/mcp.json` | `~/.omp/agent/AGENTS.md` |
 
-*`bin/pair-duo` supports all six profiles (`opencode`, `agy`, `codex`, `claude`, `pi`, `omp`). To add any custom CLI: append an entry to `cli-profiles.json` and run `./install.sh <name>`.*
+*`pairup --swap` supports all six profiles (`opencode`, `agy`, `codex`, `claude`, `pi`, `omp`). To add any custom CLI: append an entry to `cli-profiles.json` and run `./install.sh <name>`.*
 
 ### 3. Launching a Pair Session
 
@@ -195,8 +195,8 @@ bin/pairpilot --once      # One supervisor pass, to see what it would do right n
 bin/pairpilot --launch agy=agy   # How to restart a role whose process died
 bin/pairwatch --unblock    # Background daemon to detect stalls and auto-approve [y/n] prompts
 bin/pairdoctor             # Health check and environment diagnostic utility
-bin/pair-duo opencode "task"   # Launch same-CLI dual session (writer/critic split in tmux)
-bin/pair-duo --worktree claude # Launch with isolated git worktree for the critic
+pairup --swap agy            # Replace the critic pane with another CLI, writer untouched
+bin/pair-duo --swap-critic agy --state <dir> --project <dir>  # Same, directly
 ```
 
 ### 🧭 How far the pair runs without you
@@ -221,14 +221,13 @@ The level is chosen when the pair starts and not renegotiated mid-round, so you 
 asked **at most once** — and in `auto`, not at all.
 
 ```bash
-bin/pair-duo --semi opencode "task"   # or --auto, --observe
+pairup --task "autonomy: semi fix the thing"   # or pairctl autonomy semi
 ```
 
 With no flag, the launcher resolves in this order, strongest first:
 
 | Source | What it looks like |
 |---|---|
-| `flag` | `bin/pair-duo --semi` |
 | `task` | `autonomy: semi` on the **first line** of the task |
 | `file` | `.pair/autonomy`, one word |
 | `default` | `auto` |

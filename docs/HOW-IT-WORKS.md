@@ -46,7 +46,7 @@ so one writes and one breaks. Which is which is decided by the standing arrangem
 ```sh
 bin/pairctl           # the human's authority surface: task, mode, autonomy, ok, status
 pairup                 # fast start from the project folder: supervisor-if-dead + pair
-bin/pair-duo          # starts a pair inside one CLI, two panes
+bin/pair-duo --swap-critic <cli>  # replace the critic pane, writer untouched
 bin/pairpilot         # the supervisor: restarts a dead agent, confirms allowlisted
                       # prompts, nudges a role with unread mail, writes the report
 bin/pairchat          # the conversation of this pair, live
@@ -62,7 +62,7 @@ with `pairup --swap <cli>` and no paperwork. `finish.sh` is the heavy first-time
 path (install + full tests); `pairup` is the daily one (seconds).
 
 Launch commands live in `cli-profiles.json`: six profiles (`opencode`, `agy`,
-`codex`, `claude`, `pi`, `omp`); `bin/pair-duo` supports all six. The
+`codex`, `claude`, `pi`, `omp`). The
 server exposes 22 `pair_*` MCP tools. The pair's state lives in `.pair`:
 `state.json`, `transcript.jsonl`, and the `mailbox/`, `notes/`, `patches/`,
 `obligations/`, `notifications/` stores.
@@ -91,7 +91,7 @@ You are asked **at most once**, and by default not at all: the level is chosen w
 pair starts, not renegotiated mid-round.
 
 ```sh
-bin/pair-duo --semi opencode "task"     # or --auto, --observe
+pairup --task "autonomy: semi do the thing"   # or pairctl autonomy semi
 ```
 
 With no flag the launcher resolves in this order, strongest first: the flag, then

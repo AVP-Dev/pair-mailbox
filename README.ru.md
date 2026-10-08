@@ -127,7 +127,7 @@ cd pair-mailbox
 | `pi` | Pi Coding Agent | `~/.pi/agent/mcp.json` | `~/.pi/agent/AGENTS.md` |
 | `omp` | OMP Coding Agent | `~/.omp/agent/mcp.json` | `~/.omp/agent/AGENTS.md` |
 
-*`bin/pair-duo` поддерживает все шесть профилей (`opencode`, `agy`, `codex`, `claude`, `pi`, `omp`). Чтобы добавить новый CLI: добавьте одну запись в `cli-profiles.json` и выполните `./install.sh <имя>`.*
+*`pairup --swap` поддерживает все шесть профилей (`opencode`, `agy`, `codex`, `claude`, `pi`, `omp`). Чтобы добавить новый CLI: добавьте одну запись в `cli-profiles.json` и выполните `./install.sh <имя>`.*
 
 ### 3. Запуск парной сессии
 
@@ -191,8 +191,8 @@ bin/pairpilot --once      # Один проход сверхвизора: пос
 bin/pairpilot --launch agy=agy   # Как поднимать роль, процесс которой умер
 bin/pairwatch --unblock    # Фоновый сторож: ловит зависания и автоматически жмет [y/n]
 bin/pairdoctor             # Диагностика окружения и проверка доступности компонентов
-bin/pair-duo opencode "задача" # Запуск дуо-режима для одного CLI (сплит writer/critic в tmux)
-bin/pair-duo --worktree claude # Запуск с изолированным git worktree для критика
+pairup --swap agy            # Заменить панель критика другим CLI, писатель не тронут
+bin/pair-duo --swap-critic agy --state <dir> --project <dir>  # То же самое, напрямую
 ```
 
 ### 🧭 Насколько далеко пара идёт сама
@@ -218,14 +218,13 @@ bin/pair-duo --worktree claude # Запуск с изолированным git 
 что вас спрашивают **не чаще одного раза** — а в `auto` не спрашивают вовсе.
 
 ```bash
-bin/pair-duo --semi opencode "задача"   # или --auto, --observe
+pairup --task "autonomy: semi сделать дело"   # или pairctl autonomy semi
 ```
 
 Без флага запускалка решает так, по убыванию силы:
 
 | Источник | Как выглядит |
 |---|---|
-| `flag` | `bin/pair-duo --semi` |
 | `task` | `autonomy: semi` на **первой строке** задачи |
 | `file` | `.pair/autonomy`, одно слово |
 | `default` | `auto` |

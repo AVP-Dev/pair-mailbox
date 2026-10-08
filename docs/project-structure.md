@@ -87,8 +87,7 @@
 - `serve.sh` — транспортный запуск сервера: `exec` с `<role>` и `--state`
   (`mcp/pair_mailbox/serve.sh:10,28`). Имя и путь `mcp/pair_mailbox/server.py`
   менять нельзя: от него зависят `install.sh`, `finish.sh` и конфигурация MCP
-  у всех шести ролей (`cli-profiles.json`: opencode, agy, codex, claude, pi, omp;
-  `pair-duo` поднимает двойную сессию только для первых четырёх).
+  у всех шести ролей (`cli-profiles.json`: opencode, agy, codex, claude, pi, omp).
 - Тесты запускаются как `python3 mcp/pair_mailbox/test_protocol.py`, поэтому корень
   репозитория обязан оставаться импортируемым путём. Файл нельзя переносить.
 

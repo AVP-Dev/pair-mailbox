@@ -93,7 +93,7 @@ bin/pairctl why          # across all projects
 bin/pairctl status       # in the current project, JSON
 ```
 
-A script may not do this. `finish.sh --duo` delegates to `bin/pair-duo`, which used to run `pairctl assign` on its own, silently moving the trust boundary on every run. Only `--duo` lets it appoint `<cli>-writer`, and only when no standing arrangement and no current writer exist; `finish.sh` without `--duo` follows the standing arrangement by default.
+A script may not do this. `bin/pair-duo` used to run `pairctl assign` on its own, silently moving the trust boundary on every run; now it leaves authority alone unless no standing arrangement and no current writer exist, and says so out loud. The pair is always two *different* CLIs.
 
 Swapping the critic's CLI (`pairup --swap <cli>`, `pair-duo --swap-critic`) is not
 moving authority: the writer keeps writing, only the reviewer's process changes.
@@ -481,7 +481,6 @@ With no flag, `bin/pairctl launch-autonomy` resolves in this order, strongest fi
 
 | source | what it looks like | wins over |
 |---|---|---|
-| `flag` | `pair-duo --semi` | everything |
 | `task` | `autonomy: semi` on the **first line** of the task | the file |
 | `file` | `.pair/autonomy`, one word | the default |
 | `default` | `auto` | — |
