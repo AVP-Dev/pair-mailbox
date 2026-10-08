@@ -43,10 +43,14 @@ if [ -z "$state" ]; then
             dir="$parent"
         done
     fi
-    if [ -z "$state" ]; then
-        echo "pair-mailbox: refusing: no git repository here ($(pwd)), no .pair above repo root — refusing to create a stray state" >&2
-        exit 4
-    fi
+fi
+# Видимость, не запрет: запуск из чужой папки — главный источник путаницы
+# панелей между проектами. Легитимные запуски из подкаталогов не ломаем.
+# Стоит ПОСЛЕ резолва, чтобы ловить и walk-up, и явный --state/PAIR_STATE.
+proj_root="$(dirname -- "$state")"; case "$(pwd)/" in "$proj_root"/*) ;; *) echo "pair-mailbox: внимание: state из $state, а cwd $(pwd) — панель будет выглядеть чужой" >&2;; esac
+if [ -z "$state" ]; then
+    echo "pair-mailbox: refusing: no git repository here ($(pwd)), no .pair above repo root — refusing to create a stray state" >&2
+    exit 4
 fi
 if [ -n "${PAIR_ROLE:-}" ] && [ "${PAIR_ROLE}" != "$role" ]; then
   echo "pair-mailbox: refusing: PAIR_ROLE=${PAIR_ROLE} != argv role $role (role comes from config, never from env)" >&2

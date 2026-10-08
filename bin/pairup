@@ -212,12 +212,17 @@ launch_for() {
 }
 writer_cmd="$(launch_for "$writer")"
 critic_cmd="$(launch_for "$critic")"
-session="pair-$(echo "$writer" | tr -c 'a-z0-9' '-')-$(echo "$critic" | tr -c 'a-z0-9' '-')-$(date +%s)"
+proj_name="$(basename -- "$PROJECT_DIR")"
+title_for() { printf '%s:%s (%s)' "$proj_name" "$1" "$2"; }
 writer_init="export PAIR_ROLE='$writer' PAIR_STATE='$STATE_DIR'; cd '$PROJECT_DIR'; echo '=== PAIR WRITER: $writer ==='; $writer_cmd"
 critic_init="export PAIR_ROLE='$critic' PAIR_STATE='$STATE_DIR'; cd '$PROJECT_DIR'; echo '=== PAIR CRITIC: $critic ==='; $critic_cmd"
+title_writer="$(title_for "$writer" writer)"
+title_critic="$(title_for "$critic" critic)"
 
 if [ -n "${TMUX:-}" ]; then
   tmux split-window -h -c "$PROJECT_DIR" "$SHELL -c \"$critic_init\""
+  tmux select-pane -T "$title_critic" -t '{last}' 2>/dev/null || true
+  tmux select-pane -T "$title_writer" 2>/dev/null || true
   tmux select-pane -L 2>/dev/null || true
   echo "pairup: критик $critic в новой панели, писатель — здесь ($writer)"
   echo "pairup: писатель: $writer_cmd"
@@ -226,6 +231,8 @@ else
   tmux new-session -d -s "$session" -n "pair" -c "$PROJECT_DIR" "$SHELL -c \"$writer_init\""
   tmux split-window -t "$session" -h -c "$PROJECT_DIR" "$SHELL -c \"$critic_init\""
   tmux select-layout -t "$session" even-horizontal 2>/dev/null || true
+  tmux select-pane -T "$title_writer" -t "$session:0.0" 2>/dev/null || true
+  tmux select-pane -T "$title_critic" -t "$session:0.1" 2>/dev/null || true
   echo "pairup: сессия $session (писатель $writer | критик $critic)"
   tmux attach-session -t "$session"
 fi

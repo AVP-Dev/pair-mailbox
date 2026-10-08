@@ -64,6 +64,7 @@ def _commands() -> dict[str, str]:
         "keys": "pairctl_authority",
         "pane": "pairctl_panes",
         "roster": "pairctl_panes",
+        "panes": "pairctl_panes",
         "digest": "pairctl_read",
         "why": "pairctl_read",
         "inbox": "pairctl_read",
@@ -133,6 +134,8 @@ def build_parser() -> argparse.ArgumentParser:
     roster = sub.add_parser("roster", help="human: show who is registered, --prune to clean")
     roster.add_argument("--prune", action="store_true",
                         help="remove roles whose process is dead AND whose pane is gone")
+
+    sub.add_parser("panes", help="human: live tmux panes mapped to project, role and liveness")
 
     roles = sub.add_parser(
         "roles",

@@ -363,6 +363,59 @@ class TestPaneOverride(PairTestCase):
         self.assertEqual(0, self.ctl("pane", "--role", "opencode"))
         self.assertEqual(pane, self.pinned().get("pane_pin"))
 
+class TestPanes(PairTestCase):
+    """`pairctl panes`: живые панели tmux -> проект -> роль -> живость.
+
+    Только чтение: состояние не трогает, в журнал не пишет. Ответ на вопрос
+    «какая панель чья», который раньше требовал ps + tmux + state.json
+    (задача 53: панели лезут друг к другу между проектами).
+    """
+
+    def ctl_panes(self) -> tuple[int, str]:
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = main(["--state", str(self.root), "panes"])
+        return code, out.getvalue()
+
+    def fake_tmux(self, rows: str):
+        proc = mock.Mock()
+        proc.returncode = 0
+        proc.stdout = rows
+        proc.stderr = ""
+        return mock.patch("pairctl_panes.shutil.which", return_value="/usr/bin/tmux"), \
+            mock.patch("subprocess.run", return_value=proc)
+
+    def test_shows_our_and_foreign_panes(self) -> None:
+        """Своя панель помечена НАШ, чужая — чужой."""
+        self.store.mutate(lambda st: st.setdefault("roles", {}).update(
+            {"writer-agent": {"pane": "proj:0.0", "pid": os.getpid(),
+                              "first_seen": "then", "last_seen": "then"}}))
+        rows = ("proj:0.0\tproj:0.0\t%s\tbash\t%d\t\n"
+                "other:0.0\tother:0.0\t/tmp\tbash\t%d\t\n") % (
+                    self.root, os.getpid(), os.getpid())
+        w, r = self.fake_tmux(rows)
+        with w, r:
+            code, out = self.ctl_panes()
+        self.assertEqual(0, code)
+        self.assertIn("НАШ", out)
+        self.assertIn("чужой", out)
+        self.assertIn("writer-agent", out)
+
+    def test_without_tmux_reports_instead_of_lying(self) -> None:
+        with mock.patch("pairctl_panes.shutil.which", return_value=None):
+            self.assertEqual(1, self.ctl_panes()[0])
+
+    def test_does_not_write_state_or_transcript(self) -> None:
+        """Чтение обязано не оставлять следов."""
+        before = self.store.read()
+        n_before = len(self.store.read_transcript())
+        rows = "p:0.0\tp:0.0\t/tmp\tbash\t%d\t\n" % os.getpid()
+        w, r = self.fake_tmux(rows)
+        with w, r:
+            self.ctl_panes()
+        self.assertEqual(before["roles"], self.store.read()["roles"])
+        self.assertEqual(n_before, len(self.store.read_transcript()))
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

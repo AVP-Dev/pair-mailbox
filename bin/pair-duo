@@ -264,12 +264,17 @@ if [[ -n "${TMUX:-}" ]]; then
   IN_TMUX=1
 fi
 
+PROJ_NAME="$(basename -- "$PROJECT_ROOT_DIR")"
 WRITER_INIT="export PAIR_ROLE='${WRITER_ROLE}' PAIR_STATE='${STATE_PATH}'; cd '${ROOT}'; echo '=== PAIR WRITER: ${WRITER_ROLE} ==='; ${WRITER_CMD}"
 CRITIC_INIT="export PAIR_ROLE='${CRITIC_ROLE}' PAIR_STATE='${STATE_PATH}'; cd '${CRITIC_DIR}'; echo '=== PAIR CRITIC: ${CRITIC_ROLE} ==='; ${CRITIC_CMD}"
+TITLE_WRITER="$PROJ_NAME:${WRITER_ROLE} (writer)"
+TITLE_CRITIC="$PROJ_NAME:${CRITIC_ROLE} (critic)"
 
 if [[ "$IN_TMUX" -eq 1 ]]; then
   # Inside tmux: split current window
   tmux split-window $SPLIT_OPT -c "$CRITIC_DIR" "$SHELL -c \"$CRITIC_INIT\""
+  tmux select-pane -T "$TITLE_CRITIC" -t '{last}' 2>/dev/null || true
+  tmux select-pane -T "$TITLE_WRITER" 2>/dev/null || true
   tmux select-pane -L 2>/dev/null || tmux select-pane -U 2>/dev/null || true
   eval "$WRITER_INIT"
 else
@@ -279,5 +284,7 @@ else
   tmux new-session -d -s "$SESSION_NAME" -n "pair" -c "$ROOT" "$SHELL -c \"$WRITER_INIT\""
   tmux split-window -t "$SESSION_NAME" $SPLIT_OPT -c "$CRITIC_DIR" "$SHELL -c \"$CRITIC_INIT\""
   tmux select-layout -t "$SESSION_NAME" even-horizontal 2>/dev/null || true
+  tmux select-pane -T "$TITLE_WRITER" -t "$SESSION_NAME:0.0" 2>/dev/null || true
+  tmux select-pane -T "$TITLE_CRITIC" -t "$SESSION_NAME:0.1" 2>/dev/null || true
   tmux attach-session -t "$SESSION_NAME"
 fi
