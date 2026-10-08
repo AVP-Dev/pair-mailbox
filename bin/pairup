@@ -119,7 +119,15 @@ status_json="$("$PAIRCTL" --state "$STATE_DIR" status 2>/dev/null || true)"
 writer="$(printf '%s' "$status_json" | python3 -c 'import json,sys; s=json.load(sys.stdin); print((s.get("policy") or {}).get("writer") or s.get("writer") or "")' 2>/dev/null || true)"
 critic="$(printf '%s' "$status_json" | python3 -c 'import json,sys; s=json.load(sys.stdin); print((s.get("policy") or {}).get("critic") or "")' 2>/dev/null || true)"
 if [ -z "$critic" ]; then
-  critic="$(printf '%s' "$status_json" | python3 -c 'import json,sys; s=json.load(sys.stdin); rs=[r for r in s.get("roles",{}) if r != s.get("writer")]; print(rs[0] if rs else "")' 2>/dev/null || true)"
+  # Только живой: мёртвая запись в ростере иначе становится критиком,
+  # и pairup открывает нерабочий CLI. pid берём из state.json напрямую:
+  # status отдаёт roles строками last_seen, там pid нет.
+  critic="$(python3 -c 'import json,os,sys; s=json.load(open(sys.argv[1])); rs=s.get("roles",{}); w=s.get("writer"); out="";
+for r,info in rs.items():
+  if r==w or not isinstance(info,dict): continue
+  try: os.kill(info.get("pid") or 0, 0); out=r; break
+  except OSError: continue
+print(out)' "$STATE_DIR/state.json" 2>/dev/null || true)"
 fi
 if { [ -n "$DUO" ] || [ -n "$SWAP" ]; } || { [ -z "$writer" ] || [ -z "$critic" ]; }; then
   _global="$HOME/.config/pair-mailbox/roles.json"
