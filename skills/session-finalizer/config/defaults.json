@@ -1,7 +1,7 @@
 {
   "marker": ".session/finalized",
-  "protected_branches": ["main", "master", "develop", "trunk"],
-  "protected_patterns": ["main*", "master", "develop*", "trunk", "release/*", "hotfix/*"],
+  "protected_branches": ["main", "master", "develop", "dev", "trunk", "staging"],
+  "protected_patterns": ["main*", "master", "develop*", "dev", "dev/*", "trunk", "release/*", "hotfix/*", "staging", "staging/*"],
   "temp_patterns": ["*.tmp", "*.bak", "*~", ".DS_Store", "*.swp", "*.orig", "*.rej"],
   "temp_dirs": ["/tmp/opencode"],
   "agents_config_overrides": {},
