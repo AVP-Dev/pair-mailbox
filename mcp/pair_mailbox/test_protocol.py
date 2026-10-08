@@ -210,6 +210,45 @@ class TestPersistentRoles(PairTestCase):
         state = self.store.read()
         self.assertEqual(state["writer"], "writer-agent")
 
+    def test_designated_writer_takes_over_a_dead_holder(self) -> None:
+        self.peer.tool_pair_claim(reason="держу")
+        self.pin("writer-agent", "reviewer-agent")
+        self.store.mutate(lambda st: (
+            st["roles"]["reviewer-agent"].__setitem__("pid", 999999999),
+            st["roles"]["reviewer-agent"].__setitem__("last_seen", "2000-01-01T00:00:00+00:00"),
+        ))
+        result = self.writer.tool_pair_claim(reason="продолжаю в новом CLI")
+        self.assertEqual(result["writer"], "writer-agent")
+        self.assertTrue(result.get("by_policy"))
+
+    def test_anyone_may_not_take_over_a_live_holder(self) -> None:
+        self.pin("writer-agent", "reviewer-agent")
+        self.writer.tool_pair_claim(reason="держу")
+        self.assertRefused(self.peer.tool_pair_claim, contains="расстановке")
+        self.assertEqual(self.store.read()["writer"], "writer-agent")
+
+    def test_any_live_role_takes_over_a_dead_holder_without_policy(self) -> None:
+        self.writer.tool_pair_claim(reason="держу")
+        self.store.mutate(lambda st: (
+            st["roles"]["writer-agent"].__setitem__("pid", 999999999),
+            st["roles"]["writer-agent"].__setitem__("last_seen", "2000-01-01T00:00:00+00:00"),
+        ))
+        result = self.peer.tool_pair_claim(reason="продолжаю в новом CLI")
+        self.assertEqual(result["writer"], "reviewer-agent")
+        self.assertTrue(result.get("took_over"))
+
+    def test_critic_never_bypasses_designated_writer_on_dead_holder(self) -> None:
+        # seq 466: holder_dead снимал отказ критику, и тот забирал право в обход
+        # policy. Отказ критику — всегда, перехват мёртвого — только назначенному.
+        self.peer.tool_pair_claim(reason="держу")
+        self.pin("writer-agent", "reviewer-agent")
+        self.store.mutate(lambda st: (
+            st["roles"]["reviewer-agent"].__setitem__("pid", 999999999),
+            st["roles"]["reviewer-agent"].__setitem__("last_seen", "2000-01-01T00:00:00+00:00"),
+        ))
+        self.assertRefused(self.peer.tool_pair_claim, contains="расстановке")
+        self.assertEqual(self.store.read()["writer"], "reviewer-agent")
+
     def test_no_policy_keeps_the_race(self) -> None:
         self.writer.tool_pair_state()
         result = self.writer.tool_pair_claim(reason="первый прочитал задачу")
@@ -218,13 +257,16 @@ class TestPersistentRoles(PairTestCase):
 
     def test_state_says_what_you_are(self) -> None:
         self.pin("writer-agent", "reviewer-agent")
-        self.assertEqual(self.writer.tool_pair_state()["my_standing"],
-                         "writer по постоянной расстановке")
-        self.assertEqual(self.peer.tool_pair_state()["my_standing"],
-                         "критик по постоянной расстановке")
+        self.assertIn("writer по постоянной расстановке", self.writer.tool_pair_state()["my_standing"])
+        self.assertIn("критик по постоянной расстановке", self.peer.tool_pair_state()["my_standing"])
 
-    def test_state_says_race_when_unpinned(self) -> None:
-        self.assertIn("гонк", self.writer.tool_pair_state()["my_standing"])
+    def test_state_separates_designated_from_holder(self) -> None:
+        self.pin("writer-agent", "reviewer-agent")
+        self.writer.tool_pair_claim(reason="держу")
+        standing = self.peer.tool_pair_state()["my_standing"]
+        self.assertIn("критик", standing)
+        self.assertIn("writer-agent", standing)
+        self.assertFalse(self.peer.tool_pair_state()["you_are_writer"])
 
     def test_claim_after_release_still_follows_the_policy(self) -> None:
         self.pin("writer-agent", "reviewer-agent")

@@ -44,8 +44,7 @@ From there the critic has two honest paths, neither involving the human:
   its mind and hand over authority itself.
 - Agree, and work as the critic.
 
-Neither path takes authority away from an active holder. A claim succeeds when authority is free or stale: released, a closed round (`closed_at` or phase `done` — the claim reopens it at `implement` with `round + 1`), an abandoned writer (closed round plus silence past `PAIR_STALL_SECONDS`), or the standing policy naming the claimant (`by_policy`).
-
+Neither path takes authority away from an active holder. A claim succeeds when authority is free or stale: released, a closed round (`closed_at` or phase `done` — the claim reopens it at `implement` with `round + 1`), an abandoned writer (closed round plus silence past `PAIR_STALL_SECONDS`), the standing policy naming the claimant (`by_policy` — on a free slot, or when the holder is dead: its process is gone AND tmux no longer has its panel), or any live role taking over a dead holder when no policy pins the claimant (rather than idling over a corpse).
 Enforced by the server:
 
 - `pair_claim` is refused while authority is held

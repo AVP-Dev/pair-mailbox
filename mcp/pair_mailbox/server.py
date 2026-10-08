@@ -1677,9 +1677,21 @@ class PairSession:
                 "they_wait_for_me": self._obligations_where("to", self.role),
             },
             "my_standing": (
-                "writer по постоянной расстановке" if policy_writer == self.role
-                else "критик по постоянной расстановке" if policy_writer
+                # Расстановка называет роль, держатель — факт. Совпадают не
+                # всегда: мёртвый holder блокирует назначенного (claim требует
+                # пустого writer), и текст без держателя читается как
+                # разрешение писать при you_are_writer=false.
+                "writer по постоянной расстановке, право у меня"
+                if policy_writer == self.role and writer == self.role
+                else "writer по постоянной расстановке, право свободно — забери через pair_claim"
+                if policy_writer == self.role and not writer
+                else f"назначен писателем, право держит {writer!r} — забери через pair_claim, откажет лишь живому"
+                if policy_writer == self.role
+                else f"критик по постоянной расстановке (пишет {policy_writer!r}, держит {writer!r})"
+                if policy_writer
                 else "не задано, определяется гонкой"
+                if not writer
+                else f"гонка за право, держит {writer!r}"
             ),
             # Почему именно он пишет. Без этого сосед видит только факт и не может
             # понять, спорить ему с выбором или принять его.
@@ -1806,6 +1818,25 @@ class PairSession:
             return []
         return sorted(inbox.glob("*.json"), key=lambda p: p.name)
 
+    def _writer_is_dead(self, state: dict[str, Any], writer: str) -> bool:
+        """Держатель мёртв как процесс и как панель: pid не жив И панели нет.
+
+        Два факта, а не один: pid переиспользуется ядром, панель — tmux
+        (pane_exists fail-closed без tmux, поэтому без tmux это False и запись
+        живёт — угадывать смерть нельзя). Живой holder этим путём не отбирается
+        никогда: защита длинного сьюта из _writer_is_abandoned здесь в силе.
+        """
+        info = (state.get("roles") or {}).get(writer) or {}
+        pid = info.get("pid")
+        if pid is not None and is_pid_alive(pid):
+            return False
+        pane = info.get("pane")
+        if pane and pane_exists(pane):
+            return False
+        if pid is None and not pane:
+            return False
+        return True
+
     def _writer_is_abandoned(self, state: dict[str, Any], writer: str) -> bool:
         """True when the holder closed the round and has gone quiet long enough
         that it no longer holds authority in any useful sense.
@@ -1839,6 +1870,8 @@ class PairSession:
             self._register(state)
             policy = self._policy(state)
             designated = policy.get("writer")
+            current = state.get("writer")
+            holder_dead = bool(current and current != self.role and self._writer_is_dead(state, current))
             if designated and designated != self.role:
                 raise ProtocolError(
                     f"по постоянной расстановке ролей писатель {designated!r}, а ты критик.",
@@ -1854,10 +1887,11 @@ class PairSession:
                     "round": state.get("round", 0),
                     "by_policy": True,
                 }
-            current = state.get("writer")
             was_closed = bool(state.get("closed_at") or state.get("phase") == "done")
             if current and current != self.role:
-                if not self._writer_is_abandoned(state, current) and not was_closed:
+                dead = holder_dead and (not designated or designated == self.role)
+                by_policy_takeover = bool(designated and designated == self.role and holder_dead)
+                if not self._writer_is_abandoned(state, current) and not was_closed and not dead:
                     held = str(state.get("writer_reason") or "").strip()
                     raise ProtocolError(
                         f"write authority is held by {current!r}"
@@ -1868,7 +1902,9 @@ class PairSession:
                     )
                 state["writer"] = self.role
                 state["round"] = int(state.get("round", 0)) + 1
-                if reason.strip():
+                if by_policy_takeover:
+                    state["writer_reason"] = "назначено политикой ролей (держатель мёртв)"
+                elif reason.strip():
                     state["writer_reason"] = reason.strip()
                 if was_closed:
                     state.pop("closed_at", None)
@@ -1878,6 +1914,7 @@ class PairSession:
                     "writer": self.role,
                     "round": state["round"],
                     "took_over": True,
+                    "by_policy": by_policy_takeover,
                 }
             if current == self.role:
                 if reason.strip():

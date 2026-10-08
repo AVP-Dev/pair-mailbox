@@ -134,7 +134,7 @@ fi
 EXISTING_WRITER="$("$HERE/pairctl" --state "$STATE_PATH" status 2>/dev/null \
   | python3 -c 'import json,sys
 try:
-    print(json.load(sys.stdin).get("policy", {}).get("writer") or "")
+    print((json.load(sys.stdin).get("policy") or {}).get("writer") or "")
 except Exception:
     print("")' 2>/dev/null)"
 CURRENT_WRITER="$("$HERE/pairctl" --state "$STATE_PATH" status 2>/dev/null \

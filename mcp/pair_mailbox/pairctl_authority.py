@@ -41,6 +41,11 @@ from server import (
 def cmd_status(store: Store, args: argparse.Namespace) -> int:
     state = store.read()
     session = PairSession("pairctl", store)
+    # Оператор видел сырой state.policy (null), а сервер отказывал по
+    # резолвленной _policy (project → global): "пина нет", хотя он есть.
+    effective = session._policy(state) or None
+    raw = state.get("policy") if isinstance(state.get("policy"), dict) else None
+    source = "project" if raw and raw.get("writer") else ("global" if effective else None)
     print(json.dumps(
         {
             "state_dir": str(store.root),
@@ -48,7 +53,8 @@ def cmd_status(store: Store, args: argparse.Namespace) -> int:
             "mode": state.get("mode", "fix"),
             "autonomy": autonomy_of(state),
             "writer": state.get("writer"),
-            "policy": state.get("policy"),
+            "policy": effective,
+            "policy_source": source,
             "phase": state.get("phase"),
             "round": state.get("round"),
             "human_ok": session.human_ok_for_round(state),
@@ -110,6 +116,16 @@ def cmd_roles(store: Store, args: argparse.Namespace) -> int:
                 wanted["writer"] = was_critic
                 wanted["critic"] = was_writer
 
+    if not args.clear and not args.writer and not args.critic and not args.swap:
+        # Голый вызов — чтение, а не снос: без флагов wanted пуст и старый код
+        # снимал project policy с записью в транскрипт. Показываем обе:
+        # project (сырая) и effective (project → global, как видит сервер).
+        session = PairSession("pairctl", store)
+        effective = session._policy(state) or None
+        print(json.dumps({"project": current or None, "effective": effective},
+                         indent=2, ensure_ascii=False))
+        return 0
+
     if not wanted:
         store.mutate(lambda st: st.pop("policy", None))
         store.append_transcript("roles", "human", policy=None)
@@ -123,9 +139,7 @@ def cmd_roles(store: Store, args: argparse.Namespace) -> int:
     store.mutate(lambda st: st.__setitem__("policy", wanted))
     store.append_transcript("roles", "human", policy=wanted, source=str(policy_path))
 
-    # Расстановка сразу применяется к текущему раунду: назначенный писатель
-    # получает право, иначе право остаётся у прошлого держателя и работа
-    # стоит до вмешательства человека.
+    # Расстановка сразу применяется к текущему раунду назначением держателя.
     holder = state.get("writer")
     if wanted.get("writer") and holder != wanted["writer"]:
         def apply(st):

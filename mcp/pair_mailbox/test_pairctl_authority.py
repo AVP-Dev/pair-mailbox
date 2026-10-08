@@ -44,8 +44,8 @@ class TestGlobalRoles(PairTestCase):
             json.dumps({"writer": "writer-agent", "critic": "reviewer-agent"}), encoding="utf-8")
         self.writer.tool_pair_state()  # обе роли должны появиться в ростере
         self.peer.tool_pair_state()
-        self.assertEqual(self.peer.tool_pair_state()["my_standing"],
-                         "критик по постоянной расстановке")
+        self.assertIn("критик по постоянной расстановке",
+                      self.peer.tool_pair_state()["my_standing"])
 
     def test_global_policy_is_ignored_when_its_roles_never_show_up(self) -> None:
         """Ролизация «opencode пишет» в проекте, где opencode не запускают, не
@@ -63,8 +63,8 @@ class TestGlobalRoles(PairTestCase):
         self.writer.tool_pair_state()
         self.peer.tool_pair_state()
         self.store.mutate(lambda st: st.__setitem__("policy", {"writer": "reviewer-agent"}))
-        self.assertEqual(self.peer.tool_pair_state()["my_standing"],
-                         "writer по постоянной расстановке")
+        self.assertIn("writer по постоянной расстановке",
+                      self.peer.tool_pair_state()["my_standing"])
 
     def test_missing_or_broken_global_file_leaves_the_race(self) -> None:
         self.assertIn("гонк", self.writer.tool_pair_state()["my_standing"])
@@ -77,6 +77,18 @@ class TestGlobalRoles(PairTestCase):
         self.peer.tool_pair_state()
         self.assertIn("гонк", self.writer.tool_pair_state()["my_standing"])
 
+    def test_status_shows_effective_policy_with_source(self) -> None:
+        self._roles_file.write_text(
+            json.dumps({"writer": "writer-agent", "critic": "reviewer-agent"}), encoding="utf-8")
+        self.writer.tool_pair_state()
+        self.peer.tool_pair_state()
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            self.assertEqual(main(["--state", str(self.root), "status"]), 0)
+        payload = json.loads(buffer.getvalue()[buffer.getvalue().index("{"):])
+        self.assertEqual(payload["policy"],
+                         {"writer": "writer-agent", "critic": "reviewer-agent"})
+        self.assertEqual(payload["policy_source"], "global")
 
 
 class TestAutonomyCommand(PairTestCase):
@@ -140,9 +152,21 @@ class TestControlSurface(PairTestCase):
         self._ctl("assign", "reviewer-agent")
         self.assertEqual(self.store.read()["writer"], "reviewer-agent")
 
+    def test_bare_roles_is_a_read_not_a_clear(self) -> None:
+        # Голый вызов раньше снимал policy: без флагов wanted пуст и ветка
+        # clear срабатывала с записью в транскрипт. Теперь это чтение.
+        self._ctl("roles", "--writer", "writer-agent", "--critic", "reviewer-agent")
+        before = len(self.store.read_transcript(1000))
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            self.assertEqual(self._ctl("roles"), 0)
+        self.assertEqual(self.store.read()["policy"],
+                         {"writer": "writer-agent", "critic": "reviewer-agent"})
+        self.assertEqual(len(self.store.read_transcript(1000)), before)
+
+
     def test_task_and_reset(self) -> None:
         self._ctl("task", "fix the retry storm")
-        self.assertEqual(self.store.read()["task"], "fix the retry storm")
 
         self.assertEqual(self._ctl("reset"), 2, "reset must refuse without --yes")
         self.assertEqual(self.store.read()["task"], "fix the retry storm")
