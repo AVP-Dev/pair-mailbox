@@ -1425,11 +1425,14 @@ class TestNoteTailReads(PairTestCase):
         self._seed("verdict", entries=400)
         res = self.writer.tool_pair_note_read(kind="verdict", tail_lines=10 ** 6)
         self.assertLessEqual(res["returned_lines"], NOTE_READ_MAX + 3)
+        by_limit = self.writer.tool_pair_note_read(kind="verdict", limit=10 ** 6)
+        self.assertEqual(by_limit["text"], res["text"])
 
     def test_bad_arguments_are_refused(self) -> None:
         self._seed("verdict", entries=2)
         self.assertRefused(lambda: self.writer.tool_pair_note_read(kind="../escape"))
         self.assertRefused(lambda: self.writer.tool_pair_note_read(kind="verdict", tail_lines=0))
+        self.assertRefused(lambda: self.writer.tool_pair_note_read(kind="verdict", limit=0))
         self.assertRefused(lambda: self.writer.tool_pair_note_read(kind="нет-такой"))
 
 class TestNoteRotation(PairTestCase):
