@@ -1335,6 +1335,30 @@ class TestStalledPatches(PilotCase):
                          "патч применён, пока текст ждал, — доставлять нечего")
         self.assertIn("pilot_nudge_stale", self.transcript_kinds())
 
+    def test_obligation_nudge_answered_while_queued_is_dropped_not_delivered(self) -> None:
+        """Напоминание про закрытый запрос не доставляется.
+
+        Измерено 2026-10-07 (backlog pilot-nudge-about-closed-obligation):
+        напоминание про запрос 370 ушло через mailbox_fallback, хотя файл
+        obligations/000370 уже был закрыт ответом. Текст про запрос/seq
+        проверяется по файлу obligations/<seq>-*.json.
+        """
+        p = self.pilot()
+        root = self.state_dir / "obligations"
+        root.mkdir(parents=True, exist_ok=True)
+        (root / "000370-q.json").write_text(json.dumps({
+            "seq": 370, "from": "omp", "to": "agy",
+            "opened_at": ago(60), "subject": "вопрос 370",
+        }), encoding="utf-8")
+        state = self.write_state(roles={"agy": {"pane": "%1", "pid": os.getpid()}})
+        text = "omp ждёт ответа на запрос 370 уже 30 мин"
+        self.assertTrue(p.nudge_still_true(state, "agy", text),
+                        "запрос открыт — условие живо")
+        (root / "000370-q.json").unlink()
+        self.assertFalse(p.nudge_still_true(state, "agy", text),
+                         "запрос закрыт, пока текст ждал, — доставлять нечего")
+
+
     def test_patched_owner_is_told_too(self) -> None:
         """Автор патча молчал и счёл его принятым. Его персональное дело —
         сказать, применён он или нет."""

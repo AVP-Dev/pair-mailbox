@@ -777,10 +777,21 @@ class Pilot:
         очередь до `patch_applied`, а доставлено после — агент получил
         ложный «висит неприменённым» при applied=true. Условие читается
         из свежего состояния здесь, а не из момента постановки.
+        Измерено 2026-10-07 (backlog pilot-nudge-about-closed-obligation):
+        напоминание про запрос 370 ушло после закрытия obligation-файла.
+        Поэтому текст про запрос/seq проверяется по файлу
+        obligations/<seq>-*.json: нет файла — условие протухло.
         Неопознанный текст не трогаем: лучше доставить лишнее, чем молча
         выбросить то, чего не поняли.
         """
         low = text.lower()
+        match = re.search(r"(?:запрос|seq)\s+(\d+)", text, re.IGNORECASE)
+        if match:
+            prefix = f"{int(match.group(1)):06d}-"
+            root = self.store.obligations_root
+            if root.is_dir() and any(p.name.startswith(prefix) for p in root.glob("*.json")):
+                return True
+            return False
         if "патч" not in low and "patch" not in low:
             return True
         for _path, record in (state.get("patches") or {}).items():
