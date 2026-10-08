@@ -302,9 +302,11 @@ nothing may depend on one.
 | Claude, Codex | `tmux send-keys` | reminder only |
 | anything else | none | reminder only |
 
-The supervisor nudges a role that has unread mail and has gone quiet — once, not every
-tick, recorded as `pilot_unread_nudge`. That nudge goes through the same unreliable
-delivery, so treat it as best-effort. The pull is what actually works.
+The supervisor nudges a role that has unread mail and has gone quiet — once per unread
+batch, not every tick, recorded as `pilot_unread_nudge`. Reading resets the nudge, so the
+next letter wakes again; a hanging `expects_reply` repeats every 2h until answered. That
+nudge goes through the same unreliable delivery, so treat it as best-effort. The pull is
+what actually works.
 
 Two ways to send, then:
 

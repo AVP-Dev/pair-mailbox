@@ -379,8 +379,8 @@ Highlights covered by the test suite:
   is never guessed, `observe` never restarts, and write authority is never touched.
 - Autonomy resolution: a fresh state and a reset both land on `auto`, a flag beats a task
   line, a task line beats a file, a file beats the default, and the source is recorded.
-- The unread nudge is sent once and appears in the transcript — otherwise a repeating
-  stream would have been invisible.
+- The unread nudge is sent once per unread batch and appears in the transcript — reading
+  resets it, so the next letter wakes again; a hanging request repeats every 2h until answered.
 - Permission context is not permission consent: a frame containing "allow" is not a grant.
 
 ---
