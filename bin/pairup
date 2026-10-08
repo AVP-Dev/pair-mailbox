@@ -15,7 +15,13 @@
 # состояние. Репо автономности находится по шиму: pairup знает где живёт.
 set -euo pipefail
 
-PAIRUP_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+_src="${BASH_SOURCE[0]}"
+while [ -L "$_src" ]; do
+  _dir="$(cd -- "$(dirname -- "$_src")" && pwd)"
+  _src="$(readlink "$_src")"
+  case "$_src" in /*) ;; *) _src="$_dir/$_src" ;; esac
+done
+PAIRUP_ROOT="$(cd -- "$(dirname -- "$_src")/.." && pwd)"
 HERE_STATE=""
 STATE_DIR=""
 if [ -n "${PAIR_STATE:-}" ]; then
@@ -32,17 +38,18 @@ fi
 
 usage() {
   sed -n '2,14p' "$0" | sed 's/^# //; s/^#//'
-  echo "usage: pairup [--install] [--swap <cli>] [--task TEXT] [--duo <cli>] [--state DIR]"
+  echo "usage: pairup [--install] [--writer <роль>] [--swap <cli>] [--task TEXT] [--duo <cli>] [--state DIR]"
   echo "  --install    положить шим в ~/.local/bin (один раз), выйти"
+  echo "  --writer <роль> назначить писателя этого проекта и поднять пару"
   echo "  --swap <cli> пересоздать панель критика новым CLI, писателя не трогать"
   echo "  --task TEXT  записать задачу перед подъёмом"
   echo "  --duo <cli>  две копии одного CLI вместо постоянной расстановки"
   echo "  --state DIR  явный каталог состояния (по умолчанию walk-up от cwd)"
 }
-
 TASK=""
 SWAP=""
 DUO=""
+WANT_WRITER=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --install)
@@ -57,6 +64,7 @@ while [ $# -gt 0 ]; do
       ;;
     --swap) SWAP="${2:-}"; shift 2 || { echo "error: --swap needs a CLI" >&2; exit 2; } ;;
     --task) TASK="${2:-}"; shift 2 || { echo "error: --task needs text" >&2; exit 2; } ;;
+    --writer) WANT_WRITER="${2:-}"; shift 2 || { echo "error: --writer needs a role" >&2; exit 2; } ;;
     --duo) DUO="${2:-}"; shift 2 || { echo "error: --duo needs a CLI" >&2; exit 2; } ;;
     --state) STATE_DIR="${2:-}"; shift 2 || { echo "error: --state needs a dir" >&2; exit 2; } ;;
     -h|--help) usage; exit 0 ;;
@@ -65,9 +73,23 @@ while [ $# -gt 0 ]; do
 done
 
 if [ -z "$STATE_DIR" ]; then
-  echo "pairup: нет .pair/state.json вверх от $(pwd)" >&2
-  echo "pairup: это не проект пары — сначала ./finish.sh --no-pair там, где лежит код автономности" >&2
-  exit 1
+  # Состояния нет — это новый проект пары: создаём минимальное молча,
+  # писатель и задача назначаются дальше по флагам и расстановке.
+  mkdir -p .pair/mailbox .pair/notes .pair/obligations .pair/patches
+  if [ ! -f .pair/state.json ]; then
+    python3 - "$PWD/.pair" <<'EOF'
+import json, sys, datetime
+root = sys.argv[1]
+now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+st = {"task": "", "mode": "fix", "autonomy": "semi", "writer": None,
+      "phase": "scoping", "round": 0, "created_at": now, "updated_at": now,
+      "roles": {}, "seen": {}, "patches": {}, "evidence": [],
+      "human_ok": [], "tasks": []}
+open(root + "/state.json", "w", encoding="utf-8").write(json.dumps(st, ensure_ascii=False, indent=2))
+EOF
+  fi
+  STATE_DIR="$PWD/.pair"
+  echo "pairup: новое состояние в $STATE_DIR"
 fi
 STATE_DIR="$(cd -- "$STATE_DIR" && pwd -P)"
 PROJECT_DIR="$(dirname -- "$STATE_DIR")"
@@ -75,6 +97,12 @@ export PAIR_STATE="$STATE_DIR"
 
 PAIRCTL="$PAIRUP_ROOT/bin/pairctl"
 PILOT="$PAIRUP_ROOT/bin/pairpilot"
+
+# --- 0. писатель одной командой: флаг бьёт всё, дальше — расстановка проекта,
+# затем глобальная. Человек запоминает два слова вместо полного пути к pairctl.
+if [ -n "$WANT_WRITER" ]; then
+  "$PAIRCTL" --state "$STATE_DIR" roles --writer "$WANT_WRITER"
+fi
 
 # --- 1. сверхвизор, если мёртв. Живого не трогаем: второй пилот на тот же state
 # гонял бы тики параллельно и двоил бы пробуждения (замечание agy seq 475).
@@ -98,7 +126,17 @@ if [ "$pilot_alive" -eq 1 ]; then
 else
   nohup python3 "$PILOT" --state "$STATE_DIR" >>"$STATE_DIR/pairpilot.log" 2>&1 &
   echo "$!" >"$STATE_DIR/pilot.pid"
-  echo "pairup: сверхвизор поднят (pid $(cat "$STATE_DIR/pilot.pid"), лог $STATE_DIR/pairpilot.log)"
+  sleep 2
+  _pid="$(cat "$STATE_DIR/pilot.pid" 2>/dev/null || true)"
+  if [ -n "$_pid" ] && kill -0 "$_pid" 2>/dev/null; then
+    echo "pairup: сверхвизор поднят (pid $_pid, лог $STATE_DIR/pairpilot.log)"
+  else
+    # Врал «поднят» и умирал молча: шим вёл не туда (корень от симлинка),
+    # пилот падал на старте, а человек узнавал из пустого лога. Больше не врём.
+    echo "pairup: сверхвизор НЕ поднялся, смотри $STATE_DIR/pairpilot.log" >&2
+    tail -5 "$STATE_DIR/pairpilot.log" >&2 || true
+    exit 1
+  fi
 fi
 
 # --- 2. задача, если дали.
@@ -135,7 +173,20 @@ if [ -z "$critic" ]; then
   critic="$(printf '%s' "$status_json" | python3 -c 'import json,sys; s=json.load(sys.stdin); rs=[r for r in s.get("roles",{}) if r != s.get("writer")]; print(rs[0] if rs else "")' 2>/dev/null || true)"
 fi
 if [ -z "$writer" ]; then
-  echo "pairup: в расстановке нет писателя: bin/pairctl roles --writer <роль>" >&2
+  # Проекта без писателя не поднимаем молча, но и за путём не посылаем:
+  # глобальная расстановка человека — тот же его выбор, просто шире.
+  _global="$HOME/.config/pair-mailbox/roles.json"
+  if [ -f "$_global" ]; then
+    _gw="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("writer") or "")' "$_global" 2>/dev/null || true)"
+    if [ -n "$_gw" ]; then
+      "$PAIRCTL" --state "$STATE_DIR" roles --writer "$_gw"
+      echo "pairup: писатель $_gw (из общей расстановки, перебить: pairup --writer <роль>)"
+      writer="$_gw"
+    fi
+  fi
+fi
+if [ -z "$writer" ]; then
+  echo "pairup: в расстановке нет писателя: pairup --writer <роль>" >&2
   exit 1
 fi
 if [ -z "$critic" ]; then
