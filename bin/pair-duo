@@ -211,7 +211,9 @@ if [[ -n "$TASK" ]]; then
   "$HERE/pairctl" task "$TASK"
 fi
 
-"$HERE/pairctl" launch-autonomy --flag "$AUTONOMY_OPT" --task "$TASK"
+if [[ -n "$AUTONOMY_OPT" || -n "$TASK" ]]; then
+  "$HERE/pairctl" launch-autonomy ${AUTONOMY_OPT:+--flag "$AUTONOMY_OPT"} ${TASK:+--task "$TASK"}
+fi
 
 # Authority is the human's to move (PROTOCOL §2). This script used to run
 # `pairctl assign` unconditionally, so every launch silently handed the role to

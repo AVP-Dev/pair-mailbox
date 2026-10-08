@@ -523,6 +523,9 @@ class Pilot:
         log(f"{role}: {reason}, жду пробуждения молча (в печать не бью)")
         self.ring(state, role, reason)
 
+    # Роль -> wake-модуль (был `if role == "opencode"`; новый = строка + wake_<cli>.py).
+    WAKE_ADAPTERS = {"opencode": "wake_opencode"}
+
     def ring(self, state: dict, role: str, reason: str) -> None:
         """Позвонить в панель роли: display-message, не печать в композер.
 
@@ -531,10 +534,7 @@ class Pilot:
         Троттл — по полю rung_at в wake-файле: не чаще раза в 5 мин,
         иначе это тот же спам, только без текста.
 
-        Для opencode после звонка идёт wake-адаптер (wake_opencode.wake):
-        инъекция указателя как user-ход по официальному session prompt API.
-        Fail-closed: двусмысленность или отказ API — тихо, mailbox остаётся
-        гарантией; throttle общий с display-message, спама нет.
+        После звонка — wake-адаптер из WAKE_ADAPTERS (fail-closed, throttle общий).
         """
         if self.tmux is None or role in self.skip:
             return
@@ -551,17 +551,18 @@ class Pilot:
                            capture_output=True, timeout=5)
         except Exception:
             return
-        if role == "opencode":
+        adapter = self.WAKE_ADAPTERS.get(role)
+        if adapter:
             try:
-                from wake_opencode import wake
-                result = wake(self.store.project_root, pointer)
+                result = __import__(adapter).wake(self.store.project_root, pointer)
                 self.store.append_transcript("pilot_wake_api", "pairpilot",
                                              target=role, woken=result.get("woken"),
                                              why=(result.get("why") or "")[:120])
-                log(f"{role}: wake-api {'принят' if result.get('woken') else 'отказ: ' + (result.get('why') or '')[:60]}")
             except Exception as error:  # noqa: BLE001 - адаптер не должен ронять звонок
                 self.store.append_transcript("pilot_wake_api_failed", "pairpilot",
                                              target=role, error=str(error)[:120])
+        else:
+            self.store.append_transcript("pilot_wake_no_adapter", "pairpilot", target=role)
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
             payload["rung_at"] = time.time()
@@ -569,9 +570,7 @@ class Pilot:
                             encoding="utf-8")
         except (OSError, ValueError):
             pass
-        self.store.append_transcript("pilot_ring", "pairpilot", target=role,
-                                     reason=reason)
-        log(f"{role}: позвонил в панель ({reason})")
+        self.store.append_transcript("pilot_ring", "pairpilot", target=role, reason=reason)
 
     @staticmethod
     def _last_ring(path) -> float:

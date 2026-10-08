@@ -44,14 +44,23 @@ if [ -z "$state" ]; then
         done
     fi
 fi
+# Пустой state — до любых предупреждений: иначе `dirname -- ""` даёт `.`
+# и в лог летит мусор `state из ,`. Отказ создавать stray state — честный
+# (probe из $HOME не должен поднимать сервер на мусоре), но сообщение обязано
+# различать "нет git" и "нет .pair" и говорить что делать дальше (pairup).
+if [ -z "$state" ]; then
+    if git rev-parse --show-toplevel >/dev/null 2>&1; then
+        echo "pair-mailbox: refusing: no .pair/state.json in $(pwd) or above (git root $(git rev-parse --show-toplevel 2>/dev/null)) — create it: cd <project> && pairup [--writer <role>] [--duo <cli>]" >&2
+    else
+        echo "pair-mailbox: refusing: no git repository here ($(pwd)) — refusing to create a stray state; cd into a project and run pairup first" >&2
+    fi
+    exit 4
+fi
+case "$state" in -*) echo "pair-mailbox: refusing flag-like state $state (a flag was taken for a path)" >&2; exit 2;; esac
 # Видимость, не запрет: запуск из чужой папки — главный источник путаницы
 # панелей между проектами. Легитимные запуски из подкаталогов не ломаем.
 # Стоит ПОСЛЕ резолва, чтобы ловить и walk-up, и явный --state/PAIR_STATE.
 proj_root="$(dirname -- "$state")"; case "$(pwd)/" in "$proj_root"/*) ;; *) echo "pair-mailbox: внимание: state из $state, а cwd $(pwd) — панель будет выглядеть чужой" >&2;; esac
-if [ -z "$state" ]; then
-    echo "pair-mailbox: refusing: no git repository here ($(pwd)), no .pair above repo root — refusing to create a stray state" >&2
-    exit 4
-fi
 if [ -n "${PAIR_ROLE:-}" ] && [ "${PAIR_ROLE}" != "$role" ]; then
   echo "pair-mailbox: refusing: PAIR_ROLE=${PAIR_ROLE} != argv role $role (role comes from config, never from env)" >&2
   exit 3
