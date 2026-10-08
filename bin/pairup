@@ -75,20 +75,23 @@ done
 if [ -z "$STATE_DIR" ]; then
   # Состояния нет — это новый проект пары: создаём минимальное молча,
   # писатель и задача назначаются дальше по флагам и расстановке.
-  mkdir -p .pair/mailbox .pair/notes .pair/obligations .pair/patches
-  if [ ! -f .pair/state.json ]; then
-    python3 - "$PWD/.pair" <<'EOF'
+  # Корень — git-top, а не $PWD: запуск из подкаталога не должен плодить
+  # второй .pair в src/. Пары без git не бывает (нет коммитов — нечего ревьюить).
+  _root="$(git rev-parse --show-toplevel 2>/dev/null || pwd -P)"
+  mkdir -p "$_root/.pair/mailbox" "$_root/.pair/notes" "$_root/.pair/obligations" "$_root/.pair/patches"
+  if [ ! -f "$_root/.pair/state.json" ]; then
+    python3 - "$_root/.pair" <<'EOF'
 import json, sys, datetime
 root = sys.argv[1]
 now = datetime.datetime.now(datetime.timezone.utc).isoformat()
-st = {"task": "", "mode": "fix", "autonomy": "semi", "writer": None,
+st = {"task": "", "mode": "fix", "autonomy": "auto", "writer": None,
       "phase": "scoping", "round": 0, "created_at": now, "updated_at": now,
       "roles": {}, "seen": {}, "patches": {}, "evidence": [],
       "human_ok": [], "tasks": []}
 open(root + "/state.json", "w", encoding="utf-8").write(json.dumps(st, ensure_ascii=False, indent=2))
 EOF
   fi
-  STATE_DIR="$PWD/.pair"
+  STATE_DIR="$_root/.pair"
   echo "pairup: новое состояние в $STATE_DIR"
 fi
 STATE_DIR="$(cd -- "$STATE_DIR" && pwd -P)"
@@ -104,7 +107,44 @@ if [ -n "$WANT_WRITER" ]; then
   "$PAIRCTL" --state "$STATE_DIR" roles --writer "$WANT_WRITER"
 fi
 
-# --- 1. сверхвизор, если мёртв. Живого не трогаем: второй пилот на тот же state
+# --- 1. роли ПЕРЕД пилотом: падать с ошибкой — до старта фона, иначе пилот
+# остаётся сиротой (замечание agy на ревью bfbe9a5). Пилот стартует только
+# когда известно, кого поднимать.
+status_json="$("$PAIRCTL" --state "$STATE_DIR" status 2>/dev/null || true)"
+writer="$(printf '%s' "$status_json" | python3 -c 'import json,sys; s=json.load(sys.stdin); print((s.get("policy") or {}).get("writer") or s.get("writer") or "")' 2>/dev/null || true)"
+critic="$(printf '%s' "$status_json" | python3 -c 'import json,sys; s=json.load(sys.stdin); print((s.get("policy") or {}).get("critic") or "")' 2>/dev/null || true)"
+if [ -z "$critic" ]; then
+  critic="$(printf '%s' "$status_json" | python3 -c 'import json,sys; s=json.load(sys.stdin); rs=[r for r in s.get("roles",{}) if r != s.get("writer")]; print(rs[0] if rs else "")' 2>/dev/null || true)"
+fi
+if { [ -n "$DUO" ] || [ -n "$SWAP" ]; } || { [ -z "$writer" ] || [ -z "$critic" ]; }; then
+  _global="$HOME/.config/pair-mailbox/roles.json"
+  if [ -f "$_global" ]; then
+    _gw="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("writer") or "")' "$_global" 2>/dev/null || true)"
+    _gc="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("critic") or "")' "$_global" 2>/dev/null || true)"
+    if [ -z "$writer" ] && [ -n "$_gw" ]; then
+      "$PAIRCTL" --state "$STATE_DIR" roles --writer "$_gw"
+      echo "pairup: писатель $_gw (из общей расстановки, перебить: pairup --writer <роль>)"
+      writer="$_gw"
+    fi
+    if [ -z "$critic" ] && [ -n "$_gc" ]; then
+      echo "pairup: критик $_gc (из общей расстановки)"
+      critic="$_gc"
+    fi
+  fi
+fi
+if [ -z "$DUO" ] && [ -z "$SWAP" ]; then
+  if [ -z "$writer" ]; then
+    echo "pairup: в расстановке нет писателя: pairup --writer <роль>" >&2
+    exit 1
+  fi
+  if [ -z "$critic" ]; then
+    echo "pairup: в расстановке нет критика и второго живого в ростере нет" >&2
+    echo "pairup: укажи явно: pairup --duo $writer  (или другой CLI)" >&2
+    exit 1
+  fi
+fi
+
+# --- 2. сверхвизор, если мёртв. Живого не трогаем: второй пилот на тот же state
 # гонял бы тики параллельно и двоил бы пробуждения (замечание agy seq 475).
 pilot_alive=0
 if command -v pgrep >/dev/null 2>&1; then
@@ -164,36 +204,7 @@ if [ -n "$DUO" ]; then
   exec "$PAIRUP_ROOT/bin/pair-duo" "$DUO" ${TASK:+"$TASK"}
 fi
 
-# Постоянная расстановка из state.json: писатель + критик (или writer-pin:
-# критик = любой второй живой, см. finish.sh launch_standing_pair).
-status_json="$("$PAIRCTL" --state "$STATE_DIR" status 2>/dev/null || true)"
-writer="$(printf '%s' "$status_json" | python3 -c 'import json,sys; s=json.load(sys.stdin); print((s.get("policy") or {}).get("writer") or s.get("writer") or "")' 2>/dev/null || true)"
-critic="$(printf '%s' "$status_json" | python3 -c 'import json,sys; s=json.load(sys.stdin); print((s.get("policy") or {}).get("critic") or "")' 2>/dev/null || true)"
-if [ -z "$critic" ]; then
-  critic="$(printf '%s' "$status_json" | python3 -c 'import json,sys; s=json.load(sys.stdin); rs=[r for r in s.get("roles",{}) if r != s.get("writer")]; print(rs[0] if rs else "")' 2>/dev/null || true)"
-fi
-if [ -z "$writer" ]; then
-  # Проекта без писателя не поднимаем молча, но и за путём не посылаем:
-  # глобальная расстановка человека — тот же его выбор, просто шире.
-  _global="$HOME/.config/pair-mailbox/roles.json"
-  if [ -f "$_global" ]; then
-    _gw="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("writer") or "")' "$_global" 2>/dev/null || true)"
-    if [ -n "$_gw" ]; then
-      "$PAIRCTL" --state "$STATE_DIR" roles --writer "$_gw"
-      echo "pairup: писатель $_gw (из общей расстановки, перебить: pairup --writer <роль>)"
-      writer="$_gw"
-    fi
-  fi
-fi
-if [ -z "$writer" ]; then
-  echo "pairup: в расстановке нет писателя: pairup --writer <роль>" >&2
-  exit 1
-fi
-if [ -z "$critic" ]; then
-  echo "pairup: в расстановке нет критика и второго живого в ростере нет" >&2
-  echo "pairup: укажи явно: pairup --duo $writer  (или другой CLI)" >&2
-  exit 1
-fi
+# Роли уже разрешены на шаге 1 (до пилота): здесь только подъём.
 
 # Команды запуска из cli-profiles.json — тот же источник, что у finish.sh и пилота.
 launch_for() {
