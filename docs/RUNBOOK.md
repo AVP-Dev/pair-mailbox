@@ -13,12 +13,15 @@ pairup
 ```
 
 Run it **from the project folder** (`cd ~/work/nyx-os && pairup`) — it finds
-`.pair` by walking up from cwd, starts the supervisor if it is dead, and
-raises the pair from the standing arrangement. No tests, no reinstall:
+`.pair` by walking up from cwd (creating it in the git root if absent), starts
+the supervisor if it is dead, and raises the pair. No tests, no reinstall:
 seconds, not minutes. First time only: `pairup --install` puts a shim into
-`~/.local/bin` so no full path is needed afterwards.
+`~/.local/bin` so no full path is needed afterwards. No writer pinned yet —
+`pairup` applies your global arrangement (`~/.config/pair-mailbox/roles.json`)
+and says so; override once with `pairup --writer <role>`.
 
 ```bash
+pairup --writer omp    # pin this project's writer and start, one command
 pairup --swap agy       # critic's limits ran out: new critic pane, writer untouched
 pairup --task "..."     # record the task before raising the pair
 pairup --duo opencode   # two copies of one CLI instead of the standing pair
@@ -31,10 +34,11 @@ code; for the daily start use `pairup`.
 | `pairup` flag | effect |
 |---|---|
 | `--install` | put a shim into `~/.local/bin`, exit (once) |
+| `--writer <role>` | pin this project's writer and start |
 | `--swap <cli>` | replace the critic pane with another CLI; writer and authority untouched |
 | `--task "..."` | record the task in the shared list before starting |
 | `--duo <cli>` | two copies of one CLI instead of the standing pair |
-| `--state <dir>` | explicit state dir (default: walk-up from cwd) |
+| `--state <dir>` | explicit state dir (default: walk-up from cwd, else git root) |
 
 ## The standing pair, and what `--duo` is for
 
