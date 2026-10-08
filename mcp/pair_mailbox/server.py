@@ -1836,6 +1836,27 @@ class PairSession:
                         )
         except Exception:  # noqa: BLE001 - ревью-гейт не роняет закрытие
             pass
+        try:  # подпись evidence не роняет закрытие; без ключа — как раньше
+            import rolekeys as _keys2
+            for item in round_evidence(state):
+                env = item.get("envelope")
+                if not isinstance(env, dict):
+                    continue
+                vk = _keys2.load_verify_key(self.store.root, item.get("role", ""))
+                if vk is None:
+                    continue
+                text = f"{item.get('round')}:{item.get('kind')}:{item.get('task') or ''}:{item.get('value')}"
+                if not _keys2.verify_envelope(vk, env, text):
+                    self.store.append_transcript("bad_signature", self.role,
+                                                 evidence_kind=item.get("kind"),
+                                                 evidence_value=str(item.get("value"))[:120])
+                    blockers.append(
+                        f"evidence {item.get('kind')!r} с неверной подписью "
+                        f"не учитывается: {item.get('value')!r}. "
+                        f"Перезапиши факт своим ключом через pair_evidence."
+                    )
+        except Exception:  # noqa: BLE001 - подпись не роняет закрытие
+            pass
         return blockers
 
     def _inbox_files(self) -> list[Path]:
@@ -2687,6 +2708,16 @@ class PairSession:
                 "at": utcnow(),
             }
             entries = state.setdefault("evidence", [])
+            try:  # без ключа факт уходит без подписи, подпись не роняет запись
+                import rolekeys as _keys
+                sk = _keys.load_signing_key(self.store.root, self.role)
+                if sk is not None:
+                    text = f"{record['round']}:{record['kind']}:{record['task'] or ''}:{record['value']}"
+                    record["envelope"] = _keys.sign_envelope(
+                        sk, _keys.key_id_for(self.store.project_root, self.role),
+                        record["round"], self.role, "", record["at"], text)
+            except Exception:  # noqa: BLE001
+                pass
             entries.append(record)
             # Записи текущего раунда не вытесняются никогда. Гейт закрытия читает
             # их из state, а не из транскрипта, поэтому вытесненная запись о падении

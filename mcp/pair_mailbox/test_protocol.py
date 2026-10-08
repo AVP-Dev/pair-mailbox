@@ -714,6 +714,45 @@ class TestEvidenceGate(PairTestCase):
     def test_empty_value_is_refused(self) -> None:
         self.assertRefused(self.writer.tool_pair_evidence, "test", "  ", contains="value")
 
+    def test_signed_evidence_carries_a_verifying_envelope(self) -> None:
+        """Факт с ключом подписывается конвертом round:kind:task:value (3.1)."""
+        import rolekeys
+        rolekeys.generate(self.store.root, self.store.project_root, "writer-agent")
+        self.record_test_evidence()
+        items = [i for i in self.store.read()["evidence"] if i.get("round") == self.store.read()["round"]]
+        self.assertEqual(1, len(items))
+        env = items[0].get("envelope")
+        self.assertIsInstance(env, dict, "с ключом факт подписывается")
+        vk = rolekeys.load_verify_key(self.store.root, "writer-agent")
+        assert vk is not None
+        text = f"{items[0]['round']}:{items[0]['kind']}:{items[0]['task'] or ''}:{items[0]['value']}"
+        self.assertTrue(rolekeys.verify_envelope(vk, env, text))
+
+    def test_tampered_evidence_blocks_the_close(self) -> None:
+        """Подмена подписанного факта видна гейту: bad_signature, раунд не закрывается."""
+        import rolekeys
+        rolekeys.generate(self.store.root, self.store.project_root, "writer-agent")
+        self.record_test_evidence()
+        def tamper(state):
+            for item in state.get("evidence", []):
+                if item.get("round") == state.get("round"):
+                    item["value"] = "подменил"
+            return {"tampered": True}
+        self.store.mutate(tamper)
+        self.human_ok()
+        error = self.assertRefused(self.writer.tool_pair_advance, "done", contains="неверной подписью")
+        kinds = [e.get("kind") for e in self.store.read_transcript(0)]
+        self.assertIn("bad_signature", kinds, "подмена видна в транскрипте")
+
+    def test_unsigned_evidence_still_closes_fail_open(self) -> None:
+        """Без ключа (нет .pair/keys) факт без подписи закрывает как раньше."""
+        self.record_test_evidence()
+        items = [i for i in self.store.read()["evidence"] if i.get("round") == self.store.read()["round"]]
+        self.assertNotIn("envelope", items[0], "без ключа подписи нет")
+        self.human_ok()
+        self.assertEqual(self.writer.tool_pair_advance("done")["phase"], "done")
+
+
     def test_state_says_nothing_is_awaited_from_the_human_in_auto(self) -> None:
         """Обратная сторона дефолта: в auto никто не должен ждать слова человека,
         и агент обязан это видеть в состоянии, а не знать по памяти."""
