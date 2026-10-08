@@ -45,6 +45,14 @@ From there the critic has two honest paths, neither involving the human:
 - Agree, and work as the critic.
 
 Neither path takes authority away from an active holder. A claim succeeds when authority is free or stale: released, a closed round (`closed_at` or phase `done` — the claim reopens it at `implement` with `round + 1`), an abandoned writer (closed round plus silence past `PAIR_STALL_SECONDS`), the standing policy naming the claimant (`by_policy` — on a free slot, or when the holder is dead: its process is gone AND tmux no longer has its panel), or any live role taking over a dead holder when no policy pins the claimant (rather than idling over a corpse).
+
+### Standing arrangement: writer-pin
+
+The standing arrangement pins **only the writer** (`bin/pairctl roles --writer X`).
+The critic is not pinned: it is any second live role in the roster, so a CLI whose
+limits ran out is swapped with `pairup --swap <cli>` and no paperwork — writer and
+authority untouched. `--critic` is accepted and ignored with a warning (old calls
+keep working); `--swap` moves the writer to the second live role from the roster.
 Enforced by the server:
 
 - `pair_claim` is refused while authority is held
@@ -86,6 +94,11 @@ bin/pairctl status       # in the current project, JSON
 ```
 
 A script may not do this. `finish.sh --duo` delegates to `bin/pair-duo`, which used to run `pairctl assign` on its own, silently moving the trust boundary on every run. Only `--duo` lets it appoint `<cli>-writer`, and only when no standing arrangement and no current writer exist; `finish.sh` without `--duo` follows the standing arrangement by default.
+
+Swapping the critic's CLI (`pairup --swap <cli>`, `pair-duo --swap-critic`) is not
+moving authority: the writer keeps writing, only the reviewer's process changes.
+That is why it needs no `assign` and no human word — §2 guards who writes, not who
+reviews.
 
 ## 3. A read-only agent proposes patches, it does not apply them
 
@@ -550,6 +563,9 @@ neither writes to the other the pair is idle, and only the human can wake it.
 seven things: deferred delivery, nudging a silent role, confirming a permission
 request **from the allowlist**, restarting a failed agent, signalling a stalled
 patch, a checkpoint digest, and the report on round close.
+You never start it by hand: `pairup` (daily, from the project folder),
+`pair-duo --pilot` and `finish.sh` (step 5) raise it when dead and leave a live
+one alone.
 
 And it deliberately cannot: move a phase, grant or take write authority, commit,
 apply another's patches, or touch project files. Otherwise §2 stops being a boundary.

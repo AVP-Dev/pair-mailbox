@@ -127,11 +127,24 @@ cd pair-mailbox
 | `pi` | Pi Coding Agent | `~/.pi/agent/mcp.json` | `~/.pi/agent/AGENTS.md` |
 | `omp` | OMP Coding Agent | `~/.omp/agent/mcp.json` | `~/.omp/agent/AGENTS.md` |
 
-*`bin/pair-duo` supports only the first four (`opencode`, `agy`, `codex`, `claude`). To add any custom CLI: append an entry to `cli-profiles.json` and run `./install.sh <name>`.*
+*`bin/pair-duo` supports all six profiles (`opencode`, `agy`, `codex`, `claude`, `pi`, `omp`). To add any custom CLI: append an entry to `cli-profiles.json` and run `./install.sh <name>`.*
 
 ### 3. Launching a Pair Session
 
-Open two tmux panes in your project directory:
+From your project directory — one command, seconds:
+
+```bash
+pairup --install   # once: puts a shim into ~/.local/bin
+cd ~/work/<project> && pairup --task "fix 502 retry handling and backoff jitter"
+```
+
+`pairup` finds `.pair` by walking up from cwd, starts the supervisor if it is
+dead, and raises the writer + critic from the standing arrangement. Only the
+writer is pinned (`bin/pairctl roles --writer opencode --global`); the critic
+is any second live role, so a CLI whose limits ran out is swapped with
+`pairup --swap <cli>` and no paperwork — writer and authority untouched.
+
+Manual form (the same thing `pairup` does for you), in two tmux panes:
 
 **Pane 1 (e.g. OpenCode / Writer):**
 ```bash
@@ -153,7 +166,7 @@ The agents will read the codebase, claim roles (`pair_claim`), enter the autonom
 
 ### 4. One-command setup (`finish.sh`)
 
-`./finish.sh` runs the full pipeline in 7 steps: (1) tests before install, (2) install, (3) standing roles, (4) autonomy, (5) supervisor before agents, (6) agents in fresh tmux windows, (7) status report:
+The heavy first-time path: full pipeline in 7 steps — (1) tests before install, (2) install, (3) standing roles, (4) autonomy, (5) supervisor before agents, (6) agents in fresh tmux windows, (7) status report. Takes 5–10 minutes (full test suites); for the daily start use `pairup` above.
 
 ```bash
 ./finish.sh --task "fix 502 retry handling and backoff jitter"
@@ -169,6 +182,8 @@ No positional task argument: the task goes only through `--task`. See the header
 Keep full visibility into your multi-agent workflow:
 
 ```bash
+pairup                       # Fast start from the project folder: supervisor-if-dead + pair (daily)
+pairup --swap agy            # Critic's limits ran out: new critic pane, writer untouched
 bin/pairchat               # Live streaming conversation with colored rejections (Ctrl+C to exit)
 bin/pairchat --once        # Print current project chat snapshot and exit
 bin/pairchat --all --once  # Cross-project telemetry: stream chats from all active workspaces

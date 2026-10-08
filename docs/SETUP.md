@@ -32,7 +32,15 @@ case neither agent may edit — which is a safe default, not a bug.
 
 ## 2. Start both agents
 
-In **agterm**, one pane per agent, same working directory. Never bare `opencode`:
+From the project directory — `pairup` raises the supervisor (if dead) and both
+agents from the standing arrangement, in tmux:
+
+```sh
+pairup --install   # once: shim into ~/.local/bin
+cd ~/work/<project> && pairup
+```
+
+Manual form, in **agterm**, one pane per agent, same working directory. Never bare `opencode`:
 the launch is always `opencode --standalone --auto` (see `cli-profiles.json`
 and `bin/pair-duo`), so each pane gets its own local instance and MCP config:
 
