@@ -6,6 +6,12 @@
 # (card board-to-root-and-live). Source is .pair/, the HTML is disposable.
 /board.html
 
+# Finalizer marker: local session state (HEAD hash + time), recreated by
+# finalize-report on every run. Untracked by design — otherwise the marker
+# itself dirties the tree and any verdict covering it goes stale forever
+# (round 40: rev.files=[.session/] overlapped current_dirty permanently).
+.session/
+
 __pycache__/
 *.pyc
 .DS_Store
