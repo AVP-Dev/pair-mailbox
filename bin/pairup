@@ -203,7 +203,7 @@ fi
 
 # --- 4. подъём пары: duo по явному флагу, иначе постоянная расстановка.
 if [ -n "$DUO" ]; then
-  exec "$PAIRUP_ROOT/bin/pair-duo" "$DUO" ${TASK:+"$TASK"}
+  exec "$PAIRUP_ROOT/bin/pair-duo" --state "$STATE_DIR" --project "$PROJECT_DIR" "$DUO" ${TASK:+"$TASK"}
 fi
 
 # Роли уже разрешены на шаге 1 (до пилота): здесь только подъём.

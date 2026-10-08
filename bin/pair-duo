@@ -206,13 +206,12 @@ case "$AUTONOMY_OPT" in
     ;;
 esac
 
-# Record task and initial authority if specified
 if [[ -n "$TASK" ]]; then
-  "$HERE/pairctl" task "$TASK"
+  "$HERE/pairctl" --state "$STATE_PATH" task "$TASK"
 fi
 
 if [[ -n "$AUTONOMY_OPT" || -n "$TASK" ]]; then
-  "$HERE/pairctl" launch-autonomy ${AUTONOMY_OPT:+--flag "$AUTONOMY_OPT"} ${TASK:+--task "$TASK"}
+  "$HERE/pairctl" --state "$STATE_PATH" launch-autonomy ${AUTONOMY_OPT:+--flag "$AUTONOMY_OPT"} ${TASK:+--task "$TASK"}
 fi
 
 # Authority is the human's to move (PROTOCOL §2). This script used to run
@@ -242,20 +241,20 @@ if [[ -n "$EXISTING_WRITER" ]]; then
 elif [[ -n "$CURRENT_WRITER" ]]; then
   echo "pair-duo: ${CURRENT_WRITER} already holds authority, leaving it alone."
 else
-  "$HERE/pairctl" assign "$WRITER_ROLE"
+  "$HERE/pairctl" --state "$STATE_PATH" assign "$WRITER_ROLE"
   echo "pair-duo: no standing arrangement and no writer, so I appointed $WRITER_ROLE."
 fi
 
-CRITIC_DIR="$ROOT"
+CRITIC_DIR="$PROJECT_ROOT_DIR"
 if [[ "$USE_WORKTREE" -eq 1 ]]; then
-  WT_DIR="$ROOT/.pair/worktrees/${CRITIC_ROLE}"
-  mkdir -p "$ROOT/.pair/worktrees"
+  WT_DIR="$PROJECT_ROOT_DIR/.pair/worktrees/${CRITIC_ROLE}"
+  mkdir -p "$PROJECT_ROOT_DIR/.pair/worktrees"
   if [[ -d "$WT_DIR" ]]; then
     echo "pair-duo: using existing worktree at $WT_DIR"
   else
     BRANCH_NAME="duo/${CRITIC_ROLE}-$(date +%s)"
     echo "pair-duo: creating git worktree at $WT_DIR on branch $BRANCH_NAME"
-    git worktree add "$WT_DIR" -b "$BRANCH_NAME"
+    git -C "$PROJECT_ROOT_DIR" worktree add "$WT_DIR" -b "$BRANCH_NAME"
   fi
   CRITIC_DIR="$WT_DIR"
 fi
@@ -267,7 +266,7 @@ if [[ -n "${TMUX:-}" ]]; then
 fi
 
 PROJ_NAME="$(basename -- "$PROJECT_ROOT_DIR")"
-WRITER_INIT="export PAIR_ROLE='${WRITER_ROLE}' PAIR_STATE='${STATE_PATH}'; cd '${ROOT}'; echo '=== PAIR WRITER: ${WRITER_ROLE} ==='; ${WRITER_CMD}"
+WRITER_INIT="export PAIR_ROLE='${WRITER_ROLE}' PAIR_STATE='${STATE_PATH}'; cd '${PROJECT_ROOT_DIR}'; echo '=== PAIR WRITER: ${WRITER_ROLE} ==='; ${WRITER_CMD}"
 CRITIC_INIT="export PAIR_ROLE='${CRITIC_ROLE}' PAIR_STATE='${STATE_PATH}'; cd '${CRITIC_DIR}'; echo '=== PAIR CRITIC: ${CRITIC_ROLE} ==='; ${CRITIC_CMD}"
 TITLE_WRITER="$PROJ_NAME:${WRITER_ROLE} (writer)"
 TITLE_CRITIC="$PROJ_NAME:${CRITIC_ROLE} (critic)"
@@ -283,7 +282,7 @@ else
   # Outside tmux: create a new session
   SESSION_NAME="duo-${CLI}-$(date +%s)"
   echo "pair-duo: starting tmux session '$SESSION_NAME'..."
-  tmux new-session -d -s "$SESSION_NAME" -n "pair" -c "$ROOT" "$SHELL -c \"$WRITER_INIT\""
+  tmux new-session -d -s "$SESSION_NAME" -n "pair" -c "$PROJECT_ROOT_DIR" "$SHELL -c \"$WRITER_INIT\""
   tmux split-window -t "$SESSION_NAME" $SPLIT_OPT -c "$CRITIC_DIR" "$SHELL -c \"$CRITIC_INIT\""
   tmux select-layout -t "$SESSION_NAME" even-horizontal 2>/dev/null || true
   tmux select-pane -T "$TITLE_WRITER" -t "$SESSION_NAME:0.0" 2>/dev/null || true
