@@ -43,17 +43,15 @@ fi
 
 usage() {
   sed -n '2,14p' "$0" | sed 's/^# //; s/^#//'
-  echo "usage: pairup [--install] [--writer <роль>] [--swap <cli>] [--task TEXT] [--duo <cli>] [--state DIR]"
+  echo "usage: pairup [--install] [--writer <роль>] [--swap <cli>] [--task TEXT] [--state DIR]"
   echo "  --install    положить шим в ~/.local/bin (один раз), выйти"
   echo "  --writer <роль> назначить писателя этого проекта и поднять пару"
   echo "  --swap <cli> пересоздать панель критика новым CLI, писателя не трогать"
   echo "  --task TEXT  записать задачу перед подъёмом"
-  echo "  --duo <cli>  две копии одного CLI вместо постоянной расстановки"
   echo "  --state DIR  явный каталог состояния (по умолчанию walk-up от cwd)"
 }
 TASK=""
 SWAP=""
-DUO=""
 WANT_WRITER=""
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -70,7 +68,7 @@ while [ $# -gt 0 ]; do
     --swap) SWAP="${2:-}"; shift 2 || { echo "error: --swap needs a CLI" >&2; exit 2; } ;;
     --task) TASK="${2:-}"; shift 2 || { echo "error: --task needs text" >&2; exit 2; } ;;
     --writer) WANT_WRITER="${2:-}"; shift 2 || { echo "error: --writer needs a role" >&2; exit 2; } ;;
-    --duo) DUO="${2:-}"; shift 2 || { echo "error: --duo needs a CLI" >&2; exit 2; } ;;
+    --duo) echo "pairup: --duo удалён: две копии одного CLI дерутся за MCP-лок и обе падают. Критик — другой CLI: pairup --swap <cli>" >&2; exit 2 ;;
     --state) STATE_DIR="${2:-}"; shift 2 || { echo "error: --state needs a dir" >&2; exit 2; } ;;
     -h|--help) usage; exit 0 ;;
     *) echo "error: unknown flag $1" >&2; usage >&2; exit 2 ;;
@@ -129,7 +127,7 @@ for r,info in rs.items():
   except OSError: continue
 print(out)' "$STATE_DIR/state.json" 2>/dev/null || true)"
 fi
-if { [ -n "$DUO" ] || [ -n "$SWAP" ]; } || { [ -z "$writer" ] || [ -z "$critic" ]; }; then
+if [ -n "$SWAP" ] || [ -z "$writer" ] || [ -z "$critic" ]; then
   _global="$HOME/.config/pair-mailbox/roles.json"
   if [ -f "$_global" ]; then
     _gw="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("writer") or "")' "$_global" 2>/dev/null || true)"
@@ -145,7 +143,7 @@ if { [ -n "$DUO" ] || [ -n "$SWAP" ]; } || { [ -z "$writer" ] || [ -z "$critic" 
     fi
   fi
 fi
-if [ -z "$DUO" ] && [ -z "$SWAP" ]; then
+if [ -z "$SWAP" ]; then
   if [ -z "$writer" ]; then
     echo "pairup: в расстановке нет писателя: pairup --writer <роль>" >&2
     exit 1
@@ -226,11 +224,6 @@ if [ -n "$SWAP" ]; then
   cd "$PROJECT_DIR"
   echo "=== PAIR WRITER: $writer ==="
   exec $writer_cmd
-fi
-
-# --- 4. подъём пары: duo по явному флагу, иначе постоянная расстановка.
-if [ -n "$DUO" ]; then
-  exec "$PAIRUP_ROOT/bin/pair-duo" --state "$STATE_DIR" --project "$PROJECT_DIR" "$DUO" ${TASK:+"$TASK"}
 fi
 
 # Роли уже разрешены на шаге 1 (до пилота): здесь только подъём.
