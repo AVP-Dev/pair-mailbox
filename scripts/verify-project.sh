@@ -7,7 +7,7 @@ usage() {
     "  --only LAYERS   запустить только указанные слои" \
     "  --list          показать профиль без запуска" \
     "  --dry-run       показать выбранные проверки без запуска" \
-    "  --jobs N        параллельные проверки (по умолчанию 1; сюиты изолированы: temp-state, уникальные tmux-имена)"
+  "  --jobs N        параллельные проверки (по умолчанию 1; сюиты изолированы: temp-state, уникальные tmux-имена; live-tmux сюиты с пометкой serial всегда идут в одиночку)"
 }
 
 fail() {
@@ -107,12 +107,13 @@ line_number=0
 running=0
 rm -f "$PROJECT_ROOT/.pair/verify-results.txt" "$PROJECT_ROOT/.pair/verify-"*.log
 
-while IFS=$'\t' read -r name layer required command extra || [ -n "${name:-}${layer:-}${required:-}${command:-}${extra:-}" ]; do
+while IFS=$'\t' read -r name layer required command serial extra || [ -n "${name:-}${layer:-}${required:-}${command:-}${serial:-}${extra:-}" ]; do
   line_number=$((line_number + 1))
   name="${name%$'\r'}"
   layer="${layer%$'\r'}"
   required="${required%$'\r'}"
   command="${command%$'\r'}"
+  serial="${serial%$'\r'}"
   extra="${extra%$'\r'}"
 
   [ -n "$name" ] || continue
@@ -127,7 +128,10 @@ while IFS=$'\t' read -r name layer required command extra || [ -n "${name:-}${la
     0|1) ;;
     *) fail "строка $line_number: required должен быть 0 или 1" ;;
   esac
-  [ -n "$command" ] || fail "строка $line_number: команда не может быть пустой"
+  case "$serial" in
+    ""|serial) ;;
+    *) fail "строка $line_number: serial должен быть пустым или 'serial'" ;;
+  esac
   case ";$seen_names;" in
     *";$name;"*) fail "строка $line_number: повторяющееся имя проверки '$name'" ;;
   esac
@@ -136,9 +140,9 @@ while IFS=$'\t' read -r name layer required command extra || [ -n "${name:-}${la
 
   if [ "$LIST_ONLY" -eq 1 ]; then
     if selected_layer "$layer"; then
-      printf '%s\t%s\t%s\t%s\n' "$name" "$layer" "$required" "$command"
+      printf '%s\t%s\t%s\t%s\t%s\n' "$name" "$layer" "$required" "$command" "$serial"
     else
-      printf '%s\t%s\t%s\t%s\tskipped\n' "$name" "$layer" "$required" "$command"
+      printf '%s\t%s\t%s\t%s\t%s\tskipped\n' "$name" "$layer" "$required" "$command" "$serial"
     fi
     continue
   fi
@@ -151,6 +155,23 @@ while IFS=$'\t' read -r name layer required command extra || [ -n "${name:-}${la
     continue
   fi
 
+  # Live-tmux сюиты (пометка serial в профиле) делят tmux-состояние хоста:
+  # два раннера видят чужие панели и падают друг на друге (backlog
+  # live-tmux-parallel-flake; TestRestart цеплял живую панель %7). При
+  # JOBS>1 такая проверка ждёт хвост пачки, идёт синхронно и только потом
+  # пачка продолжается — в гордом одиночестве.
+  if [ "$serial" = "serial" ] && [ "$JOBS" -gt 1 ]; then
+    wait
+    running=0
+    printf '[verify] %s (%s) serial-only\n' "$name" "$layer"
+    log="$PROJECT_ROOT/.pair/verify-$name.log"
+    if bash -c "$command" >"$log" 2>&1; then
+      echo "0 $required $name" >>"$PROJECT_ROOT/.pair/verify-results.txt"
+    else
+      echo "$? $required $name" >>"$PROJECT_ROOT/.pair/verify-results.txt"
+    fi
+    continue
+  fi
   # Параллельность пачками по JOBS: каждая проверка пишет в свой лог,
   # итог собирается после wait. Вывод сюиты не перемежается с чужой.
   printf '[verify] %s (%s)\n' "$name" "$layer"

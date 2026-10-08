@@ -860,18 +860,24 @@ class TestRestart(PilotCase):
         # проверяет не своё поведение.
         self._real_pane_alive = pairpilot.pane_alive
         self._real_pane_role_pid = getattr(pairpilot, "pane_role_pid", None)
+        pairpilot.pane_role_pid = lambda tmux, pane, role: None
+        # deliver печатает в живой композер через tmux send-keys: без мока
+        # тесты слали спам в реальную панель %7 (раунд 42, жалоба agy).
+        self._real_deliver = pairpilot.deliver
+        pairpilot.deliver = lambda pane, text, wait_for_empty=0.0: {"delivered": True}
         super().setUp()
 
     def tearDown(self) -> None:
         pairpilot.subprocess = self._real_subprocess
         pairpilot.pane_alive = self._real_pane_alive
+        pairpilot.deliver = self._real_deliver
         if self._real_pane_role_pid is not None:
             pairpilot.pane_role_pid = self._real_pane_role_pid
         super().tearDown()
 
     def dead_writer_state(self, **extra) -> None:
         self.write_state(writer="agy", round=3,
-                         roles={"agy": {"last_seen": ago(600), "pid": self.DEAD_PID, "pane": "%7"}},
+                         roles={"agy": {"last_seen": ago(600), "pid": self.DEAD_PID, "pane": "%999999"}},
                          **extra)
 
     def pilot_with_launch(self, command: str = "agy --resume"):
@@ -949,7 +955,7 @@ class TestRestart(PilotCase):
         # Утверждается факт перезапуска в нужной панели с нужной командой, а не
         # то, каким по счёту был вызов: `self.calls[0]` — это утверждение о
         # порядке, и оно ломается от любой правки в соседнем коде.
-        self.assertEqual([["/usr/bin/tmux", "respawn-pane", "-t", "%7", "agy --resume"]],
+        self.assertEqual([["/usr/bin/tmux", "respawn-pane", "-t", "%999999", "agy --resume"]],
                          self.respawns(),
                          "упавший писатель перезапускается в своей панели")
         self.assertIn("pilot_restart", self.transcript_kinds())
@@ -1089,7 +1095,7 @@ class TestRestart(PilotCase):
         pilot = self.pilot_with_launch()
         pairpilot.pane_role_pid = lambda tmux, pane, role: self.DEAD_PID
         pilot.tick()
-        self.assertEqual([["/usr/bin/tmux", "respawn-pane", "-t", "%7", "agy --resume"]],
+        self.assertEqual([["/usr/bin/tmux", "respawn-pane", "-t", "%999999", "agy --resume"]],
                          self.respawns(),
                          "в панели мёртвый pid — роль поднимается")
         self.assertNotIn("pilot_pid_stale_pane_alive", self.transcript_kinds())
@@ -1210,7 +1216,7 @@ class TestRestart(PilotCase):
         """
         self.dead_writer_state()
         pilot = self.pilot_with_launch()
-        pilot.own_pane = "%7"
+        pilot.own_pane = "%999999"
         pilot.tick()
         self.assertNoRestart("свою панель не перезапускаем никогда")
         self.assertNotIn("pilot_restart", self.transcript_kinds())
