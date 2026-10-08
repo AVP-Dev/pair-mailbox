@@ -476,6 +476,22 @@ def main():
     if not os.environ.get("PAIR_INSTALL_SKIP_SUITE"):
         print("\nтесты сервера")
         env = dict(os.environ, PAIR_DISABLE_RING="1")
+        # Сюита едет в подменённом HOME (install-тесты изолируются), а PyNaCl
+        # живёт в user-site настоящего HOME. Без наследования 2 evidence-теста
+        # раунда 42 падают с ModuleNotFoundError: nacl — не кодом, окружением.
+        # _site внутри этого процесса тоже видит подменённый HOME, поэтому
+        # настоящий user-site вычисляем через pwd, а не через site.
+        import site as _site
+        import pwd as _pwd
+        real_home = _pwd.getpwuid(os.getuid()).pw_dir
+        real_site = os.path.join(real_home, ".local", "lib",
+                                 f"python{sys.version_info.major}.{sys.version_info.minor}",
+                                 "site-packages")
+        candidates = set(_site.getsitepackages() + [_site.getusersitepackages()] + [real_site])
+        live = [p for p in candidates if p and os.path.isdir(p)]
+        if live:
+            old = env.get("PYTHONPATH", "")
+            env["PYTHONPATH"] = os.pathsep.join(live + ([old] if old else []))
         t_res = subprocess.run([sys.executable, str(ROOT / "mcp/pair_mailbox/test_protocol.py")], cwd=str(ROOT), env=env)
         if t_res.returncode != 0:
             print("\nТЕСТЫ НЕ ПРОШЛИ")
