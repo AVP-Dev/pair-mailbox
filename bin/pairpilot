@@ -106,6 +106,10 @@ DEFAULT_WAKE_GRACE = 240.0
 # навсегда» — причина в may_escalate_again. Пауза заведомо больше wake_grace.
 WAKE_ESCALATE_REPEAT_SECONDS = 900.0
 DEFAULT_REPLY_HARD = 2400.0
+# Как часто повторять напоминание о зависшем запросе, пока обязательство висит.
+# Не «один раз навсегда»: штамп reply без TTL будил ровно один раз за жизнь
+# проекта (раунд 43), и зависший запрос умирал в тишине.
+DEFAULT_REPLY_REPEAT = 7200.0
 # Сколько провисает sealed-патч, прежде чем это станет дефектом, а не делом,
 # которое писатель возьмёт через минуту.
 DEFAULT_PATCH_GRACE = 1800.0
@@ -171,6 +175,7 @@ class Pilot:
     def __init__(self, state_dir: Path, silence: float, interval: float,
                  reply_grace: float = DEFAULT_REPLY_GRACE,
                  reply_hard: float = DEFAULT_REPLY_HARD,
+                 reply_repeat: float = DEFAULT_REPLY_REPEAT,
                  patch_grace: float = DEFAULT_PATCH_GRACE,
                  launch: dict[str, str] | None = None,
                  allow: list[str] | None = None,
@@ -183,6 +188,7 @@ class Pilot:
         self.interval = interval
         self.reply_grace = reply_grace
         self.reply_hard = reply_hard
+        self.reply_repeat = max(1.0, float(reply_repeat))
         self.patch_grace = patch_grace
         self.allow = allow
         self.restart_limit = max(1, int(restart_limit))
@@ -309,17 +315,30 @@ class Pilot:
     def state(self) -> dict:
         return self.store._load()
 
-    def remember(self, key: str) -> bool:
-        """True, если этого раунда мы ещё не делали. Не даёт повторять запись."""
+    def remember(self, key: str, ttl: float | None = None) -> bool:
+        """True, если этого мы ещё не делали. Не даёт повторять запись.
+
+        Без ttl штамп живёт вечно: второе событие того же вида уже не будит
+        (unread-штамп утекал так весь раунд 43). С ttl штамп старше ttl
+        обновляется и снова возвращает True — напоминание повторяется не чаще,
+        чем раз в ttl, пока причина висит.
+        """
         stamp = self.state_dir / "pilot" / f".{stamp_name(key)}"
         if stamp.exists():
-            return False
+            if ttl is None:
+                return False
+            try:
+                if time.time() - stamp.stat().st_mtime < ttl:
+                    return False
+            except OSError:
+                pass
         stamp.write_text(now_iso(), encoding="utf-8")
         return True
 
-    def forget(self, prefix: str) -> None:
-        for stamp in (self.outbox / "." + prefix).glob("*"):
-            stamp.unlink(missing_ok=True)
+    def unremember(self, key: str) -> None:
+        """Сбросить штамп: событие закрылось, следующее начнётся с чистого листа."""
+        stamp = self.state_dir / "pilot" / f".{stamp_name(key)}"
+        stamp.unlink(missing_ok=True)
 
     def panes(self, state: dict) -> dict[str, list[str]]:
         """Кто на какой панели, без мёртвых.
@@ -645,6 +664,16 @@ class Pilot:
 
     def enqueue(self, role: str, text: str) -> None:
         path = self.outbox / f"{role}.txt"
+        if path.exists():
+            try:
+                old = path.read_text(encoding="utf-8")
+            except OSError:
+                old = ""
+            if old.strip() and old != text:
+                # Вытеснение без следа — дыра в аудите: напоминание выглядит
+                # «не бывшим». Пишем замену в журнал (раунд 43).
+                self.store.append_transcript("pilot_outbox_replaced", "pairpilot",
+                                             to=role, old=old[:120], new=text[:120])
         path.write_text(text, encoding="utf-8")
 
     def mailbox_fallback(self, role: str, text: str) -> int | None:
@@ -839,6 +868,9 @@ class Pilot:
                 continue
             missing = self.unread(state, role)
             if missing <= 0:
+                # Прочитал — штамп сбрасывается: следующее письмо будит заново.
+                # Без этого второе письмо не будило никогда (раунд 43).
+                self.unremember(f"unread-{role}")
                 continue
             out.append(role)
             key = f"unread-{role}"
@@ -912,7 +944,7 @@ class Pilot:
 
             if receiver and age >= self.reply_grace and receiver not in self.skip:
                 key = f"reply-{seq}-{receiver}"
-                if self.remember(key):
+                if self.remember(key, ttl=self.reply_repeat):
                     text = (f"[pairpilot] {sender} ждёт ответа на запрос {seq} "
                             f"уже {int(age // 60)} мин{f': {subject}' if subject else ''}. "
                             f"Это запрос с expects_reply, а ответа в его почте нет. "
@@ -923,7 +955,7 @@ class Pilot:
 
             if sender and age >= self.reply_hard and sender not in self.skip:
                 key = f"waiting-{seq}-{sender}"
-                if self.remember(key):
+                if self.remember(key, ttl=self.reply_repeat):
                     text = (f"[pairpilot] Ты ждёшь ответа на запрос {seq} от {receiver} "
                             f"уже {int(age // 60)} мин{f': {subject}' if subject else ''}. "
                             f"Ответа нет. Не жди вечно: сделай следующий шаг сам, "
@@ -1526,6 +1558,8 @@ def main() -> int:
                         help="seconds before the recipient of a request is poked")
     parser.add_argument("--reply-hard", type=float, default=DEFAULT_REPLY_HARD,
                         help="seconds before the author of a request is told it went unanswered")
+    parser.add_argument("--reply-repeat", type=float, default=DEFAULT_REPLY_REPEAT,
+                        help="seconds between repeated nudges while a request stays unanswered")
     parser.add_argument("--patch-grace", type=float, default=DEFAULT_PATCH_GRACE,
                         help="seconds before a sealed patch nobody applied becomes a defect")
     parser.add_argument("--restart-limit", type=int, default=DEFAULT_RESTART_LIMIT,
@@ -1555,6 +1589,7 @@ def main() -> int:
     state_dir = Path(args.state).resolve()
     pilot = Pilot(state_dir, silence=args.silence, interval=args.interval,
                   reply_grace=args.reply_grace, reply_hard=args.reply_hard,
+                  reply_repeat=args.reply_repeat,
                   patch_grace=args.patch_grace, launch=launch, allow=allow,
                   restart_limit=args.restart_limit, restart_window=args.restart_window,
                   outbox_ttl=args.outbox_ttl)
