@@ -151,9 +151,18 @@ if [ -z "$DUO" ] && [ -z "$SWAP" ]; then
     exit 1
   fi
   if [ -z "$critic" ]; then
-    echo "pairup: в расстановке нет критика и второго живого в ростере нет" >&2
-    echo "pairup: подними критика сам: pairup --swap <cli> (agy, claude, codex, opencode, pi, omp)" >&2
-    exit 1
+    # Обычный пользователь: скачал, install, pairup — и пара работает.
+    # Спрашивать --swap значит ронять первый запуск. Поднимаем первый
+    # установленный CLI (кроме писателя): agy проверен живым, дальше прочие.
+    for _c in agy claude codex opencode pi omp; do
+      if [ "$_c" != "$writer" ] && command -v "$_c" >/dev/null 2>&1; then critic="$_c"; break; fi
+    done
+    if [ -z "$critic" ]; then
+      echo "pairup: нет ни одного установленного CLI для критика (agy, claude, codex, opencode, pi, omp)" >&2
+      exit 1
+    fi
+    echo "pairup: критик не назначен — поднимаю $critic (перебить: pairup --swap <cli>)" >&2
+    SWAP="$critic"
   fi
 fi
 
