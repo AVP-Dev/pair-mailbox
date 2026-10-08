@@ -9,32 +9,43 @@ there is nothing left to say, not because something broke.
 ## One command
 
 ```bash
-./finish.sh
+pairup
 ```
 
-`finish.sh` does everything: installs, fixes the configs, runs the tests, prunes dead
-roster entries, starts the supervisor, and starts the pair. The steps below are here
-so you know what it does and what to fix by hand.
+Run it **from the project folder** (`cd ~/work/nyx-os && pairup`) — it finds
+`.pair` by walking up from cwd, starts the supervisor if it is dead, and
+raises the pair from the standing arrangement. No tests, no reinstall:
+seconds, not minutes. First time only: `pairup --install` puts a shim into
+`~/.local/bin` so no full path is needed afterwards.
 
-| flag | effect |
+```bash
+pairup --swap agy       # critic's limits ran out: new critic pane, writer untouched
+pairup --task "..."     # record the task before raising the pair
+pairup --duo opencode   # two copies of one CLI instead of the standing pair
+```
+
+`./finish.sh` is the heavy path: install + full test suites (5–10 min) +
+supervisor + pair. Use it for the first setup or after changing this repo's
+code; for the daily start use `pairup`.
+
+| `pairup` flag | effect |
 |---|---|
-| `--task "..."` | record the task in the shared list before starting (the only way to pass a task; there is no positional argument) |
-| `--autonomy observe\|semi\|auto` | how far the pair may go alone (default `auto`) |
-| `--duo` | two copies of one CLI instead of the standing pair (see below) |
-| `--cli <name>` | which CLI to duplicate; only with `--duo` (one of `opencode`, `agy`, `codex`, `claude`) |
-| `--roles writer,critic` | set the standing arrangement before starting |
-| `--state <dir>` | state directory (default `.pair`) |
-| `--no-pair` | install and verify only, start no agents |
-| `--no-prune` | leave the roster alone |
+| `--install` | put a shim into `~/.local/bin`, exit (once) |
+| `--swap <cli>` | replace the critic pane with another CLI; writer and authority untouched |
+| `--task "..."` | record the task in the shared list before starting |
+| `--duo <cli>` | two copies of one CLI instead of the standing pair |
+| `--state <dir>` | explicit state dir (default: walk-up from cwd) |
 
 ## The standing pair, and what `--duo` is for
 
-By default `finish.sh` reads the standing arrangement and starts **the writer and
-the critic on their own CLIs**:
+By default `pairup`/`finish.sh` read the standing arrangement and start
+**the writer and the critic on their own CLIs**. Only the writer is pinned
+(writer-pin); the critic is any second live role, so swapping CLIs when
+limits run out needs no paperwork:
 
 ```bash
-bin/pairctl roles --writer opencode --critic agy --global   # set it once
-./finish.sh --task "задача"                                  # honours it
+bin/pairctl roles --writer opencode --global   # set it once
+pairup                                         # honours it, from the project folder
 ```
 
 `--duo` is for running two instances of the *same* CLI, which is occasionally useful
@@ -90,11 +101,15 @@ they grow with the code; the TSV is the source of truth.
 ### 2. Fix the standing arrangement
 
 ```bash
-bin/pairctl roles --writer opencode --critic agy --global
-bin/pairctl roles                                 # show it
+bin/pairctl roles --writer opencode --global
+bin/pairctl roles                                 # show it (project + effective)
 bin/pairctl roster                                # who is registered
 bin/pairctl roster --prune                        # drop the dead ones
 ```
+
+Only the writer is pinned. `--critic` is accepted and ignored with a warning
+(old calls keep working); `--swap` moves the writer to the second live role
+from the roster. The critic is whoever else is alive — no paperwork on swap.
 
 `--prune` removes a role only when two independent facts agree: its process is dead
 **and** its pane is either gone or belongs to another live role. One fact is not
@@ -103,8 +118,9 @@ whoever holds write authority.
 
 ### 3. Start the supervisor
 
-The supervisor starts **before** the agents (`finish.sh` step 5 before step 6):
-otherwise it never sees the pair's first minutes.
+You normally never run this by hand: `pairup`, `pair-duo --pilot` and
+`finish.sh` (step 5) raise it when it is dead and leave a live one alone.
+Direct form, when you need it:
 
 ```bash
 bin/pairpilot &                  # in the background, it watches
@@ -123,7 +139,8 @@ bin/pairctl autonomy observe   # only reports; the human is at the wheel
 ### 4. Start the pair
 
 ```bash
-./finish.sh --task "..."        # respects the standing arrangement
+cd ~/work/<project> && pairup --task "..."   # fast: supervisor-if-dead + pair
+./finish.sh --task "..."                     # heavy: install + full tests + pair
 ```
 
 Or by hand, in two panes:

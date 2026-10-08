@@ -5,7 +5,7 @@
 - `python3` 10 or newer on `PATH` (the server has no third-party dependencies)
 - Two agent CLIs. The pairing ships 6 profiles in `cli-profiles.json` (opencode, agy,
   codex, claude, pi, omp); the same server works for anything else that speaks MCP —
-  see *Another CLI* below. `bin/pair-duo` launches the first four.
+  see *Another CLI* below. `bin/pair-duo` launches all six.
 - Both agents working the same repository, in the same project directory, so they resolve the same
   `.pair` state directory.
 
@@ -45,7 +45,7 @@ Any two different CLIs, in any order. Roles come from the standing arrangement i
 one, and only otherwise from a claim:
 
 ```sh
-bin/pairctl roles --writer opencode --critic agy --global   # set it once
+bin/pairctl roles --writer opencode --global   # set it once (writer-pin: critic is any second live role)
 ```
 
 With an arrangement in place, pane order does not decide anything, and neither agent

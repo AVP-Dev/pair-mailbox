@@ -3,6 +3,7 @@
 #
 # Usage:
 #   bin/pair-duo [options] <cli> [task]
+#   bin/pair-duo --swap-critic <cli> --state DIR --project DIR
 #
 # Options:
 #   --worktree    Create an isolated git worktree for the critic pane
@@ -11,16 +12,19 @@
 #                 the launcher resolves in this order: a line in the task
 #                 ("autonomy: semi"), then .pair/autonomy, then auto.
 #   --auto --semi --observe   Shorthand for --autonomy
+#   --swap-critic CLI  Replace the critic pane with another CLI (limits ran out).
+#                 Writer untouched (PROTOCOL §2). Needs --state + --project.
+#   --pilot       Ensure the supervisor runs on this state before launching.
+#                 pairup passes it always; direct calls get the same guard.
 #   -h, --help    Show this help
 #
 # Supported CLIs:
-#   opencode, agy, claude, codex
+#   opencode, agy, claude, codex, pi, omp
 #
 # Examples:
 #   bin/pair-duo opencode "refactor auth middleware"
 #   bin/pair-duo --worktree claude "add integration tests for payments"
 #   bin/pair-duo agy
-set -euo pipefail
 
 HERE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd -- "$HERE/.." && pwd)"
@@ -31,6 +35,10 @@ STATE_PATH="${PAIR_STATE:-$ROOT/.pair}"
 USE_WORKTREE=0
 SPLIT_OPT="-h"
 AUTONOMY_OPT=""
+SWAP_CRITIC=""
+WANT_PILOT=0
+FLAG_STATE=""
+FLAG_PROJECT=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -52,8 +60,26 @@ while [[ $# -gt 0 ]]; do
       AUTONOMY_OPT="${1#--}"
       shift
       ;;
+    --swap-critic)
+      # Смена исполнителя роли критика при кончившихся лимитах: писатель и
+      # право записи не трогаются (PROTOCOL §2 — двигает только человек).
+      SWAP_CRITIC="${2:-}"
+      shift 2 || { echo "error: --swap-critic needs a CLI" >&2; exit 2; }
+      ;;
+    --pilot)
+      WANT_PILOT=1
+      shift
+      ;;
+    --state)
+      FLAG_STATE="${2:-}"
+      shift 2 || { echo "error: --state needs a dir" >&2; exit 2; }
+      ;;
+    --project)
+      FLAG_PROJECT="${2:-}"
+      shift 2 || { echo "error: --project needs a dir" >&2; exit 2; }
+      ;;
     -h|--help)
-      sed -n '2,20p' "$0" | sed 's/^# //' | sed 's/^#//'
+      sed -n '2,28p' "$0" | sed 's/^# //' | sed 's/^#//'
       exit 0
       ;;
     *)
@@ -62,8 +88,72 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+# Явный state/project побеждают дефолт: pairup зовёт из папки проекта, а не
+# из репо автономности, и несёт оба пути с собой.
+if [[ -n "$FLAG_STATE" ]]; then
+  STATE_PATH="$FLAG_STATE"
+fi
+PROJECT_ROOT_DIR="${FLAG_PROJECT:-$ROOT}"
+
+# Сверхвизор до агентов (RUNBOOK §3): живого не двоим — второй пилот на тот же
+# state гонял бы тики параллельно и двоил бы пробуждения (замечание agy seq 475).
+if [[ "$WANT_PILOT" -eq 1 || -n "$SWAP_CRITIC" ]]; then
+  pilot_alive=0
+  if command -v pgrep >/dev/null 2>&1; then
+    if pgrep -f "bin/pairpilot.*--state $STATE_PATH" >/dev/null 2>&1 \
+      || pgrep -f "pairpilot.*$STATE_PATH" >/dev/null 2>&1; then
+      pilot_alive=1
+    fi
+  fi
+  if [[ "$pilot_alive" -eq 0 && -f "$STATE_PATH/pilot.pid" ]]; then
+    old_pid="$(cat "$STATE_PATH/pilot.pid" 2>/dev/null || true)"
+    if [[ -n "$old_pid" ]] && kill -0 "$old_pid" 2>/dev/null; then
+      pilot_alive=1
+    else
+      rm -f "$STATE_PATH/pilot.pid"
+    fi
+  fi
+  if [[ "$pilot_alive" -eq 1 ]]; then
+    echo "pair-duo: сверхвизор уже работает, не трогаю"
+  else
+    if [[ ! -d "$STATE_PATH" ]]; then
+      echo "pair-duo: нет состояния $STATE_PATH — пилоту не за чем смотреть" >&2
+      exit 1
+    fi
+    nohup python3 "$HERE/pairpilot" --state "$STATE_PATH" >>"$STATE_PATH/pairpilot.log" 2>&1 &
+    echo "$!" >"$STATE_PATH/pilot.pid"
+    echo "pair-duo: сверхвизор поднят (pid $(cat "$STATE_PATH/pilot.pid"))"
+  fi
+fi
+
+# Swap-режим: новая панель с другим CLI в роли критика. Писатель не трогается,
+# старая панель критика остаётся человеку (Ctrl-D) — убивать чужое окно скриптом
+# нельзя: там может быть недописанный вердикт.
+if [[ -n "$SWAP_CRITIC" ]]; then
+  case "$SWAP_CRITIC" in
+    opencode|agy|claude|codex|pi|omp) ;;
+    *) echo "error: unsupported CLI '$SWAP_CRITIC'" >&2; exit 2 ;;
+  esac
+  if [[ -z "${TMUX:-}" ]]; then
+    echo "pair-duo: --swap-critic работает изнутри tmux-сессии пары" >&2
+    exit 1
+  fi
+  writer="$("$HERE/pairctl" --state "$STATE_PATH" status 2>/dev/null \
+    | python3 -c 'import json,sys; print(json.load(sys.stdin).get("writer") or "")' 2>/dev/null || true)"
+  critic_cmd="$SWAP_CRITIC"
+  if [[ "$SWAP_CRITIC" == "opencode" ]]; then
+    critic_cmd="opencode --standalone --auto"
+  fi
+  echo "pair-duo: писатель $writer остаётся, критик -> $SWAP_CRITIC"
+  tmux split-window $SPLIT_OPT -c "$PROJECT_ROOT_DIR" \
+    "$SHELL -c \"export PAIR_ROLE='$SWAP_CRITIC' PAIR_STATE='$STATE_PATH'; cd '$PROJECT_ROOT_DIR'; echo '=== PAIR CRITIC: $SWAP_CRITIC (swap) ==='; $critic_cmd\""
+  echo "pair-duo: новый критик $SWAP_CRITIC в соседней панели; старую панель критика закрой сам (Ctrl-D)"
+  echo "pair-duo: право записи у $writer, не трогал (PROTOCOL §2)"
+  exit 0
+fi
+
 if [[ $# -lt 1 ]]; then
-  echo "error: CLI name required (opencode, agy, claude, codex)" >&2
+  echo "error: CLI name required (opencode, agy, claude, codex, pi, omp)" >&2
   echo "usage: bin/pair-duo [--worktree] <cli> [task]" >&2
   exit 2
 fi
@@ -72,10 +162,10 @@ CLI="$1"
 TASK="${2:-}"
 
 case "$CLI" in
-  opencode|agy|claude|codex)
+  opencode|agy|claude|codex|pi|omp)
     ;;
   *)
-    echo "error: unsupported CLI '$CLI'. Supported: opencode, agy, claude, codex" >&2
+    echo "error: unsupported CLI '$CLI'. Supported: opencode, agy, claude, codex, pi, omp" >&2
     exit 2
     ;;
 esac

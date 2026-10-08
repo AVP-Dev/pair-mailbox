@@ -258,7 +258,10 @@ class TestPersistentRoles(PairTestCase):
     def test_state_says_what_you_are(self) -> None:
         self.pin("writer-agent", "reviewer-agent")
         self.assertIn("writer по постоянной расстановке", self.writer.tool_pair_state()["my_standing"])
-        self.assertIn("критик по постоянной расстановке", self.peer.tool_pair_state()["my_standing"])
+        # Writer-pin: критик безымянный — «критик (пишет …)», без «по постоянной».
+        standing = self.peer.tool_pair_state()["my_standing"]
+        self.assertIn("критик", standing)
+        self.assertIn("writer-agent", standing)
 
     def test_state_separates_designated_from_holder(self) -> None:
         self.pin("writer-agent", "reviewer-agent")
@@ -275,24 +278,27 @@ class TestPersistentRoles(PairTestCase):
         result = self.writer.tool_pair_claim()
         self.assertEqual(result["writer"], "writer-agent")
 
-    def test_cli_roles_rejects_one_role_for_both_jobs(self) -> None:
+    def test_cli_roles_rejects_missing_writer(self) -> None:
+        # Writer-pin: policy без writer не пишется; --critic один не создаёт pin.
         proc = subprocess.run(
             [sys.executable, str(SERVER), "--state", str(self.root), "roles",
-             "--writer", "only-one", "--critic", "only-one"],
+             "--critic", "only-critic"],
             capture_output=True, text=True, timeout=30,
         )
-        self.assertEqual(proc.returncode, 2)
         self.assertNotIn("policy", self.store.read())
 
-    def test_cli_swap_exchanges_the_roles(self) -> None:
+    def test_cli_swap_needs_a_second_live_role(self) -> None:
+        # Swap меняет писателя на второго живого из ростера; без второго —
+        # отказ, а не молчаливый pin (writer-pin не хранит критика).
+        self.writer.tool_pair_state()
+        self.peer.tool_pair_state()
         self.pin("writer-agent", "reviewer-agent")
         proc = subprocess.run(
             [sys.executable, str(SERVER), "--state", str(self.root), "roles", "--swap"],
             capture_output=True, text=True, timeout=30,
         )
         self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertEqual(self.store.read()["policy"],
-                         {"writer": "reviewer-agent", "critic": "writer-agent"})
+        self.assertEqual(self.store.read()["policy"], {"writer": "reviewer-agent"})
 
     def test_cli_clear_returns_to_the_race(self) -> None:
         self.pin("writer-agent", "reviewer-agent")

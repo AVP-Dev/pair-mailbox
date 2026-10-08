@@ -45,6 +45,7 @@ so one writes and one breaks. Which is which is decided by the standing arrangem
 
 ```sh
 bin/pairctl           # the human's authority surface: task, mode, autonomy, ok, status
+pairup                 # fast start from the project folder: supervisor-if-dead + pair
 bin/pair-duo          # starts a pair inside one CLI, two panes
 bin/pairpilot         # the supervisor: restarts a dead agent, confirms allowlisted
                       # prompts, nudges a role with unread mail, writes the report
@@ -55,8 +56,13 @@ bin/pairwatch         # catches a stuck agent
 bin/pairdoctor        # checks that everything is in place
 ```
 
+The standing arrangement pins only the writer (`bin/pairctl roles --writer X`);
+the critic is any second live role, so a CLI whose limits ran out is swapped
+with `pairup --swap <cli>` and no paperwork. `finish.sh` is the heavy first-time
+path (install + full tests); `pairup` is the daily one (seconds).
+
 Launch commands live in `cli-profiles.json`: six profiles (`opencode`, `agy`,
-`codex`, `claude`, `pi`, `omp`); `bin/pair-duo` supports the first four. The
+`codex`, `claude`, `pi`, `omp`); `bin/pair-duo` supports all six. The
 server exposes 22 `pair_*` MCP tools. The pair's state lives in `.pair`:
 `state.json`, `transcript.jsonl`, and the `mailbox/`, `notes/`, `patches/`,
 `obligations/`, `notifications/` stores.

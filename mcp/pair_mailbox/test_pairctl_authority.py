@@ -44,8 +44,9 @@ class TestGlobalRoles(PairTestCase):
             json.dumps({"writer": "writer-agent", "critic": "reviewer-agent"}), encoding="utf-8")
         self.writer.tool_pair_state()  # обе роли должны появиться в ростере
         self.peer.tool_pair_state()
-        self.assertIn("критик по постоянной расстановке",
-                      self.peer.tool_pair_state()["my_standing"])
+        standing = self.peer.tool_pair_state()["my_standing"]
+        self.assertIn("критик", standing)
+        self.assertIn("writer-agent", standing)
 
     def test_global_policy_is_ignored_when_its_roles_never_show_up(self) -> None:
         """Ролизация «opencode пишет» в проекте, где opencode не запускают, не
@@ -155,13 +156,36 @@ class TestControlSurface(PairTestCase):
     def test_bare_roles_is_a_read_not_a_clear(self) -> None:
         # Голый вызов раньше снимал policy: без флагов wanted пуст и ветка
         # clear срабатывала с записью в транскрипт. Теперь это чтение.
+        # Writer-pin: --critic принят и проигнорирован, в policy только writer.
         self._ctl("roles", "--writer", "writer-agent", "--critic", "reviewer-agent")
         before = len(self.store.read_transcript(1000))
         buffer = io.StringIO()
         with contextlib.redirect_stdout(buffer):
             self.assertEqual(self._ctl("roles"), 0)
-        self.assertEqual(self.store.read()["policy"],
-                         {"writer": "writer-agent", "critic": "reviewer-agent"})
+        self.assertEqual(self.store.read()["policy"], {"writer": "writer-agent"})
+        self.assertEqual(len(self.store.read_transcript(1000)), before)
+
+    def test_writer_pin_single_name_and_critic_ignored(self) -> None:
+        # finish.sh --roles одним именем: только писатель, без критика.
+        # Старые вызовы с --critic не падают, критик молча отбрасывается.
+        self._ctl("roles", "--writer", "writer-agent")
+        self.assertEqual(self.store.read()["policy"], {"writer": "writer-agent"})
+        buffer = io.StringIO()
+        with contextlib.redirect_stderr(buffer):
+            self.assertEqual(self._ctl("roles", "--writer", "writer-agent",
+                                       "--critic", "reviewer-agent"), 0)
+        self.assertIn("проигнорирован", buffer.getvalue())
+        self.assertEqual(self.store.read()["policy"], {"writer": "writer-agent"})
+
+    def test_critic_alone_does_not_clear_the_policy(self) -> None:
+        # --critic без --writer — чтение, а не снос: иначе «установка» критика
+        # молча снимала бы policy через ветку not wanted.
+        self._ctl("roles", "--writer", "writer-agent")
+        before = len(self.store.read_transcript(1000))
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            self.assertEqual(self._ctl("roles", "--critic", "reviewer-agent"), 0)
+        self.assertEqual(self.store.read()["policy"], {"writer": "writer-agent"})
         self.assertEqual(len(self.store.read_transcript(1000)), before)
 
 

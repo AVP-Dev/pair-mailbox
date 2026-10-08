@@ -6,7 +6,7 @@
 
 - `python3` 10 или новее в `PATH` (у сервера нет сторонних зависимостей)
 - Два CLI агентов. В `cli-profiles.json` 6 профилей (opencode, agy,
-  codex, claude, pi, omp); тот же сервер работает с любым другим клиентом, говорящим по MCP — см. *Другой CLI* ниже. `bin/pair-duo` поднимает первые четыре.
+  codex, claude, pi, omp); тот же сервер работает с любым другим клиентом, говорящим по MCP — см. *Другой CLI* ниже. `bin/pair-duo` поднимает все шесть.
 - Оба агента работают в одном репозитории, в одном каталоге проекта, чтобы разрешать один и тот же
   каталог состояния `.pair`.
 
@@ -46,7 +46,7 @@ agy                                   # pane 2
 задали, и только иначе — из клейма:
 
 ```sh
-bin/pairctl roles --writer opencode --critic agy --global   # set it once
+bin/pairctl roles --writer opencode --global   # set it once (writer-pin: critic is any second live role)
 ```
 
 При заданной договорённости порядок панелей ничего не решает, и ни одному агенту

@@ -141,7 +141,7 @@ def main() -> int:
                         help="поставить и проверить, но агентов не поднимать")
     parser.add_argument("--state", default=os.environ.get("PAIR_STATE", ".pair"))
     parser.add_argument("--autonomy", default="", choices=("", "observe", "semi", "auto"))
-    parser.add_argument("--roles", default="", help="writer,critic через запятую")
+    parser.add_argument("--roles", default="", help="писатель; writer,critic через запятую тоже принято (critic проигнорирован, writer-pin)")
     args = parser.parse_args()
 
     failed = []
@@ -164,9 +164,11 @@ def main() -> int:
 
     step("3. постоянные роли")
     if args.roles and "," in args.roles:
-        writer, critic = (part.strip() for part in args.roles.split(",", 1))
+        # Старая форма writer,critic: критик проигнорирован (writer-pin),
+        # пишется только писатель — старые вызовы не падают.
+        writer = args.roles.split(",", 1)[0].strip()
         run([sys.executable, ROOT / "mcp/pair_mailbox/server.py",
-             "--state", args.state, "roles", "--writer", writer, "--critic", critic])
+             "--state", args.state, "roles", "--writer", writer])
     elif args.roles:
         run([sys.executable, ROOT / "mcp/pair_mailbox/server.py",
              "--state", args.state, "roles", "--writer", args.roles.strip()])

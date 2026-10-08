@@ -1681,13 +1681,15 @@ class PairSession:
                 # всегда: мёртвый holder блокирует назначенного (claim требует
                 # пустого writer), и текст без держателя читается как
                 # разрешение писать при you_are_writer=false.
+                # Writer-pin: пинится только писатель, критик — любой второй
+                # живой, его имя нигде не хранится и в текстах не называется.
                 "writer по постоянной расстановке, право у меня"
                 if policy_writer == self.role and writer == self.role
                 else "writer по постоянной расстановке, право свободно — забери через pair_claim"
                 if policy_writer == self.role and not writer
                 else f"назначен писателем, право держит {writer!r} — забери через pair_claim, откажет лишь живому"
                 if policy_writer == self.role
-                else f"критик по постоянной расстановке (пишет {policy_writer!r}, держит {writer!r})"
+                else f"критик (пишет {policy_writer!r}, держит {writer!r})"
                 if policy_writer
                 else "не задано, определяется гонкой"
                 if not writer

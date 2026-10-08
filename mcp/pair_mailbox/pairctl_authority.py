@@ -95,8 +95,13 @@ def cmd_assign(store: Store, args: argparse.Namespace) -> int:
 
 
 def cmd_roles(store: Store, args: argparse.Namespace) -> int:
-    # Постоянная расстановка: кто всегда пишет, кто всегда ревьюит.
-    # Гонка остаётся как запасной вариант, но по умолчанию роли известны
+    # Постоянная расстановка: пинится ТОЛЬКО писатель (writer-pin).
+    # Критик — любой второй живой в ростере, его имя в policy не хранится:
+    # лимиты кончаются, CLI меняются, а переписывать расстановку при каждой
+    # смене критика — это остановка работы ради бумажки. Флаг --critic принят
+    # и проигнорирован (предупреждение, не ошибка): старые вызовы и скрипты
+    # не должны падать после перехода на writer-pin.
+    # Гонка остаётся как запасной вариант, но по умолчанию писатель известен
     # заранее, и раунд начинается с работы, а не с торговли правами.
     policy_path = global_roles_path()
     state = store.read()
@@ -107,19 +112,26 @@ def cmd_roles(store: Store, args: argparse.Namespace) -> int:
         wanted = {}
     else:
         if args.writer:
-            wanted["writer"] = args.writer
+            wanted = {"writer": args.writer}
         if args.critic:
-            wanted["critic"] = args.critic
+            # Принят и проигнорирован: writer-pin не хранит критика.
+            print(f"предупреждение: --critic {args.critic!r} проигнорирован — "
+                  f"критик теперь любой второй живой (writer-pin)", file=sys.stderr)
         if args.swap:
-            was_writer, was_critic = wanted.get("writer"), wanted.get("critic")
-            if was_writer or was_critic:
-                wanted["writer"] = was_critic
-                wanted["critic"] = was_writer
+            # Swap без хранимого критика — это смена писателя на второго живого
+            # из ростера; без второго живого — отказ с объяснением.
+            roles = state.get("roles") or {}
+            others = [r for r in roles if r != wanted.get("writer")]
+            if not others:
+                print("error: --swap не с кем: в ростере нет второго живого", file=sys.stderr)
+                return 2
+            wanted = {"writer": others[0]}
+            print(f"писатель -> {others[0]} (первый второй живой из ростера)")
 
-    if not args.clear and not args.writer and not args.critic and not args.swap:
-        # Голый вызов — чтение, а не снос: без флагов wanted пуст и старый код
-        # снимал project policy с записью в транскрипт. Показываем обе:
-        # project (сырая) и effective (project → global, как видит сервер).
+    if not args.clear and not args.writer and not args.swap:
+        # Голый вызов и --critic без --writer — чтение, а не снос: критик
+        # в writer-pin не хранится, и его «установка» молча снимала бы policy
+        # через ветку not wanted ниже. Показываем project + effective.
         session = PairSession("pairctl", store)
         effective = session._policy(state) or None
         print(json.dumps({"project": current or None, "effective": effective},
@@ -131,10 +143,6 @@ def cmd_roles(store: Store, args: argparse.Namespace) -> int:
         store.append_transcript("roles", "human", policy=None)
         print("постоянная расстановка снята, роли снова определяются гонкой")
         return 0
-
-    if wanted.get("writer") == wanted.get("critic"):
-        print("error: писатель и критик не могут быть одной ролью", file=sys.stderr)
-        return 2
 
     store.mutate(lambda st: st.__setitem__("policy", wanted))
     store.append_transcript("roles", "human", policy=wanted, source=str(policy_path))
@@ -151,7 +159,7 @@ def cmd_roles(store: Store, args: argparse.Namespace) -> int:
         policy_path.parent.mkdir(parents=True, exist_ok=True)
         policy_path.write_text(json.dumps(wanted, ensure_ascii=False, indent=2), encoding="utf-8")
         print(f"сохранено для любых проектов: {policy_path}")
-    print(f"расстановка: писатель {wanted.get('writer') or '—'}, критик {wanted.get('critic') or '—'}")
+    print(f"расстановка: писатель {wanted.get('writer') or '—'} (критик — любой второй живой)")
     return 0
 
 
