@@ -218,7 +218,14 @@ if [ -n "$SWAP" ]; then
   fi
   echo "pairup: писатель $writer остаётся, критик -> $SWAP"
   "$PAIRUP_ROOT/bin/pair-duo" --swap-critic "$SWAP" --state "$STATE_DIR" --project "$PROJECT_DIR" || exit $?
-  exit 0
+  # Писатель запускается ЗДЕСЬ же: иначе человек остаётся в пустом шелле
+  # и не понимает как пользоваться одной панелью. Критик уже в соседней.
+  writer_cmd="$(python3 -c "import json; p=json.load(open('$PAIRUP_ROOT/cli-profiles.json')); print(p.get('$writer',{}).get('launch','') or '$writer')")"
+  echo "pairup: критик $SWAP в соседней панели, запускаю писателя $writer здесь"
+  export PAIR_ROLE="$writer" PAIR_STATE="$STATE_DIR"
+  cd "$PROJECT_DIR"
+  echo "=== PAIR WRITER: $writer ==="
+  exec $writer_cmd
 fi
 
 # --- 4. подъём пары: duo по явному флагу, иначе постоянная расстановка.
