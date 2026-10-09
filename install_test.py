@@ -7,6 +7,8 @@
 
 Запуск:  python3 install_test.py
 """
+from __future__ import annotations
+
 import json
 import os
 import re

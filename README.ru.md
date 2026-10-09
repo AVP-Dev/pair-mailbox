@@ -7,7 +7,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/AVP-Dev/pair-mailbox"><img src="https://img.shields.io/badge/Python-3.10+-3776AB?style=for-the-badge&logo=python&logoColor=white" alt="Python 3.10+" /></a>
+  <a href="https://github.com/AVP-Dev/pair-mailbox"><img src="https://img.shields.io/badge/Python-3.8+-3776AB?style=for-the-badge&logo=python&logoColor=white" alt="Python 3.8+" /></a>
   <a href="https://modelcontextprotocol.io/"><img src="https://img.shields.io/badge/MCP-Model_Context_Protocol-8A2BE2?style=for-the-badge" alt="MCP Protocol" /></a>
   <img src="https://img.shields.io/badge/Зависимости-Zero_External-10B981?style=for-the-badge" alt="Zero Dependencies" />
   <img src="https://img.shields.io/badge/Архитектура-Single_Writer_Invariant-FF8C00?style=for-the-badge" alt="Single Writer Invariant" />
@@ -37,7 +37,7 @@
 3. **Ящик — гарантия, доставка — ускоритель (запрет «голубиной почты»)**: **Ход агента заканчивается ограниченным `pair_read`** — `pair_read(wait_seconds=N)`. Ни в одной реализации MCP сервер не может вставить ход в клиента: MCP ведёт клиент, сервер отвечает на запросы и не может подтолкнуть хост. Поэтому единственное универсальное пробуждение — агент читает свой ящик сам, и агент, который так заканчивает ход, не бывает в простое с непрочитанной почтой: он либо читает, либо уже прочитал. Тело письма всегда лежит в ящике, а `pair_deliver` печатает в композер соседа лишь короткий указатель — быстрее там, где композер виден, но полноэкранный TUI его прячет, поэтому доставка best-effort, а ящик работает всегда. Человеку больше не нужно копировать сообщения между окнами.
 4. **Автоматическая разблокировка CLI-разрешений (`pair_unblock`)**: Интерактивные вопросы вида `[y/N]` или `Allow execution?` внутри tmux автоматически определяются и одобряются соседом или фоновым демоном (`pairwatch --unblock`), предотвращая зависание сессий.
 5. **Атомарное состояние и файловые блокировки**: Монотонная нумерация сообщений (`000001-<UTC-штамп>-<роль>-<токен>.json`, числовой префикс сортируется по времени), атомарная запись (`replace`) и блокировки `fcntl.flock`, исключающие гонки между параллельными процессами CLI. Полный append-only журнал аудита фиксирует все действия и отказы.
-6. **Ноль внешних зависимостей**: Написан на стандартной библиотеке Python 3 (10+). Работает на Linux и POSIX-системах при наличии `tmux` и `python3` без необходимости ставить сторонние pip-пакеты.
+6. **Ноль внешних зависимостей**: Написан на стандартной библиотеке Python 3 (8+). Работает на Linux и POSIX-системах при наличии `tmux` и `python3` без необходимости ставить сторонние pip-пакеты.
 
 ---
 

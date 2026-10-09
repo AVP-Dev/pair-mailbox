@@ -12,6 +12,7 @@ it was sealed, a glob where an exact path belongs.
 from __future__ import annotations
 
 import contextlib
+import ast
 import io
 import json
 import os
@@ -4152,6 +4153,69 @@ class TestComposerOfAnOpencodePane(PairTestCase):
         import re
         from composer import BOX_GLYPH
         self.assertTrue(re.fullmatch(rf"[{BOX_GLYPH}]+", "\u2580\u2580\u2580"))
+
+
+class TestOldPythonStillRuns(PairTestCase):
+    """Код обязан импортироваться на том Python, который стоит у человека.
+
+    Установка на macOS рушилась 210 тестами с одной причины: системный python3
+    там 3.9, а аннотации вида `str | None` вычисляются при импорте и требуют
+    3.10. Тест ловит это на любой машине: он спрашивает не «какая тут версия»,
+    а «импортируется ли каждый модуль на МИНИМАЛЬНОЙ заявленной версии».
+    """
+
+    FLOOR = (3, 8)
+    ROOT = Path(__file__).resolve().parents[2]
+
+    def modules(self):
+        """Модули поставки: сервер, композер и всё, что он импортирует лениво."""
+        pkg = Path(__file__).resolve().parent
+        skip = {"test_protocol", "pair_test_base"}
+        return sorted(p for p in pkg.glob("*.py")
+                      if p.stem not in skip and not p.name.startswith("test_"))
+
+    def test_every_module_imports_on_the_declared_floor(self) -> None:
+        if sys.version_info >= self.FLOOR:
+            self.skipTest(f"и так на {sys.version_info.major}.{sys.version_info.minor}, "
+                          f"проверять нечего")
+        for path in self.modules():
+            with self.subTest(module=path.name):
+                proc = subprocess.run(
+                    [sys.executable, "-c", f"import {path.stem}"],
+                    cwd=str(path.parent), capture_output=True, text=True, timeout=30)
+                self.assertEqual(0, proc.returncode,
+                                 f"{path.name} не импортируется на минимуме:\n{proc.stderr}")
+
+    def test_no_module_pep604_annotations_without_the_future_import(self) -> None:
+        """`X | None` в аннотациях — 3.10+. Без `from __future__ import
+        annotations` аннотация вычисляется при импорте и роняет модуль."""
+        for path in self.modules():
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            future = any(isinstance(n, ast.ImportFrom) and n.module == "__future__"
+                         and any(a.name == "annotations" for a in n.names)
+                         for n in tree.body)
+            if future:
+                continue
+            for node in ast.walk(tree):
+                ann = None
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    ann = node.returns
+                if isinstance(node, ast.arg):
+                    ann = node.annotation
+                if isinstance(node, ast.AnnAssign):
+                    ann = node.annotation
+                if ann is None:
+                    continue
+                if any(isinstance(n, ast.BinOp) and isinstance(n.op, ast.BitOr)
+                       and _is_type(n.left) and _is_type(n.right)
+                       for n in ast.walk(ann)):
+                    self.fail(f"{path.name}:{node.lineno} — аннотация с `|` "
+                              f"без `from __future__ import annotations`")
+
+
+def _is_type(node) -> bool:
+    """Сторона `X | Y` в аннотации: имя, подписка или None-константа."""
+    return isinstance(node, (ast.Name, ast.Attribute, ast.Subscript, ast.Constant))
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

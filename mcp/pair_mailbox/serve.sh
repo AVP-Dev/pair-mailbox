@@ -69,11 +69,20 @@ fi
 here="$(cd -- "$(dirname -- "$0")" && pwd)"
 
 # Prefer python3 explicitly: some agents run with a minimal PATH that finds
-# `python` as Python 2, and this server needs 3.10+ for match-statement syntax.
+# `python` as Python 2, and this server needs 3.8 or newer.
 python="$(command -v python3 || true)"
 if [ -z "$python" ]; then
   echo "pair-mailbox: python3 not found on PATH" >&2
   exit 127
+fi
+# Проверка версии ДО запуска: без неё человек на старом Python получает
+# 200+ ошибок импорта вместо одной строки о версии. Именно так выглядела
+# установка на macOS, где системный python3 — 3.9, а аннотации вида `str | None`
+# требуют 3.10. Сообщение обязано называть, что делать, а не только что не так.
+if ! "$python" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 8) else 1)' 2>/dev/null; then
+  echo "pair-mailbox: нужен python3 3.8 или новее, а найден $("$python" -c 'import platform; print(platform.python_version())' 2>/dev/null || echo '?')" >&2
+  echo "pair-mailbox: поставь новее (brew install python) и проверь, какой python3 в PATH: command -v python3" >&2
+  exit 6
 fi
 
 exec "$python" "$here/server.py" --role "$role" --state "$state"

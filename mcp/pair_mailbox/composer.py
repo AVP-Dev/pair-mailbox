@@ -12,6 +12,8 @@
 
 Поэтому: снимок → проверка «свободен» → кусками → сверка хвоста → Enter или откат.
 """
+from __future__ import annotations
+
 import os
 import re
 import shutil
