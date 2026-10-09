@@ -578,6 +578,27 @@ class TestEvidenceGate(PairTestCase):
         for phase in ("plan", "implement", "verify"):
             self.writer.tool_pair_advance(phase)
 
+
+    def require_rolekeys(self):
+        """`rolekeys` или пропуск теста, если нет PyNaCl.
+
+        Подпись — ОПЦИОНАЛЬНАЯ функция, и сервер это уже провозглашает: он
+        импортирует rolekeys в try/except и fail-open-ит без ключа
+        (server.py:1850, 2367, 2492, 2722). Значит отсутствие PyNaCl — не поломка,
+        а законная конфигурация.
+
+        Раньше тесты импортировали rolekeys напрямую, и на macOS, где из
+        CommandLineTools нет ни одного pip-пакета, установка падала двумя
+        ошибками ModuleNotFoundError поверх десятков других. Подпись при этом
+        не проверялась нигде — она просто блокировала установку.
+        """
+        try:
+            import rolekeys
+        except ImportError as exc:
+            self.skipTest(f"PyNaCl нет ({exc.name}): подпись отключена, "
+                          f"сервер работает fail-open")
+        return rolekeys
+
     def test_done_is_refused_without_evidence(self) -> None:
         self.human_ok()
         error = self.assertRefused(self.writer.tool_pair_advance, "done",
@@ -717,7 +738,7 @@ class TestEvidenceGate(PairTestCase):
 
     def test_signed_evidence_carries_a_verifying_envelope(self) -> None:
         """Факт с ключом подписывается конвертом round:kind:task:value (3.1)."""
-        import rolekeys
+        rolekeys = self.require_rolekeys()
         rolekeys.generate(self.store.root, self.store.project_root, "writer-agent")
         self.record_test_evidence()
         items = [i for i in self.store.read()["evidence"] if i.get("round") == self.store.read()["round"]]
@@ -731,7 +752,7 @@ class TestEvidenceGate(PairTestCase):
 
     def test_tampered_evidence_blocks_the_close(self) -> None:
         """Подмена подписанного факта видна гейту: bad_signature, раунд не закрывается."""
-        import rolekeys
+        rolekeys = self.require_rolekeys()
         rolekeys.generate(self.store.root, self.store.project_root, "writer-agent")
         self.record_test_evidence()
         def tamper(state):
