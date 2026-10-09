@@ -176,7 +176,11 @@ while IFS=$'\t' read -r name layer required command serial extra || [ -n "${name
   # итог собирается после wait. Вывод сюиты не перемежается с чужой.
   printf '[verify] %s (%s)\n' "$name" "$layer"
   log="$PROJECT_ROOT/.pair/verify-$name.log"
-  ( bash -c "$command" >"$log" 2>&1; echo "$? $required $name" >>"$PROJECT_ROOT/.pair/verify-results.txt" ) &
+  # set +e внутри подшелла: он наследует errexit родителя, и падающая
+  # проверка убивала подшелл ДО записи результата — итог тогда либо
+  # молча обрывался на wait -n (jobs=1), либо сводился как «0 failures»
+  # (jobs>1): красная required-проверка выглядела зелёной.
+  ( set +e; bash -c "$command" >"$log" 2>&1; echo "$? $required $name" >>"$PROJECT_ROOT/.pair/verify-results.txt" ) &
   running=$((running + 1))
   if [ "$running" -ge "$JOBS" ]; then
     wait -n

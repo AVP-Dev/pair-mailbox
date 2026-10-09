@@ -60,6 +60,12 @@ scan_pattern() {
     while IFS= read -r match; do
       line_number="${match%%:*}"
       [ -n "$line_number" ] || continue
+      # Присваивание вызова функции — не секрет: url, password = service_endpoint()
+      # (16-символьный идентификатор попадал под паттерн значений).
+      content="${match#*:}"
+      if [[ "$content" =~ (password|passwd|secret|api[_-]?key|access[_-]?token|auth[_-]?token|private[_-]?key)[[:space:]]*[:=][[:space:]]*[\'\"]?[A-Za-z_][A-Za-z0-9_]*[[:space:]]*\( ]]; then
+        continue
+      fi
       report "$file" "$line_number" "$category"
     done <<<"$matches"
   fi
