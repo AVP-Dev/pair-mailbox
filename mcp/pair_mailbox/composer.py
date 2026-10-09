@@ -576,9 +576,12 @@ def composer_line(lines: list) -> str | None:
     значит отправить keystrokes в никуда. Вызывающий обязан считать None занятой.
     """
     # Геометрия opencode снизу вверх: строка пути/статуса, над ней нижняя
-    # граница поля ввода (угол `╹`/`▌`), над ней боковые рамки. Хвост после
-    # границы — обстановка, а не контент: пропускаем строки статуса и чистые
-    # рамки, пока не встретим границу. Всё остальное внизу — не поле ввода.
+    # граница поля ввода (угол `╹`/`▌`). pi-подобная рамка: контент МЕЖДУ
+    # двумя полными разделителями `───`, под ними — статус (cwd, токены).
+    # Первая содержательная строка ПОСЛЕ пропущенного разделителя — поле
+    # ввода (pi, живой capture 2026-10-10: набранный текст между двумя
+    # ─-рядами). Без этого признака pi считался занятым всегда.
+    seen_sep_below = False
     for line in reversed(lines):
         stripped = line.rstrip()
         if not stripped.strip():
@@ -587,11 +590,23 @@ def composer_line(lines: list) -> str | None:
         if text and text[0] in INPUT_BOX_CORNERS_LOWER:
             return line
         if looks_like_status_line(stripped):
+            is_sep = bool(re.fullmatch(rf"[{BOX_GLYPH}\s═─━]+", text))
+            if is_sep and seen_sep_below:
+                # Два разделителя подряд: между ними лежит ПУСТОЕ поле
+                # ввода (pi idle). Строки-контент нет — композер это
+                # верхний разделитель, который is_composer_empty читает
+                # как пустой (чистая рамка): доставка разрешается.
+                return line
+            if is_sep:
+                seen_sep_below = True
             continue
         if text and text[0] in INPUT_BOX_CORNERS and is_input_box_border(stripped):
             continue
         if text.startswith("~/") or text.startswith("/"):
             continue
+        if seen_sep_below:
+            # Содержательная строка между разделителями — pi-стиль.
+            return line
         break
 
     fallback = None

@@ -81,5 +81,51 @@ class TestRoundedCornerPrompt(unittest.TestCase):
         self.assertFalse(composer.is_composer_empty("╰─ hello"))
 
 
+class TestPiFramedInput(unittest.TestCase):
+    """Рамка ввода pi: контент между двумя полными `───` разделителями.
+
+    Пи не имеет маркера промпта: набранный текст лежит между двумя
+    горизонтальными рядами-разделителями, а ниже — cwd и строка токенов
+    (цена `$0.003` и цифры делают её статусной). До рамочного признака
+    scan отваливался: содержательная строка не совпадала ни с одним
+    возвращаемым кейсом → композер считался занятым всегда, delivery в
+    pi невозможна (находка agy, finding-pi-support.md; живой capture
+    gala:0.1 2026-10-10).
+    """
+
+    SEP = "─" * 73
+    TOKENS = "↑22k ↓2.8k R216k CH98.3% $0.003 2.1%/1.0M (auto) muse-spark"
+
+    def idle(self) -> list:
+        return ["верх вывода", self.SEP, self.SEP, "~/work/gala (main)", self.TOKENS]
+
+    def busy(self) -> list:
+        return ["верх вывода", self.SEP, "наработанный текст", self.SEP,
+                "~/work/gala (main)", self.TOKENS]
+
+    def test_idle_frame_reads_empty(self) -> None:
+        line = composer.composer_line(self.idle())
+        self.assertIsNotNone(line)
+        self.assertTrue(composer.is_composer_empty(line))
+
+    def test_busy_frame_reads_busy(self) -> None:
+        line = composer.composer_line(self.busy())
+        self.assertEqual("наработанный текст", line)
+        self.assertFalse(composer.is_composer_empty(line))
+
+    def test_opencode_geometry_unchanged(self) -> None:
+        panel = ["…", "  ┃  Ask anything…", "  ╹" + "▀" * 30,
+                 "  ~/work/umputum:master"]
+        self.assertEqual("  ╹" + "▀" * 30, composer.composer_line(panel))
+
+    def test_shell_footer_with_text_below_one_rule_is_not_composer(self) -> None:
+        """Одиночная черта вывода не делает следующую строку композером:
+        иначе текст над любой печатной линией отдадут под доставку."""
+        panel = ["output", "─" * 40, "script text", "user@host:~$ "]
+        self.assertNotEqual("script text", composer.composer_line(panel))
+
+
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
