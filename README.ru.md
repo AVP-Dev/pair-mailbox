@@ -138,6 +138,19 @@ pairup --install   # один раз: шим в ~/.local/bin
 cd ~/work/<проект> && pairup --task "починить обработку 502 ошибок и jitter ретраев"
 ```
 
+**Если `pairup: command not found`:** шим либо не установлен, либо `~/.local/bin`
+нет в PATH. Починить один раз:
+
+```bash
+./bin/pairup --install                      # изнутри клона pair-mailbox
+echo $PATH | tr ':' '\n' | grep .local/bin  # пусто на macOS по умолчанию
+```
+
+Если пусто — в `~/.zshrc` (macOS/zsh) или `~/.bashrc` (Linux/bash):
+`export PATH="$HOME/.local/bin:$PATH"`, затем `source ~/.zshrc`. После этого
+`pairup` работает из любого каталога. Первым делом можно и полным путём:
+`cd <клон pair-mailbox> && ./bin/pairup`.
+
 `pairup` находит `.pair` walk-up от cwd, поднимает сверхвизора если мёртв, пару — из стоящей расстановки. Пинится только писатель (`bin/pairctl roles --writer opencode --global`); критик — любой второй живой, CLI с кончившимися лимитами меняется через `pairup --swap <cli>` без бумажек — писатель и право не тронуты.
 
 Ручная форма (то же, что `pairup` делает за вас), две панели tmux в каталоге проекта:

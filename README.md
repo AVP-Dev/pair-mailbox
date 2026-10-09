@@ -138,6 +138,19 @@ pairup --install   # once: puts a shim into ~/.local/bin
 cd ~/work/<project> && pairup --task "fix 502 retry handling and backoff jitter"
 ```
 
+**If `pairup: command not found`:** the shim is either not installed or
+`~/.local/bin` is not on PATH. Fix once:
+
+```bash
+./bin/pairup --install                      # from inside the pair-mailbox clone
+echo $PATH | tr ':' '\n' | grep .local/bin  # empty on macOS by default
+```
+
+If it's empty, add to `~/.zshrc` (macOS/zsh) or `~/.bashrc` (Linux/bash):
+`export PATH="$HOME/.local/bin:$PATH"`, then `source ~/.zshrc`. From now on
+`pairup` runs from any directory. First time you may also just use the full
+path: `cd <pair-mailbox-clone> && ./bin/pairup`.
+
 `pairup` finds `.pair` by walking up from cwd, starts the supervisor if it is
 dead, and raises the writer + critic from the standing arrangement. Only the
 writer is pinned (`bin/pairctl roles --writer opencode --global`); the critic

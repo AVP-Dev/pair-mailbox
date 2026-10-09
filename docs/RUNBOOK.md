@@ -41,6 +41,39 @@ code; for the daily start use `pairup`.
 | `--task "..."` | record the task in the shared list before starting |
 | `--state <dir>` | explicit state dir (default: walk-up from cwd, else git root) |
 
+## Running pairup from anywhere
+
+`bin/pairup` is a repo script, not a global command. To make `pairup` work
+from any directory (Linux or macOS), install the shim once — the clone can
+live anywhere:
+
+```bash
+./bin/pairup --install        # symlink ~/.local/bin/pairup -> this clone's bin/pairup
+```
+
+**macOS note:** `~/.local/bin` is usually **not on PATH by default**. Check:
+
+```bash
+echo $PATH | tr ':' '\n' | grep .local/bin
+```
+
+If it prints nothing, add to `~/.zshrc` (zsh) or `~/.bashrc` (bash):
+
+```bash
+export PATH="$HOME/.local/bin:$PATH"
+```
+
+then `source ~/.zshrc` (or open a new terminal). After that `pairup` works from
+any directory. Linux behaves the same, but on most distros `~/.local/bin` is
+already on PATH.
+
+If the clone moves or you rebuild it, run `--install` again — the shim is just a
+symlink pointing at the clone's `bin/pairup`. Alternatively, without any install:
+
+```bash
+cd <pair-mailbox-repo> && ./bin/pairup      # full path, no shim needed
+```
+
 ## The standing pair
 
 By default `pairup`/`finish.sh` read the standing arrangement and start
