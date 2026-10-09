@@ -412,7 +412,8 @@ critic answered with a verdict, and nothing in between was ever discussed
 ### 9a-1. Two plans, one meeting (the "miting" rule)
 
 The plan is not announced, it is BUILT. For any task that changes user-facing
-behavior, touches more than one file, or could break a dependency:
+behavior, touches more than one file, could break a dependency, or changes a
+contract other code calls into — a tool, a fixture, a state file format:
 
 1. **Both agents draft independently.** Each writes its own plan into a
    `pair_note(kind="plan")` BEFORE reading the other's. One agent's plan
@@ -421,7 +422,10 @@ behavior, touches more than one file, or could break a dependency:
    other's and sends its objections with `file:line` (§9: an objection
    without an anchor is noise).
 3. **One agreed plan wins.** The final plan names: the chosen approach and
-   why, alternatives rejected and why, and edge cases the pair found.
+   why, alternatives rejected and why, edge cases the pair found — and
+   LINKS the paths of both draft notes; otherwise "two independent plans"
+   is an unverifiable claim, which is exactly what this round treated as
+   a defect.
 4. **Unknown technology — context7 or web search first.** Before choosing
    an approach that touches a library or API either agent hasn't verified
    against current docs, both agents check the docs via `context7` or
@@ -435,8 +439,9 @@ behavior, touches more than one file, or could break a dependency:
    to show, error-state text, and confirm/cancel wording — written down
    before code, not polished after.
 7. **Timebox, not deadlock.** Two exchanges on the plan (each side one
-   iteration); disagreement after that is resolved by the writer with a
-   recorded `decision` note. There is no infinite miting.
+   iteration — exactly the server's MAX_OPEN_REVIEWS=2); disagreement
+   after that is resolved by the writer with a recorded `decision`
+   note. There is no infinite miting.
 
 In `audit` this section does not apply — there are no commits to plan. In
 `fix` the "miting" is a discipline for user-facing work and for cross-file
