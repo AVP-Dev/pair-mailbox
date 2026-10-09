@@ -79,10 +79,14 @@ def recheck_peers(
             # Живой процесс перерегистрируется сам. Лечить чужую живую
             # запись — значит отбирать панель у работающего агента.
             continue
+        # Ghost-запись: pane уже снят, а UID/session_id остались. Они вечно
+        # триггерят pane_uid_collision при каждом регистре живой роли на
+        # доказанной панели — вечно горящее предупреждение = отсутствие
+        # предупреждения. Теперь чистятся вместе с pane во всех трёх ветках.
         try:
             if not pane_exists(pane):
-                info.pop("pane", None)
-                info.pop("pane_pin_why", None)
+                for field in ("pane", "pane_pin_why", "pane_uid", "pane_session_id"):
+                    info.pop(field, None)
                 events.append({"kind": "pane_stale_dropped", "role": self_role,
                                "other_role": name, "pane": pane,
                                "why": "панель отсутствует в tmux, процесс мёртв"})
@@ -95,14 +99,14 @@ def recheck_peers(
         except Exception:
             continue
         if not ours:
-            info.pop("pane", None)
-            info.pop("pane_pin_why", None)
+            for field in ("pane", "pane_pin_why", "pane_uid", "pane_session_id"):
+                info.pop(field, None)
             events.append({"kind": "pane_foreign_dropped", "role": self_role,
                            "other_role": name, "pane": pane, "why": why_not})
             continue
         if any(same_pane(held, pane) for held in living_panes if held):
-            info.pop("pane", None)
-            info.pop("pane_pin_why", None)
+            for field in ("pane", "pane_pin_why", "pane_uid", "pane_session_id"):
+                info.pop(field, None)
             events.append({"kind": "pane_stale_dropped", "role": self_role,
                            "other_role": name, "pane": pane,
                            "why": "панель занята другой живой ролью"})
