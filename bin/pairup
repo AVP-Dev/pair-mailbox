@@ -163,35 +163,43 @@ if [ -z "$SWAP" ]; then
     SWAP="$critic"
   fi
 fi
-# --- 1b. Сирота-лока (диагноз 2026-10-10, note/finding; упрощение agy, seq 730
-# в pair_message): opencode без --standalone гоняет MCP через фоновый
-# `opencode serve --service`, и сервер роли переживает свою панель: flock
-# держит сирота, любая новая панель той же роли в этом проекте падает
-# ProtocolError «роль уже занята». Лечим: проверяем родителя держателя напрямую
-# (pgrep -f со своим паттерном ловит саму обёртку — измерено), O(1).
-_critic_pid="$(python3 -c 'import json,sys; s=json.load(open(sys.argv[1])); i=(s.get("roles") or {}).get(sys.argv[2]) or {}; print(i.get("pid") or 0)' "$STATE_DIR/state.json" "$SWAP" 2>/dev/null || true)"
-if [ -n "$_critic_pid" ] && [ "$_critic_pid" != "0" ] && kill -0 "$_critic_pid" 2>/dev/null; then
-  _holder_parent="$(ps -o ppid= -p "$_critic_pid" 2>/dev/null | tr -d ' ')"
-  _parent_cmd="$(ps -o args= -p "$_holder_parent" 2>/dev/null || true)"
-  case "$_parent_cmd" in
-    *opencode*serve*--service*)
-      # Панель роли может лежать в state голым %N/provisional (agy, seq 730):
-      # has-session по имени сессии («mail») вернёт 0 даже без живой панели,
-      # поэтому адрес проверяем именно у панели — tmux display-message -t.
-      _pane_addr="$(python3 -c 'import json,sys; s=json.load(open(sys.argv[1])); print(((s.get("roles") or {}).get(sys.argv[2]) or {}).get("pane") or "")' "$STATE_DIR/state.json" "$SWAP" 2>/dev/null || true)"
-      if [ -z "$_pane_addr" ] || \
-         ! tmux display-message -p -t "$_pane_addr" '#{pane_id}' >/dev/null 2>&1; then
-        echo "pairup: роль $SWAP держит сироту-сервер общего сервиса opencode (pid $_critic_pid) — освобождаю слот"
-        kill "$_critic_pid" 2>/dev/null || true
-        for _ in 1 2 3 4 5 6 7 8 9 10; do
-          kill -0 "$_critic_pid" 2>/dev/null || break
-          sleep 0.5
-        done
-        kill -9 "$_critic_pid" 2>/dev/null || true
-      fi
-      ;;
+# --- 1b. Сирота-лока (диагноз 2026-10-10, упрощение agy seq 730): opencode без
+# --standalone гоняет MCP через фоновый `opencode serve --service`, и сервер
+# роли переживает свою панель: flock держит сирота, любая новая панель той же
+# роли в этом проекте падает ProtocolError «роль уже занята». Проверяем ОБЕ
+# роли раунда — и писателя, и критика (находка раунда 50: cure у критика не
+# трогал сироту-писателя opencode в galatour, pairup висел). Родителя держателя
+# проверяем напрямую (pgrep -f со своим паттерном ловит саму обёртку).
+_pair_cure_role() {
+  local _role="$1" _pid _ppid _pcmd _pane
+  _pid="$(python3 -c 'import json,sys; s=json.load(open(sys.argv[1])); print(((s.get("roles") or {}).get(sys.argv[2]) or {}).get("pid") or 0)' "$STATE_DIR/state.json" "$_role" 2>/dev/null || true)"
+  [ -n "$_pid" ] && [ "$_pid" != "0" ] && kill -0 "$_pid" 2>/dev/null || return 0
+  _ppid="$(ps -o ppid= -p "$_pid" 2>/dev/null | tr -d ' ')"
+  _pcmd="$(ps -o args= -p "$_ppid" 2>/dev/null || true)"
+  case "$_pcmd" in
+    *opencode*serve*--service*) ;;
+    *) return 0 ;;
   esac
-fi
+  # Панель роли может лежать в state голым %N/provisional (agy, seq 730):
+  # has-session по имени сессии вернул бы 0 даже без живой панели — адрес
+  # проверяем именно у панели: tmux display-message -t.
+  _pane="$(python3 -c 'import json,sys; s=json.load(open(sys.argv[1])); print(((s.get("roles") or {}).get(sys.argv[2]) or {}).get("pane") or "")' "$STATE_DIR/state.json" "$_role" 2>/dev/null || true)"
+  if [ -z "$_pane" ] || \
+     ! tmux display-message -p -t "$_pane" '#{pane_id}' >/dev/null 2>&1; then
+    echo "pairup: роль $_role держит сироту-сервер общего сервиса opencode (pid $_pid) — освобождаю слот"
+    kill "$_pid" 2>/dev/null || true
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+      kill -0 "$_pid" 2>/dev/null || break
+      sleep 0.5
+    done
+    kill -9 "$_pid" 2>/dev/null || true
+  fi
+}
+# Порядок: после резолва обеих ролей (145-165), до пилота — иначе сирота
+# опрокидывает spawn писателя, а pairup уже открутил фоновый пилот.
+_pair_cure_role "$writer"
+[ -n "$SWAP" ] && [ "$SWAP" != "$writer" ] && _pair_cure_role "$SWAP"
+
 # --- 2. сверхвизор, если мёртв. Живого не трогаем: второй пилот на тот же state
 # гонял бы тики параллельно и двоил бы пробуждения (замечание agy seq 475).
 pilot_alive=0
