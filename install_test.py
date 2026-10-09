@@ -68,6 +68,42 @@ def _roles_claiming(raw: str | None, pane: str) -> set[str]:
             if isinstance(info, dict) and info.get("pane") == pane}
 
 
+def _dead_roles(raw: str | None) -> set[str]:
+    """Роли без живого процесса: такие не появляются и не исчезают сами.
+
+    Пара пишет в живое состояние прямо во время установки — свои last_seen,
+    свои регистрации, — поэтому «роль появилась» само по себе ничего не
+    доказывает: это мог быть собственный агент набора. Доказывает обратное:
+    роль, чей pid мёртв, не могла появиться или исчезнуть ничьей рукой, кроме
+    установщика. Именно эту регрессию (verify писал в настоящий state.json,
+    найдено вживую в round 31) сравнение по мёртвым ролям и ловит, а живая
+    саморегистрация её не роняет.
+    """
+    if not raw:
+        return set()
+    try:
+        roles = json.loads(raw).get("roles") or {}
+    except (ValueError, AttributeError):
+        return set()
+    out = set()
+    for name, info in roles.items():
+        pid = (info or {}).get("pid") if isinstance(info, dict) else None
+        alive = False
+        if isinstance(pid, int) and pid > 0:
+            try:
+                os.kill(pid, 0)
+                alive = True
+            except ProcessLookupError:
+                alive = False
+            except PermissionError:
+                alive = True  # чужой процесс: проверить нечем, считается живым
+            except OSError:
+                alive = False
+        if not alive:
+            out.add(name)
+    return out
+
+
 class InstallCase(unittest.TestCase):
     def setUp(self) -> None:
         self.home = Path(tempfile.mkdtemp(prefix="pair-install-"))
@@ -288,11 +324,15 @@ class TestVerifyDoesNotTouchTheRoster(InstallCase):
                 _roles_claiming(before, pane), _roles_claiming(after, pane),
                 "панель запускающего процесса не должна перейти к другой "
                 "роли: установщик добавил или отнял её в живом ростере")
+            # Не «opencode» в белый список: сравнение идёт по роли, которую
+            # никто живой не держит. Живая роль появляется сама (её агент
+            # пишет в состояние во время установки — пара-набор жива), мёртвая
+            # не появляется ничьей рукой, кроме установщика.
             self.assertEqual(
-                json.loads(before).get("roles", {}).keys() |
-                {"opencode"},
-                json.loads(after).get("roles", {}).keys() | {"opencode"},
-                "установщик не должен добавлять и убирать роли живого ростера")
+                _dead_roles(before), _dead_roles(after),
+                "установщик не должен добавлять и убирать роли живого ростера: "
+                "мёртвая роль появляется или исчезает только его рукой "
+                "(verify, писавший в настоящий state.json, — регрессия 31-го)")
         return
 
     def test_a_pane_may_belong_to_a_role_without_being_rejected(self) -> None:
