@@ -409,6 +409,39 @@ Why: rounds used to skip the middle — the writer wrote code at once, the
 critic answered with a verdict, and nothing in between was ever discussed
 (rounds with empty-subject pings instead of a plan, October 2026).
 
+### 9a-1. Two plans, one meeting (the "miting" rule)
+
+The plan is not announced, it is BUILT. For any task that changes user-facing
+behavior, touches more than one file, or could break a dependency:
+
+1. **Both agents draft independently.** Each writes its own plan into a
+   `pair_note(kind="plan")` BEFORE reading the other's. One agent's plan
+   never seeds the other.
+2. **Exchange, then critique.** After both plans exist, each reads the
+   other's and sends its objections with `file:line` (§9: an objection
+   without an anchor is noise).
+3. **One agreed plan wins.** The final plan names: the chosen approach and
+   why, alternatives rejected and why, and edge cases the pair found.
+4. **Unknown technology — context7 or web search first.** Before choosing
+   an approach that touches a library or API either agent hasn't verified
+   against current docs, both agents check the docs via `context7` or
+   web search. Guessing API shape from memory is refused by convention.
+5. **Impact check before code.** The agreed plan lists: what can break,
+   which callers/importers are affected (monorepo cross-links), whether
+   rollback is safe (revert single commit), and which tests prove the
+   boundary didn't regress.
+6. **For user-facing features: an experience checklist.** What a user
+   sees on open/close, what updates, what renders if there is nothing
+   to show, error-state text, and confirm/cancel wording — written down
+   before code, not polished after.
+7. **Timebox, not deadlock.** Two exchanges on the plan (each side one
+   iteration); disagreement after that is resolved by the writer with a
+   recorded `decision` note. There is no infinite miting.
+
+In `audit` this section does not apply — there are no commits to plan. In
+`fix` the "miting" is a discipline for user-facing work and for cross-file
+edits; a one-line doc typo does not need a meeting.
+
 ## 10. Git is part of the work
 
 A branch per task, a commit after every green step, tests green as a precondition,
