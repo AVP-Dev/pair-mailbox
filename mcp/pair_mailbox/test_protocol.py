@@ -3493,22 +3493,41 @@ class TestRingAndUnblock(PairTestCase):
         self.store.mutate(lambda s: s.setdefault("roles", {})
                           .setdefault("reviewer-agent", {}).update({"pane": "%45"}))
         os.environ.pop("PAIR_DISABLE_RING", None)
+        import server as server_mod
         orig_line = composer.composer_line
-        orig_which = composer.shutil.which
         orig_foreign = composer.pane_is_foreign
+        orig_run = server_mod.subprocess.run
         composer.composer_line = lambda lines: None
-        composer.shutil.which = lambda name: "/usr/bin/tmux"
         # Панели %45 не существует, и проверка идентичности отвергла бы её раньше,
         # чем дойдёт до композера. Тест про невидимый композер, поэтому
         # принадлежность панели объявляется заранее, а не подменяется пустым
         # результатом: иначе он проверял бы уже другую ветку.
         self.allow_panes()
+        # Подменяются ИСПОЛНЕНИЕ и путь, а не «настоящий tmux». Раньше здесь стояло
+        # `composer.shutil.which = lambda: "/usr/bin/tmux"`, но `composer.shutil` —
+        # это сам модуль shutil на весь процесс, и подмена била ещё и по
+        # server.py:2075, где ищется tmux для настоящего subprocess.run.
+        # Тест про ВИДИМОСТЬ композера, а не про то, где лежит tmux: на macOS
+        # Homebrew кладёт его в /opt/homebrew/bin, и тест падал FileNotFoundError,
+        # оставаясь зелёным только на машине, где tmux лежит в /usr/bin.
+        #
+        # `which` отдаёт путь, который гарантированно есть (/usr/bin/false):
+        # иначе тест всё ещё требовал бы tmux в PATH, и на машине без него
+        # отвечал бы «tmux не найден в PATH», то есть проверял бы не композер.
+        orig_which = server_mod.shutil.which
+        server_mod.shutil.which = lambda name: "/usr/bin/false"
+        def fake_run(cmd, *args, **kwargs):
+            # Панель %45 не существует: отвечаем «жива», чтобы _ring дошёл
+            # до композера — его видимость и есть предмет теста.
+            return subprocess.CompletedProcess(cmd, 0, stdout="0\n", stderr="")
+        server_mod.subprocess.run = fake_run
         try:
             result = self.writer._ring("reviewer-agent", "заметка", "детали")
         finally:
             composer.composer_line = orig_line
-            composer.shutil.which = orig_which
             composer.pane_is_foreign = orig_foreign
+            server_mod.subprocess.run = orig_run
+            server_mod.shutil.which = orig_which
         self.assertFalse(result["rung"], "в невидимый композер не лезем")
         self.assertIn("не виден", result["why"])
 
