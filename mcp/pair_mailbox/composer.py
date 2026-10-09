@@ -590,12 +590,12 @@ def composer_line(lines: list) -> str | None:
         if text and text[0] in INPUT_BOX_CORNERS_LOWER:
             return line
         if looks_like_status_line(stripped):
-            is_sep = bool(re.fullmatch(rf"[{BOX_GLYPH}\s═─━]+", text))
+            is_sep = bool(re.fullmatch(r"[\u2500\u2550\u2501\s]+", text))
             if is_sep and seen_sep_below:
-                # Два разделителя подряд: между ними лежит ПУСТОЕ поле
-                # ввода (pi idle). Строки-контент нет — композер это
-                # верхний разделитель, который is_composer_empty читает
-                # как пустой (чистая рамка): доставка разрешается.
+                # Два ГОРИЗОНТАЛЬНЫХ ряда подряд (─ ═ ━, без боковых
+                # '┃'): между ними лежит ПУСТОЕ поле ввода (pi idle).
+                # Боковые рамки opencode (' ┃') не разделители — на них
+                # признак не срабатывает (test_protocol 1354, regression).
                 return line
             if is_sep:
                 seen_sep_below = True
