@@ -12,6 +12,7 @@ it was sealed, a glob where an exact path belongs.
 from __future__ import annotations
 
 import contextlib
+import ast
 import io
 import json
 import os
@@ -577,6 +578,27 @@ class TestEvidenceGate(PairTestCase):
         for phase in ("plan", "implement", "verify"):
             self.writer.tool_pair_advance(phase)
 
+
+    def require_rolekeys(self):
+        """`rolekeys` или пропуск теста, если нет PyNaCl.
+
+        Подпись — ОПЦИОНАЛЬНАЯ функция, и сервер это уже провозглашает: он
+        импортирует rolekeys в try/except и fail-open-ит без ключа
+        (server.py:1850, 2367, 2492, 2722). Значит отсутствие PyNaCl — не поломка,
+        а законная конфигурация.
+
+        Раньше тесты импортировали rolekeys напрямую, и на macOS, где из
+        CommandLineTools нет ни одного pip-пакета, установка падала двумя
+        ошибками ModuleNotFoundError поверх десятков других. Подпись при этом
+        не проверялась нигде — она просто блокировала установку.
+        """
+        try:
+            import rolekeys
+        except ImportError as exc:
+            self.skipTest(f"PyNaCl нет ({exc.name}): подпись отключена, "
+                          f"сервер работает fail-open")
+        return rolekeys
+
     def test_done_is_refused_without_evidence(self) -> None:
         self.human_ok()
         error = self.assertRefused(self.writer.tool_pair_advance, "done",
@@ -716,7 +738,7 @@ class TestEvidenceGate(PairTestCase):
 
     def test_signed_evidence_carries_a_verifying_envelope(self) -> None:
         """Факт с ключом подписывается конвертом round:kind:task:value (3.1)."""
-        import rolekeys
+        rolekeys = self.require_rolekeys()
         rolekeys.generate(self.store.root, self.store.project_root, "writer-agent")
         self.record_test_evidence()
         items = [i for i in self.store.read()["evidence"] if i.get("round") == self.store.read()["round"]]
@@ -730,7 +752,7 @@ class TestEvidenceGate(PairTestCase):
 
     def test_tampered_evidence_blocks_the_close(self) -> None:
         """Подмена подписанного факта видна гейту: bad_signature, раунд не закрывается."""
-        import rolekeys
+        rolekeys = self.require_rolekeys()
         rolekeys.generate(self.store.root, self.store.project_root, "writer-agent")
         self.record_test_evidence()
         def tamper(state):
@@ -1425,11 +1447,14 @@ class TestNoteTailReads(PairTestCase):
         self._seed("verdict", entries=400)
         res = self.writer.tool_pair_note_read(kind="verdict", tail_lines=10 ** 6)
         self.assertLessEqual(res["returned_lines"], NOTE_READ_MAX + 3)
+        by_limit = self.writer.tool_pair_note_read(kind="verdict", limit=10 ** 6)
+        self.assertEqual(by_limit["text"], res["text"])
 
     def test_bad_arguments_are_refused(self) -> None:
         self._seed("verdict", entries=2)
         self.assertRefused(lambda: self.writer.tool_pair_note_read(kind="../escape"))
         self.assertRefused(lambda: self.writer.tool_pair_note_read(kind="verdict", tail_lines=0))
+        self.assertRefused(lambda: self.writer.tool_pair_note_read(kind="verdict", limit=0))
         self.assertRefused(lambda: self.writer.tool_pair_note_read(kind="нет-такой"))
 
 class TestNoteRotation(PairTestCase):
@@ -4149,6 +4174,69 @@ class TestComposerOfAnOpencodePane(PairTestCase):
         import re
         from composer import BOX_GLYPH
         self.assertTrue(re.fullmatch(rf"[{BOX_GLYPH}]+", "\u2580\u2580\u2580"))
+
+
+class TestOldPythonStillRuns(PairTestCase):
+    """Код обязан импортироваться на том Python, который стоит у человека.
+
+    Установка на macOS рушилась 210 тестами с одной причины: системный python3
+    там 3.9, а аннотации вида `str | None` вычисляются при импорте и требуют
+    3.10. Тест ловит это на любой машине: он спрашивает не «какая тут версия»,
+    а «импортируется ли каждый модуль на МИНИМАЛЬНОЙ заявленной версии».
+    """
+
+    FLOOR = (3, 8)
+    ROOT = Path(__file__).resolve().parents[2]
+
+    def modules(self):
+        """Модули поставки: сервер, композер и всё, что он импортирует лениво."""
+        pkg = Path(__file__).resolve().parent
+        skip = {"test_protocol", "pair_test_base"}
+        return sorted(p for p in pkg.glob("*.py")
+                      if p.stem not in skip and not p.name.startswith("test_"))
+
+    def test_every_module_imports_on_the_declared_floor(self) -> None:
+        if sys.version_info >= self.FLOOR:
+            self.skipTest(f"и так на {sys.version_info.major}.{sys.version_info.minor}, "
+                          f"проверять нечего")
+        for path in self.modules():
+            with self.subTest(module=path.name):
+                proc = subprocess.run(
+                    [sys.executable, "-c", f"import {path.stem}"],
+                    cwd=str(path.parent), capture_output=True, text=True, timeout=30)
+                self.assertEqual(0, proc.returncode,
+                                 f"{path.name} не импортируется на минимуме:\n{proc.stderr}")
+
+    def test_no_module_pep604_annotations_without_the_future_import(self) -> None:
+        """`X | None` в аннотациях — 3.10+. Без `from __future__ import
+        annotations` аннотация вычисляется при импорте и роняет модуль."""
+        for path in self.modules():
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            future = any(isinstance(n, ast.ImportFrom) and n.module == "__future__"
+                         and any(a.name == "annotations" for a in n.names)
+                         for n in tree.body)
+            if future:
+                continue
+            for node in ast.walk(tree):
+                ann = None
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    ann = node.returns
+                if isinstance(node, ast.arg):
+                    ann = node.annotation
+                if isinstance(node, ast.AnnAssign):
+                    ann = node.annotation
+                if ann is None:
+                    continue
+                if any(isinstance(n, ast.BinOp) and isinstance(n.op, ast.BitOr)
+                       and _is_type(n.left) and _is_type(n.right)
+                       for n in ast.walk(ann)):
+                    self.fail(f"{path.name}:{node.lineno} — аннотация с `|` "
+                              f"без `from __future__ import annotations`")
+
+
+def _is_type(node) -> bool:
+    """Сторона `X | Y` в аннотации: имя, подписка или None-константа."""
+    return isinstance(node, (ast.Name, ast.Attribute, ast.Subscript, ast.Constant))
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

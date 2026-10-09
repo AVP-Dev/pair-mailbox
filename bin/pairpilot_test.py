@@ -6,6 +6,8 @@
 
 Запуск:  python3 bin/pairpilot_test.py
 """
+from __future__ import annotations
+
 import importlib.util
 import json
 import os
@@ -880,6 +882,12 @@ class TestTmuxPaths(PilotCase):
         pilot.tick()
         self.assertEqual(1, self.transcript_kinds().count("pilot_pane_dead"),
                          "о мёртвой панели говорим один раз, а не каждые 15 секунд")
+
+    def test_role_without_wake_adapter_is_named_not_silent(self) -> None:
+        """Нет адаптера — запись в журнал, а не молчание (pi молчал 3 часа)."""
+        self.write_state(roles={"pi": {"last_seen": ago(10), "pane": "%9"}})
+        self.fake_tmux().mark_wake(self.pilot().store.read(), "pi", "сообщение", "текст")
+        self.assertIn("pilot_wake_no_adapter", self.transcript_kinds())
 
     def test_permission_prompt_is_confirmed_and_logged(self) -> None:
         self.write_state(roles={"agy": {"last_seen": ago(10), "pane": "%9"}})

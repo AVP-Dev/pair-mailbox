@@ -7,7 +7,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/AVP-Dev/pair-mailbox"><img src="https://img.shields.io/badge/Python-3.10+-3776AB?style=for-the-badge&logo=python&logoColor=white" alt="Python 3.10+" /></a>
+  <a href="https://github.com/AVP-Dev/pair-mailbox"><img src="https://img.shields.io/badge/Python-3.8+-3776AB?style=for-the-badge&logo=python&logoColor=white" alt="Python 3.8+" /></a>
   <a href="https://modelcontextprotocol.io/"><img src="https://img.shields.io/badge/MCP-Model_Context_Protocol-8A2BE2?style=for-the-badge" alt="MCP Protocol" /></a>
   <img src="https://img.shields.io/badge/Dependencies-Zero_External-10B981?style=for-the-badge" alt="Zero Dependencies" />
   <img src="https://img.shields.io/badge/Architecture-Single_Writer_Invariant-FF8C00?style=for-the-badge" alt="Single Writer Invariant" />
@@ -37,7 +37,7 @@ An AI agent working alone is susceptible to its own assumptions: it gladly accep
 3. **The Mailbox Is the Guarantee, Delivery Is the Accelerator**: **A turn ends with a bounded `pair_read`** — `pair_read(wait_seconds=N)`. Nothing in any MCP implementation can inject a turn into another agent's client: MCP is client-driven, the server answers requests and cannot push the host. So the only universal wake-up is the agent reading its own mailbox, and an agent that ends its turn this way is never idle with unread mail — it is either reading or it already has the message. The body always lands in the mailbox; `pair_deliver` types only a short pointer into the peer's pane and presses Enter, which is faster where the composer is visible, but a full-screen TUI hides it, so delivery is best-effort and the mailbox always works. The human user never acts as an RFC 1149 messenger copying text between windows.
 4. **Autonomous CLI Permission Unblocking (`pair_unblock`)**: Interactive prompts like `[y/N]` or `Allow command execution?` inside tmux are automatically detected and approved by the peer or background watchdog (`pairwatch --unblock`), eliminating unattended stalls.
 5. **Atomic, Crash-Resilient State & File Locking**: Monotonic numbering (`000001-<UTC-stamp>-<role>-<token>.json`, numeric prefix sorts chronologically), atomic file writes (`replace`), and advisory `fcntl.flock` locks preventing race conditions between concurrent CLI processes. Full append-only audit trail logging every message, claim, phase change, and rejection.
-6. **Zero Dependencies**: Pure Python 3 standard library. Runs on Linux and POSIX systems with `tmux` and `python3` (10+) with zero pip packages to install.
+6. **Zero Dependencies**: Pure Python 3 standard library. Runs on Linux and POSIX systems with `tmux` and `python3` (8+) with zero pip packages to install.
 
 ---
 
@@ -127,7 +127,7 @@ cd pair-mailbox
 | `pi` | Pi Coding Agent | `~/.pi/agent/mcp.json` | `~/.pi/agent/AGENTS.md` |
 | `omp` | OMP Coding Agent | `~/.omp/agent/mcp.json` | `~/.omp/agent/AGENTS.md` |
 
-*`bin/pair-duo` supports all six profiles (`opencode`, `agy`, `codex`, `claude`, `pi`, `omp`). To add any custom CLI: append an entry to `cli-profiles.json` and run `./install.sh <name>`.*
+*`pairup --swap` supports all six profiles (`opencode`, `agy`, `codex`, `claude`, `pi`, `omp`). To add any custom CLI: append an entry to `cli-profiles.json` and run `./install.sh <name>`.*
 
 ### 3. Launching a Pair Session
 
@@ -195,8 +195,8 @@ bin/pairpilot --once      # One supervisor pass, to see what it would do right n
 bin/pairpilot --launch agy=agy   # How to restart a role whose process died
 bin/pairwatch --unblock    # Background daemon to detect stalls and auto-approve [y/n] prompts
 bin/pairdoctor             # Health check and environment diagnostic utility
-bin/pair-duo opencode "task"   # Launch same-CLI dual session (writer/critic split in tmux)
-bin/pair-duo --worktree claude # Launch with isolated git worktree for the critic
+pairup --swap agy            # Replace the critic pane with another CLI, writer untouched
+bin/pair-duo --swap-critic agy --state <dir> --project <dir>  # Same, directly
 ```
 
 ### 🧭 How far the pair runs without you
@@ -221,14 +221,13 @@ The level is chosen when the pair starts and not renegotiated mid-round, so you 
 asked **at most once** — and in `auto`, not at all.
 
 ```bash
-bin/pair-duo --semi opencode "task"   # or --auto, --observe
+pairup --task "autonomy: semi fix the thing"   # or pairctl autonomy semi
 ```
 
 With no flag, the launcher resolves in this order, strongest first:
 
 | Source | What it looks like |
 |---|---|
-| `flag` | `bin/pair-duo --semi` |
 | `task` | `autonomy: semi` on the **first line** of the task |
 | `file` | `.pair/autonomy`, one word |
 | `default` | `auto` |

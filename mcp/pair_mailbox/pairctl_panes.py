@@ -181,8 +181,61 @@ def cmd_pane(store: Store, args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_panes(store: Store, args: argparse.Namespace) -> int:
+    # Живые панели tmux -> проект (cwd) -> роль из ростера -> живость pid.
+    # Только чтение: состояние не трогает, в журнал не пишет. Ответ на вопрос
+    # «какая панель чья», который раньше требовал ps + tmux + state.json.
+    import subprocess
+    tmux = shutil.which("tmux")
+    if not tmux:
+        print("tmux недоступен, панели не прочитать")
+        return 1
+    try:
+        out = subprocess.run(
+            [tmux, "list-panes", "-a", "-F",
+             "#{pane_id}\t#{session_name}:#{window_index}.#{pane_index}\t#{pane_current_path}\t#{pane_current_command}\t#{pane_pid}\t#{pane_title}"],
+            capture_output=True, text=True, timeout=10)
+    except Exception as exc:  # noqa: BLE001 - tmux упал, сказать а не врать
+        print(f"tmux не ответил: {exc}")
+        return 1
+    if out.returncode != 0:
+        print(f"tmux отказал: {(out.stderr or '').strip()[:120]}")
+        return 1
+    state = store.read()
+    roles_now = state.get("roles") or {}
+    # Панель -> роли этого проекта, что на неё записаны.
+    by_pane: dict[str, list[str]] = {}
+    for role, info in roles_now.items():
+        pane = info.get("pane")
+        if pane:
+            by_pane.setdefault(str(pane), []).append(role)
+    lines = out.stdout.splitlines()
+    if not lines:
+        print("живых панелей нет")
+        return 0
+    print(f"{'панель':14} {'чей':7} {'проект (cwd)':36} {'роль':12} {'процесс'}")
+    for line in lines:
+        parts = line.split("\t")
+        if len(parts) < 5:
+            continue
+        uid, addr, cwd, cmd, pid = parts[0], parts[1], parts[2], parts[3], parts[4]
+        title = parts[5] if len(parts) > 5 else ""
+        ours = ""
+        try:
+            ours = "НАШ" if Path(cwd).resolve() == store.project_root.resolve() \
+                or store.project_root.resolve() in Path(cwd).resolve().parents else "чужой"
+        except OSError:
+            ours = "?"
+        claim = ",".join(sorted(by_pane.get(uid, []) + by_pane.get(addr, []))) or "—"
+        if title and title not in ("", cmd):
+            claim += f" [{title}]"
+        alive = "жив" if pid.strip().isdigit() and is_pid_alive(int(pid.strip())) else "?"
+        print(f"{addr:14} {ours:7} {cwd[-34:]:36} {claim:12} {alive} {cmd}")
+    print(f"\n{len(lines)} панелей; проект: {store.project_root} (НАШ — этот проект)")
+    return 0
+
+
 def cmd_roster(store: Store, args: argparse.Namespace) -> int:
-    # Что записан в ростере, кто из этого ещё существует.
     #
     # `roster` без флагов только показывает. `--prune` удаляет, и удаляет по
     # двум независимым фактам сразу: процесс мёртв И панели больше нет. Одного

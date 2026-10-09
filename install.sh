@@ -418,6 +418,14 @@ def verify(argv):
 
 
 def main():
+
+    # Версия Python проверяется ДО установки, а не пачкой тестов в конце.
+    # Установка на macOS давала 210 ошибок импорта, и ни одна из них не
+    # говорила, что системный python3 там 3.9, а код написан под 3.8+.
+    if sys.version_info < (3, 8):
+        print("нужен python3 3.8 или новее, а запущен " + sys.version.split()[0])
+        print("поставь новее и повтори: brew install python   (проверь: python3 -V)")
+        return 1
     args = [a for a in sys.argv[1:] if not a.startswith("-")]
     if "--list" in sys.argv:
         for k, v in PROFILES.items():

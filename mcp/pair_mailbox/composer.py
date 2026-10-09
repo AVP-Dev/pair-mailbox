@@ -12,6 +12,8 @@
 
 Поэтому: снимок → проверка «свободен» → кусками → сверка хвоста → Enter или откат.
 """
+from __future__ import annotations
+
 import os
 import re
 import shutil
@@ -49,7 +51,7 @@ INPUT_BOX_CORNERS = "\u2579\u257a\u2578\u2576\u257b\u2502\u2503\u2551\u2552"
 
 # Что считаем приглашением ввести текст. Универсально: последняя строка, где
 # после маркера пусто или почти пусто.
-PROMPT_MARKERS = (">", "\u203a", "$", "#", "::", "ask>")
+PROMPT_MARKERS = (">", "\u203a", "$", "#", "::", "ask>", "╰─")
 
 
 def looks_like_status_line(line: str) -> bool:
@@ -64,7 +66,7 @@ def looks_like_status_line(line: str) -> bool:
     text = line.strip()
     if not text:
         return True
-    if text[0] in INPUT_BOX_CORNERS_LOWER:
+    if text[0] in INPUT_BOX_CORNERS_LOWER or text.startswith("╰─"):
         return False
     if re.fullmatch(r"[\u2500-\u259f\s═─━╹▀_-]+", text):
         return True

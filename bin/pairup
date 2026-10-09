@@ -27,9 +27,14 @@ STATE_DIR=""
 if [ -n "${PAIR_STATE:-}" ]; then
   STATE_DIR="$PAIR_STATE"
 else
+  # Граница — git-top, а не корень ФС: иначе из galatour цепляется чужой
+  # ~/work/.pair (каталог проектов — не проект), и пара работает не в том
+  # состоянии. Тот же предел, что в serve.sh и walk_up_to_state.
+  _top="$(git rev-parse --show-toplevel 2>/dev/null || true)"
   dir="$(pwd -P)"
   for _ in 1 2 3 4 5 6 7 8 9 10 11 12; do
     if [ -f "$dir/.pair/state.json" ]; then STATE_DIR="$dir/.pair"; break; fi
+    if [ -n "$_top" ] && [ "$dir" = "$_top" ]; then break; fi
     parent="$(dirname -- "$dir")"
     if [ "$parent" = "$dir" ]; then break; fi
     dir="$parent"
@@ -38,17 +43,15 @@ fi
 
 usage() {
   sed -n '2,14p' "$0" | sed 's/^# //; s/^#//'
-  echo "usage: pairup [--install] [--writer <роль>] [--swap <cli>] [--task TEXT] [--duo <cli>] [--state DIR]"
+  echo "usage: pairup [--install] [--writer <роль>] [--swap <cli>] [--task TEXT] [--state DIR]"
   echo "  --install    положить шим в ~/.local/bin (один раз), выйти"
   echo "  --writer <роль> назначить писателя этого проекта и поднять пару"
   echo "  --swap <cli> пересоздать панель критика новым CLI, писателя не трогать"
   echo "  --task TEXT  записать задачу перед подъёмом"
-  echo "  --duo <cli>  две копии одного CLI вместо постоянной расстановки"
   echo "  --state DIR  явный каталог состояния (по умолчанию walk-up от cwd)"
 }
 TASK=""
 SWAP=""
-DUO=""
 WANT_WRITER=""
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -65,7 +68,7 @@ while [ $# -gt 0 ]; do
     --swap) SWAP="${2:-}"; shift 2 || { echo "error: --swap needs a CLI" >&2; exit 2; } ;;
     --task) TASK="${2:-}"; shift 2 || { echo "error: --task needs text" >&2; exit 2; } ;;
     --writer) WANT_WRITER="${2:-}"; shift 2 || { echo "error: --writer needs a role" >&2; exit 2; } ;;
-    --duo) DUO="${2:-}"; shift 2 || { echo "error: --duo needs a CLI" >&2; exit 2; } ;;
+    --duo) echo "pairup: --duo удалён: две копии одного CLI дерутся за MCP-лок и обе падают. Критик — другой CLI: pairup --swap <cli>" >&2; exit 2 ;;
     --state) STATE_DIR="${2:-}"; shift 2 || { echo "error: --state needs a dir" >&2; exit 2; } ;;
     -h|--help) usage; exit 0 ;;
     *) echo "error: unknown flag $1" >&2; usage >&2; exit 2 ;;
@@ -114,9 +117,17 @@ status_json="$("$PAIRCTL" --state "$STATE_DIR" status 2>/dev/null || true)"
 writer="$(printf '%s' "$status_json" | python3 -c 'import json,sys; s=json.load(sys.stdin); print((s.get("policy") or {}).get("writer") or s.get("writer") or "")' 2>/dev/null || true)"
 critic="$(printf '%s' "$status_json" | python3 -c 'import json,sys; s=json.load(sys.stdin); print((s.get("policy") or {}).get("critic") or "")' 2>/dev/null || true)"
 if [ -z "$critic" ]; then
-  critic="$(printf '%s' "$status_json" | python3 -c 'import json,sys; s=json.load(sys.stdin); rs=[r for r in s.get("roles",{}) if r != s.get("writer")]; print(rs[0] if rs else "")' 2>/dev/null || true)"
+  # Только живой: мёртвая запись в ростере иначе становится критиком,
+  # и pairup открывает нерабочий CLI. pid берём из state.json напрямую:
+  # status отдаёт roles строками last_seen, там pid нет.
+  critic="$(python3 -c 'import json,os,sys; s=json.load(open(sys.argv[1])); rs=s.get("roles",{}); w=s.get("writer"); out="";
+for r,info in rs.items():
+  if r==w or not isinstance(info,dict): continue
+  try: os.kill(info.get("pid") or 0, 0); out=r; break
+  except OSError: continue
+print(out)' "$STATE_DIR/state.json" 2>/dev/null || true)"
 fi
-if { [ -n "$DUO" ] || [ -n "$SWAP" ]; } || { [ -z "$writer" ] || [ -z "$critic" ]; }; then
+if [ -n "$SWAP" ] || [ -z "$writer" ] || [ -z "$critic" ]; then
   _global="$HOME/.config/pair-mailbox/roles.json"
   if [ -f "$_global" ]; then
     _gw="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("writer") or "")' "$_global" 2>/dev/null || true)"
@@ -132,15 +143,24 @@ if { [ -n "$DUO" ] || [ -n "$SWAP" ]; } || { [ -z "$writer" ] || [ -z "$critic" 
     fi
   fi
 fi
-if [ -z "$DUO" ] && [ -z "$SWAP" ]; then
+if [ -z "$SWAP" ]; then
   if [ -z "$writer" ]; then
     echo "pairup: в расстановке нет писателя: pairup --writer <роль>" >&2
     exit 1
   fi
   if [ -z "$critic" ]; then
-    echo "pairup: в расстановке нет критика и второго живого в ростере нет" >&2
-    echo "pairup: укажи явно: pairup --duo $writer  (или другой CLI)" >&2
-    exit 1
+    # Обычный пользователь: скачал, install, pairup — и пара работает.
+    # Спрашивать --swap значит ронять первый запуск. Поднимаем первый
+    # установленный CLI (кроме писателя): agy проверен живым, дальше прочие.
+    for _c in agy claude codex opencode pi omp; do
+      if [ "$_c" != "$writer" ] && command -v "$_c" >/dev/null 2>&1; then critic="$_c"; break; fi
+    done
+    if [ -z "$critic" ]; then
+      echo "pairup: нет ни одного установленного CLI для критика (agy, claude, codex, opencode, pi, omp)" >&2
+      exit 1
+    fi
+    echo "pairup: критик не назначен — поднимаю $critic (перебить: pairup --swap <cli>)" >&2
+    SWAP="$critic"
   fi
 fi
 
@@ -196,12 +216,14 @@ if [ -n "$SWAP" ]; then
   fi
   echo "pairup: писатель $writer остаётся, критик -> $SWAP"
   "$PAIRUP_ROOT/bin/pair-duo" --swap-critic "$SWAP" --state "$STATE_DIR" --project "$PROJECT_DIR" || exit $?
-  exit 0
-fi
-
-# --- 4. подъём пары: duo по явному флагу, иначе постоянная расстановка.
-if [ -n "$DUO" ]; then
-  exec "$PAIRUP_ROOT/bin/pair-duo" "$DUO" ${TASK:+"$TASK"}
+  # Писатель запускается ЗДЕСЬ же: иначе человек остаётся в пустом шелле
+  # и не понимает как пользоваться одной панелью. Критик уже в соседней.
+  writer_cmd="$(python3 -c "import json; p=json.load(open('$PAIRUP_ROOT/cli-profiles.json')); print(p.get('$writer',{}).get('launch','') or '$writer')")"
+  echo "pairup: критик $SWAP в соседней панели, запускаю писателя $writer здесь"
+  export PAIR_ROLE="$writer" PAIR_STATE="$STATE_DIR"
+  cd "$PROJECT_DIR"
+  echo "=== PAIR WRITER: $writer ==="
+  exec $writer_cmd
 fi
 
 # Роли уже разрешены на шаге 1 (до пилота): здесь только подъём.
@@ -212,12 +234,17 @@ launch_for() {
 }
 writer_cmd="$(launch_for "$writer")"
 critic_cmd="$(launch_for "$critic")"
-session="pair-$(echo "$writer" | tr -c 'a-z0-9' '-')-$(echo "$critic" | tr -c 'a-z0-9' '-')-$(date +%s)"
+proj_name="$(basename -- "$PROJECT_DIR")"
+title_for() { printf '%s:%s (%s)' "$proj_name" "$1" "$2"; }
 writer_init="export PAIR_ROLE='$writer' PAIR_STATE='$STATE_DIR'; cd '$PROJECT_DIR'; echo '=== PAIR WRITER: $writer ==='; $writer_cmd"
 critic_init="export PAIR_ROLE='$critic' PAIR_STATE='$STATE_DIR'; cd '$PROJECT_DIR'; echo '=== PAIR CRITIC: $critic ==='; $critic_cmd"
+title_writer="$(title_for "$writer" writer)"
+title_critic="$(title_for "$critic" critic)"
 
 if [ -n "${TMUX:-}" ]; then
   tmux split-window -h -c "$PROJECT_DIR" "$SHELL -c \"$critic_init\""
+  tmux select-pane -T "$title_critic" -t '{last}' 2>/dev/null || true
+  tmux select-pane -T "$title_writer" 2>/dev/null || true
   tmux select-pane -L 2>/dev/null || true
   echo "pairup: критик $critic в новой панели, писатель — здесь ($writer)"
   echo "pairup: писатель: $writer_cmd"
@@ -226,6 +253,8 @@ else
   tmux new-session -d -s "$session" -n "pair" -c "$PROJECT_DIR" "$SHELL -c \"$writer_init\""
   tmux split-window -t "$session" -h -c "$PROJECT_DIR" "$SHELL -c \"$critic_init\""
   tmux select-layout -t "$session" even-horizontal 2>/dev/null || true
+  tmux select-pane -T "$title_writer" -t "$session:0.0" 2>/dev/null || true
+  tmux select-pane -T "$title_critic" -t "$session:0.1" 2>/dev/null || true
   echo "pairup: сессия $session (писатель $writer | критик $critic)"
   tmux attach-session -t "$session"
 fi

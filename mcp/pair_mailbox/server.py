@@ -1084,7 +1084,17 @@ def same_pane(left, right) -> bool:
     """`composer.same_pane` с найденным tmux. Логика — в composer, рядом с
     `pane_identity`: сравнение панелей это часть разбора панели, а не протокола.
     Обёртка нужна потому, что зовут её три места протокола, а composer
-    импортируется лениво."""
+    импортируется лениво.
+
+    Тождество двух ссылок доказывается БЕЗ tmux: одинаковые строки — это
+    одна и та же панель по определению. Раньше обёртка отвечала False на
+    отсутствие tmux, и проверка «не звоним в собственную панель» молча
+    выключалась на машине без tmux — то есть ровно там, где соседа и нет.
+    """
+    if not left or not right:
+        return False
+    if str(left) == str(right):
+        return True
     tmux = shutil.which("tmux")
     if not tmux:
         return False
@@ -3145,15 +3155,16 @@ class PairSession:
         return {"count": len(out), "total_bytes": sum(i["bytes"] for i in out),
                 "notes": out}
 
-    def tool_pair_note_read(self, kind: str, tail_lines: int = NOTE_READ_DEFAULT) -> dict[str, Any]:
+    def tool_pair_note_read(self, kind: str, tail_lines: int = NOTE_READ_DEFAULT, limit: int | None = None) -> dict[str, Any]:
         """Прочитать ХВОСТ заметки, а не её целиком.
 
         Заметка растёт только в хвост, и читать её целиком не нужно почти
         никогда: актуально последнее, а не всё накопленное за всю историю.
         `tail_lines` ограничен сверху, ответ всегда обрезан по границе записи,
         и в ответе прямо сказано, было ли обрезание — иначе читающий примет
-        хвост за полным текстом.
+        хвост за полным текстом. `limit` — алиас `tail_lines` (привычка pair_read/transcript).
         """
+        if limit is not None: tail_lines = limit
         kind = (kind or "").strip()
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}", kind):
             raise ProtocolError("`kind` must be a short slug: letters, digits, dot, dash, underscore.")
@@ -3676,6 +3687,7 @@ def tool_definitions() -> list[dict[str, Any]]:
                         ),
                         "minimum": 1,
                     },
+                    "limit": {"type": "integer", "description": "Alias for tail_lines.", "minimum": 1},
                 },
                 "required": ["kind"],
             },

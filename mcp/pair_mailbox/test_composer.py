@@ -64,5 +64,22 @@ class TestProjectPermissionBlockMatchesProtocol(unittest.TestCase):
                 self.assertEqual("deny", value, f"граница §13c держит: {key}")
 
 
+class TestRoundedCornerPrompt(unittest.TestCase):
+    """Промпт omp `╰─` — приглашение ввести, а не строка статуса (задача 54).
+
+    Живая панель omp заканчивается строкой `╰─`: она попадала под fullmatch
+    рамочных глифов в looks_like_status_line, composer_line отдавал None, и
+    pair_deliver/pairpilot жаловались «композер не виден» (находка agy seq 662).
+    """
+
+    def test_prompt_row_is_recognized(self) -> None:
+        panel = ["⠏ 11m > ◕ Muse Spark > $0.06", "╰─"]
+        self.assertEqual("╰─", composer.composer_line(panel))
+        self.assertTrue(composer.is_composer_empty("╰─"))
+
+    def test_typed_text_keeps_the_row_busy(self) -> None:
+        self.assertFalse(composer.is_composer_empty("╰─ hello"))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

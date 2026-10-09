@@ -24,8 +24,10 @@ and says so; override once with `pairup --writer <role>`.
 pairup --writer omp    # pin this project's writer and start, one command
 pairup --swap agy       # critic's limits ran out: new critic pane, writer untouched
 pairup --task "..."     # record the task before raising the pair
-pairup --duo opencode   # two copies of one CLI instead of the standing pair
 ```
+No critic assigned — `pairup` raises the first installed CLI itself (writer
+untouched) and starts the writer in the current pane, so a fresh checkout
+works with one command and no questions.
 
 `./finish.sh` is the heavy path: install + full test suites (5–10 min) +
 supervisor + pair. Use it for the first setup or after changing this repo's
@@ -37,10 +39,9 @@ code; for the daily start use `pairup`.
 | `--writer <role>` | pin this project's writer and start |
 | `--swap <cli>` | replace the critic pane with another CLI; writer and authority untouched |
 | `--task "..."` | record the task in the shared list before starting |
-| `--duo <cli>` | two copies of one CLI instead of the standing pair |
 | `--state <dir>` | explicit state dir (default: walk-up from cwd, else git root) |
 
-## The standing pair, and what `--duo` is for
+## The standing pair
 
 By default `pairup`/`finish.sh` read the standing arrangement and start
 **the writer and the critic on their own CLIs**. Only the writer is pinned
@@ -52,18 +53,9 @@ bin/pairctl roles --writer opencode --global   # set it once
 pairup                                         # honours it, from the project folder
 ```
 
-`--duo` is for running two instances of the *same* CLI, which is occasionally useful
-and is not the default. `bin/pair-duo` appoints `<cli>-writer` as writer **only**
-when there is no standing `policy.writer` and no live writer holds authority
-already — otherwise it leaves authority alone and says so out loud:
-
-```bash
-./finish.sh --duo --task "задача"   # writer becomes opencode-writer only if nobody writes yet
-bin/pair-duo claude "задача"        # the same thing, directly
-```
-
-Authority moves only through the human, so `--duo` states out loud that it is
-overriding the standing arrangement. Nothing else in the system may do it.
+Authority moves only through the human. The pair is always two *different*
+CLIs: two copies of one CLI fight over the MCP role lock and both fail,
+so there is no duo mode.
 
 ## The step-by-step path, when you need it
 
@@ -198,7 +190,7 @@ word. See PROTOCOL §10b.
 The level is picked when the pair starts, and by default you are not asked at all:
 
 ```bash
-bin/pair-duo --semi opencode "task"     # or --auto, --observe
+pairup --task "autonomy: semi do the thing"   # or pairctl autonomy semi
 ```
 
 With no flag: `autonomy: semi` on the first line of the task, then `.pair/autonomy`,
