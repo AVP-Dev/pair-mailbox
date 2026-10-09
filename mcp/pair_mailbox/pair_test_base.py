@@ -66,6 +66,12 @@ class PairTestCase(unittest.TestCase):
         # (сервер читает PAIR_DISABLE_STATE_CACHE — см. tool_pair_state).
         self._orig_disable_state_cache = os.environ.get("PAIR_DISABLE_STATE_CACHE")
         os.environ["PAIR_DISABLE_STATE_CACHE"] = "1"
+        # Фикс раунда 48 (условие A вердикта opencode): pair_send вне ростера
+        # отказывается, поэтому peer-роль обязана зарегистрироваться до писем.
+        try:
+            self.peer.tool_pair_state()
+        except Exception:  # noqa: BLE001 - регистрация не должна ронять setUp
+            pass
 
     def tearDown(self) -> None:
         self._tmp.cleanup()
