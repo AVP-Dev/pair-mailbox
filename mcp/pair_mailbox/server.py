@@ -2074,10 +2074,16 @@ class PairSession:
         tmux = shutil.which("tmux")
         if not tmux:
             return {"rung": False, "why": "tmux не найден в PATH"}
-        probe = subprocess.run(
-            [tmux, "display-message", "-p", "-t", pane, "#{pane_dead}"],
-            capture_output=True, text=True, timeout=5,
-        )
+        try:
+            probe = subprocess.run(
+                [tmux, "display-message", "-p", "-t", pane, "#{pane_dead}"],
+                capture_output=True, text=True, timeout=5,
+            )
+        except OSError as exc:
+            # tmux умер между which() и запуском, панель исчезла — звонок
+            # не гарантированно доставим, но не и починка для этого раунда
+            # (урок §10: починка мастера не важнее доставки письма).
+            return {"rung": False, "why": f"панель соседа не проверяется: {exc}"}
         if probe.returncode != 0 or probe.stdout.strip() == "1":
             return {"rung": False, "why": "панель соседа мертва"}
         # Живость — не идентичность. Номер панели переживает смерть процесса,
@@ -2337,9 +2343,20 @@ class PairSession:
             roles = state.setdefault("roles", {})
             roles[self.role]["sends"] = int(roles[self.role].get("sends", 0)) + 1
             if to not in roles:
-                # Not fatal: the peer may not have started yet. Recorded for auditing.
-                pass
+                # Роль вне ростера — не «ещё не стартовала», а опечатка или
+                # фантом (уроки 47 раунда: opencode-agent получил мёртвый
+                # ящик, а пилот 20 раз долбил в некому отвечающего). Молча
+                # создать ящик = молчаливая потеря сообщения. Отказ с
+                # перечнем живых ролей — единственное честное поведение.
+                raise ProtocolError(
+                    f"роль {to!r} не зарегистрирована в ростере. "
+                    f"Живые роли: "
+                    f"{', '.join(sorted(n for n, i in roles.items() if i.get('pid'))) or 'никто'}. "
+                    f"Проверь имя роли. Если роль должна существовать — пусть "
+                    f"агент сначала вызовет любой pair_* инструмент, это его зарегистрирует."
+                )
             inbox = self.store.mailbox_root / to
+            # Каталог мог не создаться, если письмо первое для роли.
             inbox.mkdir(parents=True, exist_ok=True)
             existing_seqs = [0]
             if self.store.mailbox_root.is_dir():

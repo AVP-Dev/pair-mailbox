@@ -1885,6 +1885,7 @@ class TestMessaging(PairTestCase):
         Проверено кодом 2026-10-07: тела лежали в mailbox целыми, а событие
         в transcript несло только пустой subject — текст терялся из журнала.
         """
+        self.peer.tool_pair_state()
         self.writer.tool_pair_send(to="reviewer-agent", text="план раунда: чиню send")
         sends = [e for e in self.store.read_transcript(0) if e.get("kind") == "send"]
         self.assertEqual(1, len(sends))
@@ -1895,6 +1896,16 @@ class TestMessaging(PairTestCase):
         self.assertRefused(self.writer.tool_pair_send, to="writer-agent", text="me", contains="own role")
         self.assertRefused(self.writer.tool_pair_send, to="", text="me", contains="required")
         self.assertRefused(self.writer.tool_pair_send, to="peer", text="  ", contains="required")
+        # Урок 47 раунда: 4 письма ушли в роль opencode-agent, которой нет
+        # в ростере. Сервер создал мёртвый ящик и отчитался delivered:true.
+        # Молчаливая потеря — тот же класс отказа, который протокол обязан
+        # предотвращать. Ростер переживает письма — теперь отказ раньше.
+        self.assertRefused(
+            self.writer.tool_pair_send, to="ghost-role", text="привет",
+            contains="не зарегистрирована")
+        mailboxes_after = sorted(p.name for p in self.store.mailbox_root.glob("*"))
+        self.assertNotIn("ghost-role", mailboxes_after,
+                         "мёртвый ящик не должен создаваться")
 
     def test_writer_may_wait_too(self) -> None:
         """Both roles may wait. This used to be forced to zero for the writer, to
@@ -3554,6 +3565,25 @@ class TestRingAndUnblock(PairTestCase):
         self.assertIn("нет панели tmux", res["why"])
         self.assertEqual(res["prompt"], "")
 
+    def test_ring_probe_oserror_is_reported_not_raised(self) -> None:
+        os.environ.pop("PAIR_DISABLE_RING", None)
+        self.addCleanup(os.environ.update, PAIR_DISABLE_RING="1")
+        self.allow_panes()
+        self.store.mutate(lambda s: s.setdefault("roles", {})
+                          .setdefault("reviewer-agent", {}).update({"pane": "%45", "pid": 999999}))
+        import server as server_mod
+        orig_run = server_mod.subprocess.run
+        def boom(cmd, *args, **kwargs):
+            raise OSError("tmux исчез между which() и запуском")
+        server_mod.subprocess.run = boom
+        try:
+            result = self.writer._ring("reviewer-agent", "тест")
+        finally:
+            server_mod.subprocess.run = orig_run
+        self.assertFalse(result["rung"])
+        self.assertIn("не проверяется", result["why"])
+        self.assertIn("tmux исчез", result["why"])
+
 class TestMailboxInvariants(PairTestCase):
     def test_claim_clears_closed_at_and_phase(self) -> None:
         self.writer.tool_pair_claim(reason="I will write")
@@ -3581,6 +3611,7 @@ class TestMailboxInvariants(PairTestCase):
 
     def test_negative_unread_clamped_and_does_not_block_done(self) -> None:
         self.writer.tool_pair_claim(reason="writer")
+        self.peer.tool_pair_state()
         self.writer.tool_pair_send(to="reviewer-agent", text="msg 1")
         self.peer.tool_pair_read()
 
@@ -3621,12 +3652,14 @@ class TestMailboxInvariants(PairTestCase):
 
     def test_corrupt_state_does_not_clobber_message_files(self) -> None:
         self.writer.tool_pair_claim(reason="writer")
+        self.peer.tool_pair_state()
         self.writer.tool_pair_send(to="reviewer-agent", text="first message")
 
         # Corrupt state.json
         self.store.state_path.write_text("{corrupt json", encoding="utf-8")
 
         # Sending message #2 must not overwrite message #1
+        self.peer.tool_pair_state()
         self.writer.tool_pair_send(to="reviewer-agent", text="second message")
 
         files = list((self.store.mailbox_root / "reviewer-agent").glob("*.json"))
@@ -3644,6 +3677,7 @@ class TestMailboxInvariants(PairTestCase):
 
     def test_unreadable_message_does_not_increment_seen_silently(self) -> None:
         self.writer.tool_pair_claim(reason="writer")
+        self.peer.tool_pair_state()
         self.writer.tool_pair_send(to="reviewer-agent", text="msg 1")
         self.writer.tool_pair_send(to="reviewer-agent", text="msg 2")
 
