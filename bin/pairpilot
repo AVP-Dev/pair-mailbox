@@ -34,6 +34,8 @@
     bin/pairpilot --launch agy=agy # как поднимать роль, если её процесс умер
     bin/pairpilot --allow 'r"^git status' # что ещё можно подтверждать само
 """
+from __future__ import annotations
+
 import argparse
 import hashlib
 import json
