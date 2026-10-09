@@ -1261,7 +1261,9 @@ class PairSession:
                 self.store.append_transcript(
                     "pane_env_stale", self.role, pane=env_pane, proved=proved_env,
                     why="env-панель не подтверждена как маршрут (жива, проектна, без чужой живой роли)")
-        if not pane and tmux:
+        if not pane and tmux and os.environ.get("PAIR_DISABLE_ANCESTRY_PANE") != "1":
+            # Живая реплика ищется по дереву процессов; тестовая фикстура ставит
+            # флаг, чтобы fill не получал лишнюю запись адреса (287ff1d).
             from composer import find_own_pane
             pane = find_own_pane(tmux) or ""
         # Адрес, отвергнутый как чужой. Пуст, пока отвергать нечего: иначе при
@@ -1360,7 +1362,8 @@ class PairSession:
             if other_name != self.role and same_pane(pane or rejected,
                                                      other_info.get("pane")):
                 other_pid = other_info.get("pid")
-                if other_pid and not is_pid_alive(other_pid) and not pane_exists(other_info["pane"]):
+                if other_pid and not is_pid_alive(other_pid) \
+                        and not pane_exists(other_info.get("pane")):
                     other_info.pop("pane", None)
                     self.store.append_transcript(
                         "pane_stale_cleared", self.role, pane=pane or rejected,
@@ -1452,7 +1455,12 @@ class PairSession:
             # молчаливую починку нельзя отличить от того, что панели не было
             # никогда.
             stale = entry.get("pane")
-            if stale:
+            # Запись, добавлённая владельцем (панель процежена) но снятая здесь,
+            # отличается от записи, которая никогда не проверялась: свою панель
+            # peer докажет в своём _register, здесь снос только гоняет слепоту.
+            # Ровно это ломало тест 4094: peer.tool_pair_read после отправки
+            # снимал %55, который писал только сам peer.
+            if stale and not entry.get("pane_provisional"):
                 entry.pop("pane", None)
                 entry.pop("pane_pin_why", None)
                 self.store.append_transcript(

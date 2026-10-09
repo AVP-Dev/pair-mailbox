@@ -66,12 +66,13 @@ class PairTestCase(unittest.TestCase):
         # (сервер читает PAIR_DISABLE_STATE_CACHE — см. tool_pair_state).
         self._orig_disable_state_cache = os.environ.get("PAIR_DISABLE_STATE_CACHE")
         os.environ["PAIR_DISABLE_STATE_CACHE"] = "1"
-        # Фикс раунда 48 (условие A вердикта opencode): pair_send вне ростера
-        # отказывается, поэтому peer-роль обязана зарегистрироваться до писем.
-        try:
-            self.peer.tool_pair_state()
-        except Exception:  # noqa: BLE001 - регистрация не должна ронять setUp
-            pass
+        # Адресация по ancestry выключена ДО регистрации: лишние записи self-address
+        # не должны попадать в fill (287ff1d).
+        os.environ["PAIR_DISABLE_ANCESTRY_PANE"] = "1"
+        # Регистрация ДО писем идёт mutate-merge, а не tool_pair_state: последний
+        # перезаписывает запись целиком и сносит поля, выставленные тестом позже.
+        self.store.mutate(lambda s: s.setdefault("roles", {}).setdefault(
+            "reviewer-agent", {}))
 
     def tearDown(self) -> None:
         self._tmp.cleanup()
@@ -87,6 +88,7 @@ class PairTestCase(unittest.TestCase):
             os.environ["PAIR_DISABLE_STATE_CACHE"] = self._orig_disable_state_cache
         else:
             os.environ.pop("PAIR_DISABLE_STATE_CACHE", None)
+        os.environ.pop("PAIR_DISABLE_ANCESTRY_PANE", None)
 
     def assertRefused(self, callable_, *args, contains: str = "", **kwargs):
         with self.assertRaises(ProtocolError) as caught:

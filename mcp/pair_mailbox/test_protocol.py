@@ -4070,8 +4070,9 @@ class TestPaneIdentityIsNotLiveness(PairTestCase):
         полный текст — только в ящике. Typed-печать запрещена (инъекция)."""
         import composer
         import subprocess as _sp
-        self.store.mutate(lambda s: s.setdefault("roles", {}).setdefault(
-            "reviewer-agent", {"pid": os.getpid(), "pane": "%55"}))
+        self.store.mutate(lambda s: (s.setdefault("roles", {}).setdefault(
+            "reviewer-agent", {})
+            .update({"pid": os.getpid(), "pane": "%55"})))
         orig_foreign = composer.pane_is_foreign
         orig_belongs = composer.pane_belongs_to_project
         orig_run = _sp.run
