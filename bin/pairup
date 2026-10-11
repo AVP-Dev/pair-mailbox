@@ -101,7 +101,11 @@ print(json.dumps(res))
   _target_wt="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1]).get("worktree"))' "$_wt_res")"
   echo "pairup: переключаюсь в worktree $_target_wt"
   cd "$_target_wt"
-  STATE_DIR="$_target_wt/.pair"
+  # Состояние пары по дефолту остаётся в основном репозитории, чтобы супервизор
+  # и гейты видели один раунд и одного писателя без расщепления состояния.
+  if [ -z "$STATE_DIR" ]; then
+    STATE_DIR="$_git_root/.pair"
+  fi
 fi
 
 if [ -z "$STATE_DIR" ]; then
