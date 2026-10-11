@@ -197,6 +197,9 @@ Keep full visibility into your multi-agent workflow:
 ```bash
 pairup                       # Fast start from the project folder: supervisor-if-dead + pair (daily)
 pairup --swap agy            # Critic's limits ran out: new critic pane, writer untouched
+pairup --worktree <branch>   # Run pair in an isolated git worktree (-w alias)
+bin/pairctl worktree list    # List active git worktrees across the repo
+bin/pairctl budget           # Inspect round budget ceilings (advances, messages, restarts)
 bin/pairchat               # Live streaming conversation with colored rejections (Ctrl+C to exit)
 bin/pairchat --once        # Print current project chat snapshot and exit
 bin/pairchat --all --once  # Cross-project telemetry: stream chats from all active workspaces
@@ -208,8 +211,7 @@ bin/pairpilot --once      # One supervisor pass, to see what it would do right n
 bin/pairpilot --launch agy=agy   # How to restart a role whose process died
 bin/pairwatch --unblock    # Background daemon to detect stalls and auto-approve [y/n] prompts
 bin/pairdoctor             # Health check and environment diagnostic utility
-pairup --swap agy            # Replace the critic pane with another CLI, writer untouched
-bin/pair-duo --swap-critic agy --state <dir> --project <dir>  # Same, directly
+bin/pair-duo --swap-critic agy --state <dir> --project <dir>  # Swap critic directly
 ```
 
 ### 🧭 How far the pair runs without you

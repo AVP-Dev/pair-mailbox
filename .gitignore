@@ -1,6 +1,7 @@
 # Runtime state for the two-agent pairing: mailbox, notes, in-flight patches,
 # the audit trail. Disposable — `bin/pairctl reset --yes` rebuilds it.
 .pair/
+.worktrees/
 
 # Built board: `bin/pairboard` writes board.html in the repo root by default
 # (card board-to-root-and-live). Source is .pair/, the HTML is disposable.
