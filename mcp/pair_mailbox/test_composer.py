@@ -159,5 +159,59 @@ class TestTuiHintsAreNotContent(unittest.TestCase):
 
 
 
+class TestPilotCoverageGaps(unittest.TestCase):
+    """Рутина, на которой агент вставал на промпте, хотя протокол её разрешает.
+
+    Замер раунда 54: 5 из 6 профилей CLI имеют голый launch, а из allowed-паттернов
+    выпадали bun (рантайм панелей omp/pi) и bin/ (наши раннеры). scripts/ и так
+    был закрыт (composer.py:997) — новый паттерн льёт только в эти две дыры.
+    """
+
+    def verdict(self, prompt: str) -> str:
+        return composer.permission_verdict(prompt, composer.DEFAULT_ALLOW_PATTERNS)["verdict"]
+
+    def test_bun_checks_are_allowed(self) -> None:
+        for prompt in ("bun test", "bun run build", "bun x tsc --noEmit"):
+            with self.subTest(prompt=prompt):
+                self.assertEqual("allow", self.verdict(prompt))
+
+    def test_bun_install_is_not_allowed(self) -> None:
+        """bun add — установка пакетов: NEVER-класс «сеть тянет чужой код»."""
+        self.assertEqual("refuse", self.verdict("bun add left-pad"))
+
+    def test_pair_runners_are_allowed(self) -> None:
+        for prompt in ("bin/pairup --state .pair", "bash bin/pairup", "bin/pairpilot --state .pair"):
+            with self.subTest(prompt=prompt):
+                self.assertEqual("allow", self.verdict(prompt))
+
+    def test_bin_escape_is_not_allowed(self) -> None:
+        """Относительность и защита от .. те же, что у scripts/."""
+        self.assertEqual("refuse", self.verdict("bash bin/../../evil/pairup"))
+        self.assertEqual("refuse", self.verdict("/usr/local/bin/pairup"))
+
+
+class TestNumberedMenuKeys(unittest.TestCase):
+    """Нумерованное меню vs горизонтальное: цифра только при явном разрешении."""
+
+    def test_digit_goes_to_the_least_privilege_item(self) -> None:
+        lines = ["Permission required", "$ git push origin main",
+                 "1) Allow once   2) Always allow   3) Deny"]
+        self.assertEqual("1", composer.menu_allow_key(lines))
+
+    def test_always_allow_is_the_fallback(self) -> None:
+        lines = ["Permission required", "1) Deny", "2) Always allow", "3) No"]
+        self.assertEqual("2", composer.menu_allow_key(lines))
+
+    def test_horizontal_menu_has_no_key(self) -> None:
+        """`⇆ select`-меню: Enter жмёт выделенный пункт, цифры нет — как было."""
+        lines = ["Permission required", "Allow once · Always allow · Reject",
+                 "⇆ select  enter confirm"]
+        self.assertIsNone(composer.menu_allow_key(lines))
+
+    def test_deny_only_menu_has_no_key(self) -> None:
+        lines = ["1) Deny   2) No, and tell me why"]
+        self.assertIsNone(composer.menu_allow_key(lines))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
