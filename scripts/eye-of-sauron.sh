@@ -105,6 +105,19 @@ if phase != "done" and obl > 0 and ws > 600 and cs > 600:
         pass
     if not _changed:
         deadlock = " DEADLOCK" if (ws > 1200 and cs > 1200) else " warn-deadlock"
-print(("ALARM " if alarm else "ok ") + line + deadlock)
+# Проверка Budget Ceiling
+budget_alarm = False
+budget_str = ""
+try:
+    sys.path.insert(0, root + "/mcp/pair_mailbox")
+    from budget import check_budget
+    b_ok, b_why, _ = check_budget(root + "/.pair", st, phase)
+    if not b_ok and phase != "done":
+        budget_alarm = True
+        budget_str = " BUDGET_EXCEEDED"
+except Exception:
+    pass
+is_alarm = alarm or budget_alarm
+print(("ALARM " if is_alarm else "ok ") + line + deadlock + budget_str)
 EOF
 exit 0

@@ -2595,8 +2595,12 @@ class PairSession:
                         "Invariants, Acceptance. Виза соседа — заметка kind=verdict "
                         "со строкой `plan-ack round N` (своя заметка не считается), "
                         "либо окно ожидания из .pair/plan-gate.json истекает без "
-                        "открытых запросов писателя.",
                     )
+            if phase != "done" and phase != backward:
+                from budget import check_budget
+                b_ok, b_why, _ = check_budget(self.store.root, state, phase)
+                if not b_ok:
+                    raise ProtocolError(b_why, "Сброс: `bin/pairctl budget --reset` или закрытие в done.")
             if phase == "done":
                 unread = self._unread_count(state)
                 if unread > 0:

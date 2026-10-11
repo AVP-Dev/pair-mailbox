@@ -591,6 +591,33 @@ to the measurement or the card. Restating the code in words is banned.
 The critic reviews messages as code: slop in a commit is a reasoned
 objection, same as for code.
 
+### 10d. Budget ceiling: round limits on machine metrics
+
+`bin/pairctl budget [--reset] [--json]` — machine-visible limits for the active round to prevent infinite looping and runaway autonomy.
+
+Metrics are strictly machine-verifiable (no self-reported token claims):
+- `messages`: total `send` and `deliver` events in `transcript.jsonl` since the current round opened.
+- `advances`: count of phase `advance` events within the active round.
+- `hours`: wall-clock time elapsed since round opening.
+- `restarts`: supervisor restart counts for participant roles recorded in `.pair/.restarts-*`.
+
+Defaults configured or overridden via `.pair/budget.json`:
+```json
+{
+  "max_messages": 200,
+  "max_advances": 10,
+  "max_hours": 24.0,
+  "max_restarts": 10
+}
+```
+
+Invariants (§10d, §12):
+1. **`done` is never blocked**: Closing a round into `done` is always permitted, preventing deadlocks when limits are reached.
+2. **Backward steps are never blocked**: Reverting a phase (`implement → plan`, `verify → implement`) is always permitted.
+3. **Communication is never blocked**: `pair_send` remains open even if budget ceiling is exceeded.
+4. **Forward progression blocked on breach**: Only forward phase changes (`plan → implement`, `implement → verify`) are refused by `ProtocolError`.
+5. **Reset & fresh round**: Resetting is performed via `bin/pairctl budget --reset` (writes `.pair/budget-reset.json`) or automatically upon reopening a fresh round.
+
 ## 11. Audit
 
 `transcript.jsonl`, append-only, per event: a message, a capture, a phase
