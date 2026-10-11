@@ -253,3 +253,14 @@ To run parallel pairs or avoid context clashes across branches:
 - `pairup --worktree <branch>` (or `-w <branch>`) creates `.worktrees/<branch>` and isolates the session.
 - `pairctl worktree list` shows all active trees.
 - `pairctl worktree prune` cleans up deleted trees.
+
+## Machine PR Merge Gate & Feature Freeze (Round 60)
+
+PR merges are enforced by machine rules before git master receives code:
+- Run `bin/pairctl pr merge [pr_id]` — verified gate checking that:
+  1. The round phase is strictly `verify`.
+  2. Passing test evidence exists in the round.
+  3. A peer review approval verdict exists from an independent reviewer (self-approval by the writer is refused).
+  4. The review verdict is fresh on current HEAD (no changes or new commits after approval).
+- Bypass: `--force` requires `--reason <explanation>` and is logged to the audit transcript (`pr_merge_forced`).
+- Feature Freeze: Commits or dirty edits during `verify` make the verdict stale, refusing both PR merge and closing the round.

@@ -3,6 +3,8 @@ title: Защита от слияния PR до получения одобре�
 found: 2026-10-11
 severity: high
 round: 59
+resolved_in_round: 60
+status: resolved
 ---
 
 ## Где

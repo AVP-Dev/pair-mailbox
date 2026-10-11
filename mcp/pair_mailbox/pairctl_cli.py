@@ -73,6 +73,7 @@ def _commands() -> dict[str, str]:
         "notes": "pairctl_read",
         "budget": "budget",
         "worktree": "worktree",
+        "pr": "review_gate",
     }
 
 def run_ctl(args: argparse.Namespace, state_dir: Path) -> int:
@@ -229,6 +230,12 @@ def build_parser() -> argparse.ArgumentParser:
     wt_p.add_argument("--target", help="путь или ветка для remove")
     wt_p.add_argument("--force", action="store_true", help="принудительное удаление (для remove)")
     wt_p.add_argument("--json", action="store_true", help="вывести в формате json")
+
+    pr_p = sub.add_parser("pr", help="human/writer: машинный гейт слияния PR (merge)")
+    pr_p.add_argument("pr_action", nargs="?", choices=["merge"], default="merge")
+    pr_p.add_argument("pr_id", nargs="?", help="PR number or branch name")
+    pr_p.add_argument("--force", action="store_true", help="обойти проверки (требует --reason)")
+    pr_p.add_argument("--reason", default="", help="причина принудительного слияния при --force")
 
     return parser
 
