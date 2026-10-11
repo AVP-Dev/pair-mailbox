@@ -65,16 +65,37 @@ def check_pr_merge(store: Any, repo_dir: Path) -> tuple[bool, str]:
     if writer and author == writer:
         return False, f"self-approval forbidden: verdict author {author!r} is current writer"
 
-    # Вердикт должен быть одобрительным (kind == 'verdict')
-    # Проверяем, не reject ли это
     v_rev = last_verdict.get("rev") or {}
     v_kind = last_verdict.get("kind")
     if v_kind != "verdict":
         return False, f"last review note is not a verdict (kind={v_kind!r})"
 
+    # Вердикт обязан иметь привязку к ревизии (head)
+    v_head = str(v_rev.get("head") or "").strip()
+    if not v_head:
+        return False, "verdict has no revision binding (rev.head is empty)"
+
+    # Проверка текста последнего вердикта из notes/verdict.md
+    notes_dir = store.notes_root
+    verdict_file = notes_dir / "verdict.md"
+    if verdict_file.is_file():
+        try:
+            content = verdict_file.read_text(encoding="utf-8")
+            # Берем последний блок заметки
+            blocks = [b for b in content.split("\n## ") if b.strip()]
+            if blocks:
+                last_block = blocks[-1].lower()
+                # Проверяем на явный отказ/reject
+                if "отказ" in last_block or "reject" in last_block or "changes requested" in last_block:
+                    return False, "last verdict rejected the changes (ОТКАЗ / REJECT)"
+                if not ("approve" in last_block or "одобрен" in last_block or "ok" in last_block):
+                    return False, "last verdict is not approved (no APPROVE / ОДОБРЕНО marker)"
+        except OSError:
+            pass
+
     # Проверка свежести через единый канонический предикат review.is_stale
     cur_dirty = review.dirty_files(repo_dir)
-    changed = review.changed_between(repo_dir, str(v_rev.get("head") or ""), head)
+    changed = review.changed_between(repo_dir, v_head, head)
     stale, reason = review.is_stale(v_rev, head, changed, cur_dirty)
     if stale:
         return False, f"verdict is stale: {reason}"
