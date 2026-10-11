@@ -636,6 +636,14 @@ Invariants (§10d, §12):
    - Recorded evidence items (test results, diffs, commits).
    - Final round budget metrics (message count, phase advances, wall-clock hours, supervisor restarts).
 
+### 10f. Self-healing loop: `pair-heal`
+
+When a background check, monitor, or peer reports negative evidence (`ok=false`) on a finished round (`phase == "done"`):
+1. The server automatically triggers a heal-reopen: phase switches from `done → implement` and `round` increments by 1.
+2. A remediation task `#<id>: auto-heal: <kind> failed — <value>` is added to the task ledger.
+3. Event `heal_reopen` is appended to `transcript.jsonl`.
+4. Flapping safeguard: maximum consecutive auto-heal attempts (`MAX_HEAL_ATTEMPTS = 3`). Exceeding the ceiling halts auto-reopening and requires human intervention.
+
 ## 11. Audit
 
 `transcript.jsonl`, append-only, per event: a message, a capture, a phase

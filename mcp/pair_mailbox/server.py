@@ -2809,6 +2809,12 @@ class PairSession:
         self.store.append_transcript("evidence", self.role, evidence_kind=kind,
                                      value=record["value"][:200], ok=record["ok"],
                                      round=record["round"])
+        if not record["ok"] and self.store.read().get("phase") == "done":
+            try:
+                from heal import trigger_heal
+                trigger_heal(self.store, self.role, record)
+            except Exception:
+                pass
         state = self.store.read()
         failed = [item for item in self.round_evidence(state) if not item.get("ok")]
         passed = [item for item in self.round_evidence(state) if item.get("ok")]
