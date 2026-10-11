@@ -920,6 +920,56 @@ class Pilot:
         log(f"{writer} молчит {int(age // 60)} мин и держит фазу {state.get('phase')!r} "
             f"— толкаю сразу")
 
+    def idle_roles(self, state: dict) -> None:
+        """Молчащая роль без входящих — не «ему нечего сказать», а отсутствие связи.
+
+        Триггеры пилота были реактивными: непрочитанная почта
+        (`unread_peers`), обязательства (`pending_answers`) и молчащий
+        ПИСАТЕЛЬ (`stale_writer`, порог self.silence применён только к нему).
+        У пассивного критика в новой сессии входных событий нет вообще: задача
+        пишется только в state.json, mailbox пуст. Замерено 2026-10-11 по
+        транскрипту: в 2 раундах из 8 писатель не отправил соседу ни одного
+        сообщения до смены фазы, и критика никто не будил — симптом человека
+        «один агент работает, второй молчит».
+
+        Поэтому порог молчания симметрично применяется к роли, у которой нет
+        входящих: ни непрочитанной почты, ни видимого источника работы.
+        Толчок ОДИН на раунд (`remember` с TTL в два порога) — иначе это тот же
+        спам, что запрещён в `ring`. Закрытый раунд не будим: там молчать —
+        норма. Писателя не трогаем: за него отвечает `stale_writer`.
+        """
+        writer = state.get("writer")
+        if not writer or state.get("phase") == "done":
+            return
+        for role, info in (state.get("roles") or {}).items():
+            if role == writer or role in self.skip or not isinstance(info, dict):
+                continue
+            pane = info.get("pane")
+            if pane and self.visibly_busy(pane):
+                # Занятый композер — работа, а не молчание: то же правило,
+                # что у писателя в stale_writer.
+                continue
+            if self.unread(state, role) > 0:
+                # Почта разбудит свой путь (unread_peers), второй толчок
+                # тем же текстом — спам.
+                continue
+            age = self.role_seen_age(info)
+            if age < self.silence:
+                continue
+            key = f"stale-role-{state.get('round')}-{role}"
+            if not self.remember(key, ttl=self.silence * 2):
+                continue
+            text = (f"[pairpilot] Ты молчишь {int(age // 60)} минут и у тебя нет "
+                    f"входящих, фаза {state.get('phase')!r}, писатель {writer}. "
+                    f"Вызови pair_digest: там задача раунда и что уже сделано. "
+                    f"Бери следующий кусок или пиши в заметку, чем заблокирован — "
+                    f"«делаю» не считается, нужен шаг или явная блокировка.")
+            self.mark_wake(state, role, f"молчит {int(age // 60)} мин без входящих", text)
+            self.enqueue(role, text)
+            self.store.append_transcript("pilot_idle_role", "pairpilot", target=role,
+                                         minutes=int(age // 60))
+            log(f"{role} молчит {int(age // 60)} мин без входящих — толкаю сразу")
+
     def pending_answers(self, state: dict) -> None:
         """Отправили запрос, ответа нет. Это хуже молчания: молчание может означать
         «работаю», а отсутствие ответа на конкретный вопрос — что вопрос умер в
@@ -1411,6 +1461,7 @@ class Pilot:
         self.pending_answers(state)
         self.stalled_patches(state)
         self.stale_writer(state)
+        self.idle_roles(state)
         self.drop_stale_outbox(state)
         self.flush_outbox(state)
         self.checkpoint(state)

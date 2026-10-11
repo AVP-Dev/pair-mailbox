@@ -381,14 +381,52 @@ class TestLiveness(PilotCase):
         pilot.tick()
         self.assertEqual("", pilot.pending("agy"), "закрытый раунд не будим")
 
-    def test_critic_silence_is_not_a_nudge_by_itself(self) -> None:
-        """Молчание критика — не дефект: возможно, у него нет работы. Толкать
-        нечего, и бить его значит мешать."""
+    def test_silent_role_with_no_input_is_nudged_once(self) -> None:
+        """Молчащая роль без входящих в живом раунде — отсутствие связи.
+
+        Раньше здесь стоял обратный пин: «молчание критика — не дефект,
+        возможно, ему нечего сказать». Замер 2026-10-11 показал, чем это
+        кончается: в 2 раундах из 8 писатель не писал соседу до смены фазы,
+        и критика не будил никто — у пилота не было для него пути. Прежний
+        контракт удалён, новый: порог молчания, который был только у
+        писателя (`stale_writer`), симметрично применяется к роли без
+        входящих. Толчок один на раунд, повод — `pilot_idle_role`.
+        """
         self.write_state(writer="agy", roles={"agy": {"last_seen": ago(30), "pane": "%1"},
                                               "codex": {"last_seen": ago(3600), "pane": "%2"}})
         pilot = self.pilot()
         pilot.tick()
-        self.assertEqual("", pilot.pending("codex"))
+        self.assertTrue(self.wake(pilot, "codex"), "молчащую роль без входящих будим")
+        self.assertTrue(pilot.pending("codex"), "толчок сразу, как у непрочитанного")
+        self.assertIn("pilot_idle_role", self.transcript_kinds())
+        pilot.tick()
+        self.assertEqual(len([k for k in self.transcript_kinds()
+                              if k == "pilot_idle_role"]), 1, "повтор в том же раунде — нет")
+
+    def test_fresh_role_is_left_alone(self) -> None:
+        self.write_state(writer="agy", roles={"agy": {"last_seen": ago(30), "pane": "%1"},
+                                              "codex": {"last_seen": ago(60), "pane": "%2"}})
+        pilot = self.pilot()
+        pilot.tick()
+        self.assertEqual({}, self.wake(pilot, "codex"), "молчание в пределах нормы не трогаем")
+
+    def test_role_nudge_is_not_queued_when_round_is_done(self) -> None:
+        self.write_state(writer="agy", phase="done", closed_at=ago(10),
+                         roles={"agy": {"last_seen": ago(30), "pane": "%1"},
+                                "codex": {"last_seen": ago(3600), "pane": "%2"}})
+        pilot = self.pilot()
+        pilot.tick()
+        self.assertEqual("", pilot.pending("codex"), "закрытый раунд не будим")
+
+    def test_role_with_unread_stays_with_the_mail_path(self) -> None:
+        """Почта будит свой путь; второй толчок тем же текстом — спам."""
+        self.inbox("codex", 2)
+        self.write_state(writer="agy", roles={"codex": {"last_seen": ago(3600), "pane": "%1"}},
+                         seen={"codex": 0})
+        pilot = self.pilot()
+        pilot.tick()
+        self.assertIn("pilot_unread_nudge", self.transcript_kinds())
+        self.assertNotIn("pilot_idle_role", self.transcript_kinds())
 
     def test_unread_nudge_is_sent_once_and_not_every_tick(self) -> None:
         """Напоминание о непрочитанном — толчок сразу, но один раз: агент
