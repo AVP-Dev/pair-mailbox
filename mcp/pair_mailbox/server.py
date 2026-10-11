@@ -66,6 +66,10 @@ DIGEST_MARKER = digest.DIGEST_MARKER
 TRANSCRIPT_SCAN_LIMIT = digest.TRANSCRIPT_SCAN_LIMIT
 build_digest = digest.build_digest
 estimate_tokens = digest.estimate_tokens
+
+# Баннер задачи для панелей — отдельный модуль: server.py заморожен
+# (file-size-baseline.tsv), и рост монолита запрещён без вынесения.
+from task_banner import write_task_banner
 _digest_marker_reserve = digest._digest_marker_reserve
 _render_digest = digest._render_digest
 _digest_line = digest._digest_line
@@ -2653,6 +2657,7 @@ class PairSession:
                 return item
 
             item = self.store.mutate(add)
+            write_task_banner(self.store.root, self.store.read())
             self.store.append_transcript("task_added", self.role, task_id=item["id"],
                                          text=body[:200])
             return {"task": item,
@@ -2692,6 +2697,7 @@ class PairSession:
             return match
 
         item = self.store.mutate(close)
+        write_task_banner(self.store.root, self.store.read())
         self.store.append_transcript("task_closed", self.role, task_id=item["id"],
                                      status=item["status"], reason=item["reason"][:200])
         remaining = [i["id"] for i in open_tasks(self.store.read())]

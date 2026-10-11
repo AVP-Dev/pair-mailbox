@@ -113,6 +113,38 @@ class TestPiFramedInput(unittest.TestCase):
         self.assertEqual("наработанный текст", line)
         self.assertFalse(composer.is_composer_empty(line))
 
+
+class TestTuiHintsAreNotContent(unittest.TestCase):
+    """Подсказки и шорткаты TUI в строке ввода — не набранный текст.
+
+    OpenCode/Claude Code/Codex печатают в конце строки ввода «⇧⇥ to change
+    thinking effort», «ctrl+x …» и подобное. Без очистки такой хвост делал
+    композер «занятым» навсегда: `visibly_busy` в пилоте видел работу там, где
+    агент спит, и не будил — один из путей к молчащему критику в новой сессии
+    (".pair/notes/finding.md", толчок idle_roles).
+    """
+
+    HINTS = [
+        "❯ ⇧⇥ to change thinking effort",
+        "❯ ⇧⇥ to change model",
+        "❯ ctrl+x commands",
+        "❯ ↑↓ to scroll",
+        "❯",
+    ]
+
+    def test_hint_tail_reads_empty(self) -> None:
+        for line in self.HINTS:
+            with self.subTest(line=line):
+                self.assertTrue(composer.is_composer_empty(line),
+                                "подсказка TUI не должна считаться вводом")
+
+    def test_real_text_after_hint_stays_busy(self) -> None:
+        for line in ("❯ привет, разберись с молчащим критиком",
+                     "❯ ctrl+x не помогает: текст"):
+            with self.subTest(line=line):
+                self.assertFalse(composer.is_composer_empty(line),
+                                 "настоящий текст остаётся текстом")
+
     def test_opencode_geometry_unchanged(self) -> None:
         panel = ["…", "  ┃  Ask anything…", "  ╹" + "▀" * 30,
                  "  ~/work/umputum:master"]
