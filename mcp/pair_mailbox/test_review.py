@@ -75,6 +75,64 @@ class TestReviewPure(unittest.TestCase):
             stale, _ = review.is_stale({"head": "abc", "files": ["a.py"]}, "", [], [])
             self.assertFalse(stale, "без git раунд держать нельзя")
 
+    def test_dirty_files_filters_untracked_by_default(self) -> None:
+        """У1: dirty_files по умолчанию не возвращает untracked файлы (??)."""
+        import review
+        (self.repo / "untracked_card.md").write_text("backlog card\n", encoding="utf-8")
+        self.assertEqual([], review.dirty_files(self.repo))
+        self.assertEqual(["untracked_card.md"], review.dirty_files(self.repo, include_untracked=True))
+
+    def test_snapshot_includes_head_files_with_untracked_scratch(self) -> None:
+        """У1: snapshot() объединяет head_files ∪ tracked-dirty, не вытесняя файлы коммита скретч-файлами."""
+        import review
+        (self.repo / "scratch.txt").write_text("scratch\n", encoding="utf-8")
+        snap = review.snapshot(self.repo)
+        self.assertIn("a.py", snap["files"], "файлы коммита обязаны быть в coverage снимка")
+        self.assertNotIn("scratch.txt", snap["files"], "untracked скретч не должен загрязнять snapshot")
+
+    def test_is_stale_untracked_scratch_does_not_invalidate(self) -> None:
+        """У2(а): untracked скретч-файл, появившийся после вердикта, НЕ делает вердикт stale."""
+        import review
+        old = review.snapshot(self.repo)
+        current = review.git_head(self.repo)
+        (self.repo / "scratch.txt").write_text("new untracked\n", encoding="utf-8")
+        stale, reason = review.is_stale(
+            old, current,
+            review.changed_between(self.repo, old["head"], current),
+            review.dirty_files(self.repo),
+        )
+        self.assertFalse(stale, f"untracked файл не должен вызывать вечный stale: {reason}")
+
+    def test_is_stale_tracked_edit_invalidates(self) -> None:
+        """У2(б): реальная tracked-модификация пересмотренного файла делает вердикт stale."""
+        import review
+        old = review.snapshot(self.repo)
+        current = review.git_head(self.repo)
+        (self.repo / "a.py").write_text("x=999\n", encoding="utf-8")
+        stale, reason = review.is_stale(
+            old, current,
+            review.changed_between(self.repo, old["head"], current),
+            review.dirty_files(self.repo),
+        )
+        self.assertTrue(stale, "tracked модификация обязана делать вердикт stale")
+        self.assertIn("a.py", reason)
+
+    def test_is_stale_tracked_edit_unrelated_does_not_invalidate(self) -> None:
+        """У2(в): tracked-модификация несвязанного файла не делает вердикт stale."""
+        import review
+        (self.repo / "b.py").write_text("b=1\n", encoding="utf-8")
+        git(self.repo, "add", "b.py")
+        git(self.repo, "commit", "-m", "add b")
+        old = {"head": review.git_head(self.repo), "files": ["a.py"]}
+        (self.repo / "b.py").write_text("b=2\n", encoding="utf-8")
+        current = review.git_head(self.repo)
+        stale, _ = review.is_stale(
+            old, current,
+            review.changed_between(self.repo, old["head"], current),
+            review.dirty_files(self.repo),
+        )
+        self.assertFalse(stale, "tracked модификация стороннего файла не должна инвалидировать вердикт")
+
 
 class TestReviewServer(PairTestCase):
     def fixed_snapshot(self, head: str = "h" * 40, files: list | None = None):

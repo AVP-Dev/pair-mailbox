@@ -45,8 +45,12 @@ def git_head(root: Path) -> str:
     return (out or "").strip()
 
 
-def dirty_files(root: Path) -> list[str]:
-    """Файлы с незакоммиченными изменениями (включая untracked)."""
+def dirty_files(root: Path, include_untracked: bool = False) -> list[str]:
+    """Файлы с незакоммиченными изменениями.
+
+    По умолчанию возвращает только отслеживаемые (tracked) изменения (M, D, A, R).
+    Строки untracked (??) игнорируются, если include_untracked не установлен в True.
+    """
     out = _run_git(root, "status", "--porcelain")
     if out is None:
         return []
@@ -56,6 +60,9 @@ def dirty_files(root: Path) -> list[str]:
         if not line:
             continue
         # Формат: XY <path> или XY <old> -> <new> при переименовании.
+        status_prefix = line[:2]
+        if not include_untracked and status_prefix == "??":
+            continue
         path = line[3:] if len(line) > 3 else ""
         if " -> " in path:
             path = path.split(" -> ")[-1].strip()
@@ -92,10 +99,19 @@ def changed_between(root: Path, old: str, new: str) -> list[str]:
 
 
 def snapshot(root: Path) -> dict[str, Any]:
-    """Снимок ревизии для привязки запроса/вердикта."""
+    """Снимок ревизии для привязки запроса/вердикта.
+
+    У1: Покрытие объединяет файлы коммита и реальные tracked-изменения
+    (head_files ∪ tracked-dirty), чтобы наличие dirty файлов не вытесняло
+    файлы коммита из покрытия вердикта.
+    """
     head = git_head(root)
-    dirty = dirty_files(root)
-    files = dirty or head_files(root, head)
+    dirty = dirty_files(root, include_untracked=False)
+    h_files = head_files(root, head)
+    if h_files:
+        files = sorted(set(h_files) | set(dirty))
+    else:
+        files = dirty
     return {"head": head, "dirty": dirty_hash(root), "files": files}
 
 
