@@ -187,6 +187,12 @@ docs/backlog/" → work.
 **The repair grew, we need a step back.** `pairctl mode audit`. What is already done
 stays done.
 
+**A new round.** The task appears in both panes (the banner, round 53) and the
+critic gets a push if the writer is silent. The writer writes `.pair/plan.md` —
+`round: N`, Goal, Invariants, Acceptance — and sends it to the neighbour for the
+visа. `plan → implement` is refused by the server until the visа (or the waiting
+window expires); stepping back and reopening are never blocked (docs/PROTOCOL.md §6).
+
 ## What you see
 
 ```sh

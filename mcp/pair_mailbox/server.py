@@ -2578,8 +2578,25 @@ class PairSession:
             )
 
         reopening = from_phase == "done" and phase != "done"
+        gated = from_phase == "plan" and phase == "implement" and not reopening
 
         def apply(state: dict[str, Any]) -> None:
+            if gated:
+                # Машинный гейт плана: соглашение §9a становится проверкой.
+                # Не замена evidence-gate (§5a) и не касание шагов назад:
+                # раунд, переоткрытый находкой после done, не обязан иметь
+                # план — иначе гейт запирал бы переоткрытие само себя.
+                from plan_gate import gate as plan_gate_check
+                verdict = plan_gate_check(self.store.root, state)
+                if not verdict.get("ok"):
+                    raise ProtocolError(
+                        f"переход plan → implement запрещён: {verdict['why']}",
+                        "Файл .pair/plan.md: первая строка `round: N`, секции Goal, "
+                        "Invariants, Acceptance. Виза соседа — заметка kind=verdict "
+                        "со строкой `plan-ack round N` (своя заметка не считается), "
+                        "либо окно ожидания из .pair/plan-gate.json истекает без "
+                        "открытых запросов писателя.",
+                    )
             if phase == "done":
                 unread = self._unread_count(state)
                 if unread > 0:

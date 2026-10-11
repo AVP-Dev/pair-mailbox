@@ -456,8 +456,7 @@ class TestTaskList(PairTestCase):
         self.writer.tool_pair_claim(reason="writer")
 
     def ready(self) -> None:
-        for phase in ("plan", "implement", "verify"):
-            self.writer.tool_pair_advance(phase)
+        self.advance_phases()
         self.human_ok()
 
     def test_a_new_task_does_not_erase_the_old_one(self) -> None:
@@ -538,18 +537,18 @@ class TestHumanCheckpoint(PairTestCase):
     def test_ok_given_on_plan_does_not_close_on_verify(self) -> None:
         self.set_autonomy("semi")
         self.writer.tool_pair_claim(reason="writer")
+        self.store.mutate(lambda st: st.setdefault("human_ok", []).append(
+            {"round": int(st.get("round", 0)), "at": "now", "phase": "plan"}))
+        self.write_plan(int(self.store.read().get("round", 0)))
+        self.ack_plan(int(self.store.read().get("round", 0)))
         for phase in ("plan", "implement", "verify"):
-            if phase == "plan":
-                self.store.mutate(lambda st: st.setdefault("human_ok", []).append(
-                    {"round": int(st.get("round", 0)), "at": "now", "phase": "plan"}))
             self.writer.tool_pair_advance(phase)
         self.record_test_evidence()
         self.assertRefused(self.writer.tool_pair_advance, "done", contains="pairctl ok")
 
     def test_ok_given_on_verify_closes(self) -> None:
         self.writer.tool_pair_claim(reason="writer")
-        for phase in ("plan", "implement", "verify"):
-            self.writer.tool_pair_advance(phase)
+        self.advance_phases()
         self.record_test_evidence()
         self.human_ok()
         self.assertEqual("done", self.writer.tool_pair_advance("done")["phase"])
@@ -557,8 +556,7 @@ class TestHumanCheckpoint(PairTestCase):
     def test_a_revoke_takes_the_ok_back(self) -> None:
         self.set_autonomy("semi")
         self.writer.tool_pair_claim(reason="writer")
-        for phase in ("plan", "implement", "verify"):
-            self.writer.tool_pair_advance(phase)
+        self.advance_phases()
         self.record_test_evidence()
         self.human_ok()
         self.store.mutate(lambda st: st.setdefault("human_ok", []).append(
@@ -575,8 +573,7 @@ class TestEvidenceGate(PairTestCase):
         self.writer.tool_pair_state()
         self.peer.tool_pair_state()
         self.writer.tool_pair_claim(reason="writer")
-        for phase in ("plan", "implement", "verify"):
-            self.writer.tool_pair_advance(phase)
+        self.advance_phases()
 
 
     def require_rolekeys(self):
@@ -686,8 +683,7 @@ class TestEvidenceGate(PairTestCase):
         self.writer.tool_pair_advance("done")
         # Reopen: a new round starts, the old evidence stays on the books.
         self.peer.tool_pair_advance("implement")
-        for phase in ("plan", "implement", "verify"):
-            self.writer.tool_pair_advance(phase)
+        self.advance_phases()
         self.assertRefused(self.writer.tool_pair_advance, "done",
                            contains="no passing evidence")
         # The human's word does not carry either: it was said about that round.
@@ -1069,8 +1065,7 @@ class TestPatchAccounting(PairTestCase):
         return path
 
     def ready(self) -> None:
-        for phase in ("plan", "implement", "verify"):
-            self.writer.tool_pair_advance(phase)
+        self.advance_phases()
         self.record_test_evidence()
         self.human_ok()
 
@@ -1967,6 +1962,8 @@ class TestPhasesAndNotes(PairTestCase):
         self.writer.tool_pair_advance("plan")
         self.assertEqual(self.store.read()["phase"], "plan")
         self.assertRefused(self.writer.tool_pair_advance, "done", contains="cannot move")
+        self.write_plan(int(self.store.read().get("round", 0)))
+        self.ack_plan(int(self.store.read().get("round", 0)))
         self.writer.tool_pair_advance("implement")
         self.writer.tool_pair_advance("verify")
         self.record_test_evidence()
@@ -2012,6 +2009,8 @@ class TestHeartbeatIsEveryCall(PairTestCase):
     def _close_round(self) -> None:
         self.writer.invoke("pair_claim", {})
         self.record_test_evidence()
+        self.write_plan(int(self.store.read().get("round", 0)))
+        self.ack_plan(int(self.store.read().get("round", 0)))
         for phase in ("plan", "implement", "verify", "done"):
             self.writer.invoke("pair_advance", {"phase": phase})
 
@@ -3587,6 +3586,8 @@ class TestRingAndUnblock(PairTestCase):
 class TestMailboxInvariants(PairTestCase):
     def test_claim_clears_closed_at_and_phase(self) -> None:
         self.writer.tool_pair_claim(reason="I will write")
+        self.write_plan(int(self.store.read().get("round", 0)))
+        self.ack_plan(int(self.store.read().get("round", 0)))
         self.writer.tool_pair_advance(phase="plan")
         self.writer.tool_pair_advance(phase="implement")
         self.writer.tool_pair_advance(phase="verify")
@@ -3626,6 +3627,8 @@ class TestMailboxInvariants(PairTestCase):
         self.assertEqual(self.writer.tool_pair_state()["unread"], 0)
 
         # Writer advances and closes round - must not be blocked by negative unread
+        self.write_plan(int(self.store.read().get("round", 0)))
+        self.ack_plan(int(self.store.read().get("round", 0)))
         self.writer.tool_pair_advance(phase="plan")
         self.writer.tool_pair_advance(phase="implement")
         self.writer.tool_pair_advance(phase="verify")
@@ -3636,6 +3639,8 @@ class TestMailboxInvariants(PairTestCase):
 
     def test_unread_checked_under_lock_in_advance(self) -> None:
         self.writer.tool_pair_claim(reason="writer")
+        self.write_plan(int(self.store.read().get("round", 0)))
+        self.ack_plan(int(self.store.read().get("round", 0)))
         self.writer.tool_pair_advance(phase="plan")
         self.writer.tool_pair_advance(phase="implement")
         self.writer.tool_pair_advance(phase="verify")
@@ -3722,6 +3727,8 @@ class TestMailboxInvariants(PairTestCase):
 
     def test_allowed_transitions_not_duplicated(self) -> None:
         self.writer.tool_pair_claim(reason="writer")
+        self.write_plan(int(self.store.read().get("round", 0)))
+        self.ack_plan(int(self.store.read().get("round", 0)))
         self.writer.tool_pair_advance("plan")
         self.writer.tool_pair_advance("implement")
         self.writer.tool_pair_advance("verify")

@@ -109,11 +109,55 @@ class PairTestCase(unittest.TestCase):
 
     def close_round(self, value: str = "117 passed in 6.2s (exit 0)") -> dict:
         """Walk the phases and close, satisfying the gate the way a real pair would."""
-        for phase in ("plan", "implement", "verify"):
-            self.writer.tool_pair_advance(phase)
+        self.advance_phases()
         self.record_test_evidence(value)
         self.human_ok()
         return self.writer.tool_pair_advance(phase="done")
+
+    def write_plan(self, round_number: int) -> None:
+        """Артефакт плана для машинного гейта plan → implement (манифест 53).
+
+        Фикстура пишет план ТЕКУЩЕГО раунда: гейт сверяет маркер `round: N`
+        с номером раунда, и план прошлого раунда был бы отказом — ровно та
+        защита от устаревшего артефакта, которую гейт и добавляет.
+        """
+        import plan_gate
+        body = [f"round: {round_number}", "",
+                "## Goal", "тест", "",
+                "## Invariants", "тест", "",
+                "## Acceptance", "тест", ""]
+        (self.store.root / plan_gate.PLAN_FILE).write_text("\n".join(body), encoding="utf-8")
+
+    def ack_plan(self, round_number: int) -> None:
+        """Виза критика: заметка verdict со строкой plan-ack round N.
+
+        mtime заметки двигается вперёд относительно плана: гейт требует, чтобы
+        виза была не раньше плана (заметка из прошлого раунда не считается).
+        """
+        import os
+        import time
+        from datetime import datetime, timezone
+        stamp = time.time() + 1
+        note = self.store.root / "notes" / "verdict.md"
+        note.parent.mkdir(parents=True, exist_ok=True)
+        header = ("## " + datetime.fromtimestamp(stamp, tz=timezone.utc).isoformat()
+                  + " — reviewer-agent\n")
+        note.write_text(header + f"\nplan-ack round {round_number}\n", encoding="utf-8")
+        os.utime(note, (stamp, stamp))
+
+    def advance_phases(self, phases: tuple = ("plan", "implement", "verify")) -> None:
+        """Пройти фазы так, как их проходит настоящая пара: с планом и визой.
+
+        До гейта план→implement проход был свободным, и фикстуры просто шли по
+        фазам. Теперь переход требует артефакта — помощник пишет его от имени
+        пары, чтобы тесты проверяли свой предмет, а не гейт.
+        """
+        for phase in phases:
+            if phase == "implement":
+                round_number = int(self.store.read().get("round", 0))
+                self.write_plan(round_number)
+                self.ack_plan(round_number)
+            self.writer.tool_pair_advance(phase)
 
     def set_autonomy(self, level: str) -> None:
         """Объявить уровень явно.
