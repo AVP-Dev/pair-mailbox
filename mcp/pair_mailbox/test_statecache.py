@@ -224,8 +224,7 @@ class TestCacheOverARealSession(PairTestCase):
         self.writer.tool_pair_state()
         self.peer.tool_pair_state()
         self.writer.tool_pair_claim(reason="writer")
-        for phase in ("plan", "implement", "verify"):
-            self.writer.tool_pair_advance(phase)
+        self.advance_phases()
 
     def test_evidence_becomes_visible_on_the_next_call(self) -> None:
         """Агент должен видеть причину заранее, а не тратить ход на заведомый отказ."""
