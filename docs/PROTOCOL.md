@@ -644,6 +644,24 @@ When a background check, monitor, or peer reports negative evidence (`ok=false`)
 3. Event `heal_reopen` is appended to `transcript.jsonl`.
 4. Flapping safeguard: maximum consecutive auto-heal attempts (`MAX_HEAL_ATTEMPTS = 3`). Exceeding the ceiling halts auto-reopening and requires human intervention.
 
+### 10g. Machine PR Merge Gate and Feature Freeze
+
+PR merging is gated by machine rules rather than prompt agreements:
+
+1. **Sanctioned path: `bin/pairctl pr merge [pr_id] [--force] [--reason REASON]`**:
+   Direct `gh pr merge` from a shell is outside the server process; GitHub Branch Protection provides the physical enforcement on GitHub, while `pairctl pr merge` is the only protocol-compliant merging path.
+2. **Preconditions for merging (`check_pr_merge`)**:
+   - **Phase constraint**: Phase must be strictly `verify` (merging during `implement`, `plan`, or `scoping` is refused).
+   - **Environment**: Must be a valid git repository (fail-closed on merge path: "cannot verify: not a git repo").
+   - **Test evidence**: Current round must have passing test evidence (`kind="test"`, `ok=True`).
+   - **Peer review approval**: A non-stale `approve` verdict must exist (`kind == "verdict"`).
+   - **No self-approval**: The verdict author must NOT be the current writer (`verdict.role != store.writer`).
+   - **Staleness check**: Reuses canonical `review.is_stale(...)`. Any code modifications or commits touching reviewed files invalidate the verdict.
+3. **Feature Freeze**:
+   Enforced naturally by the staleness rule: once an approval verdict is issued, any subsequent commits or file modifications change HEAD or dirty status, causing `is_stale` to return True. This blocks both `pairctl pr merge` and `pair_advance("done")`.
+4. **Bypass audit (`--force`)**:
+   Bypassing the gate via `--force` requires a non-empty `--reason` and is recorded in `transcript.jsonl` as `pr_merge_forced`.
+
 ## 11. Audit
 
 `transcript.jsonl`, append-only, per event: a message, a capture, a phase
