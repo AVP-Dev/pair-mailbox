@@ -259,6 +259,7 @@ if [ -n "$SWAP" ]; then
   export PAIR_ROLE="$writer" PAIR_STATE="$STATE_DIR"
   cd "$PROJECT_DIR"
   echo "=== PAIR WRITER: $writer ==="
+  [ -f "$STATE_DIR/task-banner.txt" ] && cat "$STATE_DIR/task-banner.txt"
   exec $writer_cmd
 fi
 
@@ -272,8 +273,8 @@ writer_cmd="$(launch_for "$writer")"
 critic_cmd="$(launch_for "$critic")"
 proj_name="$(basename -- "$PROJECT_DIR")"
 title_for() { printf '%s:%s (%s)' "$proj_name" "$1" "$2"; }
-writer_init="export PAIR_ROLE='$writer' PAIR_STATE='$STATE_DIR'; cd '$PROJECT_DIR'; echo '=== PAIR WRITER: $writer ==='; $writer_cmd"
-critic_init="export PAIR_ROLE='$critic' PAIR_STATE='$STATE_DIR'; cd '$PROJECT_DIR'; echo '=== PAIR CRITIC: $critic ==='; $critic_cmd"
+writer_init="export PAIR_ROLE='$writer' PAIR_STATE='$STATE_DIR'; cd '$PROJECT_DIR'; echo '=== PAIR WRITER: $writer ==='; [ -f '$STATE_DIR/task-banner.txt' ] && cat '$STATE_DIR/task-banner.txt'; $writer_cmd"
+critic_init="export PAIR_ROLE='$critic' PAIR_STATE='$STATE_DIR'; cd '$PROJECT_DIR'; echo '=== PAIR CRITIC: $critic ==='; [ -f '$STATE_DIR/task-banner.txt' ] && cat '$STATE_DIR/task-banner.txt'; $critic_cmd"
 title_writer="$(title_for "$writer" writer)"
 title_critic="$(title_for "$critic" critic)"
 
