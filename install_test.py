@@ -237,6 +237,41 @@ class TestForeignFilesSurvive(InstallCase):
                          "нечитаемый конфиг не переписывается")
 
 
+class TestNativePermissions(InstallCase):
+    """Установщик пишет нативный permission-слой: allow-list вместо кликов.
+
+    Боль раунда 54: 5 из 6 профилей поднимались с голым launch, deny писался
+    только для opencode. Проверка — по файлам в изолированном HOME и по
+    проектному .claude/settings.json: слой есть, deny содержит §12-категории.
+    """
+
+    def test_agy_settings_carry_deny(self) -> None:
+        result = run_install(self.home, "agy")
+        self.assertIn("права:", result.stdout)
+        path = self.home / ".gemini" / "antigravity-cli" / "settings.json"
+        self.assertTrue(path.exists(), "настройки Antigravity не записаны")
+        perms = json.loads(path.read_text(encoding="utf-8"))["permissions"]
+        self.assertIn("command(sudo)", perms["deny"])
+        self.assertIn("command(git status)", perms["allow"])
+
+    def test_codex_is_left_to_the_pilot(self) -> None:
+        """Нативного allow/deny у codex нет — установщик его не трогает.
+
+        Профиль остаётся на пилоте (§13b): это решение раунда 54, а не
+        недоделка, и молча писать approval-«never» в config.toml нельзя.
+        """
+        result = run_install(self.home, "codex")
+        self.assertNotIn("права:", result.stdout)
+
+    def test_claude_project_settings_keep_deny(self) -> None:
+        run_install(self.home, "claude")
+        path = ROOT / ".claude" / "settings.json"
+        self.assertTrue(path.exists(), "проектный .claude/settings.json потерян")
+        perms = json.loads(path.read_text(encoding="utf-8"))["permission"]
+        self.assertIn("Bash(sudo:*)", perms["deny"])
+        self.assertIn("Bash(git status:*)", perms["allow"])
+
+
 class TestMcpRegistration(InstallCase):
     def test_pair_server_is_registered_and_verified(self) -> None:
         result = run_install(self.home, "opencode")

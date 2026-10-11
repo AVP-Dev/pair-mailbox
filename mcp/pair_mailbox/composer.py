@@ -795,6 +795,36 @@ PERMISSION_MENU_MARKERS = (
 )
 PERMISSION_HEADER = re.compile(r"permission\s+(?:required|needed)", re.IGNORECASE)
 
+# Пункт меню, который разрешает операцию, вместе с его цифрой. Два вида меню
+# встречаются в живых TUI: горизонтальное (`Allow once · Always allow · Reject`
+# с `⇆ select`) — там Enter жмёт выбранный пункт, и нумерованное
+# (`1) Allow once  2) Always allow  3) Deny`) — там Enter жмёт ДЕФОЛТ, а им
+# часто оказывается отказ. Цифра шлётся только когда пункт явно разрешающий:
+# «Allow once» предпочитается «Always allow» — минимальная привилегия.
+MENU_ALLOW_ITEM = re.compile(
+    r"^\s*(\d+)\s*[).:\]]\s*(Allow\s+once|Always\s+allow|Allow|Yes)\b", re.IGNORECASE)
+
+
+def menu_allow_key(lines: list) -> str | None:
+    """Цифра разрешающего пункта нумерованного меню, либо None.
+
+    None — это тоже ответ: меню не нумеровано (горизонтальное), и жать надо
+    Enter по выделенному пункту, как было. Угадывать цифру нельзя: пункт
+    «Deny» нумерован так же, как «Allow».
+    """
+    once: str | None = None
+    always: str | None = None
+    for line in lines:
+        match = MENU_ALLOW_ITEM.match(line)
+        if not match:
+            continue
+        digit, label = match.group(1), match.group(2).lower()
+        if label == "allow once" or label == "yes":
+            return digit
+        if "always" in label and always is None:
+            always = digit
+    return once or always
+
 
 def detect_permission_menu(lines: list) -> str | None:
     """Промпт в виде меню, а не «y/N». Вернёт строку-заголовок или None.
@@ -988,7 +1018,19 @@ DEFAULT_ALLOW_PATTERNS = (
     r"\b(?:python3?|node|ruby)\s+(?:-\S+\s+)*(?:[^\s]*[_./-]?)(?:test|tests|pytest|unittest|lint|check|build)",
     r"\bmake\b",
     r"\bnpm\s+(?:run\s+\w+|test|ci)\b",
+    # bun — рантайм, на котором крутятся omp и pi (pane_current_command показал
+    # bun на панелях пары): bun test / bun run / bun x — та же работа, что
+    # pytest напрямую, и без этого агент вставал на промпте рутины.
+    r"\bbun\s+(?:test|run|x)\b",
     r"\bbuild\b",
+    # Наши раннеры из bin/: pairup/pairpilot/pair-duo/pairchat/pairctl/pairwatch/
+    # pairdoctor/pairboard. Относительность и защита от .. те же, что у scripts/.
+    # Имена с префикссом pair — все: семья инструментов одной ответственности.
+    r"\bbash\s+bin/(?!/)(?![^\s]*\.\.)pair[a-z-]*\b",
+    # Прямой запуск раннера: `bin/pairup` в начале команды. `(?<!\S)` — перед
+    # `bin/` только пробел или начало строки: иначе `/usr/local/bin/pairup`
+    # матчится как «наш раннер», а это чужой путь извне проекта.
+    r"(?<!\S)bin/(?!/)(?![^\s]*\.\.)pair[a-z-]*\b",
     # Свои гейты через bash: verify-project, file-size-gate, eye-of-sauron,
     # comment-lint, security-scan и *_test.sh. Относительность в самом паттерне:
     # `scripts/` без `/` и `..` впереди — абсолютный путь и выход из проекта
@@ -1151,8 +1193,17 @@ def resolve_permission_prompt(tmux: str, pane: str, allow: list[str] | None = No
                 "why": decision["why"], "matched": decision["matched"]}
 
     if menu:
-        subprocess.run([tmux, "send-keys", "-t", pane, "Enter"],
-                       capture_output=True, text=True, timeout=5)
+        # Меню бывает двух видов. Горизонтальное (`⇆ select`) — Enter жмёт
+        # выделенный пункт, там первым стоит Allow once, и это работало.
+        # Нумерованное (`1) Allow once`) — Enter жмёт ДЕФОЛТ, а им может быть
+        # Deny: тогда разрешённая операция молча отклонялась. Цифру шлём,
+        # только когда пункт явно разрешающий и вердикт уже allow — см.
+        # menu_allow_key. Нет цифры — прежнее поведение, без угадывания.
+        key = menu_allow_key(lines)
+        keys = [key, "Enter"] if key else ["Enter"]
+        for key in keys:
+            subprocess.run([tmux, "send-keys", "-t", pane, key],
+                           capture_output=True, text=True, timeout=5)
     else:
         subprocess.run([tmux, "send-keys", "-t", pane, "y"],
                        capture_output=True, text=True, timeout=5)

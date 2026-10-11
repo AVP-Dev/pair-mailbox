@@ -417,6 +417,24 @@ def verify(argv):
     return False, "сервер не ответил как pair-mailbox"
 
 
+def write_native_permissions(name):
+    """Нативный permission-слой CLI: allow-list вместо прокликивания человеком.
+
+    codex/pi/omp: нативных allow/deny списков нет (проверено раундом 54:
+    codex — только approval_policy, pi — доверие файлам), поэтому установщик
+    их не трогает: они остаются на пилоте (§13b). Это решение, а не недоделка.
+    """
+    if name not in ("opencode", "agy", "claude"):
+        return None
+    sys.path.insert(0, str(ROOT / "mcp" / "pair_mailbox"))
+    try:
+        import autoperms
+        return autoperms.write_native_perms(name, ROOT, Path.home())
+    except Exception as exc:  # noqa: BLE001 - установка не должна падать из-за прав
+        print("    права:   НЕ ЗАПИСАНЫ (" + str(exc) + ") — агент будет спрашивать")
+        return None
+
+
 def main():
 
     # Версия Python проверяется ДО установки, а не пачкой тестов в конце.
@@ -472,6 +490,9 @@ def main():
             print("  MCP:      " + expand(profile["mcp"]["path"]).name)
             print("  навыки:   " + ", ".join(write_skills(profile)))
             print("  инструкции: " + write_instructions(profile))
+            perms_path = write_native_permissions(name)
+            if perms_path:
+                print("  права:    " + str(perms_path))
 
         ok, detail = verify(argv)
         print("  проверка: " + ("ОК, pair-mailbox " + detail if ok else "НЕ РАБОТАЕТ — " + detail))
