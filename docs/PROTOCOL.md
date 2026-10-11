@@ -618,6 +618,24 @@ Invariants (§10d, §12):
 4. **Forward progression blocked on breach**: Only forward phase changes (`plan → implement`, `implement → verify`) are refused by `ProtocolError`.
 5. **Reset & fresh round**: Resetting is performed via `bin/pairctl budget --reset` (writes `.pair/budget-reset.json`) or automatically upon reopening a fresh round.
 
+### 10e. Intent gate and Task Receipt
+
+1. **Intent Gate (`scoping → plan`)**:
+   Moving from `scoping` forward into `plan` requires an intent artifact `.pair/intent.md`.
+   The file must start with `round: N` and contain three required sections:
+   - `Problem` (or `Проблема`) — the root issue or motivation.
+   - `Scope` (or `Границы`) — clear boundary of what is in and out of scope.
+   - `Outcome` (or `Ожидаемый результат`) — acceptance criteria and deliverables.
+   Stepping backward or reopening after `done` is never blocked.
+
+2. **Task Receipt (`.pair/RECEIPT-<round>.md`)**:
+   Upon advancing to `done`, the server automatically creates a machine receipt documenting the round execution:
+   - Round number, close timestamp, task summary.
+   - Active writer and participating peers.
+   - Tasks closed during the round.
+   - Recorded evidence items (test results, diffs, commits).
+   - Final round budget metrics (message count, phase advances, wall-clock hours, supervisor restarts).
+
 ## 11. Audit
 
 `transcript.jsonl`, append-only, per event: a message, a capture, a phase

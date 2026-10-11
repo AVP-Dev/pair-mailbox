@@ -73,6 +73,8 @@ class PairTestCase(unittest.TestCase):
         # перезаписывает запись целиком и сносит поля, выставленные тестом позже.
         self.store.mutate(lambda s: s.setdefault("roles", {}).setdefault(
             "reviewer-agent", {}))
+        # Дефолтный intent для существующих наборов тестов
+        self.write_intent(1)
 
     def tearDown(self) -> None:
         self._tmp.cleanup()
@@ -114,6 +116,15 @@ class PairTestCase(unittest.TestCase):
         self.human_ok()
         return self.writer.tool_pair_advance(phase="done")
 
+    def write_intent(self, round_number: int) -> None:
+        """Артефакт намерения для гейта scoping → plan (раунд 57)."""
+        import intent_gate
+        body = [f"round: {round_number}", "",
+                "## Problem", "тестовая проблема", "",
+                "## Scope", "границы теста", "",
+                "## Outcome", "ожидаемый результат теста", ""]
+        (self.store.root / intent_gate.INTENT_FILE).write_text("\n".join(body), encoding="utf-8")
+
     def write_plan(self, round_number: int) -> None:
         """Артефакт плана для машинного гейта plan → implement (манифест 53).
 
@@ -153,8 +164,10 @@ class PairTestCase(unittest.TestCase):
         пары, чтобы тесты проверяли свой предмет, а не гейт.
         """
         for phase in phases:
-            if phase == "implement":
-                round_number = int(self.store.read().get("round", 0))
+            round_number = int(self.store.read().get("round", 0))
+            if phase == "plan":
+                self.write_intent(round_number)
+            elif phase == "implement":
                 self.write_plan(round_number)
                 self.ack_plan(round_number)
             self.writer.tool_pair_advance(phase)

@@ -188,13 +188,16 @@ docs/backlog/" → work.
 stays done.
 
 **A new round.** The task appears in both panes (the banner, round 53) and the
-critic gets a push if the writer is silent. The writer writes `.pair/plan.md` —
+critic gets a push if the writer is silent. Moving from `scoping → plan` requires
+`.pair/intent.md` (Problem, Scope, Outcome). The writer writes `.pair/plan.md` —
 `round: N`, Goal, Invariants, Acceptance — and sends it to the neighbour for the
 visа. `plan → implement` is refused by the server until the visа (or the waiting
 window expires); stepping back and reopening are never blocked (docs/PROTOCOL.md §6).
 During execution, `budget ceiling` (§10d) protects against infinite round loops by
 measuring machine metrics (messages, phase advances, wall-clock, restarts); moving
 forward is refused on breach, while `done` and backward steps always remain open.
+Upon closing into `done`, a machine `Task Receipt` (`.pair/RECEIPT-<round>.md`) is
+automatically emitted with tasks, evidences, and final budget metrics.
 Reset limits: `bin/pairctl budget --reset`.
 
 ## What you see
