@@ -219,6 +219,72 @@ class TestReviewGate(PairTestCase):
             self.assertFalse(ok)
             self.assertIn("no revision binding", reason)
 
+    def test_check_pr_merge_prose_trap_words_refused(self) -> None:
+        """БЛОКЕР 1 (omp): отказной по смыслу вердикт со словами-ловушками (hook, book, lock) отклоняется."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            subprocess.run(["git", "init"], cwd=str(tmp_path), check=True, capture_output=True)
+            subprocess.run(["git", "config", "user.email", "pair@test.local"], cwd=str(tmp_path), check=True, capture_output=True)
+            subprocess.run(["git", "config", "user.name", "Pair Test"], cwd=str(tmp_path), check=True, capture_output=True)
+            (tmp_path / "file.txt").write_text("hello", encoding="utf-8")
+            subprocess.run(["git", "add", "file.txt"], cwd=str(tmp_path), check=True, capture_output=True)
+            subprocess.run(["git", "commit", "-m", "init"], cwd=str(tmp_path), check=True, capture_output=True)
+            head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=str(tmp_path), capture_output=True, text=True).stdout.strip()
+
+            store = MagicMock()
+            store.read.return_value = {
+                "phase": "verify",
+                "round": 60,
+                "writer": "agy",
+                "evidence": [{"round": 60, "kind": "test", "ok": True}],
+                "verdicts": [{
+                    "role": "omp",
+                    "kind": "verdict",
+                    "rev": {"head": head, "dirty": "", "files": ["file.txt"]},
+                }],
+            }
+            store.notes_root = tmp_path / "notes"
+            store.notes_root.mkdir()
+            # Текст критика без маркера одобрения, содержащий слово 'hook' (содержит 'ok')
+            (store.notes_root / "verdict.md").write_text(
+                "## 2026-10-12T01:00:00 - omp\n\nТребуется доработка: в hook пайплайна есть гонка.",
+                encoding="utf-8",
+            )
+            ok, reason = review_gate.check_pr_merge(store, tmp_path)
+            self.assertFalse(ok)
+            self.assertIn("last verdict is not approved", reason)
+
+    def test_check_pr_merge_missing_verdict_file_refused(self) -> None:
+        """БЛОКЕР 2 (omp): fail-closed при отсутствующем notes/verdict.md."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            subprocess.run(["git", "init"], cwd=str(tmp_path), check=True, capture_output=True)
+            subprocess.run(["git", "config", "user.email", "pair@test.local"], cwd=str(tmp_path), check=True, capture_output=True)
+            subprocess.run(["git", "config", "user.name", "Pair Test"], cwd=str(tmp_path), check=True, capture_output=True)
+            (tmp_path / "file.txt").write_text("hello", encoding="utf-8")
+            subprocess.run(["git", "add", "file.txt"], cwd=str(tmp_path), check=True, capture_output=True)
+            subprocess.run(["git", "commit", "-m", "init"], cwd=str(tmp_path), check=True, capture_output=True)
+            head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=str(tmp_path), capture_output=True, text=True).stdout.strip()
+
+            store = MagicMock()
+            store.read.return_value = {
+                "phase": "verify",
+                "round": 60,
+                "writer": "agy",
+                "evidence": [{"round": 60, "kind": "test", "ok": True}],
+                "verdicts": [{
+                    "role": "omp",
+                    "kind": "verdict",
+                    "rev": {"head": head, "dirty": "", "files": ["file.txt"]},
+                }],
+            }
+            store.notes_root = tmp_path / "notes"
+            store.notes_root.mkdir()
+            # verdict.md отсутствует
+            ok, reason = review_gate.check_pr_merge(store, tmp_path)
+            self.assertFalse(ok)
+            self.assertIn("notes/verdict.md does not exist", reason)
+
     def test_cmd_pr_force_without_reason_fails(self) -> None:
         """УСЛОВИЕ 3: --force без --reason отклоняется."""
         store = MagicMock()
