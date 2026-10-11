@@ -124,7 +124,7 @@ class TestReviewGate(PairTestCase):
             }
             store.notes_root = tmp_path / "notes"
             store.notes_root.mkdir()
-            (store.notes_root / "verdict.md").write_text("## 2026-10-12T01:00:00 - omp\n\nВЕРДИКТ: APPROVE", encoding="utf-8")
+            (store.notes_root / "verdict.md").write_text(f"## 2026-10-12T01:00:00 - omp\n\nverdict-approve {old_head[:12]}", encoding="utf-8")
             ok, reason = review_gate.check_pr_merge(store, tmp_path)
             self.assertFalse(ok)
             self.assertIn("verdict is stale", reason)
@@ -156,7 +156,7 @@ class TestReviewGate(PairTestCase):
             }
             store.notes_root = tmp_path / "notes"
             store.notes_root.mkdir()
-            (store.notes_root / "verdict.md").write_text("## 2026-10-12T01:00:00 - omp\n\nВЕРДИКТ: APPROVE / OK", encoding="utf-8")
+            (store.notes_root / "verdict.md").write_text(f"## 2026-10-12T01:00:00 - omp\n\nverdict-approve {head[:12]}", encoding="utf-8")
             ok, reason = review_gate.check_pr_merge(store, tmp_path)
             self.assertTrue(ok)
             self.assertEqual(reason, "")
@@ -284,6 +284,74 @@ class TestReviewGate(PairTestCase):
             ok, reason = review_gate.check_pr_merge(store, tmp_path)
             self.assertFalse(ok)
             self.assertIn("notes/verdict.md does not exist", reason)
+
+    def test_check_pr_merge_prose_ne_odobreno_refused(self) -> None:
+        """Д1 (omp): естественная формулировка отказа 'не одобрено' отклоняется."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            subprocess.run(["git", "init"], cwd=str(tmp_path), check=True, capture_output=True)
+            subprocess.run(["git", "config", "user.email", "pair@test.local"], cwd=str(tmp_path), check=True, capture_output=True)
+            subprocess.run(["git", "config", "user.name", "Pair Test"], cwd=str(tmp_path), check=True, capture_output=True)
+            (tmp_path / "file.txt").write_text("hello", encoding="utf-8")
+            subprocess.run(["git", "add", "file.txt"], cwd=str(tmp_path), check=True, capture_output=True)
+            subprocess.run(["git", "commit", "-m", "init"], cwd=str(tmp_path), check=True, capture_output=True)
+            head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=str(tmp_path), capture_output=True, text=True).stdout.strip()
+
+            store = MagicMock()
+            store.read.return_value = {
+                "phase": "verify",
+                "round": 60,
+                "writer": "agy",
+                "evidence": [{"round": 60, "kind": "test", "ok": True}],
+                "verdicts": [{
+                    "role": "omp",
+                    "kind": "verdict",
+                    "rev": {"head": head, "dirty": "", "files": ["file.txt"]},
+                }],
+            }
+            store.notes_root = tmp_path / "notes"
+            store.notes_root.mkdir()
+            (store.notes_root / "verdict.md").write_text(
+                "## 2026-10-12T01:00:00 - omp\n\nВЕРДИКТ по раунду 60: не одобрено, есть замечания.",
+                encoding="utf-8",
+            )
+            ok, reason = review_gate.check_pr_merge(store, tmp_path)
+            self.assertFalse(ok)
+            self.assertTrue("rejected the changes" in reason or "not approved" in reason)
+
+    def test_check_pr_merge_marker_head_mismatch_refused(self) -> None:
+        """Д2 (omp): маркер с несовпадающим HEAD (напр. deadbeef1234) отклоняется."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            subprocess.run(["git", "init"], cwd=str(tmp_path), check=True, capture_output=True)
+            subprocess.run(["git", "config", "user.email", "pair@test.local"], cwd=str(tmp_path), check=True, capture_output=True)
+            subprocess.run(["git", "config", "user.name", "Pair Test"], cwd=str(tmp_path), check=True, capture_output=True)
+            (tmp_path / "file.txt").write_text("hello", encoding="utf-8")
+            subprocess.run(["git", "add", "file.txt"], cwd=str(tmp_path), check=True, capture_output=True)
+            subprocess.run(["git", "commit", "-m", "init"], cwd=str(tmp_path), check=True, capture_output=True)
+            head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=str(tmp_path), capture_output=True, text=True).stdout.strip()
+
+            store = MagicMock()
+            store.read.return_value = {
+                "phase": "verify",
+                "round": 60,
+                "writer": "agy",
+                "evidence": [{"round": 60, "kind": "test", "ok": True}],
+                "verdicts": [{
+                    "role": "omp",
+                    "kind": "verdict",
+                    "rev": {"head": head, "dirty": "", "files": ["file.txt"]},
+                }],
+            }
+            store.notes_root = tmp_path / "notes"
+            store.notes_root.mkdir()
+            (store.notes_root / "verdict.md").write_text(
+                "## 2026-10-12T01:00:00 - omp\n\nverdict-approve deadbeef1234\n\nВсе хорошо.",
+                encoding="utf-8",
+            )
+            ok, reason = review_gate.check_pr_merge(store, tmp_path)
+            self.assertFalse(ok)
+            self.assertIn("marker head 'deadbeef1234' does not match current HEAD", reason)
 
     def test_cmd_pr_force_without_reason_fails(self) -> None:
         """УСЛОВИЕ 3: --force без --reason отклоняется."""

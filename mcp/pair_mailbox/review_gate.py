@@ -88,22 +88,37 @@ def check_pr_merge(store: Any, repo_dir: Path) -> tuple[bool, str]:
         if not blocks:
             return False, "notes/verdict.md is empty: no verdict text found"
         last_block = blocks[-1]
-        # B1: Структурированный машинный маркер одобрения (по аналогии с plan-ack round N)
-        # Требует явную строку "verdict-approve <head/round>" или канонический "ВЕРДИКТ ... ОДОБРЕНО (APPROVE)"
+        # Д1: Машинный канал одобрения — строго маркер verdict-approve <head|round>, без ложных срабатываний прозы
         VERDICT_APPROVE_RE = re.compile(
-            r"(?:\bverdict-approve\s+(?:round\s+\d+|[0-9a-f]{7,40})\b|"
-            r"ВЕРДИКТ\b[^\n]*\b(?:ОДОБРЕНО|APPROVE)\b)",
-            re.IGNORECASE,
+            r"^\s*verdict-approve\s+(?:round\s+(\d+)|([0-9a-f]{7,40}))\b",
+            re.IGNORECASE | re.MULTILINE,
         )
-        # Явный отказ
+        # Отказная ветка толерантна к прозе (ложный отказ безопасен)
         VERDICT_REJECT_RE = re.compile(
-            r"(?:\bverdict-reject\b|ВЕРДИКТ\b[^\n]*\b(?:ОТКАЗ|REJECT|CHANGES REQUESTED)\b)",
+            r"(?:\bverdict-reject\b|ВЕРДИКТ\b[^\n]*\b(?:ОТКАЗ|REJECT|CHANGES REQUESTED)\b|\bне\s+одобрен[оаы]?\b)",
             re.IGNORECASE,
         )
         if VERDICT_REJECT_RE.search(last_block):
-            return False, "last verdict rejected the changes (ОТКАЗ / REJECT)"
-        if not VERDICT_APPROVE_RE.search(last_block):
-            return False, "last verdict is not approved (no structured 'verdict-approve' or 'ВЕРДИКТ ... ОДОБРЕНО (APPROVE)' marker)"
+            return False, "last verdict rejected the changes (ОТКАЗ / REJECT / НЕ ОДОБРЕНО)"
+
+        approve_match = VERDICT_APPROVE_RE.search(last_block)
+        if not approve_match:
+            return False, "last verdict is not approved (no structured 'verdict-approve <head|round>' marker)"
+
+        # Д2: Сверка значения маркера с вердиктом (v_head) или текущим HEAD / текущим раундом
+        m_round, m_head = approve_match.groups()
+        if m_round:
+            cur_round = str(state.get("round", ""))
+            if str(m_round) != cur_round:
+                return False, f"marker round '{m_round}' does not match current round '{cur_round}'"
+        elif m_head:
+            m_head_lower = m_head.lower()
+            head_lower = head.lower()
+            v_head_lower = v_head.lower()
+            matches_head = head_lower.startswith(m_head_lower) or m_head_lower.startswith(head_lower)
+            matches_v_head = v_head_lower.startswith(m_head_lower) or m_head_lower.startswith(v_head_lower)
+            if not (matches_head or matches_v_head):
+                return False, f"marker head '{m_head}' does not match current HEAD '{head}'"
     except OSError as err:
         return False, f"failed to read notes/verdict.md: {err}"
 
