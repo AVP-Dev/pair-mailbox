@@ -2579,8 +2579,15 @@ class PairSession:
 
         reopening = from_phase == "done" and phase != "done"
         gated = from_phase == "plan" and phase == "implement" and not reopening
+        intent_gated = from_phase == "scoping" and phase == "plan" and not reopening
 
         def apply(state: dict[str, Any]) -> None:
+            if intent_gated:
+                from intent_gate import gate as intent_check
+                i_verdict = intent_check(self.store.root, state)
+                if not i_verdict.get("ok"):
+                    raise ProtocolError(f"переход scoping → plan запрещён: {i_verdict['why']}",
+                                        "Создай .pair/intent.md: `round: N`, Problem, Scope, Outcome.")
             if gated:
                 # Машинный гейт плана: соглашение §9a становится проверкой.
                 # Не замена evidence-gate (§5a) и не касание шагов назад:
@@ -2622,6 +2629,11 @@ class PairSession:
                 state["round"] = int(state.get("round", 0)) + 1
             elif phase == "done":
                 state["closed_at"] = utcnow()
+                try:
+                    from receipt import generate_receipt
+                    generate_receipt(self.store.root, state)
+                except Exception:
+                    pass
 
         self.store.mutate(apply)
         self.store.append_transcript(
