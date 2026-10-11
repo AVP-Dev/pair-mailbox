@@ -50,8 +50,29 @@ INPUT_BOX_CORNERS_LOWER = "\u2579\u258c\u2588"
 INPUT_BOX_CORNERS = "\u2579\u257a\u2578\u2576\u257b\u2502\u2503\u2551\u2552"
 
 # Что считаем приглашением ввести текст. Универсально: последняя строка, где
-# после маркера пусто или почти пусто.
-PROMPT_MARKERS = (">", "\u203a", "$", "#", "::", "ask>", "╰─")
+# после маркера пусто или почти пусто. `❯` — маркер композера OpenCode: без
+# него ветка очистки TUI-подсказок в is_composer_empty была недостижима, и
+# панель с хвостом «⇧⇥ to change thinking effort» читалась занятой навсегда —
+# пилот не будил спящего агента (.pair/notes/finding.md, idle_roles).
+PROMPT_MARKERS = (">", "\u203a", "$", "#", "::", "ask>", "╰─", "\u276f")
+
+# Стрелки-подсказки TUI в строке ввода. Убираются как глифы: в тексте агента
+# они не несут содержания, а в хвосте подсказки OpenCode/Codex стоят всегда.
+TUI_HINT_ARROWS = re.compile("[\u21e7\u21e5\u2191\u2193\u2192\u2190]")
+
+# Известные фразы-подсказки целиком. Совпадение проверяется на ВЕСЬ остаток
+# строки после маркера: префиксный вариант (`ctrl\+x.*`) объявляет пустым
+# композер с настоящим текстом «ctrl+x не помогает: текст», и пилот перезаписал
+# бы чужой ввод. Новый вид подсказки добавляется сюда явно — молчаливого
+# расширения быть не должно.
+TUI_HINT_PHRASES = (
+    r"to change thinking effort",
+    r"to change model",
+    r"to scroll",
+    r"commands?",
+    r"ctrl\+[a-z]\s+[a-z][a-z ]*",
+    r"(?:[a-z]+\s+)*to (?:change|scroll|select|confirm|switch|exit|navigate|toggle)",
+)
 
 
 def looks_like_status_line(line: str) -> bool:
@@ -650,6 +671,16 @@ def is_composer_empty(line: str) -> bool:
             tail = s[idx + len(marker):].strip()
             # рамка TUI, рамки-разделители, курсор
             tail = re.sub(r"[\u2500-\u257f\u2588|]", "", tail).strip()
+            # TUI-подсказки и шорткаты в конце строки ввода (OpenCode / Claude Code
+            # / Codex): «⇧⇥ to change thinking effort», «ctrl+x commands». Стрелки
+            # убираются как глифы, а слова — только если ВЕСЬ остаток совпал с
+            # известной фразой. Не префиксом: вариант с `.*` после `ctrl\+x`
+            # объявлял бы пустым композер с настоящим текстом «ctrl+x не помогает…»,
+            # и пилот перезаписал бы чужой ввод.
+            tail = re.sub(TUI_HINT_ARROWS, "", tail).strip()
+            if tail and any(re.fullmatch(phrase, tail, re.IGNORECASE)
+                            for phrase in TUI_HINT_PHRASES):
+                return True
             return len(tail) <= 2
     return False
 
