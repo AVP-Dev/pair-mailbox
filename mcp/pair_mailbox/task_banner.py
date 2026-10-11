@@ -36,7 +36,7 @@ def write_task_banner(state_dir: Path, state: dict[str, Any]) -> Path:
     try:
         target.write_text(render_task_banner(state), encoding="utf-8")
     except OSError:
-        # Панель человека не должна ронять добавление задачи. Отсутствие баннера
-        # деградирует к прежнему поведению, а не к отказу.
+        # Ошибка записи не должна ронять саму задачу: баннер — удобство
+        # панели, а не протокол, и его отсутствие возвращает прежнее поведение.
         pass
     return target
