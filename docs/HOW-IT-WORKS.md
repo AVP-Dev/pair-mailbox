@@ -246,3 +246,10 @@ if it found something after closing.
 
 **One agent has been working for a second hour.** Nobody stops it from finishing.
 `pairwatch` shows the silence; the decision is yours.
+
+## Git Worktrees (S5)
+
+To run parallel pairs or avoid context clashes across branches:
+- `pairup --worktree <branch>` (or `-w <branch>`) creates `.worktrees/<branch>` and isolates the session.
+- `pairctl worktree list` shows all active trees.
+- `pairctl worktree prune` cleans up deleted trees.

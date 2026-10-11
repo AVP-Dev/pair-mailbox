@@ -873,3 +873,18 @@ Why this is better than the supervisor's allowlist rather than next to it:
 
 That is why `launch` for OpenCode includes `--auto`: the agent stops stopping at every
 step, while the boundary rests on `deny`, which the human sees and can change.
+
+## 17. Git Worktrees Isolation (S5)
+
+When multiple pairs run in parallel, or when switching between tasks without dirtying
+the main working tree, git worktrees provide filesystem isolation.
+
+- `pairup --worktree <branch>` (alias `-w <branch>`):
+  Automatically provisions `.worktrees/<branch>` via `git worktree add`, switches into it,
+  and scopes `.pair` state locally.
+- `pairctl worktree list [--json]`:
+  Lists registered worktrees across the repository.
+- `pairctl worktree prune [--json]`:
+  Cleans stale worktree administrative records (`git worktree prune`).
+- `pairctl worktree remove [--target <path/branch>] [--force]`:
+  Removes an allocated worktree.

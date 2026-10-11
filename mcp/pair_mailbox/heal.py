@@ -72,7 +72,7 @@ def trigger_heal(
         st["reopened_by"] = f"heal:{role}"
         st.pop("closed_at", None)
 
-        # Добавим задачу на исправление
+        # Задача auto-heal фиксирует причину реопена в реестре задач раунда
         tasks = st.setdefault("tasks", [])
         next_id = max([int(t.get("id", 0)) for t in tasks] or [0]) + 1
         new_task = {

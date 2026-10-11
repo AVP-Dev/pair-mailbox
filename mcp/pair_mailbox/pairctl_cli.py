@@ -72,6 +72,7 @@ def _commands() -> dict[str, str]:
         "all": "pairctl_read",
         "notes": "pairctl_read",
         "budget": "budget",
+        "worktree": "worktree",
     }
 
 def run_ctl(args: argparse.Namespace, state_dir: Path) -> int:
@@ -221,6 +222,13 @@ def build_parser() -> argparse.ArgumentParser:
     budget_p = sub.add_parser("budget", help="human: лимиты и метрики раунда (бюджет)")
     budget_p.add_argument("--reset", action="store_true", help="сбросить счетчики бюджета текущего раунда")
     budget_p.add_argument("--json", action="store_true", help="вывести метрики в json")
+
+    wt_p = sub.add_parser("worktree", help="human: управление git worktrees для параллельных сессий")
+    wt_p.add_argument("worktree_action", nargs="?", choices=["list", "add", "remove", "prune"], default="list")
+    wt_p.add_argument("branch", nargs="?", help="имя ветки (для add)")
+    wt_p.add_argument("--target", help="путь или ветка для remove")
+    wt_p.add_argument("--force", action="store_true", help="принудительное удаление (для remove)")
+    wt_p.add_argument("--json", action="store_true", help="вывести в формате json")
 
     return parser
 
