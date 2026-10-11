@@ -11,6 +11,8 @@ mcp/pair_mailbox/test_statecache.py	statecache
 mcp/pair_mailbox/server.py	protocol
 mcp/pair_mailbox/test_protocol.py	protocol
 mcp/pair_mailbox/test_obligations.py	obligations
+mcp/pair_mailbox/budget.py	budget
+mcp/pair_mailbox/test_budget.py	budget
 mcp/pair_mailbox/rolekeys.py	rolekeys
 mcp/pair_mailbox/test_rolekeys.py	rolekeys
 mcp/pair_mailbox/obligations.py	obligations

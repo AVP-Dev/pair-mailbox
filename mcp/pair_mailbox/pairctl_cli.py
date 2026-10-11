@@ -71,6 +71,7 @@ def _commands() -> dict[str, str]:
         "log": "pairctl_read",
         "all": "pairctl_read",
         "notes": "pairctl_read",
+        "budget": "budget",
     }
 
 def run_ctl(args: argparse.Namespace, state_dir: Path) -> int:
@@ -216,6 +217,10 @@ def build_parser() -> argparse.ArgumentParser:
     keys = sub.add_parser("keys", help="human: Ed25519-ключи ролей (gen)")
     keys.add_argument("keys_command", nargs="?", help="'gen'")
     keys.add_argument("role", nargs="?", default="", help="роль для gen")
+
+    budget_p = sub.add_parser("budget", help="human: лимиты и метрики раунда (бюджет)")
+    budget_p.add_argument("--reset", action="store_true", help="сбросить счетчики бюджета текущего раунда")
+    budget_p.add_argument("--json", action="store_true", help="вывести метрики в json")
 
     return parser
 
