@@ -27,6 +27,7 @@ comment-lint	static	1	bash scripts/comment-lint.sh
 # выглядел бы как зелёный.
 protocol	positive	1	python3 mcp/pair_mailbox/test_protocol.py	serial
 task-banner	positive	1	python3 mcp/pair_mailbox/test_task_banner.py
+autoperms	positive	1	python3 mcp/pair_mailbox/test_autoperms.py
 obligations	positive	1	python3 mcp/pair_mailbox/test_obligations.py
 rolekeys	positive	1	python3 mcp/pair_mailbox/test_rolekeys.py
 pairctl-authority	positive	1	python3 mcp/pair_mailbox/test_pairctl_authority.py
