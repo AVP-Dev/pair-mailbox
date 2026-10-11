@@ -43,16 +43,18 @@ fi
 
 usage() {
   sed -n '2,14p' "$0" | sed 's/^# //; s/^#//'
-  echo "usage: pairup [--install] [--writer <роль>] [--swap <cli>] [--task TEXT] [--state DIR]"
+  echo "usage: pairup [--install] [--writer <роль>] [--swap <cli>] [--worktree <ветка>] [--task TEXT] [--state DIR]"
   echo "  --install    положить шим в ~/.local/bin (один раз), выйти"
   echo "  --writer <роль> назначить писателя этого проекта и поднять пару"
   echo "  --swap <cli> пересоздать панель критика новым CLI, писателя не трогать"
+  echo "  --worktree, -w <ветка> запустить пару в изолированном git worktree"
   echo "  --task TEXT  записать задачу перед подъёмом"
   echo "  --state DIR  явный каталог состояния (по умолчанию walk-up от cwd)"
 }
 TASK=""
 SWAP=""
 WANT_WRITER=""
+WORKTREE_BRANCH=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --install)
@@ -68,12 +70,39 @@ while [ $# -gt 0 ]; do
     --swap) SWAP="${2:-}"; shift 2 || { echo "error: --swap needs a CLI" >&2; exit 2; } ;;
     --task) TASK="${2:-}"; shift 2 || { echo "error: --task needs text" >&2; exit 2; } ;;
     --writer) WANT_WRITER="${2:-}"; shift 2 || { echo "error: --writer needs a role" >&2; exit 2; } ;;
+    --worktree|-w) WORKTREE_BRANCH="${2:-}"; shift 2 || { echo "error: --worktree needs a branch" >&2; exit 2; } ;;
     --duo) echo "pairup: --duo удалён: две копии одного CLI дерутся за MCP-лок и обе падают. Критик — другой CLI: pairup --swap <cli>" >&2; exit 2 ;;
     --state) STATE_DIR="${2:-}"; shift 2 || { echo "error: --state needs a dir" >&2; exit 2; } ;;
     -h|--help) usage; exit 0 ;;
     *) echo "error: unknown flag $1" >&2; usage >&2; exit 2 ;;
   esac
 done
+
+if [ -n "$WORKTREE_BRANCH" ]; then
+  _git_root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+  if [ -z "$_git_root" ]; then
+    echo "pairup: --worktree требует запуска внутри git-репозитория" >&2
+    exit 1
+  fi
+  _wt_res="$(python3 -c '
+import sys, json
+from pathlib import Path
+sys.path.insert(0, sys.argv[1] + "/mcp/pair_mailbox")
+import worktree
+res = worktree.setup_worktree(Path(sys.argv[2]), sys.argv[3])
+print(json.dumps(res))
+' "$PAIRUP_ROOT" "$_git_root" "$WORKTREE_BRANCH")"
+  _wt_ok="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1]).get("ok"))' "$_wt_res")"
+  if [ "$_wt_ok" != "True" ]; then
+    _wt_err="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1]).get("error"))' "$_wt_res")"
+    echo "pairup: ошибка создания worktree: $_wt_err" >&2
+    exit 1
+  fi
+  _target_wt="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1]).get("worktree"))' "$_wt_res")"
+  echo "pairup: переключаюсь в worktree $_target_wt"
+  cd "$_target_wt"
+  STATE_DIR="$_target_wt/.pair"
+fi
 
 if [ -z "$STATE_DIR" ]; then
   # Состояния нет — это новый проект пары: создаём минимальное молча,
