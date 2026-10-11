@@ -88,12 +88,22 @@ def check_pr_merge(store: Any, repo_dir: Path) -> tuple[bool, str]:
         if not blocks:
             return False, "notes/verdict.md is empty: no verdict text found"
         last_block = blocks[-1]
-        # Проверяем на явный отказ/reject с границами слов
-        if re.search(r"\b(отказ|reject|rejected|changes requested)\b", last_block, re.IGNORECASE):
+        # B1: Структурированный машинный маркер одобрения (по аналогии с plan-ack round N)
+        # Требует явную строку "verdict-approve <head/round>" или канонический "ВЕРДИКТ ... ОДОБРЕНО (APPROVE)"
+        VERDICT_APPROVE_RE = re.compile(
+            r"(?:\bverdict-approve\s+(?:round\s+\d+|[0-9a-f]{7,40})\b|"
+            r"ВЕРДИКТ\b[^\n]*\b(?:ОДОБРЕНО|APPROVE)\b)",
+            re.IGNORECASE,
+        )
+        # Явный отказ
+        VERDICT_REJECT_RE = re.compile(
+            r"(?:\bverdict-reject\b|ВЕРДИКТ\b[^\n]*\b(?:ОТКАЗ|REJECT|CHANGES REQUESTED)\b)",
+            re.IGNORECASE,
+        )
+        if VERDICT_REJECT_RE.search(last_block):
             return False, "last verdict rejected the changes (ОТКАЗ / REJECT)"
-        # Проверяем на явное одобрение (APPROVE / ОДОБРЕНО / OK) с границами слов
-        if not re.search(r"\b(approve|approved|одобрено|одобрен|одобрено\s*\(approve\)|ok)\b", last_block, re.IGNORECASE):
-            return False, "last verdict is not approved (no APPROVE / ОДОБРЕНО marker)"
+        if not VERDICT_APPROVE_RE.search(last_block):
+            return False, "last verdict is not approved (no structured 'verdict-approve' or 'ВЕРДИКТ ... ОДОБРЕНО (APPROVE)' marker)"
     except OSError as err:
         return False, f"failed to read notes/verdict.md: {err}"
 
