@@ -122,6 +122,9 @@ class TestReviewGate(PairTestCase):
                     "rev": {"head": old_head, "dirty": "", "files": ["file.txt"]},
                 }],
             }
+            store.notes_root = tmp_path / "notes"
+            store.notes_root.mkdir()
+            (store.notes_root / "verdict.md").write_text("## 2026-10-12T01:00:00 - omp\n\nВЕРДИКТ: APPROVE", encoding="utf-8")
             ok, reason = review_gate.check_pr_merge(store, tmp_path)
             self.assertFalse(ok)
             self.assertIn("verdict is stale", reason)

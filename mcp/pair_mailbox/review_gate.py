@@ -75,23 +75,27 @@ def check_pr_merge(store: Any, repo_dir: Path) -> tuple[bool, str]:
     if not v_head:
         return False, "verdict has no revision binding (rev.head is empty)"
 
-    # Проверка текста последнего вердикта из notes/verdict.md
+    # Проверка текста последнего вердикта из notes/verdict.md (fail-closed: файл обязан существовать)
     notes_dir = store.notes_root
     verdict_file = notes_dir / "verdict.md"
-    if verdict_file.is_file():
-        try:
-            content = verdict_file.read_text(encoding="utf-8")
-            # Берем последний блок заметки
-            blocks = [b for b in content.split("\n## ") if b.strip()]
-            if blocks:
-                last_block = blocks[-1].lower()
-                # Проверяем на явный отказ/reject
-                if "отказ" in last_block or "reject" in last_block or "changes requested" in last_block:
-                    return False, "last verdict rejected the changes (ОТКАЗ / REJECT)"
-                if not ("approve" in last_block or "одобрен" in last_block or "ok" in last_block):
-                    return False, "last verdict is not approved (no APPROVE / ОДОБРЕНО marker)"
-        except OSError:
-            pass
+    if not verdict_file.is_file():
+        return False, "notes/verdict.md does not exist: approval text cannot be verified"
+
+    import re
+    try:
+        content = verdict_file.read_text(encoding="utf-8")
+        blocks = [b for b in content.split("\n## ") if b.strip()]
+        if not blocks:
+            return False, "notes/verdict.md is empty: no verdict text found"
+        last_block = blocks[-1]
+        # Проверяем на явный отказ/reject с границами слов
+        if re.search(r"\b(отказ|reject|rejected|changes requested)\b", last_block, re.IGNORECASE):
+            return False, "last verdict rejected the changes (ОТКАЗ / REJECT)"
+        # Проверяем на явное одобрение (APPROVE / ОДОБРЕНО / OK) с границами слов
+        if not re.search(r"\b(approve|approved|одобрено|одобрен|одобрено\s*\(approve\)|ok)\b", last_block, re.IGNORECASE):
+            return False, "last verdict is not approved (no APPROVE / ОДОБРЕНО marker)"
+    except OSError as err:
+        return False, f"failed to read notes/verdict.md: {err}"
 
     # Проверка свежести через единый канонический предикат review.is_stale
     cur_dirty = review.dirty_files(repo_dir)
