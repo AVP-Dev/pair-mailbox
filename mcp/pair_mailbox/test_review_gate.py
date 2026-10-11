@@ -169,11 +169,31 @@ class TestReviewGate(PairTestCase):
         self.assertEqual(res, 2)
         store.append_transcript.assert_not_called()
 
+    def test_cmd_pr_force_without_human_ok_fails(self) -> None:
+        """УСЛОВИЕ 3: --force без human_ok (одобрения человеком в раунде) отклоняется."""
+        store = MagicMock()
+        store.read.return_value = {"round": 60, "phase": "verify", "human_ok": []}
+        args = argparse.Namespace(
+            pr_action="merge",
+            force=True,
+            reason="urgent fix",
+            pr_id="123",
+            role="agy",
+        )
+        res = review_gate.cmd_pr(store, args)
+        self.assertEqual(res, 1)
+        store.append_transcript.assert_not_called()
+
     @patch("review_gate.run_gh_merge")
-    def test_cmd_pr_force_with_reason_records_audit(self, mock_gh: MagicMock) -> None:
-        """УСЛОВИЕ 3: --force с --reason логируется в аудит/транскрипт."""
+    def test_cmd_pr_force_with_reason_and_human_ok_records_audit(self, mock_gh: MagicMock) -> None:
+        """УСЛОВИЕ 3: --force с --reason и human_ok логируется в аудит/транскрипт."""
         mock_gh.return_value = (0, "merged")
         store = MagicMock()
+        store.read.return_value = {
+            "round": 60,
+            "phase": "verify",
+            "human_ok": [{"round": 60, "phase": "verify"}],
+        }
         args = argparse.Namespace(
             pr_action="merge",
             force=True,

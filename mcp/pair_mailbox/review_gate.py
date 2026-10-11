@@ -119,6 +119,13 @@ def cmd_pr(store: Any, args: argparse.Namespace) -> int:
         if not reason:
             print("error: --force requires --reason with explanation", file=sys.stderr)
             return 2
+        # Остаточное требование критика: обход не доступен писателю в одиночку,
+        # требуется предварительное одобрение человеком (pairctl ok на текущий раунд)
+        from server import human_ok_for_round
+        state = store.read()
+        if not human_ok_for_round(state):
+            print("PR merge gate REFUSED: --force requires human authority (pairctl ok for current round)", file=sys.stderr)
+            return 1
         store.append_transcript(
             "pr_merge_forced",
             getattr(args, "role", "") or "human",
