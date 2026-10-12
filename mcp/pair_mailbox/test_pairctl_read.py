@@ -388,6 +388,24 @@ class TestMultiProject(PairTestCase):
             if old_env is not None:
                 os.environ["PAIR_STATE"] = old_env
 
+    def test_extract_pane_prefers_flag_over_env(self) -> None:
+        """Явный канал --pane/PAIR_PANE извлекается из аргументов и выигрывает у env."""
+        from pairctl_read import extract_pane
+        self.assertEqual(extract_pane(["--pane", "%42", "status"]), ("%42", ["status"]))
+        self.assertEqual(extract_pane(["--pane=%42", "status"]), ("%42", ["status"]))
+        self.assertEqual(extract_pane(["status"]), ("", ["status"]))
+        old = os.environ.get("PAIR_PANE")
+        os.environ["PAIR_PANE"] = "%99"
+        try:
+            self.assertEqual(extract_pane(["status"]), ("%99", ["status"]))
+            self.assertEqual(extract_pane(["--pane", "%42", "status"]), ("%42", ["status"]))
+            self.assertEqual(extract_pane(["--pane=%42", "status"]), ("%42", ["status"]))
+        finally:
+            if old is None:
+                os.environ.pop("PAIR_PANE", None)
+            else:
+                os.environ["PAIR_PANE"] = old
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

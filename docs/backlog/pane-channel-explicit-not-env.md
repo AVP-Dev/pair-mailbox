@@ -3,12 +3,15 @@ title: Канал панели: явный `--pane`/`PAIR_PANE` от запус�
 found: 2026-10-09
 severity: high
 round: 48
+status: resolved
+resolved_in_round: 63
 ---
 
 ## Где
 
-`_register` (`mcp/pair_mailbox/server.py`, env-маршрут ~1233), ancestry-маршрут
-`find_own_pane` (`mcp/pair_mailbox/composer.py:335`), занятость (server.py:1358-1368).
+`_register` (`mcp/pair_mailbox/server.py:1240-1280`), `extract_pane` (`mcp/pair_mailbox/pairctl_read.py:165-185`),
+занятость (`mcp/pair_mailbox/server.py:1393-1406`), тесты `mcp/pair_mailbox/test_protocol.py:2430-2465`
+и `mcp/pair_mailbox/test_pairctl_read.py:391-407`.
 
 ## Что это
 

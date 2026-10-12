@@ -1139,11 +1139,12 @@ def pane_exists(pane: str) -> bool:
 class PairSession:
     """One agent's view of the shared state, bound to a role at construction."""
 
-    def __init__(self, role: str, store: Store) -> None:
+    def __init__(self, role: str, store: Store, pane: str = "") -> None:
         if not role or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}", role):
             raise SystemExit(f"invalid --role {role!r}: use letters, digits, dot, dash, underscore")
         self.role = role
         self.store = store
+        self._explicit_pane = (pane or "").strip()
         self._last_state_hash: str | None = None
 
     # ---------------------------------------------------------------- helpers
@@ -1227,20 +1228,47 @@ class PairSession:
                                              pin=pin, why=pin_why)
                 pin = ""
 
-        # Маршрут: pin, затем env, затем ancestry. env — НЕ доказательство
-        # личности, а заявленный адрес: OpenCode MCP-дёмон наследует панель
-        # запускающей шелл (измерено 2026-10-07: opencode-дёмон с TMUX_PANE
-        # от панели omp). Поэтому env принимается только если:
+        # Маршрут: pin, затем явный канал, затем env, затем ancestry.
+        # Явный канал (--pane или PAIR_PANE) выигрывает у унаследованного
+        # TMUX_PANE (например, от оторванного сервиса/демона с чужим env).
+        # env — НЕ доказательство личности, а заявленный адрес: OpenCode MCP-дёмон
+        # наследует панель запускающей шелл (измерено 2026-10-07: opencode-дёмон с TMUX_PANE
+        # от панели omp). Поэтому явный канал и env принимаются только если:
         # (1) панель жива и проектна — доказывает belongs_to_project,
         # (2) в ней НЕ зарегистрирована другая ЖИВАЯ роль — иначе адрес чужой.
-        # Опровергнутый env маршрутом не становится (fail-closed): событие
-        # "pane_env_stale", активная доставка mailbox-only.
-        # События коллизий пишутся по заявленному env-адресу независимо от
-        # вердикта: столкновение — факт, даже когда маршрут не наш.
+        # Опровергнутый маршрут не становится адресом (fail-closed): событие
+        # "pane_explicit_stale" или "pane_env_stale", активная доставка mailbox-only.
+        explicit_pane = (self._explicit_pane or os.environ.get("PAIR_PANE") or "").strip()
         env_pane = os.environ.get("TMUX_PANE") or ""
         pane = pin or ""
+        proved_explicit = ""
+        if explicit_pane and tmux and not pin:
+            try:
+                ours, _why = _belongs(tmux, explicit_pane, self.store.project_root)
+            except Exception:
+                ours = False
+            occupant_alive = False
+            if ours:
+                probe_key = _pane_key(tmux, explicit_pane)
+                for _rn, _ri in roles.items():
+                    if _rn == self.role or not _ri.get("pane"):
+                        continue
+                    if _pane_key(tmux, _ri["pane"]) != probe_key:
+                        continue
+                    _pid = _ri.get("pid")
+                    if isinstance(_pid, int) and _pid > 0 and _pid != current_pid \
+                            and is_pid_alive(_pid):
+                        occupant_alive = True
+                        break
+            if ours and not occupant_alive:
+                proved_explicit = explicit_pane
+                pane = proved_explicit
+            else:
+                self.store.append_transcript(
+                    "pane_explicit_stale", self.role, pane=explicit_pane, proved=proved_explicit,
+                    why="явный канал не подтвержден как маршрут (жива, проектна, без чужой живой роли)")
         proved_env = ""
-        if env_pane and tmux and not pin:
+        if not pane and env_pane and tmux and not pin:
             try:
                 ours, _why = _belongs(tmux, env_pane, self.store.project_root)
             except Exception:
@@ -1367,7 +1395,8 @@ class PairSession:
                                                      other_info.get("pane")):
                 other_pid = other_info.get("pid")
                 if other_pid and not is_pid_alive(other_pid) \
-                        and not pane_exists(other_info.get("pane")):
+                        and (not pane_exists(other_info.get("pane"))
+                             or (explicit_pane and same_pane(explicit_pane, other_info.get("pane")))):
                     other_info.pop("pane", None)
                     self.store.append_transcript(
                         "pane_stale_cleared", self.role, pane=pane or rejected,
@@ -4037,9 +4066,11 @@ def main(argv: list[str] | None = None) -> int:
     потому что к этому моменту `server` уже загружен.
     """
     from pairctl_cli import build_parser, run_ctl
-    from pairctl_read import extract_state
+    from pairctl_read import extract_pane, extract_state
 
-    state_dir, rest = extract_state(list(sys.argv[1:] if argv is None else argv))
+    raw_args = list(sys.argv[1:] if argv is None else argv)
+    state_dir, rest = extract_state(raw_args)
+    explicit_pane, rest = extract_pane(rest)
     args = build_parser().parse_args(rest)
     if args.ctl_command:
         return run_ctl(args, state_dir)
@@ -4048,7 +4079,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     store = Store(state_dir)
     _role_handle = store.acquire_role_lock(args.role)
-    MCPServer(PairSession(args.role, store)).run()
+    MCPServer(PairSession(args.role, store, pane=explicit_pane)).run()
     return 0
 
 

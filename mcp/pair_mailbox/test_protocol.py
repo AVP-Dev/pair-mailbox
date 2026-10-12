@@ -2426,6 +2426,43 @@ class TestStalePaneSurvives(PairTestCase):
         kinds = [e["kind"] for e in self.store.read_transcript()]
         self.assertIn("pane_uid_collision", kinds)
 
+    def test_daemon_foreign_env_explicit_channel_wins(self) -> None:
+        """Демон с чужим TMUX_PANE получает адрес из явного канала (--pane/PAIR_PANE).
+
+        OpenCode демон наследует TMUX_PANE другого проекта (напр. gala:0.1).
+        Явный канал от запускающей стороны выигрывает у env и ancestry.
+        """
+        import composer
+        self.pane_alive(True)
+        self.join_pane("%foreign_pane")
+        real_belongs = composer.pane_belongs_to_project
+        composer.pane_belongs_to_project = lambda tmux, pane, root: (
+            (True, "") if str(pane) in ("%explicit_pane", "%explicit_env", "proj:0.1") else (False, "чужой проект")
+        )
+        self.addCleanup(setattr, composer, "pane_belongs_to_project", real_belongs)
+        newcomer = PairSession("claude", self.store, pane="%explicit_pane")
+        newcomer.tool_pair_state()
+        roles = self.store.read()["roles"]
+        self.assertEqual(roles["claude"].get("pane"), "%explicit_pane")
+
+    def test_deadlock_living_host_takes_over_dead_occupant_pane(self) -> None:
+        """Дедлок: живой хозяин получает панель мёртвого держателя.
+
+        Панель жива и проектна, держатель мёртв (pid 999999). Приходящая живая
+        роль с той же панелью снимает старую запись с pane_stale_cleared и
+        получает панель себе.
+        """
+        self.pane_alive(True)
+        self.register("agy", "%20", 999999)
+        self.join_pane("%20")
+        newcomer = PairSession("claude", self.store, pane="%20")
+        newcomer.tool_pair_state()
+        roles = self.store.read()["roles"]
+        self.assertIsNone(roles["agy"].get("pane"))
+        self.assertEqual(roles["claude"].get("pane"), "%20")
+        kinds = [e["kind"] for e in self.store.read_transcript()]
+        self.assertIn("pane_stale_cleared", kinds)
+
     def test_a_malformed_id_is_not_vouched_for(self) -> None:
         """После ребута %1 может принадлежать совсем другому окну, поэтому
         панель проверяется только настоящим запросом к tmux, а не формой строки."""
