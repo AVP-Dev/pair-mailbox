@@ -1,9 +1,10 @@
 {
-  "_readme": "Форматы MCP и навыков по CLI. Роль сервера = имя CLI. Добавить свой CLI = добавить сюда объект и запустить ./install.sh <имя>. Поле launch — команда, которой bin/pairpilot поднимает роль, если её процесс умер (см. PROTOCOL.md §13). Поле timeout в записи mcp — это терпение клиента, и оно обязано быть больше MAX_READ_WAIT_SECONDS (60с) с запасом: pair_read умеет ждать до минуты, и клиент, рвущий вызов раньше, обрывает живое ожидание пополам (подробности — в коде effective_read_wait, server.py:115). Поле supports_compact: true — CLI понимает команду /compact; пилот шлёт её только таким ролям (пока только Claude Code), остальным — пропуск с записью в журнал.",
+  "_readme": "Форматы MCP и навыков по CLI. Роль сервера = имя CLI. Добавить свой CLI = добавить сюда объект и запустить ./install.sh <имя>. Поле launch — команда, которой bin/pairpilot поднимает роль, если её процесс умер (см. PROTOCOL.md §13). Поле timeout в записи mcp — это терпение клиента, и оно обязано быть больше MAX_READ_WAIT_SECONDS (60с) с запасом: pair_read умеет ждать до минуты, и клиент, рвущий вызов раньше, обрывает живое ожидание пополам (подробности — в коде effective_read_wait, server.py:115). Поле supports_compact: true — CLI понимает команду /compact; пилот шлёт её только таким ролям (pi, omp, opencode), остальным — пропуск с записью в журнал.",
 
   "opencode": {
     "launch": "opencode --standalone --auto",
     "label": "OpenCode",
+    "supports_compact": true,
     "mcp": {
       "path": "~/.config/opencode/opencode.jsonc",
       "format": "json",
@@ -42,7 +43,6 @@
   "claude": {
     "launch": "claude",
     "label": "Claude Code",
-    "supports_compact": true,
     "mcp": {
       "path": "~/.claude.json",
       "format": "json",
@@ -55,6 +55,7 @@
   "pi": {
     "launch": "pi",
     "label": "Pi Coding Agent",
+    "supports_compact": true,
     "mcp": {
       "path": "~/.pi/agent/mcp.json",
       "format": "json",
@@ -67,7 +68,7 @@
   "omp": {
     "launch": "omp",
     "label": "OMP Coding Agent",
-    "binary": "omp",
+    "supports_compact": true,
     "mcp": {
       "path": "~/.omp/agent/mcp.json",
       "format": "json",

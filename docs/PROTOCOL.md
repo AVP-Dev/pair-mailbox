@@ -677,7 +677,7 @@ PR merging is gated by machine rules rather than prompt agreements:
 3. **Smart Auto-Compact**:
    Prevents context exhaustion stalls. `/compact` is injected only into roles
    whose CLI declares `"supports_compact": true` in `cli-profiles.json` (today:
-   Claude Code only); other CLIs get Escape-only recovery and no preventive
+   pi, omp, opencode); other CLIs get Escape-only recovery and no preventive
    compact, so no garbage lands in their input line:
 
 ## 11. Audit

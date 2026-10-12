@@ -1923,8 +1923,11 @@ class TestSmartAutoCompact(PilotCase):
         """Гейт читает cli-profiles.json: True только у явного флага."""
         import json
         profiles = {
-            "claude": {"launch": "claude", "supports_compact": True},
-            "omp": {"launch": "omp"},
+            "pi": {"launch": "pi", "supports_compact": True},
+            "omp": {"launch": "omp", "supports_compact": True},
+            "opencode": {"launch": "opencode", "supports_compact": True},
+            "agy": {"launch": "agy"},
+            "claude": {"launch": "claude"},
             "weird": {"launch": "x", "supports_compact": "yes"},
         }
         (self.state_dir / "cli-profiles.json").write_text(
@@ -1936,8 +1939,11 @@ class TestSmartAutoCompact(PilotCase):
         try:
             pairpilot.ROOT = self.state_dir
             pairpilot.Pilot.supports_compact = real
-            self.assertTrue(pilot.supports_compact("claude"))
-            self.assertFalse(pilot.supports_compact("omp"))
+            self.assertTrue(pilot.supports_compact("pi"))
+            self.assertTrue(pilot.supports_compact("omp"))
+            self.assertTrue(pilot.supports_compact("opencode"))
+            self.assertFalse(pilot.supports_compact("agy"))
+            self.assertFalse(pilot.supports_compact("claude"))
             self.assertFalse(pilot.supports_compact("nosuchrole"))
             self.assertFalse(pilot.supports_compact("weird"))
         finally:

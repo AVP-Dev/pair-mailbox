@@ -274,7 +274,7 @@ class Pilot:
     def supports_compact(self, role: str) -> bool:
         """Понимает ли CLI роли команду /compact (флаг в cli-profiles.json).
 
-        Только Claude Code. Читается на каждом обращении, как
+        pi, omp, opencode. Читается на каждом обращении, как
         `_launch_commands`: правка профиля вступает в силу без перезапуска
         пилота. Неизвестная роль и нечитаемый файл — False (default-deny:
         чужой ввод лучше не трогать, чем слать туда мусор).
