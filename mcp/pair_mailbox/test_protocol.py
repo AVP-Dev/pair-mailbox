@@ -1898,6 +1898,9 @@ class TestMessaging(PairTestCase):
         self.assertRefused(
             self.writer.tool_pair_send, to="ghost-role", text="привет",
             contains="не зарегистрирована")
+        self.assertRefused(
+            self.writer.tool_pair_deliver, to="ghost-role", text="привет",
+            contains="не зарегистрирована")
         mailboxes_after = sorted(p.name for p in self.store.mailbox_root.glob("*"))
         self.assertNotIn("ghost-role", mailboxes_after,
                          "мёртвый ящик не должен создаваться")
