@@ -304,7 +304,7 @@ def write_mcp(profile, role):
 def write_skills(profile):
     root = expand(profile["skills_dir"])
     out = []
-    for d in sorted(SKILLS.glob("*/")):
+    for d in sorted(p for p in SKILLS.iterdir() if p.is_dir()):
         t = root / d.name
         t.mkdir(parents=True, exist_ok=True)
         shutil.copy(d / "SKILL.md", t / "SKILL.md")
