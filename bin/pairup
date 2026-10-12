@@ -43,13 +43,13 @@ fi
 
 usage() {
   sed -n '2,14p' "$0" | sed 's/^# //; s/^#//'
-  echo "usage: pairup [--install] [--writer <роль>] [--swap <cli>] [--worktree <ветка>] [--task TEXT] [--state DIR]"
-  echo "  --install    положить шим в ~/.local/bin (один раз), выйти"
-  echo "  --writer <роль> назначить писателя этого проекта и поднять пару"
-  echo "  --swap <cli> пересоздать панель критика новым CLI, писателя не трогать"
-  echo "  --worktree, -w <ветка> запустить пару в изолированном git worktree"
-  echo "  --task TEXT  записать задачу перед подъёмом"
-  echo "  --state DIR  явный каталог состояния (по умолчанию walk-up от cwd)"
+  echo "usage: pairup [--install] [--writer <role>] [--swap <cli>] [--worktree <branch>] [--task TEXT] [--state DIR]"
+  echo "  --install    place shim in ~/.local/bin (once), exit"
+  echo "  --writer <role> assign this project's writer and launch the pair"
+  echo "  --swap <cli> recreate the critic pane with a new CLI, leave the writer alone"
+  echo "  --worktree, -w <branch> run the pair in an isolated git worktree"
+  echo "  --task TEXT  record a task before launch"
+  echo "  --state DIR  explicit state dir (default: walk-up from cwd)"
 }
 TASK=""
 SWAP=""
@@ -60,10 +60,10 @@ while [ $# -gt 0 ]; do
     --install)
       mkdir -p ~/.local/bin
       ln -sf "$PAIRUP_ROOT/bin/pairup" ~/.local/bin/pairup
-      echo "pairup: шим в ~/.local/bin/pairup"
+      echo "pairup: shim at ~/.local/bin/pairup"
       case ":$PATH:" in
         *":$HOME/.local/bin:"*|*":~/.local/bin:"*) ;;
-        *) echo "pairup: ВНИМАНИЕ ~/.local/bin нет на PATH — добавь в ~/.bashrc: export PATH=\"\$HOME/.local/bin:\$PATH\"" >&2 ;;
+        *) echo "pairup: WARNING ~/.local/bin is not on PATH — add to ~/.bashrc: export PATH=\"\$HOME/.local/bin:\$PATH\"" >&2 ;;
       esac
       exit 0
       ;;
@@ -71,7 +71,7 @@ while [ $# -gt 0 ]; do
     --task) TASK="${2:-}"; shift 2 || { echo "error: --task needs text" >&2; exit 2; } ;;
     --writer) WANT_WRITER="${2:-}"; shift 2 || { echo "error: --writer needs a role" >&2; exit 2; } ;;
     --worktree|-w) WORKTREE_BRANCH="${2:-}"; shift 2 || { echo "error: --worktree needs a branch" >&2; exit 2; } ;;
-    --duo) echo "pairup: --duo удалён: две копии одного CLI дерутся за MCP-лок и обе падают. Критик — другой CLI: pairup --swap <cli>" >&2; exit 2 ;;
+    --duo) echo "pairup: --duo removed: two copies of one CLI fight over the MCP lock and both crash. The critic is a different CLI: pairup --swap <cli>" >&2; exit 2 ;;
     --state) STATE_DIR="${2:-}"; shift 2 || { echo "error: --state needs a dir" >&2; exit 2; } ;;
     -h|--help) usage; exit 0 ;;
     *) echo "error: unknown flag $1" >&2; usage >&2; exit 2 ;;
@@ -81,7 +81,7 @@ done
 if [ -n "$WORKTREE_BRANCH" ]; then
   _git_root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
   if [ -z "$_git_root" ]; then
-    echo "pairup: --worktree требует запуска внутри git-репозитория" >&2
+    echo "pairup: --worktree requires running inside a git repository" >&2
     exit 1
   fi
   _wt_res="$(python3 -c '
@@ -95,11 +95,11 @@ print(json.dumps(res))
   _wt_ok="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1]).get("ok"))' "$_wt_res")"
   if [ "$_wt_ok" != "True" ]; then
     _wt_err="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1]).get("error"))' "$_wt_res")"
-    echo "pairup: ошибка создания worktree: $_wt_err" >&2
+    echo "pairup: worktree creation failed: $_wt_err" >&2
     exit 1
   fi
   _target_wt="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1]).get("worktree"))' "$_wt_res")"
-  echo "pairup: переключаюсь в worktree $_target_wt"
+  echo "pairup: switching to worktree $_target_wt"
   cd "$_target_wt"
   # Состояние пары по дефолту остаётся в основном репозитории, чтобы супервизор
   # и гейты видели один раунд и одного писателя без расщепления состояния.
@@ -128,7 +128,7 @@ open(root + "/state.json", "w", encoding="utf-8").write(json.dumps(st, ensure_as
 EOF
   fi
   STATE_DIR="$_root/.pair"
-  echo "pairup: новое состояние в $STATE_DIR"
+  echo "pairup: new state in $STATE_DIR"
 fi
 STATE_DIR="$(cd -- "$STATE_DIR" && pwd -P)"
 PROJECT_DIR="$(dirname -- "$STATE_DIR")"
@@ -167,18 +167,18 @@ if [ -n "$SWAP" ] || [ -z "$writer" ] || [ -z "$critic" ]; then
     _gc="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("critic") or "")' "$_global" 2>/dev/null || true)"
     if [ -z "$writer" ] && [ -n "$_gw" ]; then
       "$PAIRCTL" --state "$STATE_DIR" roles --writer "$_gw"
-      echo "pairup: писатель $_gw (из общей расстановки, перебить: pairup --writer <роль>)"
+      echo "pairup: writer $_gw (from shared policy, override: pairup --writer <role>)"
       writer="$_gw"
     fi
     if [ -z "$critic" ] && [ -n "$_gc" ]; then
-      echo "pairup: критик $_gc (из общей расстановки)"
+      echo "pairup: critic $_gc (from shared policy)"
       critic="$_gc"
     fi
   fi
 fi
 if [ -z "$SWAP" ]; then
   if [ -z "$writer" ]; then
-    echo "pairup: в расстановке нет писателя: pairup --writer <роль>" >&2
+    echo "pairup: no writer in policy: pairup --writer <role>" >&2
     exit 1
   fi
   if [ -z "$critic" ]; then
@@ -189,10 +189,10 @@ if [ -z "$SWAP" ]; then
       if [ "$_c" != "$writer" ] && command -v "$_c" >/dev/null 2>&1; then critic="$_c"; break; fi
     done
     if [ -z "$critic" ]; then
-      echo "pairup: нет ни одного установленного CLI для критика (agy, claude, codex, opencode, pi, omp)" >&2
+      echo "pairup: no installed CLI for the critic (agy, claude, codex, opencode, pi, omp)" >&2
       exit 1
     fi
-    echo "pairup: критик не назначен — поднимаю $critic (перебить: pairup --swap <cli>)" >&2
+    echo "pairup: no critic assigned — bringing up $critic (override: pairup --swap <cli>)" >&2
     SWAP="$critic"
   fi
 fi
@@ -219,7 +219,7 @@ _pair_cure_role() {
   _pane="$(python3 -c 'import json,sys; s=json.load(open(sys.argv[1])); print(((s.get("roles") or {}).get(sys.argv[2]) or {}).get("pane") or "")' "$STATE_DIR/state.json" "$_role" 2>/dev/null || true)"
   if [ -z "$_pane" ] || \
      ! tmux display-message -p -t "$_pane" '#{pane_id}' >/dev/null 2>&1; then
-    echo "pairup: роль $_role держит сироту-сервер общего сервиса opencode (pid $_pid) — освобождаю слот"
+    echo "pairup: role $_role holds an orphaned opencode shared-service server (pid $_pid) — freeing the slot"
     kill "$_pid" 2>/dev/null || true
     for _ in 1 2 3 4 5 6 7 8 9 10; do
       kill -0 "$_pid" 2>/dev/null || break
@@ -251,18 +251,18 @@ if [ "$pilot_alive" -eq 0 ] && [ -f "$STATE_DIR/pilot.pid" ]; then
   fi
 fi
 if [ "$pilot_alive" -eq 1 ]; then
-  echo "pairup: сверхвизор уже работает на $STATE_DIR, не трогаю"
+  echo "pairup: supervisor already running on $STATE_DIR, leaving it alone"
 else
   nohup python3 "$PILOT" --state "$STATE_DIR" >>"$STATE_DIR/pairpilot.log" 2>&1 &
   echo "$!" >"$STATE_DIR/pilot.pid"
   sleep 2
   _pid="$(cat "$STATE_DIR/pilot.pid" 2>/dev/null || true)"
   if [ -n "$_pid" ] && kill -0 "$_pid" 2>/dev/null; then
-    echo "pairup: сверхвизор поднят (pid $_pid, лог $STATE_DIR/pairpilot.log)"
+    echo "pairup: supervisor started (pid $_pid, log $STATE_DIR/pairpilot.log)"
   else
     # Врал «поднят» и умирал молча: шим вёл не туда (корень от симлинка),
     # пилот падал на старте, а человек узнавал из пустого лога. Больше не врём.
-    echo "pairup: сверхвизор НЕ поднялся, смотри $STATE_DIR/pairpilot.log" >&2
+    echo "pairup: supervisor did NOT start, see $STATE_DIR/pairpilot.log" >&2
     tail -5 "$STATE_DIR/pairpilot.log" >&2 || true
     exit 1
   fi
@@ -280,15 +280,15 @@ if [ -n "$SWAP" ]; then
   writer="$("$PAIRCTL" --state "$STATE_DIR" status 2>/dev/null \
     | python3 -c 'import json,sys; print(json.load(sys.stdin).get("writer") or "")' 2>/dev/null || true)"
   if [ -z "$writer" ]; then
-    echo "pairup: некого менять — писатель не назначен (pairctl assign <роль>)" >&2
+    echo "pairup: nobody to swap — no writer assigned (pairctl assign <role>)" >&2
     exit 1
   fi
-  echo "pairup: писатель $writer остаётся, критик -> $SWAP"
+  echo "pairup: writer $writer stays, critic -> $SWAP"
   "$PAIRUP_ROOT/bin/pair-duo" --swap-critic "$SWAP" --state "$STATE_DIR" --project "$PROJECT_DIR" || exit $?
   # Писатель запускается ЗДЕСЬ же: иначе человек остаётся в пустом шелле
   # и не понимает как пользоваться одной панелью. Критик уже в соседней.
   writer_cmd="$(python3 -c "import json; p=json.load(open('$PAIRUP_ROOT/cli-profiles.json')); print(p.get('$writer',{}).get('launch','') or '$writer')")"
-  echo "pairup: критик $SWAP в соседней панели, запускаю писателя $writer здесь"
+  echo "pairup: critic $SWAP in the next pane, starting writer $writer here"
   export PAIR_ROLE="$writer" PAIR_STATE="$STATE_DIR"
   cd "$PROJECT_DIR"
   echo "=== PAIR WRITER: $writer ==="
@@ -316,8 +316,8 @@ if [ -n "${TMUX:-}" ]; then
   tmux select-pane -T "$title_critic" -t '{last}' 2>/dev/null || true
   tmux select-pane -T "$title_writer" 2>/dev/null || true
   tmux select-pane -L 2>/dev/null || true
-  echo "pairup: критик $critic в новой панели, писатель — здесь ($writer)"
-  echo "pairup: писатель: $writer_cmd"
+  echo "pairup: critic $critic in new pane, writer here ($writer)"
+  echo "pairup: writer: $writer_cmd"
   eval "$writer_init"
 else
   tmux new-session -d -s "$session" -n "pair" -c "$PROJECT_DIR" "$SHELL -c \"$writer_init\""
@@ -325,6 +325,6 @@ else
   tmux select-layout -t "$session" even-horizontal 2>/dev/null || true
   tmux select-pane -T "$title_writer" -t "$session:0.0" 2>/dev/null || true
   tmux select-pane -T "$title_critic" -t "$session:0.1" 2>/dev/null || true
-  echo "pairup: сессия $session (писатель $writer | критик $critic)"
+  echo "pairup: session $session (writer $writer | critic $critic)"
   tmux attach-session -t "$session"
 fi

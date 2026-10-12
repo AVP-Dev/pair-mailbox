@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-"""Нулевое касание: ставит pair-mailbox во все найденные CLI и проверяет, что
-MCP действительно поднимается. Писать конфиг недостаточно — молчаливый отказ
-формата мы уже ловили дважды, поэтому проверка настоящая: запускаем ровно ту
-команду, которую записали в конфиг, и делаем handshake.
+"""Zero-touch: installs pair-mailbox into every detected CLI and verifies that
+MCP actually comes up. Writing the config is not enough — we have twice caught
+silent format refusals, so the check is real: launch exactly the command written
+into the config and shake hands.
 
-  ./install.sh              поставить всё найденное и проверить
-  ./install.sh codex        только один профиль
-  ./install.sh --check      только проверить, ничего не менять
-  ./install.sh --list       показать профили
+  ./install.sh              install everything found and verify
+  ./install.sh codex        one profile only
+  ./install.sh --check      verify only, change nothing
+  ./install.sh --list       show profiles
 """
 import json, os, re, shutil, subprocess, sys, tempfile
 from pathlib import Path
@@ -19,19 +19,19 @@ SKILLS = ROOT / "skills"
 MARK = "<!-- pair-mailbox -->"
 
 NOTE = """
-## Парная работа
+## Pair Work
 
-Рядом доступен соседний агент через инструменты `pair_*`.
-Прежде чем браться за задачу, вызови `pair_state`, затем `pair_claim`.
+A peer agent is available nearby via the `pair_*` tools.
+Before taking on a task, call `pair_state`, then `pair_claim`.
 
-- Захватил авторитет — ты писатель: правь файлы, гоняй тесты, коммить, открывай PR.
-- Не захватил — ты критик: читай, спорь, пиши находки в `pair_note`, файлы не правь.
+- Claimed authority — you are the writer: edit files, run tests, commit, open PRs.
+- Did not claim — you are the critic: read, argue, write findings to `pair_note`, never edit files.
 
-Раунд можно переоткрыть в любую сторону: `pair_advance("implement")` откатит фазу назад.
-Это не требует правы записи. Если писатель ушёл молча — скажи об этом пользователю.
+The round can be reopened either way: `pair_advance(\"implement\")` rolls the phase back.
+That needs no write authority. If the writer went silent — tell the user.
 
-Если сосед молчит — работай один, это не блокер.
-Правила целиком: `docs/PROTOCOL.md` в репозитории pair-mailbox.
+If the peer is silent — work alone, that is not a blocker.
+Full rules: `docs/PROTOCOL.md` in the pair-mailbox repository.
 """
 
 
@@ -281,9 +281,9 @@ def write_mcp(profile, role):
         try:
             parse_jsonc(raw)
         except Exception as exc:
-            print("    !! не читается: " + str(exc))
-            print("       " + str(path) + " не тронут. Правь конфиг руками или")
-            print("       удали блок mcp.pair из него и запусти установку снова.")
+            print("    !! unreadable: " + str(exc))
+            print("       " + str(path) + " left untouched. Edit the config by hand or")
+            print("       delete the mcp.pair block from it and run the install again.")
             return None
     entry = dict(spec["entry"])
     if isinstance(entry.get("command"), list):
@@ -338,15 +338,15 @@ def write_instructions(profile):
         head = text if not text.strip() else text.rstrip()
         updated = head + ("\n" if head else "") + MARK + NOTE
     if updated == text:
-        return "без изменений"
+        return "unchanged"
     # Копия перед перезаписью: файл принадлежит человеку, а не нам.
     try:
         path.with_suffix(path.suffix + ".bak").write_text(text, encoding="utf-8")
     except OSError as error:
-        print("    !! не смог сохранить копию: " + str(error))
-        return "НЕ ЗАПИСАНО (нет копии)"
+        print("    !! could not save a backup copy: " + str(error))
+        return "NOT WRITTEN (no backup copy)"
     path.write_text(updated, encoding="utf-8")
-    return "обновлена"
+    return "updated"
 
 
 def verify(argv):
@@ -400,7 +400,7 @@ def verify(argv):
         proc = subprocess.run(argv, input=req, capture_output=True, text=True,
                               timeout=15, env=env)
     except Exception as exc:
-        return False, "запуск не удался: " + str(exc)
+        return False, "launch failed: " + str(exc)
     finally:
         shutil.rmtree(scratch, ignore_errors=True)
     for line in proc.stdout.splitlines():
@@ -414,7 +414,7 @@ def verify(argv):
         info = reply.get("result", {}).get("serverInfo", {})
         if info.get("name") == "pair-mailbox":
             return True, info.get("version", "?")
-    return False, "сервер не ответил как pair-mailbox"
+    return False, "the server did not answer as pair-mailbox"
 
 
 def write_native_permissions(name):
@@ -431,7 +431,7 @@ def write_native_permissions(name):
         import autoperms
         return autoperms.write_native_perms(name, ROOT, Path.home())
     except Exception as exc:  # noqa: BLE001 - установка не должна падать из-за прав
-        print("    права:   НЕ ЗАПИСАНЫ (" + str(exc) + ") — агент будет спрашивать")
+        print("    permissions: NOT WRITTEN (" + str(exc) + ") — the agent will ask")
         return None
 
 
@@ -441,14 +441,14 @@ def main():
     # Установка на macOS давала 210 ошибок импорта, и ни одна из них не
     # говорила, что системный python3 там 3.9, а код написан под 3.8+.
     if sys.version_info < (3, 8):
-        print("нужен python3 3.8 или новее, а запущен " + sys.version.split()[0])
-        print("поставь новее и повтори: brew install python   (проверь: python3 -V)")
+        print("need python3 3.8 or newer, but running " + sys.version.split()[0])
+        print("install newer and retry: brew install python   (check: python3 -V)")
         return 1
     args = [a for a in sys.argv[1:] if not a.startswith("-")]
     if "--list" in sys.argv:
         for k, v in PROFILES.items():
             if not k.startswith("_"):
-                print("%-10s %-20s %s" % (k, v["label"], "есть" if present(v) else "нет"))
+                print("%-10s %-20s %s" % (k, v["label"], "found" if present(v) else "missing"))
         return 0
 
     print(r"""
@@ -467,14 +467,14 @@ def main():
     targets = args or [k for k, v in PROFILES.items() if not k.startswith("_") and present(v)]
 
     if not targets:
-        print("не найдено ни одного известного CLI")
+        print("no known CLI found")
         return 1
 
     failed = []
     for name in targets:
         profile = PROFILES.get(name)
         if not profile:
-            print("нет профиля: " + name)
+            print("no profile: " + name)
             failed.append(name)
             continue
         print("\n" + name + " — " + profile["label"])
@@ -491,7 +491,7 @@ def main():
                     entry = cfg[spec["root_key"]][server_key]
                     argv = entry["command"] if isinstance(entry["command"], list) else [entry["command"]] + entry.get("args", [])
             except Exception:
-                print("    конфиг не найден или нечитаем")
+                print("    config not found or unreadable")
                 failed.append(name)
                 continue
         else:
@@ -500,14 +500,14 @@ def main():
                 failed.append(name)
                 continue
             print("  MCP:      " + expand(profile["mcp"]["path"]).name)
-            print("  навыки:   " + ", ".join(write_skills(profile)))
-            print("  инструкции: " + write_instructions(profile))
+            print("  skills:   " + ", ".join(write_skills(profile)))
+            print("  instructions: " + write_instructions(profile))
             perms_path = write_native_permissions(name)
             if perms_path:
-                print("  права:    " + str(perms_path))
+                print("  permissions: " + str(perms_path))
 
         ok, detail = verify(argv)
-        print("  проверка: " + ("ОК, pair-mailbox " + detail if ok else "НЕ РАБОТАЕТ — " + detail))
+        print("  check: " + ("OK, pair-mailbox " + detail if ok else "NOT WORKING — " + detail))
         if not ok:
             failed.append(name)
 
@@ -515,8 +515,8 @@ def main():
     # PAIR_INSTALL_SKIP_SUITE: её гоняет verify-слой отдельно, а каждый
     # тестовый install нёс бы её заново (698с на install_test.py целиком).
     if not os.environ.get("PAIR_INSTALL_SKIP_SUITE"):
-        print("\nтесты сервера")
-        print("  проверка ядра и протокола...", end="", flush=True)
+        print("\nserver tests")
+        print("  checking core and protocol...", end="", flush=True)
         env = dict(os.environ, PAIR_DISABLE_RING="1")
         # Сюита едет в подменённом HOME (install-тесты изолируются), а PyNaCl
         # живёт в user-site настоящего HOME. Без наследования 2 evidence-теста
@@ -537,31 +537,31 @@ def main():
         t_res = subprocess.run([sys.executable, str(ROOT / "mcp/pair_mailbox/test_protocol.py")],
                                cwd=str(ROOT), env=env, capture_output=True, text=True)
         if t_res.returncode != 0:
-            print(" ОШИБКА")
-            print("\nТЕСТЫ НЕ ПРОШЛИ:")
+            print(" FAILED")
+            print("\nTESTS FAILED:")
             if t_res.stdout:
                 print(t_res.stdout)
             if t_res.stderr:
                 print(t_res.stderr)
             return 1
-        print(" ОК")
+        print(" OK")
 
     if failed:
-        print("\nНЕ СДЕЛАНО для: " + ", ".join(failed))
-        print("разбери эти вручную, остальные работают")
+        print("\nNOT DONE for: " + ", ".join(failed))
+        print("fix these by hand, the rest work")
         return 1
 
     print("\n" + "=" * 70)
-    print("✓ pair-mailbox успешно установлен и готов к работе!")
-    print("\nБыстрый старт:")
-    print("  1. Запустите пару агентов в tmux:")
+    print("✓ pair-mailbox installed and ready to work!")
+    print("\nQuick start:")
+    print("  1. Start an agent pair in tmux:")
     print("     ./bin/pairup opencode agy")
-    print("  2. В окне любого агента задайте цель:")
-    print('     "Работаем вместе над задачей X"')
-    print("  3. Веб-доска мониторинга раундов:")
+    print("  2. In either agent window, set the goal:")
+    print('     "Work together on task X"')
+    print("  3. Round-monitoring web board:")
     print("     ./bin/pairboard")
-    print("\nДокументация: docs/PROTOCOL.ru.md | docs/PROTOCOL.md")
-    print("Автор: Aliaksei Patskevich (AVP-Dev) • https://avpdev.com • https://t.me/AVP_Dev")
+    print("\nDocumentation: docs/PROTOCOL.md | docs/PROTOCOL.ru.md")
+    print("Author: Aliaksei Patskevich (AVP-Dev) • https://avpdev.com • https://t.me/AVP_Dev")
     print("GitHub: https://github.com/AVP-Dev/pair-mailbox")
     print("=" * 70)
     return 0

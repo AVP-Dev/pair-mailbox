@@ -49,16 +49,16 @@ SLEEP_SLICE = 0.25
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="pairboard",
-        description="Статический HTML-дашборд состояния пары (без веб-сервера).")
-    parser.add_argument("--state", default=".pair", help="каталог состояния пары (по умолчанию .pair)")
-    parser.add_argument("--out", default=DEFAULT_OUT, help=f"куда писать HTML (по умолчанию {DEFAULT_OUT})")
+        description="Static HTML dashboard of pair state (no web server).")
+    parser.add_argument("--state", default=".pair", help="pair state directory (default .pair)")
+    parser.add_argument("--out", default=DEFAULT_OUT, help=f"where to write HTML (default {DEFAULT_OUT})")
     parser.add_argument("--watch", type=float, default=0, metavar="N",
-                        help="пересобирать каждые N секунд и вложить автообновление в страницу")
+                        help="rebuild every N seconds and embed auto-refresh in the page")
     parser.add_argument("--limit", type=int, default=DEFAULT_EVENTS,
-                        help=f"сколько последних событий журнала показать (по умолчанию {DEFAULT_EVENTS})")
+                        help=f"how many recent log events to show (default {DEFAULT_EVENTS})")
     parser.add_argument("--stale-after", type=int, default=DEFAULT_STALE_AFTER,
-                        help="после скольких секунд снимок считается протухшим")
-    parser.add_argument("--print-json", action="store_true", help="напечатать снимок и выйти, HTML не писать")
+                        help="after how many seconds a snapshot counts as stale")
+    parser.add_argument("--print-json", action="store_true", help="print snapshot and exit, do not write HTML")
     return parser.parse_args(argv)
 
 
@@ -102,7 +102,7 @@ def run_watch(state_dir: Path, out: Path, *, interval: float, limit: int,
     try:
         written = build_once(state_dir, out, limit=limit, stale_after=stale_after,
                              refresh=int(seconds))
-        print(f"дашборд: {written} (обновление каждые {seconds:g} с, Ctrl-C выход)")
+        print(f"dashboard: {written} (refresh every {seconds:g} s, Ctrl-C to exit)")
         if once:
             return 0
         while not stopping["now"]:
@@ -115,8 +115,8 @@ def run_watch(state_dir: Path, out: Path, *, interval: float, limit: int,
             except (OSError, AssetError) as error:
                 # Падение одного прохода не должно убивать наблюдение: файл на
                 # диске остаётся предыдущим и протухшим, и страница об этом скажет.
-                print(f"дашборд: проход не удался: {error}", file=sys.stderr)
-        print("дашборд: остановлен")
+                print(f"dashboard: pass failed: {error}", file=sys.stderr)
+        print("dashboard: stopped")
         return 0
     finally:
         signal.signal(signal.SIGINT, previous)
@@ -143,8 +143,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     state_dir = resolve_state(args.state)
     if not (state_dir / "state.json").exists() and not args.print_json:
-        print(f"дашборд: в {state_dir} нет state.json — это не состояние пары. "
-              f"Укажи --state, если каталог другой.", file=sys.stderr)
+        print(f"dashboard: no state.json in {state_dir} — not a pair state. "
+              f"Pass --state if the directory is different.", file=sys.stderr)
         return 2
 
     if args.print_json:
@@ -163,15 +163,15 @@ def main(argv: list[str] | None = None) -> int:
                              stale_after=args.stale_after)
         written = build_once(state_dir, out, limit=args.limit, stale_after=args.stale_after,
                              refresh=0)
-        print(f"дашборд: {written}")
-        print(f"открыть: file://{written}")
-        print("картинка не обновляется сама; для live-режима: bin/pairboard --watch 5")
+        print(f"dashboard: {written}")
+        print(f"open: file://{written}")
+        print("page does not refresh itself; for live mode: bin/pairboard --watch 5")
         return 0
     except AssetError as error:
-        print(f"дашборд: {error}", file=sys.stderr)
+        print(f"dashboard: {error}", file=sys.stderr)
         return 2
     except OSError as error:
-        print(f"дашборд: {error}", file=sys.stderr)
+        print(f"dashboard: {error}", file=sys.stderr)
         return 1
 
 

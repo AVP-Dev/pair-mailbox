@@ -146,7 +146,7 @@ class TestForeignFilesSurvive(InstallCase):
             '{\n  "$schema": "https://opencode.ai/config.json",\n'
             '  // мой комментарий\n  "model": "test-model",\n}\n')
         result = run_install(self.home, "opencode")
-        self.assertNotIn("не читается", result.stdout,
+        self.assertNotIn("unreadable", result.stdout,
                          "комментарий в jsonc не должен ронять установку")
         cfg = _INSTALL.parse_jsonc(self.jsonc.read_text(encoding="utf-8"))
         self.assertEqual(cfg.get("model"), "test-model")
@@ -192,7 +192,7 @@ class TestForeignFilesSurvive(InstallCase):
         на каждом запуске. Удаление содержимого чужого файла §12 требует спросить."""
         self.agents().write_text(
             "# Мои правила\n\nне трогать.\n\n<!-- pair-mailbox -->\n"
-            "## Парная работа\n\nстарый блок\n\n"
+            "## Pair Work\n\nold block\n\n"
             "## Моя секция после маркера\n\nэто важно и не должно пропасть.\n",
             encoding="utf-8")
         run_install(self.home, "opencode")
@@ -231,8 +231,8 @@ class TestForeignFilesSurvive(InstallCase):
         original = '{ this is not json at all\n'
         self.write_jsonc(original)
         result = run_install(self.home, "opencode")
-        self.assertIn("не читается", result.stdout)
-        self.assertIn("не тронут", result.stdout)
+        self.assertIn("unreadable", result.stdout)
+        self.assertIn("left untouched", result.stdout)
         self.assertEqual(self.jsonc.read_text(encoding="utf-8"), original,
                          "нечитаемый конфиг не переписывается")
 
@@ -247,7 +247,7 @@ class TestNativePermissions(InstallCase):
 
     def test_agy_settings_carry_deny(self) -> None:
         result = run_install(self.home, "agy")
-        self.assertIn("права:", result.stdout)
+        self.assertIn("permissions:", result.stdout)
         path = self.home / ".gemini" / "antigravity-cli" / "settings.json"
         self.assertTrue(path.exists(), "настройки Antigravity не записаны")
         perms = json.loads(path.read_text(encoding="utf-8"))["permissions"]
@@ -261,7 +261,7 @@ class TestNativePermissions(InstallCase):
         недоделка, и молча писать approval-«never» в config.toml нельзя.
         """
         result = run_install(self.home, "codex")
-        self.assertNotIn("права:", result.stdout)
+        self.assertNotIn("permissions:", result.stdout)
 
     def test_claude_project_settings_keep_deny(self) -> None:
         run_install(self.home, "claude")
@@ -289,13 +289,13 @@ class TestMcpRegistration(InstallCase):
         result = subprocess.run([sys.executable, str(INSTALL), "opencode"],
                                 capture_output=True, text=True, env=env,
                                 cwd=str(ROOT), timeout=600)
-        self.assertNotIn("ТЕСТЫ НЕ ПРОШЛИ", result.stdout)
+        self.assertNotIn("TESTS FAILED", result.stdout)
 
     def test_test_installs_skip_the_nested_suite(self) -> None:
         """run_install ставит PAIR_INSTALL_SKIP_SUITE: вложенные ~3 мин
         на каждый тестовый install не повторяются (было 698с на файл)."""
         result = run_install(self.home, "opencode")
-        self.assertNotIn("тесты сервера", result.stdout)
+        self.assertNotIn("server tests", result.stdout)
 
     def test_skills_installation_includes_pair_chat(self) -> None:
         """Инвариант 5: install.sh раскладывает все публичные навыки в skills_dir."""
@@ -406,7 +406,7 @@ class TestVerifyDoesNotTouchTheRoster(InstallCase):
         перестал бы что-либо проверять, и это выглядело бы как успех.
         """
         result = run_install(self.home, "opencode")
-        self.assertIn("проверка: ОК, pair-mailbox", result.stdout)
+        self.assertIn("check: OK, pair-mailbox", result.stdout)
 
 
 class TestPaneRoleLookup(InstallCase):

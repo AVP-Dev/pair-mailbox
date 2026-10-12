@@ -16,19 +16,19 @@ ok_n, bad_n, warn_n = 0, 0, 0
 def ok(m):
     global ok_n
     ok_n += 1
-    print("  \033[32mок\033[0m      " + m)
+    print("  \033[32mok\033[0m      " + m)
 
 
 def bad(m):
     global bad_n
     bad_n += 1
-    print("  \033[31mошибка\033[0m " + m)
+    print("  \033[31merror\033[0m " + m)
 
 
 def warn(m):
     global warn_n
     warn_n += 1
-    print("  \033[33mвнимание\033[0m " + m)
+    print("  \033[33mwarning\033[0m " + m)
 
 
 def argv_from_toml(text):
@@ -69,22 +69,22 @@ def unittest_tail(stdout: str, stderr: str) -> list:
     return out
 
 
-print("pairdoctor, корень " + str(ROOT))
+print("pairdoctor, root " + str(ROOT))
 
-print("\n[1] сервер")
+print("\n[1] server")
 srv = ROOT / "mcp/pair_mailbox/server.py"
 tests = ROOT / "mcp/pair_mailbox/test_protocol.py"
 if not srv.exists():
-    bad("нет mcp/pair_mailbox/server.py")
+    bad("missing mcp/pair_mailbox/server.py")
 else:
     r = subprocess.run([sys.executable, str(tests)], cwd=str(ROOT),
                        capture_output=True, text=True)
     # unittest пишет итог в stderr: читаем объединённый вывод через unittest_tail.
     tail = unittest_tail(r.stdout, r.stderr)
     if r.returncode == 0:
-        ok("тесты сервера: " + (tail[0] if tail else "OK"))
+        ok("server tests: " + (tail[0] if tail else "OK"))
     else:
-        bad("тесты сервева не прошли: " + " ".join(tail) + r.stderr[-200:])
+        bad("server tests failed: " + " ".join(tail) + r.stderr[-200:])
 
 print("\n[2] CLI")
 live = []
@@ -92,13 +92,13 @@ for name, prof in PROFILES.items():
     if name.startswith("_"):
         continue
     if not shutil.which(name):
-        warn(name + ": не установлен, пропускаю")
+        warn(name + ": not installed, skipping")
         continue
 
     spec = prof["mcp"]
     path = Path(spec["path"]).expanduser()
     if not path.exists():
-        bad(name + ": бинарь есть, а конфиг (" + path.name + ") отсутствует — запусти ./install.sh")
+        bad(name + ": binary present but config (" + path.name + ") missing — run ./install.sh")
         continue
 
     try:
@@ -110,7 +110,7 @@ for name, prof in PROFILES.items():
             argv = (entry["command"] if isinstance(entry.get("command"), list)
                     else [entry.get("command")] + entry.get("args", []))
     except Exception as exc:
-        bad(name + ": не читаю " + path.name + " — " + str(exc)[:120])
+        bad(name + ": cannot read " + path.name + " — " + str(exc)[:120])
         continue
 
     req = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "initialize",
@@ -133,15 +133,15 @@ for name, prof in PROFILES.items():
             p = subprocess.run(argv + [sandbox], input=req, capture_output=True,
                                text=True, timeout=15, env=env)
         except Exception as exc:
-            bad(name + ": запуск не удался — " + str(exc)[:120])
+            bad(name + ": launch failed — " + str(exc)[:120])
             continue
         if any('"pair-mailbox"' in l for l in p.stdout.splitlines()):
-            ok(name + ": MCP отвечает как pair-mailbox")
+            ok(name + ": MCP answers as pair-mailbox")
             live.append(name)
         else:
-            bad(name + ": сервер на месте, но не отвечает — " + (p.stderr[:120] or p.stdout[:120]))
+            bad(name + ": server present but not responding — " + (p.stderr[:120] or p.stdout[:120]))
 
-print("\n[3] навыки")
+print("\n[3] skills")
 for name, prof in PROFILES.items():
     if name.startswith("_"):
         continue
@@ -152,11 +152,11 @@ for name, prof in PROFILES.items():
     want = {p.name for p in (ROOT / "skills").glob("*/")}
     missing = want - have
     if missing:
-        warn(name + ": не установлены " + ", ".join(sorted(missing)))
+        warn(name + ": missing " + ", ".join(sorted(missing)))
     else:
-        ok(name + ": навыки на месте")
+        ok(name + ": skills in place")
 
-print("\n[4] состояние")
+print("\n[4] state")
 targets = [Path(os.environ["PAIR_STATE"]).resolve()] if "PAIR_STATE" in os.environ else []
 if "--project" in sys.argv:
     targets.append(Path.cwd() / ".pair")
@@ -166,22 +166,22 @@ if not targets:
 for sd in targets:
     print("  " + str(sd))
     if not sd.exists():
-        warn("нет состояния — эта пара ещё не работала")
+        warn("no state — this pair has not run yet")
         continue
     try:
         st = json.loads((sd / "state.json").read_text(encoding="utf-8"))
     except Exception as exc:
-        bad("state.json не читается: " + str(exc)[:100])
+        bad("state.json unreadable: " + str(exc)[:100])
         continue
     roles = sorted(st.get("roles", {}))
-    ok("роли: " + (", ".join(roles) or "никто не подключался"))
-    ok("писатель: " + str(st.get("writer") or "никто") + ", фаза: " + str(st.get("phase")))
+    ok("roles: " + (", ".join(roles) or "nobody connected yet"))
+    ok("writer: " + str(st.get("writer") or "nobody") + ", phase: " + str(st.get("phase")))
     if not st.get("writer"):
-        warn("писатель не назначен — никто не может править файлы")
+        warn("no writer assigned — nobody can edit files")
     if st.get("phase") == "done":
-        warn("фаза done: раунд закрыт, сосед не прочитает новых сообщений")
+        warn("phase done: round closed, peer will not read new messages")
     if st.get("mode") == "audit":
-        ok("режим: AUDIT — проект не меняется, патчи сервер не примет")
+        ok("mode: AUDIT — project is read-only, server will reject patches")
     tr = sd / "transcript.jsonl"
     if tr.exists():
         kinds = {}
@@ -192,21 +192,21 @@ for sd in targets:
                     kinds[k] = kinds.get(k, 0) + 1
                 except Exception:
                     pass
-        ok("событий: " + str(sum(kinds.values())) +
-           ", сообщений: " + str(kinds.get("send", 0)) +
-           ", отказов: " + str(kinds.get("refusal", 0)))
+        ok("events: " + str(sum(kinds.values())) +
+           ", messages: " + str(kinds.get("send", 0)) +
+           ", refusals: " + str(kinds.get("refusal", 0)))
 
 print("\n[5] git")
 if (ROOT / ".git").exists():
     r2 = subprocess.run(["git", "log", "--oneline", "-1"], cwd=str(ROOT),
                         capture_output=True, text=True)
-    ok("репозиторий: " + (r2.stdout.strip() or "без коммитов"))
+    ok("repo: " + (r2.stdout.strip() or "no commits"))
     r3 = subprocess.run(["git", "status", "--porcelain"], cwd=str(ROOT),
                         capture_output=True, text=True)
     if r3.stdout.strip():
-        warn("незакоммиченных файлов: " + str(len(r3.stdout.strip().splitlines())))
+        warn("uncommitted files: " + str(len(r3.stdout.strip().splitlines())))
 else:
-    warn("не git-репозиторий — git init, чтобы развернуть на другой машине")
+    warn("not a git repo — git init to deploy on another machine")
 
-print("\nитог: " + str(ok_n) + " ок, " + str(bad_n) + " ошибок, " + str(warn_n) + " предупреждений")
+print("\nsummary: " + str(ok_n) + " ok, " + str(bad_n) + " errors, " + str(warn_n) + " warnings")
 sys.exit(1 if bad_n else 0)
