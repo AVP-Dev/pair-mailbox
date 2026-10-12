@@ -6,7 +6,6 @@ description: Hold a real conversation with the other agent in this two-agent pai
 # Pair chat
 
 > Единственная истина про переписку пары — этот файл.
-> `.agents/skills/pair-chat/SKILL.md` — указатель сюда.
 > Упоминания в `AGENTS.md`, `docs/PROTOCOL.md`, `docs/HOW-IT-WORKS.md` —
 > контекст, не контракт: при расхождении побеждает этот файл и код
 > `mcp/pair_mailbox/server.py`.

@@ -297,6 +297,15 @@ class TestMcpRegistration(InstallCase):
         result = run_install(self.home, "opencode")
         self.assertNotIn("тесты сервера", result.stdout)
 
+    def test_skills_installation_includes_pair_chat(self) -> None:
+        """Инвариант 5: install.sh раскладывает все публичные навыки в skills_dir."""
+        run_install(self.home, "opencode")
+        skills_dir = self.home / ".config" / "opencode" / "skills"
+        self.assertTrue((skills_dir / "pair-chat" / "SKILL.md").exists(),
+                        "скилл pair-chat должен присутствовать в целевом skills_dir")
+        self.assertTrue((skills_dir / "pair-work" / "SKILL.md").exists(),
+                        "скилл pair-work должен присутствовать в целевом skills_dir")
+
 
 class TestVerifyDoesNotTouchTheRoster(InstallCase):
     """Проверка транспорта не имеет права менять состояние живой пары.

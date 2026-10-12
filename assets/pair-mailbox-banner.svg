@@ -1,0 +1,120 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 420" width="100%" height="100%">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0b0f19" />
+      <stop offset="50%" stop-color="#111827" />
+      <stop offset="100%" stop-color="#030712" />
+    </linearGradient>
+    <linearGradient id="primaryGlow" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#38bdf8" />
+      <stop offset="50%" stop-color="#818cf8" />
+      <stop offset="100%" stop-color="#c084fc" />
+    </linearGradient>
+    <linearGradient id="writerCard" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#064e3b" stop-opacity="0.8"/>
+      <stop offset="100%" stop-color="#022c22" stop-opacity="0.9"/>
+    </linearGradient>
+    <linearGradient id="criticCard" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#78350f" stop-opacity="0.8"/>
+      <stop offset="100%" stop-color="#451a03" stop-opacity="0.9"/>
+    </linearGradient>
+    <linearGradient id="coreCard" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#1e1b4b" stop-opacity="0.8"/>
+      <stop offset="100%" stop-color="#0f172a" stop-opacity="0.9"/>
+    </linearGradient>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="120%">
+      <feDropShadow dx="0" dy="8" stdDeviation="12" flood-color="#000" flood-opacity="0.5"/>
+    </filter>
+  </defs>
+
+  <rect width="1200" height="420" fill="url(#bg)" rx="16" />
+  
+  <!-- Subtle Grid Lines -->
+  <g stroke="#1f2937" stroke-width="1" opacity="0.4">
+    <line x1="0" y1="70" x2="1200" y2="70" />
+    <line x1="0" y1="140" x2="1200" y2="140" />
+    <line x1="0" y1="210" x2="1200" y2="210" />
+    <line x1="0" y1="280" x2="1200" y2="280" />
+    <line x1="0" y1="350" x2="1200" y2="350" />
+    <line x1="200" y1="0" x2="200" y2="420" />
+    <line x1="400" y1="0" x2="400" y2="420" />
+    <line x1="600" y1="0" x2="600" y2="420" />
+    <line x1="800" y1="0" x2="800" y2="420" />
+    <line x1="1000" y1="0" x2="1000" y2="420" />
+  </g>
+
+  <!-- Title & Subtitle -->
+  <text x="600" y="75" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="44" font-weight="800" fill="url(#primaryGlow)" text-anchor="middle" letter-spacing="1.5">pair-mailbox</text>
+  <text x="600" y="112" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="18" font-weight="400" fill="#9ca3af" text-anchor="middle">Deterministic Autonomous Two-Agent Pair Programming Across Independent CLIs</text>
+
+  <!-- Architecture Cards Group -->
+  <!-- 1. Writer Card -->
+  <g transform="translate(80, 160)" filter="url(#shadow)">
+    <rect width="300" height="190" rx="12" fill="url(#writerCard)" stroke="#10b981" stroke-width="2"/>
+    <circle cx="35" cy="35" r="14" fill="#10b981" />
+    <text x="35" y="40" font-family="sans-serif" font-size="14" font-weight="bold" fill="#ffffff" text-anchor="middle">W</text>
+    <text x="60" y="38" font-family="sans-serif" font-size="18" font-weight="bold" fill="#34d399">Writer Agent</text>
+    <text x="60" y="58" font-family="sans-serif" font-size="12" fill="#a7f3d0">OpenCode / Antigravity</text>
+    
+    <line x1="20" y1="80" x2="280" y2="80" stroke="#047857" stroke-width="1"/>
+    
+    <text x="25" y="110" font-family="monospace" font-size="13" fill="#ecfdf5">✓ Edits Project Files</text>
+    <text x="25" y="135" font-family="monospace" font-size="13" fill="#ecfdf5">✓ Executes Test Suites</text>
+    <text x="25" y="160" font-family="monospace" font-size="13" fill="#ecfdf5">✓ Verifies Sealed Patches</text>
+    <text x="25" y="185" font-family="monospace" font-size="13" fill="#ecfdf5">✓ Commits &amp; Opens PR</text>
+  </g>
+
+  <!-- Central Hub: Mailbox & Engine -->
+  <g transform="translate(450, 160)" filter="url(#shadow)">
+    <rect width="300" height="190" rx="12" fill="url(#coreCard)" stroke="#818cf8" stroke-width="2"/>
+    <circle cx="35" cy="35" r="14" fill="#818cf8" />
+    <text x="35" y="40" font-family="sans-serif" font-size="14" font-weight="bold" fill="#ffffff" text-anchor="middle">M</text>
+    <text x="60" y="38" font-family="sans-serif" font-size="18" font-weight="bold" fill="#c7d2fe">Mailbox Core</text>
+    <text x="60" y="58" font-family="sans-serif" font-size="12" fill="#a5b4fc">Python 3 Stdlib + MCP</text>
+    
+    <line x1="20" y1="80" x2="280" y2="80" stroke="#4338ca" stroke-width="1"/>
+    
+    <text x="25" y="110" font-family="monospace" font-size="13" fill="#e0e7ff">🔒 Single Writer Invariant</text>
+    <text x="25" y="135" font-family="monospace" font-size="13" fill="#e0e7ff">📦 Monotonic .pair/ SSOT</text>
+    <text x="25" y="160" font-family="monospace" font-size="13" fill="#e0e7ff">⚡ pair_deliver / pair_read</text>
+    <text x="25" y="185" font-family="monospace" font-size="13" fill="#e0e7ff">🛡️ Auto-Unblock Allowlist</text>
+  </g>
+
+  <!-- 2. Critic Card -->
+  <g transform="translate(820, 160)" filter="url(#shadow)">
+    <rect width="300" height="190" rx="12" fill="url(#criticCard)" stroke="#f59e0b" stroke-width="2"/>
+    <circle cx="35" cy="35" r="14" fill="#f59e0b" />
+    <text x="35" y="40" font-family="sans-serif" font-size="14" font-weight="bold" fill="#ffffff" text-anchor="middle">C</text>
+    <text x="60" y="38" font-family="sans-serif" font-size="18" font-weight="bold" fill="#fbbf24">Critic Agent</text>
+    <text x="60" y="58" font-family="sans-serif" font-size="12" fill="#fde68a">Codex / Claude Code</text>
+    
+    <line x1="20" y1="80" x2="280" y2="80" stroke="#b45309" stroke-width="1"/>
+    
+    <text x="25" y="110" font-family="monospace" font-size="13" fill="#fffbeb">👁️ Read-Only Analysis</text>
+    <text x="25" y="135" font-family="monospace" font-size="13" fill="#fffbeb">⚔️ Adversarial Verification</text>
+    <text x="25" y="160" font-family="monospace" font-size="13" fill="#fffbeb">📜 Cryptographic Patches</text>
+    <text x="25" y="185" font-family="monospace" font-size="13" fill="#fffbeb">🔍 Grounded with file:line</text>
+  </g>
+
+  <!-- Connecting Arrows / Paths -->
+  <!-- Left to Center -->
+  <path d="M 380 255 L 450 255" stroke="#34d399" stroke-width="3" stroke-dasharray="6,4"/>
+  <polygon points="445,250 455,255 445,260" fill="#34d399" />
+
+  <!-- Center to Left -->
+  <path d="M 450 265 L 380 265" stroke="#818cf8" stroke-width="3" stroke-dasharray="6,4"/>
+  <polygon points="385,260 375,265 385,270" fill="#818cf8" />
+
+  <!-- Right to Center -->
+  <path d="M 820 255 L 750 255" stroke="#fbbf24" stroke-width="3" stroke-dasharray="6,4"/>
+  <polygon points="755,250 745,255 755,260" fill="#fbbf24" />
+
+  <!-- Center to Right -->
+  <path d="M 750 265 L 820 265" stroke="#818cf8" stroke-width="3" stroke-dasharray="6,4"/>
+  <polygon points="815,260 825,265 815,270" fill="#818cf8" />
+
+  <!-- Footer Badges / Features -->
+  <text x="600" y="390" font-family="sans-serif" font-size="14" font-weight="600" fill="#6b7280" text-anchor="middle">
+    Zero External Pip Dependencies • 6 CLI Profiles Supported • Pure Python 3 &amp; tmux • MIT Licensed
+  </text>
+</svg>

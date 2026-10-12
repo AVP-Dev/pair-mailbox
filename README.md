@@ -7,6 +7,7 @@
 </p>
 
 <p align="center">
+  <a href="https://github.com/AVP-Dev/pair-mailbox/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/AVP-Dev/pair-mailbox/ci.yml?branch=master&style=for-the-badge&logo=githubactions&logoColor=white" alt="CI Status" /></a>
   <a href="https://github.com/AVP-Dev/pair-mailbox"><img src="https://img.shields.io/badge/Python-3.8+-3776AB?style=for-the-badge&logo=python&logoColor=white" alt="Python 3.8+" /></a>
   <a href="https://modelcontextprotocol.io/"><img src="https://img.shields.io/badge/MCP-Model_Context_Protocol-8A2BE2?style=for-the-badge" alt="MCP Protocol" /></a>
   <img src="https://img.shields.io/badge/Dependencies-Zero_External-10B981?style=for-the-badge" alt="Zero Dependencies" />
@@ -15,11 +16,15 @@
 </p>
 
 <p align="center">
-  <strong>English</strong> &bull; <a href="./README.ru.md">🇷🇺 Читать на русском</a> &bull; <a href="./docs/PROTOCOL.md">📜 Protocol</a> [<a href="./docs/PROTOCOL.ru.md">ru</a>] &bull; <a href="./docs/HOW-IT-WORKS.md">💡 How It Works</a> [<a href="./docs/HOW-IT-WORKS.ru.md">ru</a>] &bull; <a href="./docs/RUNBOOK.md">🛠 Runbook</a> [<a href="./docs/RUNBOOK.ru.md">ru</a>]
+  <strong>English</strong> &bull; <a href="./README.ru.md">🇷🇺 Читать на русском</a> &bull; <a href="./docs/PROTOCOL.md">📜 Protocol</a> [<a href="./docs/PROTOCOL.ru.md">ru</a>] &bull; <a href="./docs/HOW-IT-WORKS.md">💡 How It Works</a> [<a href="./docs/HOW-IT-WORKS.ru.md">ru</a>] &bull; <a href="./docs/RUNBOOK.md">🛠 Runbook</a> [<a href="./docs/RUNBOOK.ru.md">ru</a>] &bull; <a href="./CONTRIBUTING.md">🤝 Contributing</a> &bull; <a href="./SECURITY.md">🛡️ Security</a> &bull; <a href="./skills/README.md">📦 Skills</a> &bull; <a href="./docs/MEDIA.md">📸 Media</a>
 </p>
 
 <p align="center">
   <em>Turn any two autonomous AI coding agents (OpenCode, Claude Code, Antigravity, OpenAI Codex) into a disciplined, self-orchestrating pair: one writes code while the other adversarial-reviews, tests, and proposes cryptographically sealed patches — with zero manual message relaying between them. Give the task and accept the PR: by default the pair works the round to a finished PR under <code>auto</code>, with no word asked of you in between. <code>semi</code> is there when you want one word at the verify checkpoint. Secrets, deploys, migrations and irreversible deletions stop the pair in every mode.</em>
+</p>
+
+<p align="center">
+  <img src="./assets/pair-mailbox-banner.svg" alt="pair-mailbox Architecture Banner" width="100%" />
 </p>
 
 </div>
@@ -93,6 +98,10 @@ graph TD
     style CoreEngine fill:#181824,stroke:#8b5cf6,stroke-width:2px,color:#fff
     style Storage fill:#121218,stroke:#3b82f6,stroke-width:2px,color:#fff
 ```
+
+<p align="center">
+  <img src="./assets/pair-flow-diagram.svg" alt="Autonomous Two-Agent Lifecycle Flow" width="100%" />
+</p>
 
 ---
 
@@ -343,7 +352,7 @@ Switch modes at runtime with a single command (`bin/pairctl mode <mode>`):
 Specialized agent skills included out of the box:
 
 - **[`pair-work`](./skills/pair-work/SKILL.md)**: Full autonomous collaboration. Drives the 4-turn loop without asking the human for permission or relaying text.
-- **[`pair-chat`](./.agents/skills/pair-chat/SKILL.md)** (mirrored at `.opencode/skills/pair-chat/SKILL.md`): Technical communication protocols, active delivery (`pair_deliver`), and strictly forbidding the "human pigeon" anti-pattern.
+- **[`pair-chat`](./skills/pair-chat/SKILL.md)**: Technical communication protocols, active delivery (`pair_deliver`), and strictly forbidding the "human pigeon" anti-pattern.
 - **[`pair-audit`](./skills/pair-audit/SKILL.md)**: Proves test evidence is authentic: tests fail before changes, pass after, and nothing was mocked or weakened to force a green status.
 - **[`root-cause`](./skills/root-cause/SKILL.md)**: 5-Whys systematic failure analysis before modifying code.
 - **[`pair-backlog`](./skills/pair-backlog/SKILL.md)**: Formal lifecycle for capturing verified out-of-scope defects in `docs/backlog/`.

@@ -1,0 +1,109 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 480" width="100%" height="100%">
+  <defs>
+    <linearGradient id="flowBg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0f172a" />
+      <stop offset="100%" stop-color="#1e293b" />
+    </linearGradient>
+    <linearGradient id="stepGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#3b82f6" />
+      <stop offset="100%" stop-color="#8b5cf6" />
+    </linearGradient>
+    <filter id="fShadow" x="-10%" y="-10%" width="120%" height="120%">
+      <feDropShadow dx="0" dy="4" stdDeviation="6" flood-color="#000" flood-opacity="0.4"/>
+    </filter>
+  </defs>
+
+  <rect width="1000" height="480" fill="url(#flowBg)" rx="12" />
+
+  <text x="500" y="45" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="24" font-weight="700" fill="#f8fafc" text-anchor="middle">Autonomous Two-Agent Lifecycle</text>
+  <text x="500" y="70" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="14" fill="#94a3b8" text-anchor="middle">Server-Enforced State Progression (Protocol §6 &amp; §9)</text>
+
+  <!-- Step 1: Scoping & Claim -->
+  <g transform="translate(60, 110)" filter="url(#fShadow)">
+    <rect width="190" height="130" rx="8" fill="#1e293b" stroke="#38bdf8" stroke-width="2"/>
+    <rect width="190" height="28" rx="8" fill="#0284c7" />
+    <text x="95" y="19" font-family="sans-serif" font-size="13" font-weight="bold" fill="#ffffff" text-anchor="middle">1. Claim &amp; Scoping</text>
+    <text x="15" y="55" font-family="monospace" font-size="11" fill="#e2e8f0">• pair_digest</text>
+    <text x="15" y="75" font-family="monospace" font-size="11" fill="#e2e8f0">• pair_claim(reason)</text>
+    <text x="15" y="95" font-family="monospace" font-size="11" fill="#e2e8f0">• Writer assigned</text>
+    <text x="15" y="115" font-family="monospace" font-size="11" fill="#94a3b8">Critic = Read-Only</text>
+  </g>
+
+  <!-- Arrow 1 -> 2 -->
+  <path d="M 250 175 L 290 175" stroke="#38bdf8" stroke-width="2" marker-end="url(#arrow)"/>
+  <polygon points="285,170 295,175 285,180" fill="#38bdf8" />
+
+  <!-- Step 2: Plan & Ack -->
+  <g transform="translate(295, 110)" filter="url(#fShadow)">
+    <rect width="190" height="130" rx="8" fill="#1e293b" stroke="#818cf8" stroke-width="2"/>
+    <rect width="190" height="28" rx="8" fill="#4f46e5" />
+    <text x="95" y="19" font-family="sans-serif" font-size="13" font-weight="bold" fill="#ffffff" text-anchor="middle">2. Plan &amp; Gate</text>
+    <text x="15" y="55" font-family="monospace" font-size="11" fill="#e2e8f0">• .pair/plan.md</text>
+    <text x="15" y="75" font-family="monospace" font-size="11" fill="#e2e8f0">• pair_send(plan)</text>
+    <text x="15" y="95" font-family="monospace" font-size="11" fill="#e2e8f0">• Critic reviews</text>
+    <text x="15" y="115" font-family="monospace" font-size="11" fill="#a5b4fc">plan-ack verdict</text>
+  </g>
+
+  <!-- Arrow 2 -> 3 -->
+  <path d="M 485 175 L 525 175" stroke="#818cf8" stroke-width="2"/>
+  <polygon points="520,170 530,175 520,180" fill="#818cf8" />
+
+  <!-- Step 3: Implement & Test -->
+  <g transform="translate(530, 110)" filter="url(#fShadow)">
+    <rect width="190" height="130" rx="8" fill="#1e293b" stroke="#10b981" stroke-width="2"/>
+    <rect width="190" height="28" rx="8" fill="#059669" />
+    <text x="95" y="19" font-family="sans-serif" font-size="13" font-weight="bold" fill="#ffffff" text-anchor="middle">3. Implement &amp; Test</text>
+    <text x="15" y="55" font-family="monospace" font-size="11" fill="#e2e8f0">• Writer writes code</text>
+    <text x="15" y="75" font-family="monospace" font-size="11" fill="#e2e8f0">• Run test suites</text>
+    <text x="15" y="95" font-family="monospace" font-size="11" fill="#e2e8f0">• Green commit</text>
+    <text x="15" y="115" font-family="monospace" font-size="11" fill="#6ee7b7">git commit</text>
+  </g>
+
+  <!-- Arrow 3 -> 4 -->
+  <path d="M 720 175 L 760 175" stroke="#10b981" stroke-width="2"/>
+  <polygon points="755,170 765,175 755,180" fill="#10b981" />
+
+  <!-- Step 4: Adversarial Review -->
+  <g transform="translate(765, 110)" filter="url(#fShadow)">
+    <rect width="180" height="130" rx="8" fill="#1e293b" stroke="#f59e0b" stroke-width="2"/>
+    <rect width="180" height="28" rx="8" fill="#d97706" />
+    <text x="90" y="19" font-family="sans-serif" font-size="13" font-weight="bold" fill="#ffffff" text-anchor="middle">4. Adversarial Review</text>
+    <text x="15" y="55" font-family="monospace" font-size="11" fill="#e2e8f0">• Critic reads git diff</text>
+    <text x="15" y="75" font-family="monospace" font-size="11" fill="#e2e8f0">• Sealed patch proposal</text>
+    <text x="15" y="95" font-family="monospace" font-size="11" fill="#e2e8f0">• SHA-256 seal verified</text>
+    <text x="15" y="115" font-family="monospace" font-size="11" fill="#fde68a">finding notes</text>
+  </g>
+
+  <!-- Return Loop or Down to Verify -->
+  <path d="M 855 240 L 855 310 L 685 310" stroke="#f59e0b" stroke-width="2"/>
+  <polygon points="690,305 680,310 690,315" fill="#f59e0b" />
+
+  <!-- Step 5: Verify Gate -->
+  <g transform="translate(480, 280)" filter="url(#fShadow)">
+    <rect width="200" height="120" rx="8" fill="#1e293b" stroke="#a855f7" stroke-width="2"/>
+    <rect width="200" height="28" rx="8" fill="#7e22ce" />
+    <text x="100" y="19" font-family="sans-serif" font-size="13" font-weight="bold" fill="#ffffff" text-anchor="middle">5. Verification Gate</text>
+    <text x="15" y="55" font-family="monospace" font-size="11" fill="#e2e8f0">• verify-project.sh</text>
+    <text x="15" y="75" font-family="monospace" font-size="11" fill="#e2e8f0">• pair_evidence(test)</text>
+    <text x="15" y="95" font-family="monospace" font-size="11" fill="#e2e8f0">• Feature freeze</text>
+    <text x="15" y="110" font-family="monospace" font-size="11" fill="#d8b4fe">No unread mail</text>
+  </g>
+
+  <!-- Arrow 5 -> 6 -->
+  <path d="M 480 340 L 410 340" stroke="#a855f7" stroke-width="2"/>
+  <polygon points="415,335 405,340 415,345" fill="#a855f7" />
+
+  <!-- Step 6: PR & Done -->
+  <g transform="translate(200, 280)" filter="url(#fShadow)">
+    <rect width="205" height="120" rx="8" fill="#1e293b" stroke="#10b981" stroke-width="2"/>
+    <rect width="205" height="28" rx="8" fill="#059669" />
+    <text x="102" y="19" font-family="sans-serif" font-size="13" font-weight="bold" fill="#ffffff" text-anchor="middle">6. Pull Request &amp; Done</text>
+    <text x="15" y="55" font-family="monospace" font-size="11" fill="#e2e8f0">• git push origin branch</text>
+    <text x="15" y="75" font-family="monospace" font-size="11" fill="#e2e8f0">• GitHub PR created</text>
+    <text x="15" y="95" font-family="monospace" font-size="11" fill="#e2e8f0">• pair_advance(done)</text>
+    <text x="15" y="110" font-family="monospace" font-size="11" fill="#6ee7b7">Pilot parked on done</text>
+  </g>
+
+  <!-- Bottom invariant text -->
+  <text x="500" y="445" font-family="monospace" font-size="12" fill="#64748b" text-anchor="middle">Invariant: Zero human message relaying • All communication strictly via MCP Mailbox</text>
+</svg>

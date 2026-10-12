@@ -5,5 +5,5 @@ description: Hold a real conversation with the other agent in this two-agent pai
 
 # Pair chat (указатель)
 
-Единственная истина — `.opencode/skills/pair-chat/SKILL.md`. Читай её.
+Единственная истина — `skills/pair-chat/SKILL.md`. Читай её.
 Здесь контракт не дублируется, чтобы три копии не разъехались в третий раз.

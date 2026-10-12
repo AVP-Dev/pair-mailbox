@@ -7,6 +7,7 @@
 </p>
 
 <p align="center">
+  <a href="https://github.com/AVP-Dev/pair-mailbox/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/AVP-Dev/pair-mailbox/ci.yml?branch=master&style=for-the-badge&logo=githubactions&logoColor=white" alt="CI Status" /></a>
   <a href="https://github.com/AVP-Dev/pair-mailbox"><img src="https://img.shields.io/badge/Python-3.8+-3776AB?style=for-the-badge&logo=python&logoColor=white" alt="Python 3.8+" /></a>
   <a href="https://modelcontextprotocol.io/"><img src="https://img.shields.io/badge/MCP-Model_Context_Protocol-8A2BE2?style=for-the-badge" alt="MCP Protocol" /></a>
   <img src="https://img.shields.io/badge/Зависимости-Zero_External-10B981?style=for-the-badge" alt="Zero Dependencies" />
@@ -15,11 +16,15 @@
 </p>
 
 <p align="center">
-  <a href="./README.md">🇬🇧 English Version</a> &bull; <strong>Русская версия</strong> &bull; <a href="./docs/PROTOCOL.md">📜 Протокол</a> [<a href="./docs/PROTOCOL.ru.md">ru</a>] &bull; <a href="./docs/HOW-IT-WORKS.md">💡 Как это работает</a> [<a href="./docs/HOW-IT-WORKS.ru.md">ru</a>] &bull; <a href="./docs/RUNBOOK.md">🛠 Runbook</a> [<a href="./docs/RUNBOOK.ru.md">ru</a>]
+  <a href="./README.md">🇬🇧 English Version</a> &bull; <strong>Русская версия</strong> &bull; <a href="./docs/PROTOCOL.md">📜 Протокол</a> [<a href="./docs/PROTOCOL.ru.md">ru</a>] &bull; <a href="./docs/HOW-IT-WORKS.md">💡 Как это работает</a> [<a href="./docs/HOW-IT-WORKS.ru.md">ru</a>] &bull; <a href="./docs/RUNBOOK.md">🛠 Runbook</a> [<a href="./docs/RUNBOOK.ru.md">ru</a>] &bull; <a href="./CONTRIBUTING.md">🤝 Contributing</a> &bull; <a href="./SECURITY.md">🛡️ Security</a> &bull; <a href="./skills/README.md">📦 Навыки</a> &bull; <a href="./docs/MEDIA.ru.md">📸 Медиа</a>
 </p>
 
 <p align="center">
   <em>Объедините любых двух автономных AI-кодеров (OpenCode, Claude Code, Antigravity, OpenAI Codex) в дисциплинированную пару: один пишет код, а второй критикует, верифицирует гипотезы и предлагает криптографически опечатанные патчи — без превращения человека в «почтового голубя». Дайте задачу и примите PR: по умолчанию пара отрабатывает раунд до готового PR в режиме <code>auto</code>, и между этим вас не спрашивают ни разу. <code>semi</code> — если нужно одно слово на чекпоинте verify. Секреты, деплои, миграции и необратимые удаления останавливают пару в любом режиме.</em>
+</p>
+
+<p align="center">
+  <img src="./assets/pair-mailbox-banner.svg" alt="pair-mailbox Архитектура" width="100%" />
 </p>
 
 </div>
@@ -93,6 +98,10 @@ graph TD
     style CoreEngine fill:#181824,stroke:#8b5cf6,stroke-width:2px,color:#fff
     style Storage fill:#121218,stroke:#3b82f6,stroke-width:2px,color:#fff
 ```
+
+<p align="center">
+  <img src="./assets/pair-flow-diagram.svg" alt="Жизненный цикл пары" width="100%" />
+</p>
 
 ---
 
@@ -339,7 +348,7 @@ echo '{"allow": ["Read", "grep", "git status"]}' > .pair/permissions.json
 В поставку входят готовые навыки, расширяющие возможности моделей:
 
 - **[`pair-work`](./skills/pair-work/SKILL.md)**: Полная автономная коллаборация: План &rarr; Код &rarr; Ревью &rarr; Тесты &rarr; PR без прерываний человека.
-- **[`pair-chat`](./.agents/skills/pair-chat/SKILL.md)** (дубль в `.opencode/skills/pair-chat/SKILL.md`): Протокол общения, правила активной доставки `pair_deliver` и запрет «голубиной почты».
+- **[`pair-chat`](./skills/pair-chat/SKILL.md)**: Протокол общения, правила активной доставки `pair_deliver` и запрет «голубиной почты».
 - **[`pair-audit`](./skills/pair-audit/SKILL.md)**: Аудит достоверности тестов: проверка, что тесты падали до правок и проходят после, без фиктивных моков.
 - **[`root-cause`](./skills/root-cause/SKILL.md)**: Анализ первопричин методом «5 Почему» до начала модификации кода.
 - **[`pair-backlog`](./skills/pair-backlog/SKILL.md)**: Сохранение подтвержденных дефектов вне скоупа задачи в `docs/backlog/`.
