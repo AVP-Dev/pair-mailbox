@@ -38,6 +38,36 @@ from server import (
 )
 
 
+def _last_permit(store: Store) -> dict:
+    """Последнее автоподтверждение из журнала (P2, раунд 75).
+
+    Человек видит не «было разрешение», а ЧТО именно подтвердили:
+    exact_command и argv последнего события unblock/unblock_refused.
+    Журнала нет или разрешений не было — пустой словарь, а не ошибка:
+    отсутствие разрешений это нормальное состояние, а не поломка.
+    """
+    import json as _json
+    path = store.root / "transcript.jsonl"
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return {}
+    for raw in reversed(lines[-200:]):
+        try:
+            entry = _json.loads(raw)
+        except ValueError:
+            continue
+        if entry.get("kind") in ("unblock", "unblock_refused"):
+            return {
+                "ts": entry.get("ts"),
+                "verdict": "allow" if entry.get("kind") == "unblock" else "refuse",
+                "exact_command": entry.get("exact_command", entry.get("prompt", "")),
+                "argv": entry.get("argv", []),
+                "why": entry.get("why", ""),
+            }
+    return {}
+
+
 def cmd_status(store: Store, args: argparse.Namespace) -> int:
     state = store.read()
     session = PairSession("pairctl", store)
@@ -62,6 +92,7 @@ def cmd_status(store: Store, args: argparse.Namespace) -> int:
             "unresolved_patches": [item["path"] for item in session.unresolved_patches(state)],
             "closing_blocked_by": session._done_blockers(state),
             "permission_allowlist": str(permissions_path(store.root)),
+            "last_permit": _last_permit(store),
             "roles": {name: info.get("last_seen") for name, info in state.get("roles", {}).items()},
         },
         indent=2,

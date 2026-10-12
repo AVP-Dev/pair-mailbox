@@ -780,8 +780,11 @@ Allowed by default:
 - reading: `Read`, `grep`, `glob`, `ls`, `cat`, `head`, `tail`, `find`;
 - editing inside the project: `write`, `edit`, `create`, `replace`, `patch`, `apply`,
   `format`, `lint`;
-- checks and builds: `pytest`, `unittest`, `ruff`, `mypy`, `tsc`, `make`, `npm run`,
-  `build`, plus `python3`/`node` with a test or linter in the command;
+- checks and builds: `ruff`, `mypy`, `tsc`, `make`, `npm run`,
+  `build`; test runners (`pytest`, `unittest`, `cargo test`, `bun test`,
+  `python3`/`node` with a test in the command) run ONLY isolated via
+  `scripts/run-isolated-test.sh` (container, no network, no `$HOME`) —
+  direct runs on the host wait for a human (P0);
 - local git: `status`, `diff`, `log`, `add`, `commit`, `checkout`, `switch`,
   `branch`, `stash`;
 - shipping the work: `git push` to a **feature branch** and `gh pr` — §10 requires

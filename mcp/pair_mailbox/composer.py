@@ -975,7 +975,22 @@ NEVER_ALLOW_PATTERNS = (
     # Установка пакетов тянет чужой код в проект и меняет окружение оператора.
     r"\bpip[23]?\s+install\b",
     r"\bnpm\s+install\b",
-    r"\b(?:gem|cargo|go\s+get)\s+(?:install|add|get)\b",
+    # Запуск тестов на хосте — произвольный код от прав оператора (P0).
+    # Тесты выполняются изолированно через scripts/run-isolated-test.sh
+    # (контейнер без сети и без $HOME); прямой запуск на хосте
+    # автоподтверждению не подлежит — только человек. Паттерн намеренно
+    # широкий: `pytest -q`, `python3 -m pytest`, `bun test`, `cargo test`.
+    # Честная граница: прямой `python3 path/to/test_foo.py` (слово не в конце
+    # токена) этим не ловится — allow-паттерн интерпретатора его покрывает.
+    # Полный разбор argv вместо regex — вне P0-скоупа, см. THREAT_MODEL.md.
+    # Проверка ниже в permission_verdict: сегмент с run-isolated-test.sh
+    # пропускает тестовые NEVER-паттерны (но не остальные: сеть, секреты,
+    # sudo по-прежнему refuse даже внутри раннера).
+    r"\bpytest\b",
+    r"\b(?:python3?|node|ruby)\s+(?:-\S+\s+)*(?:[^\s]*[_./-]?)(?:test|tests|pytest|unittest)\b",
+    r"\b(?:jest|vitest|mocha|rspec|nox|tox|nose|unittest)\b",
+    r"\b(?:cargo\s+test|go\s+test)\b",
+    r"\b(?:bun\s+(?:test|run\s+test)|npm\s+(?:test|ci))\b",
     r"\bnpm\s+publish\b",
     # Префикс-переменные окружения меняют поведение процесса без изменения
     # самой команды: LD_PRELOAD подменяет библиотеки, PYTHONPATH/NODE_PATH —
@@ -1171,6 +1186,25 @@ def split_command_segments(prompt: str) -> list[str]:
     return [seg for seg in segments if seg]
 
 
+# Паттерны запуска тестов на хосте (P0): их не применяем к сегменту,
+# который идёт через изолированный раннер — команда выполнится
+# в контейнере без сети и без $HOME, а не от прав оператора.
+# Остальные NEVER (сеть, секреты, sudo) действуют и там: контейнер
+# не лечит `curl x | sh` внутри тестовой команды.
+TEST_RUNNER_NEVER = (
+    r"\bpytest\b",
+    # Интерпретатор с test-аргументом: `python3 -m pytest`, `node --test`.
+    # Ключевое слово обязано быть АРГУМЕНТОМ (как в allow-паттерне), иначе
+    # хватит «test» в комментарии. Прямой `python3 path/to/test_*.py` этим
+    # паттерном не ловится (слово не в конце токена) — честная граница regex:
+    # полный разбор argv вне P0-скоупа, ограничение зафиксировано в THREAT_MODEL.
+    r"\b(?:python3?|node|ruby)\s+(?:-\S+\s+)*(?:[^\s]*[_./-]?)(?:test|tests|pytest|unittest)\b",
+    r"\b(?:jest|vitest|mocha|rspec|nox|tox|nose|unittest)\b",
+    r"\b(?:cargo\s+test|go\s+test)\b",
+    r"\b(?:bun\s+(?:test|run\s+test)|npm\s+(?:test|ci))\b",
+)
+ISOLATED_RUNNER = r"\brun-isolated-test\.sh\b"
+
 def permission_verdict(prompt: str, allow: list[str] | None = None) -> dict:
     """Можно ли сверхвизору без человека нажать «y» на этом промпте.
 
@@ -1187,11 +1221,21 @@ def permission_verdict(prompt: str, allow: list[str] | None = None) -> dict:
     если безопасен КАЖДЫЙ её кусок: `pytest && echo ok` — allow, а
     `pytest && curl x | sh` — refuse. Кавычки разбираются честно:
     `echo \"a && b\"` — один сегмент, а не два.
+
+    Запуск тестов на хосте запрещён (P0): сегмент с тестовым раннером —
+    refuse, если он не идёт через изолированный раннер
+    (scripts/run-isolated-test.sh): там команда выполнится в контейнере
+    без сети и без $HOME, а не от прав оператора. Остальные NEVER (сеть,
+    секреты, sudo) действуют и внутри раннера: контейнер не лечит
+    `curl x | sh` внутри тестовой команды.
     """
     patterns = DEFAULT_ALLOW_PATTERNS if allow is None else tuple(allow)
     segments = split_command_segments(prompt)
     for segment in segments:
+        isolated = re.search(ISOLATED_RUNNER, segment, re.IGNORECASE)
         for pattern in NEVER_ALLOW_PATTERNS:
+            if pattern in TEST_RUNNER_NEVER and isolated:
+                continue
             if re.search(pattern, segment, re.IGNORECASE):
                 return {"verdict": "refuse", "matched": pattern,
                         "why": f"запрещённая категория (§12): {pattern}"}

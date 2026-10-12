@@ -171,9 +171,12 @@ class TestPilotCoverageGaps(unittest.TestCase):
         return composer.permission_verdict(prompt, composer.DEFAULT_ALLOW_PATTERNS)["verdict"]
 
     def test_bun_checks_are_allowed(self) -> None:
-        for prompt in ("bun test", "bun run build", "bun x tsc --noEmit"):
+        # P0 (раунд 75): `bun test` запускает тесты на хосте — refuse,
+        # остальной bun-рантайм (run/x) — как был allow.
+        for prompt in ("bun run build", "bun x tsc --noEmit"):
             with self.subTest(prompt=prompt):
                 self.assertEqual("allow", self.verdict(prompt))
+        self.assertEqual("refuse", self.verdict("bun test"))
 
     def test_bun_install_is_not_allowed(self) -> None:
         """bun add — установка пакетов: NEVER-класс «сеть тянет чужой код»."""

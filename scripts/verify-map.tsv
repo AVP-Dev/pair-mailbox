@@ -4,7 +4,9 @@
 # Формат имён сюит — из scripts/verification-profile.tsv.
 mcp/pair_mailbox/composer.py	composer
 mcp/pair_mailbox/test_composer.py	composer
-mcp/pair_mailbox/test_allowlist_bypass.py	composer
+mcp/pair_mailbox/test_allowlist_bypass.py	composer-bypass
+mcp/pair_mailbox/autoperms.py	autoperms
+mcp/pair_mailbox/test_autoperms.py	autoperms
 mcp/pair_mailbox/liveness.py	liveness
 mcp/pair_mailbox/test_liveness.py	liveness
 mcp/pair_mailbox/statecache.py	statecache

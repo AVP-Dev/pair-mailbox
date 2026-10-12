@@ -928,12 +928,16 @@ class TestDefaultAllowlist(PairTestCase):
     def test_project_work_is_confirmed_without_any_file(self) -> None:
         from composer import load_allow_patterns
         allow, _ = load_allow_patterns(self.missing)
-        for prompt in ('Allow execution of "pytest"? [y/N]',
-                       "Allow Read of server.py?",
+        # P0 (раунд 75): `pytest` на хосте — refuse даже без файла настроек;
+        # остальная рутина (чтение, git, уборка build/) — как была allow.
+        for prompt in ("Allow Read of server.py?",
                        "Allow bash? git status",
                        "Allow bash? rm -rf build/"):
             with self.subTest(prompt=prompt):
                 self.assertEqual("allow", self.composer.permission_verdict(prompt, allow)["verdict"])
+        self.assertEqual(
+            "refuse",
+            self.composer.permission_verdict('Allow execution of "pytest"? [y/N]', allow)["verdict"])
 
     def test_harm_to_system_or_other_projects_stays_refused(self) -> None:
         """Граница человека: запрет не зависит от того, есть ли файл настроек."""
@@ -1546,13 +1550,29 @@ class TestPermissionAllowlist(PairTestCase):
         §10 требует коммитов и PR, поэтому «только чтение» означало бы, что пара
         встаёт на каждом шаге и ждёт человека — ровно та остановка, ради которой
         всё это и чинилось."""
-        for prompt in ("python3 -m pytest", "git commit -m 'fix'",
+        for prompt in ("git commit -m 'fix'",
                        "git push -u origin feature-branch", "gh pr create --title x",
                        "Allow Write of server.py?", "ruff check .", "mypy mcp/",
                        "git checkout -b feat", "rm -rf build/", "rm -rf ./dist"):
             with self.subTest(prompt=prompt):
                 self.assertEqual(self.composer.permission_verdict(prompt)["verdict"], "allow",
                                  "работа, которую протокол и так требует, не должна ждать человека")
+
+    def test_test_runners_require_isolated_runner_p0(self) -> None:
+        """P0 (раунд 75): запуск тестов на хосте — произвольный код от прав
+        оператора, автоподтверждению не подлежит. Безопасный путь —
+        scripts/run-isolated-test.sh (контейнер без сети и без $HOME)."""
+        for prompt in ("python3 -m pytest", "pytest -q",
+                       "python3 -m unittest discover -s mcp",
+                       "node --test", "cargo test"):
+            with self.subTest(prompt=prompt):
+                self.assertEqual(self.composer.permission_verdict(prompt)["verdict"], "refuse",
+                                 f"тесты на хосте ждут человека: {prompt}")
+        for prompt in ("bash scripts/run-isolated-test.sh -- pytest -q",
+                       "bash scripts/run-isolated-test.sh -- python3 -m pytest"):
+            with self.subTest(prompt=prompt):
+                self.assertEqual(self.composer.permission_verdict(prompt)["verdict"], "allow",
+                                 f"изолированные тесты разрешены: {prompt}")
 
     def test_push_to_main_and_history_destruction_stay_refused(self) -> None:
         """§10: «в main не пушат никогда». §12: удаление истории git — стоп."""
@@ -1626,17 +1646,27 @@ class TestPermissionAllowlist(PairTestCase):
                 self.assertEqual("refuse", self.composer.permission_verdict(prompt)["verdict"])
 
     def test_real_test_commands_are_still_allowed(self) -> None:
-        """Правка не должна затыкать то, ради чего белый список и нужен: свои
-        тесты и сборки запускать можно, иначе пара встаёт на каждом шаге."""
+        # P0 (раунд 75): формулировка «свои тесты запускать можно» теперь
+        # читается «свои тесты запускать можно ИЗОЛИРОВАННО»: прямой запуск
+        # на хосте — refuse, через run-isolated-test.sh — allow.
+        # Прямой вызов интерпретатора с файлом теста внутри проекта —
+        # та же категория запуска кода, поэтому тоже идёт в изоляцию.
+        for prompt in ("bash scripts/run-isolated-test.sh -- pytest -q",
+                       "bash scripts/run-isolated-test.sh -- python3 -m pytest",
+                       "bash scripts/run-isolated-test.sh -- python3 mcp/pair_mailbox/test_protocol.py"):
+            with self.subTest(prompt=prompt):
+                self.assertEqual("allow", self.composer.permission_verdict(prompt)["verdict"],
+                                 f"своя проверка должна остаться разрешённой: {prompt}")
+        # Прямой `python3 path/to/test_*.py` — allow-паттерн интерпретатора его
+        # покрывает, а NEVER ловит только test-слово в конце токена; дыра шире
+        # P0-скоупа (нужен разбор argv, а не regex). Фиксируем честно: пока allow.
         for prompt in ("python3 -m pytest",
-                       "python3 mcp/pair_mailbox/test_protocol.py",
-                       "python3 bin/pairpilot_test.py",
                        "python3 -m unittest discover -s mcp",
                        "node --test",
                        "pytest -q"):
             with self.subTest(prompt=prompt):
-                self.assertEqual("allow", self.composer.permission_verdict(prompt)["verdict"],
-                                 f"своя проверка должна остаться разрешённой: {prompt}")
+                self.assertEqual("refuse", self.composer.permission_verdict(prompt)["verdict"],
+                                 f"запуск на хосте ждёт человека (P0): {prompt}")
 
     def test_own_gate_scripts_are_allowed_but_only_inside_scripts(self) -> None:
         """Задача seq 329: рутинные прогоны требовали ручного Allow.
@@ -3356,9 +3386,9 @@ class TestPermissionMenu(PairTestCase):
     def test_a_yes_no_prompt_still_gets_y(self) -> None:
         """Старый путь не сломан: на «[y/N]» по-прежнему y + Enter.
 
-        Строка вопроса содержит и признак промпта, и разрешённое слово, поэтому
-        проходит и по белому списку, и по запретам."""
-        panel = ["Running build", "Allow execution of 'pytest'? [y/N]"]
+        P0 (раунд 75): пример — безобидная команда (git status), а не pytest:
+        запуск тестов на хосте ждёт человека, клавиш не шлём."""
+        panel = ["Running build", "Allow execution of 'git status'? [y/N]"]
         self.assertEqual([["y"], ["Enter"]], self.resolve_keys(panel))
 
     def test_a_y_no_prompt_naming_a_forbidden_command_stays_refused(self) -> None:

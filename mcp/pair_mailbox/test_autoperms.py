@@ -66,7 +66,8 @@ class TestRenderers(unittest.TestCase):
         payload = autoperms.render("claude", self.root, self.home)
         perms = payload["permission"]
         self.assertIn("Bash(git status:*)", perms["allow"])
-        self.assertIn("Bash(bun test)", perms["allow"])
+        # P0 (раунд 75): раннеры тестов — deny, а не allow.
+        self.assertIn("Bash(bun test:*)", perms["deny"])
         self.assertIn("Bash(sudo:*)", perms["deny"])
         self.assertIn("Read(./.env)", perms["deny"])
 
@@ -75,11 +76,16 @@ class TestRenderers(unittest.TestCase):
 
         Канон хранит подкоманды и команды по отдельности (`status` + `git`),
         склеивает их рендерер — проверяем и канон, и склейку в каждом виде.
+        P0 (раунд 75): раннеры тестов из allow убраны — только человек или
+        изоляция; здесь проверяем, что они переехали в deny.
         """
         covered = autoperms._allow_items()
-        for item in ("status", "commit", "pytest", "bun test", "bash scripts/",
+        for item in ("status", "commit", "ruff", "bash scripts/",
                      "bin/pairup", "gh pr"):
             self.assertIn(item, covered)
+        denied = " ".join(autoperms._deny_items())
+        for item in ("pytest", "bun test", "cargo test", "npm test"):
+            self.assertIn(item, denied)
         agy = autoperms.render("agy", self.root, self.home)["permissions"]["allow"]
         claude = autoperms.render("claude", self.root, self.home)["permission"]["allow"]
         self.assertIn("command(git status)", agy)

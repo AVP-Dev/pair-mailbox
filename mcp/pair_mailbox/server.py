@@ -2226,13 +2226,26 @@ class PairSession:
                     note="permissions.json отсутствует, подтверждено по списку по умолчанию")
         except Exception as exc:  # noqa: BLE001 - чужая панель не должна ронять сервер
             return {"unblocked": False, "why": f"панель не прочиталась: {exc}", "prompt": ""}
+        # P2 (раунд 75): в журнал пишем не голое имя regex-паттерна, а
+        # разобранную команду — exact_command целиком и argv по сегментам.
+        # Вердикт уже вынесен и клавиши уже нажаты в resolve; лог фиксирует
+        # то, на что было дано согласие: подмена после логирования видна
+        # при сверке журнала с фактом, а не тонет в молчании.
+        try:
+            from composer import split_command_segments as _split_segments
+            _segments = _split_segments(result.get("prompt") or "")
+        except Exception:  # noqa: BLE001 - лог не должен блокировать разблокировку
+            _segments = []
+        exact_command = "; ".join(_segments) if _segments else (result.get("prompt") or "")
         matched = result.get("prompt") or ""
         if result.get("approved"):
             self.store.append_transcript("unblock", self.role, target=target, pane=pane,
-                                         prompt=matched, matched=result.get("matched"))
+                                         prompt=matched, matched=result.get("matched"),
+                                         exact_command=exact_command, argv=_segments)
         elif result.get("verdict") == "refuse":
             self.store.append_transcript("unblock_refused", self.role, target=target, pane=pane,
-                                         prompt=matched, why=result.get("why"))
+                                         prompt=matched, why=result.get("why"),
+                                         exact_command=exact_command, argv=_segments)
         return {
             "unblocked": bool(result.get("approved")),
             "peer": target,

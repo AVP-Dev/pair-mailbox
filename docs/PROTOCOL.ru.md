@@ -755,8 +755,11 @@ bin/pairctl log --limit 50
 - чтение: `Read`, `grep`, `glob`, `ls`, `cat`, `head`, `tail`, `find`;
 - правка внутри проекта: `write`, `edit`, `create`, `replace`, `patch`, `apply`,
   `format`, `lint`;
-- проверки и сборки: `pytest`, `unittest`, `ruff`, `mypy`, `tsc`, `make`, `npm run`,
-  `build`, а также `python3`/`node` с тестом или линтером в команде;
+- проверки и сборки: `ruff`, `mypy`, `tsc`, `make`, `npm run`,
+  `build`; раннеры тестов (`pytest`, `unittest`, `cargo test`, `bun test`,
+  `python3`/`node` с тестом в команде) — ТОЛЬКО изолированно через
+  `scripts/run-isolated-test.sh` (контейнер без сети и без `$HOME`),
+  прямой запуск на хосте ждёт человека (P0);
 - локальный git: `status`, `diff`, `log`, `add`, `commit`, `checkout`, `switch`,
   `branch`, `stash`;
 - отправка работы: `git push` в **фиче-ветку** и `gh pr` — §10 требует PR;

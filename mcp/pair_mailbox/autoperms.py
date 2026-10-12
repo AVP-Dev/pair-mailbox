@@ -26,11 +26,14 @@ ALLOW: dict[str, tuple[str, ...]] = {
     "git": ("status", "diff", "log", "show", "branch", "remote", "describe",
             "rev-parse", "add", "commit", "checkout", "switch", "stash", "tag",
             "blame", "shortlog", "reflog", "check-ignore"),
-    # проверки и сборки — та же работа, что pytest напрямую
-    "checks": ("pytest", "unittest", "ruff", "flake8", "pylint", "mypy",
+    # проверки и сборки. P0 (раунд 75): раннеры тестов (pytest, unittest,
+    # bun test, npm test, cargo test, jest...) на хосте НЕ разрешены без
+    # человека — только через scripts/run-isolated-test.sh (см. composer
+    # NEVER). В каноне остаются линтеры и сборки; deny ниже дублирует запрет.
+    "checks": ("ruff", "flake8", "pylint", "mypy",
                "pyright", "eslint", "prettier", "tsc", "black", "isort", "make",
-               "bun test", "bun run", "bun x", "npm run", "npm test", "npm ci",
-               "cargo test", "go test", "jest", "vitest"),
+               "bun run", "bun x", "npm run", "vitest", "mocha", "rspec",
+               "nox", "tox", "nose"),
     # наши гейты и раннеры (относительные пути, см. composer.py allow)
     "gates": ("bash scripts/", "scripts/", "bin/pairup", "bin/pairpilot",
               "bin/pair-duo", "bin/pairctl", "bin/pairchat", "bin/pairwatch",
@@ -55,6 +58,10 @@ DENY: dict[str, tuple[str, ...]] = {
                 "reflog expire"),
     "network": ("curl", "wget", "nc -", "ssh", "pip install", "npm install",
                 "bun add", "npm publish"),
+    # P0 (раунд 75): запуск тестов на хосте — только человек; в нативных слоях
+    # CLI это deny, безопасный путь — scripts/run-isolated-test.sh.
+    "testruns": ("pytest", "unittest", "cargo test", "go test", "bun test",
+                 "npm test", "npm ci", "jest", "node --test"),
 }
 
 PROFILES_WITH_NATIVE_LAYER = ("opencode", "agy", "claude")
@@ -117,6 +124,8 @@ def render_agy(home: Path) -> dict[str, Any]:
         deny.append(f"write_file({item})")
     for item in ("curl", "wget", "ssh", "nc", "sudo"):
         deny.append(f"command(regex:{item} .*)")
+    for item in DENY["testruns"]:
+        deny.append(f"command(regex:{item} .*)")
     return {"permissions": {"allow": allow, "deny": deny,
                             "ask": ["command(*)", "read_url(*)"]}}
 
@@ -135,6 +144,7 @@ def render_claude(root: Path) -> dict[str, Any]:
     deny += ["Bash(curl:*)", "Bash(wget:*)", "Bash(sudo:*)", "Bash(ssh:*)",
              "Bash(pip install:*)", "Bash(npm install:*)", "Bash(bun add:*)",
              "Bash(git push --force:*)", "Bash(git reset --hard:*)"]
+    deny += [f"Bash({item}:*)" for item in DENY["testruns"]]
     return {"permission": {"allow": allow, "deny": deny}}
 
 
