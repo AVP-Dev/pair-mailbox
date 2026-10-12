@@ -18,10 +18,13 @@ fi
 role="$1"
 shift
 state=""
+pane=""
 while [ "$#" -gt 0 ]; do
     case "$1" in
         --state) state="${2:-}"; shift 2;;
         --state=*) state="${1#--state=}"; shift;;
+        --pane) pane="${2:-}"; shift 2;;
+        --pane=*) pane="${1#--pane=}"; shift;;
         *) if [ -z "$state" ]; then case "$1" in --*) ;; *) state="$1";; esac; fi; shift;;
     esac
 done
@@ -85,4 +88,8 @@ if ! "$python" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 8) else 1)'
   exit 6
 fi
 
-exec "$python" "$here/server.py" --role "$role" --state "$state"
+if [ -n "$pane" ]; then
+  exec "$python" "$here/server.py" --role "$role" --state "$state" --pane "$pane"
+else
+  exec "$python" "$here/server.py" --role "$role" --state "$state"
+fi

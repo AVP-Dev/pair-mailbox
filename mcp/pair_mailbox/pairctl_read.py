@@ -162,6 +162,29 @@ def extract_state(argv: list[str]) -> tuple[Path, list[str]]:
     return resolved, rest
 
 
+def extract_pane(argv: list[str]) -> tuple[str, list[str]]:
+    """Pull --pane out of argv wherever it appears or fallback to PAIR_PANE.
+
+    Explicit channel for the running pane, avoiding reliance on inherited TMUX_PANE.
+    """
+    raw = (os.environ.get("PAIR_PANE") or "").strip()
+    rest: list[str] = []
+    index = 0
+    while index < len(argv):
+        item = argv[index]
+        if item == "--pane" and index + 1 < len(argv):
+            raw = argv[index + 1]
+            index += 2
+            continue
+        if item.startswith("--pane="):
+            raw = item.split("=", 1)[1]
+            index += 1
+            continue
+        rest.append(item)
+        index += 1
+    return raw.strip(), rest
+
+
 def walk_up_to_state(start: Path | None = None) -> Path:
     """Ближайший .pair вверх от cwd — тот же walk-up, что у плагина.
 
