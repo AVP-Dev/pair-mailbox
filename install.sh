@@ -451,6 +451,18 @@ def main():
                 print("%-10s %-20s %s" % (k, v["label"], "есть" if present(v) else "нет"))
         return 0
 
+    print(r"""
+  ____       _        __  __       _ _ _               
+ |  _ \ __ _(_)_ __  |  \/  | __ _(_) | |__   _____  __
+ | |_) / _` | | '__| | |\/| |/ _` | | | '_ \ / _ \ \/ /
+ |  __/ (_| | | |    | |  | | (_| | | | |_) | (_) >  < 
+ |_|   \__,_|_|_|    |_|  |_|\__,_|_|_|_.__/ \___/_/\_\
+
+ Autonomous Two-Agent Pair Programming over MCP & tmux
+ Created by Aliaksei Patskevich (AVP-Dev) • https://avpdev.com
+ GitHub: https://github.com/AVP-Dev/pair-mailbox
+""".strip())
+
     check_only = "--check" in sys.argv
     targets = args or [k for k, v in PROFILES.items() if not k.startswith("_") and present(v)]
 
@@ -504,6 +516,7 @@ def main():
     # тестовый install нёс бы её заново (698с на install_test.py целиком).
     if not os.environ.get("PAIR_INSTALL_SKIP_SUITE"):
         print("\nтесты сервера")
+        print("  проверка ядра и протокола...", end="", flush=True)
         env = dict(os.environ, PAIR_DISABLE_RING="1")
         # Сюита едет в подменённом HOME (install-тесты изолируются), а PyNaCl
         # живёт в user-site настоящего HOME. Без наследования 2 evidence-теста
@@ -521,17 +534,36 @@ def main():
         if live:
             old = env.get("PYTHONPATH", "")
             env["PYTHONPATH"] = os.pathsep.join(live + ([old] if old else []))
-        t_res = subprocess.run([sys.executable, str(ROOT / "mcp/pair_mailbox/test_protocol.py")], cwd=str(ROOT), env=env)
+        t_res = subprocess.run([sys.executable, str(ROOT / "mcp/pair_mailbox/test_protocol.py")],
+                               cwd=str(ROOT), env=env, capture_output=True, text=True)
         if t_res.returncode != 0:
-            print("\nТЕСТЫ НЕ ПРОШЛИ")
+            print(" ОШИБКА")
+            print("\nТЕСТЫ НЕ ПРОШЛИ:")
+            if t_res.stdout:
+                print(t_res.stdout)
+            if t_res.stderr:
+                print(t_res.stderr)
             return 1
+        print(" ОК")
 
     if failed:
         print("\nНЕ СДЕЛАНО для: " + ", ".join(failed))
         print("разбери эти вручную, остальные работают")
         return 1
 
-    print("\nвсё работает. перезапусти агентов и скажи им: работаем вместе над X")
+    print("\n" + "=" * 70)
+    print("✓ pair-mailbox успешно установлен и готов к работе!")
+    print("\nБыстрый старт:")
+    print("  1. Запустите пару агентов в tmux:")
+    print("     ./bin/pairup opencode agy")
+    print("  2. В окне любого агента задайте цель:")
+    print('     "Работаем вместе над задачей X"')
+    print("  3. Веб-доска мониторинга раундов:")
+    print("     ./bin/pairboard")
+    print("\nДокументация: docs/PROTOCOL.ru.md | docs/PROTOCOL.md")
+    print("Автор: Aliaksei Patskevich (AVP-Dev) • https://avpdev.com • https://t.me/AVP_Dev")
+    print("GitHub: https://github.com/AVP-Dev/pair-mailbox")
+    print("=" * 70)
     return 0
 
 
