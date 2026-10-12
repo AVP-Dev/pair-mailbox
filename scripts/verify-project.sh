@@ -105,6 +105,7 @@ failures=0
 warnings=0
 line_number=0
 running=0
+mkdir -p "$PROJECT_ROOT/.pair"
 rm -f "$PROJECT_ROOT/.pair/verify-results.txt" "$PROJECT_ROOT/.pair/verify-"*.log
 
 while IFS=$'\t' read -r name layer required command serial extra || [ -n "${name:-}${layer:-}${required:-}${command:-}${serial:-}${extra:-}" ]; do

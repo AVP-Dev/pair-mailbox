@@ -598,9 +598,6 @@ class Pilot:
         """
         if not self.wake_root.is_dir():
             return
-        if self.is_done_parked(state):
-            # В фазе done пилот припаркован: не эскалируем wake-файлы заметок в композер.
-            return
         now = time.time()
         for path in sorted(self.wake_root.glob("*.json")):
             try:
@@ -632,6 +629,9 @@ class Pilot:
                                              target=role, reason=wake.get("reason"),
                                              since_seconds=since)
                 log(f"{role}: проснулся сам, печать не понадобилась")
+                continue
+            if self.is_done_parked(state):
+                # В фазе done пилот припаркован: не эскалируем wake-файлы в композер.
                 continue
             asked = parse_iso(wake.get("asked_at"))
             age = now - asked.timestamp() if asked else 0.0
