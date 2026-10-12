@@ -122,6 +122,24 @@ def check_pr_merge(store: Any, repo_dir: Path) -> tuple[bool, str]:
     except OSError as err:
         return False, f"failed to read notes/verdict.md: {err}"
 
+    # У3: Защита пути слияния — отказ при любом грязном дереве (tracked или untracked).
+    # Слияние разрешено строго на чистом закоммиченном дереве («сливаем то, что проверено и закоммичено»).
+    uncommitted = review.dirty_files(repo_dir, include_untracked=True)
+    try:
+        rel_notes = str(notes_dir.resolve().relative_to(repo_dir.resolve()))
+    except (ValueError, AttributeError):
+        rel_notes = None
+    if rel_notes:
+        rel_notes_slash = rel_notes.rstrip("/") + "/"
+        uncommitted = [
+            f for f in uncommitted
+            if f != rel_notes and not f.startswith(rel_notes_slash) and f != ".pair" and not f.startswith(".pair/")
+        ]
+    else:
+        uncommitted = [f for f in uncommitted if f != ".pair" and not f.startswith(".pair/")]
+    if uncommitted:
+        return False, f"working tree has uncommitted changes ({len(uncommitted)} dirty files): {', '.join(uncommitted[:3])}"
+
     # Проверка свежести через единый канонический предикат review.is_stale
     cur_dirty = review.dirty_files(repo_dir)
     changed = review.changed_between(repo_dir, v_head, head)

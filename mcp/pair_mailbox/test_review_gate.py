@@ -161,6 +161,43 @@ class TestReviewGate(PairTestCase):
             self.assertTrue(ok)
             self.assertEqual(reason, "")
 
+    def test_check_pr_merge_uncommitted_untracked_refused(self) -> None:
+        """У3: Отказ слияния при наличии uncommitted/untracked файлов в рабочем дереве."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            subprocess.run(["git", "init"], cwd=str(tmp_path), check=True, capture_output=True)
+            subprocess.run(["git", "config", "user.email", "pair@test.local"], cwd=str(tmp_path), check=True, capture_output=True)
+            subprocess.run(["git", "config", "user.name", "Pair Test"], cwd=str(tmp_path), check=True, capture_output=True)
+            (tmp_path / "file.txt").write_text("hello", encoding="utf-8")
+            subprocess.run(["git", "add", "file.txt"], cwd=str(tmp_path), check=True, capture_output=True)
+            subprocess.run(["git", "commit", "-m", "init"], cwd=str(tmp_path), check=True, capture_output=True)
+
+            head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=str(tmp_path), capture_output=True, text=True).stdout.strip()
+
+            store = MagicMock()
+            store.read.return_value = {
+                "phase": "verify",
+                "round": 60,
+                "writer": "agy",
+                "evidence": [{"round": 60, "kind": "test", "ok": True}],
+                "verdicts": [{
+                    "role": "omp",
+                    "kind": "verdict",
+                    "rev": {"head": head, "dirty": "", "files": ["file.txt"]},
+                }],
+            }
+            store.notes_root = tmp_path / "notes"
+            store.notes_root.mkdir()
+            (store.notes_root / "verdict.md").write_text(f"## 2026-10-12T01:00:00 - omp\n\nverdict-approve {head[:12]}", encoding="utf-8")
+
+            # Создаем untracked файл кода/скретча
+            (tmp_path / "untracked.py").write_text("print(1)", encoding="utf-8")
+
+            ok, reason = review_gate.check_pr_merge(store, tmp_path)
+            self.assertFalse(ok)
+            self.assertIn("working tree has uncommitted changes", reason)
+            self.assertIn("untracked.py", reason)
+
     def test_check_pr_merge_reject_verdict_refused(self) -> None:
         """Отказ, если в тексте вердикта зафиксирован отказ/reject."""
         with tempfile.TemporaryDirectory() as tmp:
