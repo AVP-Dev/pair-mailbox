@@ -110,6 +110,14 @@ class TestEventWake(PairTestCase):
         sleeps = []
         orig_sleep = server_mod.time.sleep
         server_mod.time.sleep = lambda s: sleeps.append(s)  # type: ignore[method-assign]
+        orig_sub_run = server_mod.subprocess.run
+
+        def fake_sub_run(cmd, *a, **kw):
+            if isinstance(cmd, (list, tuple)) and len(cmd) >= 2 and cmd[1] == "display-message":
+                return server_mod.subprocess.CompletedProcess(cmd, 0, stdout="0\n", stderr="")
+            return orig_sub_run(cmd, *a, **kw)
+
+        server_mod.subprocess.run = fake_sub_run  # type: ignore[method-assign]
         try:
             result = self.writer._ring("reviewer-agent", "сообщение")
         finally:
@@ -117,6 +125,7 @@ class TestEventWake(PairTestCase):
             composer.shutil.which = orig_which
             composer.pane_is_foreign = orig_foreign
             server_mod.time.sleep = orig_sleep  # type: ignore[method-assign]
+            server_mod.subprocess.run = orig_sub_run  # type: ignore[method-assign]
         self.assertFalse(result["rung"], "в занятый композер не лезем")
         self.assertIn("занят", result["why"])
         self.assertEqual([], sleeps, "ожидание композера обязано быть single-shot без sleep")
