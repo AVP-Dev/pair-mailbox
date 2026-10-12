@@ -14,6 +14,8 @@ mcp/pair_mailbox/test_obligations.py	obligations
 mcp/pair_mailbox/intent_gate.py	intent-gate
 mcp/pair_mailbox/test_intent_gate.py	intent-gate
 mcp/pair_mailbox/receipt.py	intent-gate
+mcp/pair_mailbox/server_freshness.py	server-freshness
+mcp/pair_mailbox/test_server_freshness.py	server-freshness
 mcp/pair_mailbox/heal.py	heal
 mcp/pair_mailbox/test_heal.py	heal
 mcp/pair_mailbox/budget.py	budget
