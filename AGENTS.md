@@ -100,6 +100,6 @@ arrangement safe rather than merely clever.
 - **Finish the loop.** Read the peer's findings and open the files it cited before reporting done.
 - **One test file per source file.** `server.py` → `test_*.py` beside it (shared helpers in `mcp/pair_mailbox/pair_test_base.py`), never a third.
 - **Leave the tree clean.** No stray patch files, no scratch notes outside `.pair`.
-- **No human pigeon.** Never ask the user to relay messages, reviews, handoffs, or prompts to the
+- **No human relay.** Never ask the user to relay messages, reviews, handoffs, or prompts to the
   other window. The two agents are an autonomous pair. Use `pair_deliver` to actively wake the peer.
   The user defines the task and receives the finished PR; the user is not a message bus.

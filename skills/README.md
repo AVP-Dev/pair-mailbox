@@ -39,4 +39,4 @@ When you run `./install.sh`:
 
 - **Autonomous Pair Work**: Triggered by user prompts like `"work with peer on X"`, `"работаем в паре"`, or via `bin/pairup --task "..."`.
 - **Peer Communications**: Agents use `pair_deliver` for high-priority immediate handoffs (typing into the peer's tmux pane) and `pair_send` for background notes, reviews, and reports.
-- **Never Human Pigeon**: Agents are strictly instructed never to ask human users to relay messages between windows. All communication flows autonomously through the `pair_*` MCP tools.
+- **Never Human Relay**: Agents are strictly instructed never to ask human users to relay messages between windows. All communication flows autonomously through the `pair_*` MCP tools.

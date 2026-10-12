@@ -353,7 +353,7 @@ answered" from "I was disconnected" draws a conclusion about its peer instead of
 about its own client. The MCP `timeout` in `cli-profiles.json` must therefore exceed
 `MAX_READ_WAIT_SECONDS`, and a test fails the suite if any profile does not.
 
-## 7a. No pigeon post: agents talk to each other directly
+## 7a. No manual relay: agents talk to each other directly
 
 Agents are strictly forbidden to ask the user to relay messages, signals or prompts
 into the neighbouring terminal window (for example: *"there's a request waiting in the

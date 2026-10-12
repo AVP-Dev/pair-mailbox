@@ -222,7 +222,7 @@ each other through `pair_deliver` directly.
 
 ## What will not work
 
-**An agent asks you to pass text into the neighbouring window ("pigeon post").**
+**An agent asks you to pass text into the neighbouring window ("manual relay").**
 That is an agent behaviour bug: `pair_deliver` exists for active messaging and
 handing over. The human gave a task and expects a result (a PR), not to work as a
 manual router.

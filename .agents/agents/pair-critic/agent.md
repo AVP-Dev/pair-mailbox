@@ -84,7 +84,7 @@ anyone (forward belongs to the writer). This is your veto and needs no authority
 
 ## Never
 
-- Never ask the user to relay messages or signals to the writer (no "human pigeon"). You have
+- Never ask the user to relay messages or signals to the writer (no "human relay"). You have
   `pair_deliver` to actively wake the writer and hand off tasks. Asking the user to switch windows
   and copy-paste text or give a continuation signal is a protocol violation.
 - Never pause routine work for user approval. Applying patches, running tests, planning, and task

@@ -53,7 +53,7 @@ You hold write authority because the human gave it to you. Only the human moves 
   asking the human for approval. Only 6 critical triggers require user approval (§12 of PROTOCOL.md):
   secrets/.env, prod deploy, DB migrations, data/history deletion, deployment ports/domains, or write
   authority reassignment.
-- **No human pigeon**: Never ask the user to relay messages, reviews, or prompts to the peer. Use
+- **No human relay**: Never ask the user to relay messages, reviews, or prompts to the peer. Use
   `pair_deliver` to communicate and wake the peer directly.
 - Never ask your peer to take over, and never treat agreement from it as human sign-off on those 6
   critical operations.

@@ -35,7 +35,7 @@
 | Without pair-mailbox (Single Agent / Manual Chat) | With pair-mailbox (Autonomous Pair) |
 |---|---|
 | ❌ **Hallucinates and agrees with itself**: agent writes bugs, writes flawed tests, and tells you "all green". | 🛡️ **Adversarial Critic**: second agent independently breaks hypotheses, runs tests, and catches flaws before shipping. |
-| ❌ **You act as a manual copy-paste messenger** between two browser/terminal tabs ("human pigeon"). | ⚡ **Autonomous peer channel**: agents communicate, wake each other in tmux, and coordinate without you. |
+| ❌ **You act as a manual copy-paste messenger** between two browser/terminal tabs ("human relay"). | ⚡ **Autonomous peer channel**: agents communicate, wake each other in tmux, and coordinate without you. |
 | ❌ **Both agents overwrite each other's files**, creating merge conflicts and broken states. | 🔒 **Strict Single Writer**: exactly one agent edits files; critic proposes verified SHA-256 sealed patches. |
 | ❌ **Stalls indefinitely on interactive CLI prompts** (`[y/N]` or `Allow execution?`). | 🤖 **Safe Autonomous Unblocking**: watchdog and peer safely confirm allowlisted commands. |
 | ❌ **You spend hours supervising**. | 🎯 **Give task & accept PR**: pair drives Scoping &rarr; Plan &rarr; Code &rarr; Review &rarr; Test &rarr; PR under `auto`. |
@@ -381,7 +381,7 @@ Switch modes at runtime with a single command (`bin/pairctl mode <mode>`):
 Specialized agent skills included out of the box:
 
 - **[`pair-work`](./skills/pair-work/SKILL.md)**: Full autonomous collaboration. Drives the 4-turn loop without asking the human for permission or relaying text.
-- **[`pair-chat`](./skills/pair-chat/SKILL.md)**: Technical communication protocols, active delivery (`pair_deliver`), and strictly forbidding the "human pigeon" anti-pattern.
+- **[`pair-chat`](./skills/pair-chat/SKILL.md)**: Technical communication protocols, active delivery (`pair_deliver`), and strictly forbidding the "human relay" anti-pattern.
 - **[`pair-audit`](./skills/pair-audit/SKILL.md)**: Proves test evidence is authentic: tests fail before changes, pass after, and nothing was mocked or weakened to force a green status.
 - **[`root-cause`](./skills/root-cause/SKILL.md)**: 5-Whys systematic failure analysis before modifying code.
 - **[`pair-backlog`](./skills/pair-backlog/SKILL.md)**: Formal lifecycle for capturing verified out-of-scope defects in `docs/backlog/`.

@@ -90,7 +90,7 @@ typed into its composer). The peer may still disagree or run into an error.
 Never claim the peer is "looking at it" or "working on it". Say you delivered
 it, and continue your work.
 
-## Never use the human as a messenger (No human pigeon)
+## Never use the human as a messenger (No human relay)
 
 **Never ask the user to relay messages, reviews, handoffs, or prompts to the other window.**
 The two agents are an autonomous pair. Use `pair_deliver` to actively wake the peer and hand
