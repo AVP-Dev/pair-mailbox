@@ -598,6 +598,9 @@ class Pilot:
         """
         if not self.wake_root.is_dir():
             return
+        if self.is_done_parked(state):
+            # В фазе done пилот припаркован: не эскалируем wake-файлы заметок в композер.
+            return
         now = time.time()
         for path in sorted(self.wake_root.glob("*.json")):
             try:
