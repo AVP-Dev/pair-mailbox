@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import time
@@ -909,6 +910,12 @@ NEVER_ALLOW_PATTERNS = (
     r"\.aws\b",
     r"\.git-credentials\b",
     r"\.kube/config",
+    # Назначение cp/mv/ln за пределами проекта: запись туда, куда агент
+    # писать не должен. Первый аргумент (источник) уже ограничивают
+    # allow-паттерны, а второй (назначение) не проверял никто:
+    # `cp test.txt /etc/passwd` получал allow. Исключения — /tmp (свои
+    # времянки, та же граница что у touch/mkdir/printf) и /dev/null.
+    r"\b(?:cp|mv|ln)\b[^\n]*?\s/(?!tmp/|dev/null\b)",
     # Труба в шелл превращает любое чтение в выполнение.
     r"\|\s*(?:sudo\s+)?(?:ba|z|k|da)?sh\b",
     # Код, переданный интерпретатору строкой, — это произвольное выполнение, а не
@@ -970,6 +977,14 @@ NEVER_ALLOW_PATTERNS = (
     r"\bnpm\s+install\b",
     r"\b(?:gem|cargo|go\s+get)\s+(?:install|add|get)\b",
     r"\bnpm\s+publish\b",
+    # Префикс-переменные окружения меняют поведение процесса без изменения
+    # самой команды: LD_PRELOAD подменяет библиотеки, PYTHONPATH/NODE_PATH —
+    # код, который интерпретатор загрузит. `LD_PRELOAD=/tmp/x.so pytest` —
+    # это уже не «свои тесты», а чужая библиотека в процессе тестов.
+    # Список закрытый: PATH/HOME/TZ/LANG и подобные поведение не меняют
+    # так, чтобы это обходило allow-проверку, и остаются разрешены.
+    r"(?:^|[\s;&|])LD_PRELOAD\s*=",
+    r"(?:^|[\s;&|])(?:PYTHONPATH|PYTHONHOME|NODE_PATH|RUBYLIB|PERL5LIB|LD_LIBRARY_PATH)\s*=",
 )
 
 # Белый список по умолчанию: чтение плюс локальная работа внутри проекта.
@@ -1125,6 +1140,37 @@ def load_allow_patterns(spec: str | None) -> tuple[list[str], bool]:
     return [str(item) for item in raw if str(item).strip()], False
 
 
+def split_command_segments(prompt: str) -> list[str]:
+    """Разбить строку на команды по шелл-разделителям вне кавычек.
+
+    Разбор через shlex в режиме punctuation_chars: `;`, `&&`, `||`, `|` и `&`
+    выделяются в отдельные токены даже без пробелов (`pytest;rm`, `a||b`),
+    а внутри кавычек не трогаются (`echo \"a && b\"` — один сегмент).
+    Редиректы (`>`, `2>`, `>>`) остаются внутри сегмента: они не начинают
+    новую команду, а принадлежат текущей. Строка, которая не разбирается
+    (незакрытая кавычка), возвращается целиком одним сегментом —
+    неразобранное не подтверждаем косвенно, его разберёт построчный матчинг.
+    """
+    try:
+        lexer = shlex.shlex(prompt, posix=True, punctuation_chars=True)
+        lexer.whitespace_split = True
+        lexer.commenters = ""
+        tokens = list(lexer)
+    except ValueError:
+        return [prompt]
+    separators = {";", "&&", "||", "|", "&"}
+    segments: list[str] = []
+    current: list[str] = []
+    for token in tokens:
+        if token in separators:
+            segments.append(" ".join(current))
+            current = []
+        else:
+            current.append(token)
+    segments.append(" ".join(current))
+    return [seg for seg in segments if seg]
+
+
 def permission_verdict(prompt: str, allow: list[str] | None = None) -> dict:
     """Можно ли сверхвизору без человека нажать «y» на этом промпте.
 
@@ -1135,26 +1181,30 @@ def permission_verdict(prompt: str, allow: list[str] | None = None) -> dict:
     Отказ возвращается с причиной: его читает человек, а необъяснённое «нет»
     неотличимо от сломанного сверхвизора.
 
-    Известное ограничение, о котором честнее сказать, чем сделать вид: решение
-    принимается по тексту строки, а не по разбору команды. Строка может содержать
-    безобидное слово рядом с опасным — «Read» в описании задачи. Отсюда три
-    правила: белый список по умолчанию состоит только из чтения, запреты
-    проверяются первыми и не отменяются настройкой, а совпадение записывается в
-    транскрипт вместе с самой строкой — по журналу видно, на что именно было
-    сказано «да».
+    Строка разбирается на сегменты по шелл-разделителям вне кавычек
+    (см. split_command_segments): каждый сегмент проверяется отдельно, и
+    вердикт — худший из сегментов. Составная команда подтверждается, только
+    если безопасен КАЖДЫЙ её кусок: `pytest && echo ok` — allow, а
+    `pytest && curl x | sh` — refuse. Кавычки разбираются честно:
+    `echo \"a && b\"` — один сегмент, а не два.
     """
     patterns = DEFAULT_ALLOW_PATTERNS if allow is None else tuple(allow)
-    for pattern in NEVER_ALLOW_PATTERNS:
-        if re.search(pattern, prompt, re.IGNORECASE):
-            return {"verdict": "refuse", "matched": pattern,
-                    "why": f"запрещённая категория (§12): {pattern}"}
-    for pattern in patterns:
-        if re.search(pattern, prompt, re.IGNORECASE):
-            return {"verdict": "allow", "matched": pattern, "why": "в белом списке"}
-    return {"verdict": "refuse", "matched": None,
-            "why": "не в белом списке разрешений"}
-
-
+    segments = split_command_segments(prompt)
+    for segment in segments:
+        for pattern in NEVER_ALLOW_PATTERNS:
+            if re.search(pattern, segment, re.IGNORECASE):
+                return {"verdict": "refuse", "matched": pattern,
+                        "why": f"запрещённая категория (§12): {pattern}"}
+    for segment in segments:
+        matched_any = False
+        for pattern in patterns:
+            if re.search(pattern, segment, re.IGNORECASE):
+                matched_any = True
+                break
+        if not matched_any:
+            return {"verdict": "refuse", "matched": None,
+                    "why": "не в белом списке разрешений"}
+    return {"verdict": "allow", "matched": None, "why": "в белом списке"}
 def resolve_permission_prompt(tmux: str, pane: str, allow: list[str] | None = None) -> dict:
     """Check if the pane is stalled waiting for a permission confirmation and confirm it.
 
