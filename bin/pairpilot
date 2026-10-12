@@ -861,6 +861,23 @@ class Pilot:
         inbox = self.state_dir / "mailbox" / role
         return len(list(inbox.glob("*.json"))) if inbox.exists() else 0
 
+    def is_done_parked(self, state: dict) -> bool:
+        """В фазе done при отсутствии открытых задач и обязательств пилот припаркован.
+        В этом состоянии эскалация тишины и спам толчками запрещены для экономии токенов.
+        """
+        if state.get("phase") != "done":
+            return False
+        if open_tasks(state):
+            return False
+        root = self.state_dir / "obligations"
+        if root.is_dir() and any(root.glob("*.json")):
+            return False
+        key = f"parked-{state.get('round')}"
+        if self.remember(key, ttl=3600):
+            self.store.append_transcript("pilot_parked", "pairpilot", round=state.get("round"))
+            log(f"раунд {state.get('round')} в done: пилот припаркован, спам отключён")
+        return True
+
     def unread_peers(self, state: dict) -> list[str]:
         """Кого разбудить из-за непрочитанного. Почтальон на чеку: письмо в ящике
         без толчка не лежит — память (wake) и толчок (outbox) пишутся вместе.
@@ -868,6 +885,10 @@ class Pilot:
         узнал сейчас: следующий flush (этот же тик) вбивает его в композер.
         """
         out = []
+        if self.is_done_parked(state):
+            # В фазе done без открытых задач и обязательств пилот припаркован:
+            # не спамим агентов толчками «предложи следующий кусок работы».
+            return out
         for role in state.get("roles", {}):
             if role in self.skip:
                 continue

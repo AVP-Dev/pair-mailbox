@@ -662,6 +662,22 @@ PR merging is gated by machine rules rather than prompt agreements:
 4. **Bypass audit (`--force`)**:
    Bypassing the gate via `--force` requires a non-empty `--reason` and is recorded in `transcript.jsonl` as `pr_merge_forced`.
 
+### 10h. Server Runtime Freshness & Supervisor Parking
+
+1. **Server Runtime Freshness Gate (`server_freshness`)**:
+   MCP servers are long-lived processes. When server source files (`mcp/pair_mailbox/*.py`) are edited, in-memory servers continue executing stale bytecode.
+   - `pair_state` exposes runtime status: `server_fresh: bool` and `server_stale_files: list[str]`.
+   - `pair_advance` fail-closed gate: Forward phase transitions and round reopenings (`done` → `implement`) are refused with `ProtocolError` if `server_fresh` is false, requiring server restart (`serve.sh`). Backward recovery steps (`PHASE_BACKWARD`) remain open.
+   - `pairpilot` detects stale server processes and records `pilot_server_stale` events in the transcript.
+2. **Supervisor Done Parking & Token Budget Protection**:
+   In continuous supervisor mode, once a round reaches `phase: done`, `pairpilot` parks itself (`pilot_parked`) if no open tasks (`pair_task`) and no pending obligations exist:
+   - Suppresses silence escalations and repetitive nudges to prevent token quota waste on idle rounds.
+   - Preserves active unblocking and wakes whenever a peer delivers a new message, opens a task, or changes the phase.
+3. **Smart Auto-Compact**:
+   Prevents context exhaustion stalls:
+   - Automated `/compact` injection upon round closing (`done`).
+   - Zero-delta timeout detection for stuck `Working...` states (> 300s).
+
 ## 11. Audit
 
 `transcript.jsonl`, append-only, per event: a message, a capture, a phase
