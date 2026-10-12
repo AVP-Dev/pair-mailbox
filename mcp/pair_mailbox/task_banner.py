@@ -13,6 +13,8 @@
 Баннер — проекция из состояния, а не рукописный текст: устареть не может.
 """
 
+from __future__ import annotations
+
 from pathlib import Path
 from typing import Any
 
