@@ -1800,6 +1800,10 @@ class TestSmartAutoCompact(PilotCase):
         self._orig_pane_alive = pairpilot.pane_alive
         self._orig_deliver = pairpilot.deliver
         self._orig_subprocess_run = pairpilot.subprocess.run
+        self._orig_supports_compact = pairpilot.Pilot.supports_compact
+        # По умолчанию все роли понимают /compact: существующие тесты проверяют
+        # механику отправки, а не гейт. Гейт — отдельными тестами ниже.
+        pairpilot.Pilot.supports_compact = lambda self, role: True
 
         self.delivered_commands = []
         self.sent_keys = []
@@ -1817,6 +1821,7 @@ class TestSmartAutoCompact(PilotCase):
         pairpilot.pane_alive = self._orig_pane_alive
         pairpilot.deliver = self._orig_deliver
         pairpilot.subprocess.run = self._orig_subprocess_run
+        pairpilot.Pilot.supports_compact = self._orig_supports_compact
         super().tearDown()
 
     def test_stalled_busy_triggers_escape_and_compact(self) -> None:
@@ -1879,6 +1884,65 @@ class TestSmartAutoCompact(PilotCase):
         pilot.tick()
         self.assertTrue(any(text == "/compact" for pane, text in self.delivered_commands))
 
+    def test_stalled_busy_without_compact_support_sends_only_escape(self) -> None:
+        """CLI без /compact: зависший агент получает Escape, но не /compact."""
+        self.write_state(writer="omp", roles={"omp": {"pane": "%3", "last_seen": ago(100)}})
+        pilot = self.pilot()
+        pilot.tmux = "/usr/bin/true"
+        pilot.stall_timeout = 10.0
+        pilot.supports_compact = lambda role: False
+
+        pairpilot.composer_line = lambda lines: None
+        pairpilot.capture = lambda tmux, pane: ["⎋ Working...", "Thinking..."]
+
+        pilot.tick()
+        screen_hash, first_ts = pilot._screen_hashes["omp"]
+        pilot._screen_hashes["omp"] = (screen_hash, first_ts - 15.0)
+
+        pilot.tick()
+        self.assertTrue(any("Escape" in cmd for cmd in self.sent_keys))
+        self.assertFalse(any(text == "/compact" for pane, text in self.delivered_commands))
+        self.assertNotIn("pilot_auto_compact", self.transcript_kinds())
+
+    def test_preventive_compact_skipped_without_support(self) -> None:
+        """Превентивный /compact на done: роль без поддержки пропускается."""
+        self.write_state(phase="done", closed_at=now_iso(),
+                         writer="agy", roles={"omp": {"pane": "%3", "last_seen": ago(10)}})
+        pilot = self.pilot()
+        pilot.tmux = "/usr/bin/true"
+        pilot.supports_compact = lambda role: False
+
+        pairpilot.composer_line = lambda lines: ">"
+        pairpilot.is_composer_empty = lambda line: True
+        pairpilot.capture = lambda tmux, pane: [">"]
+
+        pilot.tick()
+        self.assertFalse(any(text == "/compact" for pane, text in self.delivered_commands))
+
+    def test_supports_compact_reads_profiles_hermetically(self) -> None:
+        """Гейт читает cli-profiles.json: True только у явного флага."""
+        import json
+        profiles = {
+            "claude": {"launch": "claude", "supports_compact": True},
+            "omp": {"launch": "omp"},
+            "weird": {"launch": "x", "supports_compact": "yes"},
+        }
+        (self.state_dir / "cli-profiles.json").write_text(
+            json.dumps(profiles), encoding="utf-8")
+        pilot = self.pilot()
+        saved = pairpilot.ROOT
+        # setUp ставит заглушку True на класс — для этого теста нужен настоящий метод.
+        real = self._orig_supports_compact
+        try:
+            pairpilot.ROOT = self.state_dir
+            pairpilot.Pilot.supports_compact = real
+            self.assertTrue(pilot.supports_compact("claude"))
+            self.assertFalse(pilot.supports_compact("omp"))
+            self.assertFalse(pilot.supports_compact("nosuchrole"))
+            self.assertFalse(pilot.supports_compact("weird"))
+        finally:
+            pairpilot.ROOT = saved
+            pairpilot.Pilot.supports_compact = lambda self, role: True
     def test_pilot_detects_and_logs_stale_server(self) -> None:
         import server_freshness
         orig = server_freshness.check_server_freshness

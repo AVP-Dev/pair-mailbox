@@ -271,6 +271,23 @@ class Pilot:
     def launch_command(self, role: str) -> str:
         return self._launch_commands().get(role, "").strip()
 
+    def supports_compact(self, role: str) -> bool:
+        """Понимает ли CLI роли команду /compact (флаг в cli-profiles.json).
+
+        Только Claude Code. Читается на каждом обращении, как
+        `_launch_commands`: правка профиля вступает в силу без перезапуска
+        пилота. Неизвестная роль и нечитаемый файл — False (default-deny:
+        чужой ввод лучше не трогать, чем слать туда мусор).
+        """
+        profiles = ROOT / "cli-profiles.json"
+        try:
+            data = json.loads(profiles.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return False
+        if not isinstance(data, dict):
+            return False
+        profile = data.get(role)
+        return isinstance(profile, dict) and profile.get("supports_compact") is True
     # ------------------------------------------------------------ restart budget
 
     def restarts_file(self, role: str) -> Path:
@@ -1044,17 +1061,21 @@ class Pilot:
             if not self.remember(key, ttl=self.stall_timeout * 2):
                 continue
 
-            log(f"{role}: завис в Working... {int(stalled_duration)}с (zero-delta) — шлю Escape и /compact")
+            compact_ok = self.supports_compact(role)
+            log(f"{role}: завис в Working... {int(stalled_duration)}с (zero-delta) — шлю Escape" + (" и /compact" if compact_ok else " (CLI не понимает /compact — только Escape)"))
             try:
                 subprocess.run([self.tmux, "send-keys", "-t", pane, "Escape"],
                                capture_output=True, text=True, timeout=5)
                 time.sleep(1.0)
-                deliver(pane, "/compact", wait_for_empty=3.0, submit=True)
+                if compact_ok:
+                    deliver(pane, "/compact", wait_for_empty=3.0, submit=True)
             except Exception as exc:  # noqa: BLE001
                 log(f"{role}: авто-компакт не удался: {exc}")
                 continue
 
             self._screen_hashes.pop(role, None)
+            if not compact_ok:
+                continue
             self.store.append_transcript("pilot_auto_compact", "pairpilot",
                                          target=role, reason="stalled_busy",
                                          duration_seconds=int(stalled_duration))
@@ -1086,6 +1107,9 @@ class Pilot:
             if not pane or not pane_alive(self.tmux, pane):
                 continue
             try:
+                if not self.supports_compact(role):
+                    log(f"{role}: превентивный /compact пропущен — CLI его не понимает")
+                    continue
                 line = composer_line(capture(self.tmux, pane))
                 if line is not None and is_composer_empty(line):
                     deliver(pane, "/compact", wait_for_empty=1.0, submit=True)

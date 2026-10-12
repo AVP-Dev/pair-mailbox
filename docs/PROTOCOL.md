@@ -675,9 +675,10 @@ PR merging is gated by machine rules rather than prompt agreements:
    - Suppresses silence escalations, repetitive nudges, and note wake file escalations (`poll_wakes`) to prevent token quota waste on idle rounds.
    - Preserves active unblocking and wakes whenever a peer delivers a new message, opens a task, or changes the phase.
 3. **Smart Auto-Compact**:
-   Prevents context exhaustion stalls:
-   - Automated `/compact` injection upon round closing (`done`).
-   - Zero-delta timeout detection for stuck `Working...` states (> 300s).
+   Prevents context exhaustion stalls. `/compact` is injected only into roles
+   whose CLI declares `"supports_compact": true` in `cli-profiles.json` (today:
+   Claude Code only); other CLIs get Escape-only recovery and no preventive
+   compact, so no garbage lands in their input line:
 
 ## 11. Audit
 
