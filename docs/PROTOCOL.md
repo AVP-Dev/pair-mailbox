@@ -671,7 +671,7 @@ PR merging is gated by machine rules rather than prompt agreements:
    - `pairpilot` detects stale server processes and records `pilot_server_stale` events in the transcript.
 2. **Supervisor Done Parking & Token Budget Protection**:
    In continuous supervisor mode, once a round reaches `phase: done`, `pairpilot` parks itself (`pilot_parked`) if no open tasks (`pair_task`) and no pending obligations exist:
-   - Suppresses silence escalations and repetitive nudges to prevent token quota waste on idle rounds.
+   - Suppresses silence escalations, repetitive nudges, and note wake file escalations (`poll_wakes`) to prevent token quota waste on idle rounds.
    - Preserves active unblocking and wakes whenever a peer delivers a new message, opens a task, or changes the phase.
 3. **Smart Auto-Compact**:
    Prevents context exhaustion stalls:
