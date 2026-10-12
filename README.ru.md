@@ -7,7 +7,6 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/AVP-Dev/pair-mailbox/actions/workflows/ci.yml"><img src="https://github.com/AVP-Dev/pair-mailbox/actions/workflows/ci.yml/badge.svg?branch=master" alt="CI Status" /></a>
   <a href="https://github.com/AVP-Dev/pair-mailbox"><img src="https://img.shields.io/badge/Python-3.8+-3776AB?style=for-the-badge&logo=python&logoColor=white" alt="Python 3.8+" /></a>
   <a href="https://modelcontextprotocol.io/"><img src="https://img.shields.io/badge/MCP-Model_Context_Protocol-8A2BE2?style=for-the-badge" alt="MCP Protocol" /></a>
   <img src="https://img.shields.io/badge/Зависимости-Zero_External-10B981?style=for-the-badge" alt="Zero Dependencies" />
