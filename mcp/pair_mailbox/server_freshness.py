@@ -60,6 +60,26 @@ def latest_code_mtime(code_dir: Path | None = None) -> tuple[float, str]:
     return newest_mtime, newest_file
 
 
+def list_stale_files(code_dir: Path | None = None,
+                     process_start_ts: float | None = None,
+                     tolerance: float = 2.0) -> list[str]:
+    """Вернуть список имен *.py файлов, чей mtime новее старта процесса с учетом допуска."""
+    start_ts = process_start_ts if process_start_ts is not None else get_process_start_time()
+    target_dir = code_dir if code_dir is not None else server_code_dir()
+    cutoff = start_ts + tolerance
+    stale: list[str] = []
+    try:
+        for p in sorted(target_dir.glob("*.py")):
+            try:
+                if p.stat().st_mtime > cutoff:
+                    stale.append(p.name)
+            except OSError:
+                continue
+    except OSError:
+        pass
+    return stale
+
+
 def check_server_freshness(code_dir: Path | None = None,
                            process_start_ts: float | None = None) -> dict[str, Any]:
     """Проверить, свеж ли исполняемый сервер относительно файлов на диске.
@@ -69,13 +89,11 @@ def check_server_freshness(code_dir: Path | None = None,
     """
     start_ts = process_start_ts if process_start_ts is not None else get_process_start_time()
     newest_mtime, newest_file = latest_code_mtime(code_dir)
+    stale_files = list_stale_files(code_dir, start_ts)
     
     # Допуск 2.0 секунды на рассинхрон файловой системы при одновременном старте
-    is_fresh = True
-    lag_seconds = 0.0
-    if newest_mtime > (start_ts + 2.0):
-        is_fresh = False
-        lag_seconds = newest_mtime - start_ts
+    is_fresh = len(stale_files) == 0
+    lag_seconds = max(0.0, newest_mtime - start_ts) if not is_fresh else 0.0
 
     start_iso = datetime.fromtimestamp(start_ts, tz=timezone.utc).isoformat()
     newest_iso = (datetime.fromtimestamp(newest_mtime, tz=timezone.utc).isoformat()
@@ -89,7 +107,29 @@ def check_server_freshness(code_dir: Path | None = None,
         "newest_code_at": newest_iso,
         "newest_code_ts": newest_mtime,
         "lag_seconds": lag_seconds,
+        "stale_files": stale_files,
         "why": ("сервер свеж" if is_fresh else
                 f"код {newest_file} изменён {lag_seconds:.1f}с после старта сервера ({start_iso}) — "
                 f"в памяти исполняется старая версия. Требуется перезапуск MCP-сервера.")
     }
+
+
+def assert_server_fresh(reopening: bool = False, backward: bool = False) -> None:
+    """Гейт свежести сервера для tool_pair_advance.
+
+    Откаты назад (backward) разрешены всегда для аварийного спасения,
+    за исключением reopening (done -> implement), где запуск нового раунда
+    на устаревшем сервере запрещен.
+    Любые движения вперед блокируются при stale сервере.
+    """
+    if backward and not reopening:
+        return
+    status = check_server_freshness()
+    if not status["fresh"]:
+        from server import ProtocolError
+        files = ", ".join(status["stale_files"]) or status["newest_code_file"]
+        action = "переоткрытием раунда" if reopening else "переводом фазы"
+        raise ProtocolError(
+            f"сервер устарел: {status['why']}",
+            f"Файлы с изменениями: {files}. Перезапустите MCP-сервер перед {action}."
+        )

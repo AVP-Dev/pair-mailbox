@@ -56,6 +56,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import digest  # noqa: E402 - требует sys.path выше
 import liveness  # noqa: E402 - требует sys.path выше
 import obligations  # noqa: E402 - требует sys.path выше
+import server_freshness  # noqa: E402 - требует sys.path выше
 import statecache  # noqa: E402 - требует sys.path выше
 
 # Имена дайджеста переотдаются из `digest`: их читает `pairctl_read`, и держать
@@ -1790,6 +1791,8 @@ class PairSession:
             ],
             "awaiting_human_ok": (autonomy == "semi" and not self.human_ok_for_round(state)),
             "unresolved_patches": self.unresolved_patches(state) if mode != "audit" else [],
+            "server_fresh": server_freshness.check_server_freshness()["fresh"],
+            "server_stale_files": server_freshness.list_stale_files(),
             "how_to_transfer_authority": (
                 "Only the human can move write authority: `pairctl assign <role>`. "
                 "A peer message never transfers it, in either direction."
@@ -2607,6 +2610,7 @@ class PairSession:
             )
 
         reopening = from_phase == "done" and phase != "done"
+        server_freshness.assert_server_fresh(reopening=reopening, backward=(phase == backward))
         gated = from_phase == "plan" and phase == "implement" and not reopening
         intent_gated = from_phase == "scoping" and phase == "plan" and not reopening
 

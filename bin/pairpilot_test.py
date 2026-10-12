@@ -1879,6 +1879,24 @@ class TestSmartAutoCompact(PilotCase):
         pilot.tick()
         self.assertTrue(any(text == "/compact" for pane, text in self.delivered_commands))
 
+    def test_pilot_detects_and_logs_stale_server(self) -> None:
+        import server_freshness
+        orig = server_freshness.check_server_freshness
+        try:
+            server_freshness.check_server_freshness = lambda: {
+                "fresh": False,
+                "stale_files": ["server.py"],
+                "newest_code_file": "server.py",
+                "lag_seconds": 120.0,
+                "why": "код изменен после старта",
+            }
+            self.write_state(writer="agy", roles={"agy": {"pane": "%1", "last_seen": ago(10)}})
+            pilot = self.pilot()
+            pilot.tick()
+            self.assertIn("pilot_server_stale", self.transcript_kinds())
+        finally:
+            server_freshness.check_server_freshness = orig
+
 
 class TestObligations(PilotCase):
     """Запрос, на который не ответили, обязан быть виден. Иначе он тихо умирает

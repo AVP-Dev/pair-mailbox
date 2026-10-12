@@ -1072,6 +1072,24 @@ class Pilot:
             except Exception as exc:  # noqa: BLE001
                 log(f"{role}: превентивный компакт не удался: {exc}")
 
+    def check_server_freshness(self, state: dict) -> None:
+        """Проверить свежесть MCP-сервера и зафиксировать в транскрипте при устаревании."""
+        try:
+            import server_freshness
+            verdict = server_freshness.check_server_freshness()
+            if not verdict.get("fresh"):
+                key = f"server-stale-{verdict.get('newest_code_file')}"
+                if self.remember(key, ttl=300.0):
+                    self.store.append_transcript(
+                        "pilot_server_stale", "pairpilot",
+                        newest_file=verdict.get("newest_code_file"),
+                        lag_seconds=int(verdict.get("lag_seconds", 0)),
+                        note="MCP-сервер в памяти исполняет устаревший код; требуется перезапуск"
+                    )
+                    log(f"ВНИМАНИЕ: MCP-сервер устарел ({verdict.get('why')})")
+        except Exception:  # noqa: BLE001
+            pass
+
     def pending_answers(self, state: dict) -> None:
         """Отправили запрос, ответа нет. Это хуже молчания: молчание может означать
         «работаю», а отсутствие ответа на конкретный вопрос — что вопрос умер в
@@ -1568,6 +1586,7 @@ class Pilot:
         self.drop_stale_outbox(state)
         self.flush_outbox(state)
         self.preventive_compact(state)
+        self.check_server_freshness(state)
         self.checkpoint(state)
         self.report_once(state)
         return state
