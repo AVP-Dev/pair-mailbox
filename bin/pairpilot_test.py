@@ -1791,6 +1791,95 @@ class TestVisibleWork(PilotCase):
         self.assertEqual("", pilot.pending("agy"))
 
 
+class TestSmartAutoCompact(PilotCase):
+    """Тесты S2: Smart Auto-Compact при зависшем Working... и превентивный на done."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self._orig_capture = pairpilot.capture
+        self._orig_pane_alive = pairpilot.pane_alive
+        self._orig_deliver = pairpilot.deliver
+        self._orig_subprocess_run = pairpilot.subprocess.run
+
+        self.delivered_commands = []
+        self.sent_keys = []
+        pairpilot.pane_alive = lambda tmux, pane: True
+        pairpilot.deliver = lambda pane, text, wait_for_empty=0.0, submit=True: (
+            self.delivered_commands.append((pane, text)) or {"delivered": True}
+        )
+        def mock_run(cmd, *args, **kwargs):
+            self.sent_keys.append(cmd)
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+        pairpilot.subprocess.run = mock_run
+
+    def tearDown(self) -> None:
+        pairpilot.capture = self._orig_capture
+        pairpilot.pane_alive = self._orig_pane_alive
+        pairpilot.deliver = self._orig_deliver
+        pairpilot.subprocess.run = self._orig_subprocess_run
+        super().tearDown()
+
+    def test_stalled_busy_triggers_escape_and_compact(self) -> None:
+        self.write_state(writer="omp", roles={"omp": {"pane": "%3", "last_seen": ago(100)}})
+        pilot = self.pilot()
+        pilot.tmux = "/usr/bin/true"
+        pilot.stall_timeout = 10.0
+
+        # Мокаем зависший спиннер: composer_line возвращает None (занят), экран не меняется
+        pairpilot.composer_line = lambda lines: None
+        pairpilot.capture = lambda tmux, pane: ["⎋ Working...", "Thinking..."]
+
+        # 1-й тик: фиксирует снимок экрана в _screen_hashes
+        pilot.tick()
+        self.assertEqual([], self.delivered_commands)
+
+        # Симулируем истечение stall_timeout с неизменным экраном
+        screen_hash, first_ts = pilot._screen_hashes["omp"]
+        pilot._screen_hashes["omp"] = (screen_hash, first_ts - 15.0)
+
+        # 2-й тик: порог превышен, отправляется Escape и /compact
+        pilot.tick()
+        self.assertTrue(any("Escape" in cmd for cmd in self.sent_keys))
+        self.assertTrue(any(text == "/compact" for pane, text in self.delivered_commands))
+        self.assertIn("pilot_auto_compact", self.transcript_kinds())
+
+    def test_active_busy_with_screen_delta_is_not_compacted(self) -> None:
+        self.write_state(writer="omp", roles={"omp": {"pane": "%3", "last_seen": ago(100)}})
+        pilot = self.pilot()
+        pilot.tmux = "/usr/bin/true"
+        pilot.stall_timeout = 10.0
+
+        pairpilot.composer_line = lambda lines: None
+        captured_lines = ["⎋ Working... token 1"]
+        pairpilot.capture = lambda tmux, pane: captured_lines
+
+        # 1-й тик
+        pilot.tick()
+        screen_hash, first_ts = pilot._screen_hashes["omp"]
+
+        # Экран изменился (агент реально генерирует вывод)
+        captured_lines = ["⎋ Working... token 2"]
+        pilot._screen_hashes["omp"] = (screen_hash, first_ts - 15.0)
+
+        # 2-й тик: хэш изменился -> сброс таймера, компакта нет
+        pilot.tick()
+        self.assertEqual([], self.delivered_commands)
+
+    def test_preventive_compact_on_round_done(self) -> None:
+        self.write_state(phase="done", closed_at=now_iso(),
+                         writer="agy", roles={"omp": {"pane": "%3", "last_seen": ago(10)}})
+        pilot = self.pilot()
+        pilot.tmux = "/usr/bin/true"
+
+        # Композер свободен
+        pairpilot.composer_line = lambda lines: ">"
+        pairpilot.is_composer_empty = lambda line: True
+        pairpilot.capture = lambda tmux, pane: [">"]
+
+        pilot.tick()
+        self.assertTrue(any(text == "/compact" for pane, text in self.delivered_commands))
+
+
 class TestObligations(PilotCase):
     """Запрос, на который не ответили, обязан быть виден. Иначе он тихо умирает
     в ящике, а пара выглядит спокойно."""

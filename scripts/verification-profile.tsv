@@ -30,6 +30,7 @@ task-banner	positive	1	python3 mcp/pair_mailbox/test_task_banner.py
 autoperms	positive	1	python3 mcp/pair_mailbox/test_autoperms.py
 intent-gate	positive	1	python3 mcp/pair_mailbox/test_intent_gate.py
 plan-gate	positive	1	python3 mcp/pair_mailbox/test_plan_gate.py
+server-freshness	positive	1	python3 mcp/pair_mailbox/test_server_freshness.py
 heal	positive	1	python3 mcp/pair_mailbox/test_heal.py
 budget	positive	1	python3 mcp/pair_mailbox/test_budget.py
 worktree	positive	1	python3 mcp/pair_mailbox/test_worktree.py

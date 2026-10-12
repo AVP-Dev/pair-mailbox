@@ -120,6 +120,7 @@ DEFAULT_PATCH_GRACE = 1800.0
 # и без потолка это цикл падения, а не восстановление.
 DEFAULT_RESTART_LIMIT = 3
 DEFAULT_RESTART_WINDOW = 600.0
+DEFAULT_STALL_TIMEOUT = 300.0
 PROMPT_MARKERS = (">", "›", "❯")
 AUTONOMIES = ("observe", "semi", "auto")
 
@@ -184,7 +185,8 @@ class Pilot:
                  restart_limit: int = DEFAULT_RESTART_LIMIT,
                  restart_window: float = DEFAULT_RESTART_WINDOW,
                  outbox_ttl: float = DEFAULT_OUTBOX_TTL,
-                 wake_grace: float = DEFAULT_WAKE_GRACE) -> None:
+                 wake_grace: float = DEFAULT_WAKE_GRACE,
+                 stall_timeout: float = DEFAULT_STALL_TIMEOUT) -> None:
         self.state_dir = state_dir
         self.silence = silence
         self.interval = interval
@@ -196,6 +198,8 @@ class Pilot:
         self.restart_limit = max(1, int(restart_limit))
         self.restart_window = max(1.0, float(restart_window))
         self.outbox_ttl = max(1.0, float(outbox_ttl))
+        self.stall_timeout = max(1.0, float(stall_timeout))
+        self._screen_hashes: dict[str, tuple[str, float]] = {}
         # Store умеет root — это сам каталог состояния: server.py делает ровно
         # то же. Со state_dir.parent мы бы читали несуществующий state.json.
         self.store = Store(state_dir)
@@ -970,6 +974,104 @@ class Pilot:
                                          minutes=int(age // 60))
             log(f"{role} молчит {int(age // 60)} мин без входящих — толкаю сразу")
 
+    def check_stalled_busy(self, state: dict) -> None:
+        """Детекция зависшего агента в состоянии 'Working...' (> stall_timeout zero-delta).
+
+        Агент, зависший на стриме API (timeout) или раздутом контексте (>75%),
+        показывает спиннер, из-за чего visibly_busy() считает его работающим.
+        Если экран не меняется дольше stall_timeout, отправляем Escape, ждём ввода
+        и выполняем /compact с фиксацией в журнале и заметках.
+        """
+        if self.tmux is None:
+            return
+        # Не компактаем во время запечатанных патчей (риск прервать review/apply)
+        for _p, rec in (state.get("patches") or {}).items():
+            if rec.get("sealed") and not rec.get("applied"):
+                return
+
+        now = time.time()
+        for role, info in (state.get("roles") or {}).items():
+            if role in self.skip or not isinstance(info, dict):
+                continue
+            pane = info.get("pane")
+            if not pane or not pane_alive(self.tmux, pane):
+                self._screen_hashes.pop(role, None)
+                continue
+            if not self.visibly_busy(pane):
+                self._screen_hashes.pop(role, None)
+                continue
+
+            try:
+                raw_lines = capture(self.tmux, pane)
+                screen_hash = hashlib.sha256("\n".join(raw_lines).encode("utf-8")).hexdigest()[:16]
+            except Exception:  # noqa: BLE001
+                continue
+
+            last_hash, first_seen = self._screen_hashes.get(role, ("", now))
+            if screen_hash != last_hash:
+                self._screen_hashes[role] = (screen_hash, now)
+                continue
+
+            stalled_duration = now - first_seen
+            if stalled_duration < self.stall_timeout:
+                continue
+
+            key = f"auto-compact-stall-{role}-{state.get('round')}-{screen_hash}"
+            if not self.remember(key, ttl=self.stall_timeout * 2):
+                continue
+
+            log(f"{role}: завис в Working... {int(stalled_duration)}с (zero-delta) — шлю Escape и /compact")
+            try:
+                subprocess.run([self.tmux, "send-keys", "-t", pane, "Escape"],
+                               capture_output=True, text=True, timeout=5)
+                time.sleep(1.0)
+                deliver(pane, "/compact", wait_for_empty=3.0, submit=True)
+            except Exception as exc:  # noqa: BLE001
+                log(f"{role}: авто-компакт не удался: {exc}")
+                continue
+
+            self._screen_hashes.pop(role, None)
+            self.store.append_transcript("pilot_auto_compact", "pairpilot",
+                                         target=role, reason="stalled_busy",
+                                         duration_seconds=int(stalled_duration))
+            # Фиксация инцидента в заметках
+            try:
+                notes_dir = self.state_dir / "notes"
+                notes_dir.mkdir(parents=True, exist_ok=True)
+                note_file = notes_dir / "fix.md"
+                with note_file.open("a", encoding="utf-8") as f:
+                    f.write(f"\n## {now_iso()} — pairpilot\n\n"
+                            f"Smart Auto-Compact: {role} завис в 'Working...' на "
+                            f"{int(stalled_duration)}с без изменения экрана. Отправлен Escape + /compact.\n")
+            except OSError:
+                pass
+
+    def preventive_compact(self, state: dict) -> None:
+        """Превентивный /compact для живых ролей при phase == 'done'."""
+        if state.get("phase") != "done" or self.tmux is None:
+            return
+        round_num = state.get("round", 0)
+        key = f"preventive-compact-round-{round_num}"
+        if not self.remember(key):
+            return
+
+        for role, info in (state.get("roles") or {}).items():
+            if role in self.skip or not isinstance(info, dict):
+                continue
+            pane = info.get("pane")
+            if not pane or not pane_alive(self.tmux, pane):
+                continue
+            try:
+                line = composer_line(capture(self.tmux, pane))
+                if line is not None and is_composer_empty(line):
+                    deliver(pane, "/compact", wait_for_empty=1.0, submit=True)
+                    self.store.append_transcript("pilot_auto_compact", "pairpilot",
+                                                 target=role, reason="preventive_done",
+                                                 round=round_num)
+                    log(f"{role}: превентивный /compact на фазе done")
+            except Exception as exc:  # noqa: BLE001
+                log(f"{role}: превентивный компакт не удался: {exc}")
+
     def pending_answers(self, state: dict) -> None:
         """Отправили запрос, ответа нет. Это хуже молчания: молчание может означать
         «работаю», а отсутствие ответа на конкретный вопрос — что вопрос умер в
@@ -1460,10 +1562,12 @@ class Pilot:
         self.poll_wakes(state)
         self.pending_answers(state)
         self.stalled_patches(state)
+        self.check_stalled_busy(state)
         self.stale_writer(state)
         self.idle_roles(state)
         self.drop_stale_outbox(state)
         self.flush_outbox(state)
+        self.preventive_compact(state)
         self.checkpoint(state)
         self.report_once(state)
         return state
@@ -1625,6 +1729,8 @@ def main() -> int:
     parser.add_argument("--allow", default=os.environ.get("PAIR_PERMISSIONS"),
                         help="permission allowlist: a file of patterns, or a comma-separated "
                              "list. Empty means confirm nothing.")
+    parser.add_argument("--stall-timeout", type=float, default=DEFAULT_STALL_TIMEOUT,
+                        help="seconds an agent may stay busy with identical screen before auto-compact")
     parser.add_argument("--once", action="store_true", help="один проход и выход")
     args = parser.parse_args()
 
@@ -1644,7 +1750,7 @@ def main() -> int:
                   reply_repeat=args.reply_repeat,
                   patch_grace=args.patch_grace, launch=launch, allow=allow,
                   restart_limit=args.restart_limit, restart_window=args.restart_window,
-                  outbox_ttl=args.outbox_ttl)
+                  outbox_ttl=args.outbox_ttl, stall_timeout=args.stall_timeout)
 
     if args.once:
         state = pilot.tick()
