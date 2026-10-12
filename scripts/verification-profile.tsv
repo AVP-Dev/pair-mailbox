@@ -53,6 +53,7 @@ liveness	positive	1	python3 mcp/pair_mailbox/test_liveness.py	serial
 digest	positive	1	python3 mcp/pair_mailbox/test_digest.py
 panes	positive	1	python3 mcp/pair_mailbox/test_panes.py	serial
 composer	positive	1	python3 mcp/pair_mailbox/test_composer.py	serial
+composer-bypass	positive	1	python3 mcp/pair_mailbox/test_allowlist_bypass.py	serial
 roster-heal	positive	1	python3 mcp/pair_mailbox/test_roster_heal.py
 file-size-gate-tests	positive	1	bash scripts/file-size-gate_test.sh
 eye-deadlock	positive	1	bash scripts/eye-of-sauron_test.sh
