@@ -30,13 +30,29 @@
 </div>
 
 ---
-## ⏱️ За 10 секунд: До и После
 
-**До:** Запуск pair-mailbox требует изучения инфраструктуры, установки tmux, настройки ролей и понимания протокола pair-mailbox.
+## ⏱️ In 10 Seconds: What Changes? (Before & After)
 
-**После:** Запуск занимает одну команду: `pairup --task "ваша цель"` — две панели tmux, автономный pairing loop, готовый PR.
+| Without pair-mailbox (Single Agent / Manual Chat) | With pair-mailbox (Autonomous Pair) |
+|---|---|
+| ❌ **Hallucinates and agrees with itself**: agent writes bugs, writes flawed tests, and tells you "all green". | 🛡️ **Adversarial Critic**: second agent independently breaks hypotheses, runs tests, and catches flaws before shipping. |
+| ❌ **You act as a manual copy-paste messenger** between two browser/terminal tabs ("human pigeon"). | ⚡ **Autonomous peer channel**: agents communicate, wake each other in tmux, and coordinate without you. |
+| ❌ **Both agents overwrite each other's files**, creating merge conflicts and broken states. | 🔒 **Strict Single Writer**: exactly one agent edits files; critic proposes verified SHA-256 sealed patches. |
+| ❌ **Stalls indefinitely on interactive CLI prompts** (`[y/N]` or `Allow execution?`). | 🤖 **Safe Autonomous Unblocking**: watchdog and peer safely confirm allowlisted commands. |
+| ❌ **You spend hours supervising**. | 🎯 **Give task & accept PR**: pair drives Scoping &rarr; Plan &rarr; Code &rarr; Review &rarr; Test &rarr; PR under `auto`. |
 
----
+### 🚀 Quick 3-Step Demo
+
+```bash
+# 1. Install once across detected CLIs
+./install.sh
+
+# 2. Start pairing from your project repo
+pairup --task "fix retry jitter handling in client"
+
+# 3. Done. The pair collaborates in tmux and opens a verified PR.
+```
+
 ---
 
 ## ⚡ Why pair-mailbox?
