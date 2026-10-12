@@ -3,44 +3,47 @@ name: pair-backlog
 description: Park a real finding that will not be fixed in this run, without losing it. Use when a review finds something genuinely broken but out of scope, or when the user says "в бэклог", "отложим", "не сейчас", "park it", "defer this".
 ---
 
-# Бэклог
+# Backlog
 
-Находка настоящая, но не в объёме этой задачи. В бэклог идёт то, что сломается позже.
-Не выдумывай мелочей.
+> Language: this is the English original. The Russian mirror is [SKILL.ru.md](./SKILL.ru.md).
 
-## Как
+A finding is real but outside this task's scope. The backlog holds what will break later.
+Do not invent trivia.
 
-1. `pair_note(kind="backlog", text=...)`. Формат: `file:line — что сломается — почему отложили`.
-2. Писатель в конце задачи переносит находки в `docs/backlog/<слаг>.md`, по одному файлу:
+## How
+
+1. `pair_note(kind="backlog", text=...)`. Format: `file:line — what will break — why deferred`.
+2. At the end of the task the writer moves findings into `docs/backlog/<slug>.md`, one file each:
 
 ```markdown
 ---
-title: <коротко>
-found: <дата>
+title: <brief>
+found: <date>
 severity: high|medium|low
 ---
-## Где
+## Where
 `file:line`
-## Что сломается
-<сценарий>
-## Почему отложили
-<причина>
-## Что сделать
-<шаг>
+## What will break
+<scenario>
+## Why deferred
+<reason>
+## What to do
+<step>
 ```
 
-## Правила
+## Rules
 
-- Только писатель создаёт файлы в `docs/backlog/`. Критик кладёт находку в заметку.
-- Что правится за минуту — чинить сразу. Бэклог растёт от лени.
+- Only the writer creates files in `docs/backlog/`. The critic puts the finding in a note.
+- What takes a minute to fix — fix now. The backlog grows from laziness.
 
-## В `mode=audit`
+## In `mode=audit`
 
-В раунде `audit` этот навык — основной выход для находок, а не запасной. Правки
-не делаются вовсе, поэтому «отложить» тут не исключение, а весь итог: подтверждённое
-источниками идёт в `docs/backlog/<слаг>.md`.
+In an `audit` round this skill is the main outlet for findings, not a fallback.
+No changes are made at all, so "deferred" here is not the exception but the whole
+outcome: anything confirmed by sources goes into `docs/backlog/<slug>.md`.
 
-Разница одна, и она важна: в `fix` сюда попадает то, что не влезло в объём задачи.
-В `audit` сюда попадает **всё подтверждённое**, и «а это чинится за минуту» — не
-причина пропустить. Причина одна: раунд починки не заказан, и следующий заведёт
-другой. Находку без файла через полгода не найдут.
+The difference is one, and it matters: in `fix` this holds what did not fit the
+task's scope. In `audit` it holds **everything confirmed**, and "but this takes
+a minute to fix" is not a reason to skip. There is one reason only: the fix
+round was not ordered, and a different one will be started later. A finding
+without a file will not be found in six months.

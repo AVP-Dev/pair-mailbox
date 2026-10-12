@@ -270,14 +270,14 @@ Stepping back from `done` increments `round` and clears `closed_at`.
 ### The plan gate: `plan → implement` is machine-checked
 
 Forward from `plan` to `implement` is refused by the server until the round has a
-plan artefact and the neighbour's visа (round 55):
+plan artefact and the neighbour's visa (round 55):
 
 - **`​.pair/plan.md`** — the contract. First line is strictly `round: N` (N is the
   current round), then the sections `Goal`, `Invariants`, `Acceptance`. The marker
   exists for the same reason a stale verdict is refused: applying last round's plan
   silently is worse than having none.
-- **The neighbour's visа** — a `kind=verdict` note containing `plan-ack round N`,
-  written by any role but the writer (your own visа is refused: that would be the
+- **The neighbour's visa** — a `kind=verdict` note containing `plan-ack round N`,
+  written by any role but the writer (your own visa is refused: that would be the
   gate removing itself), not older than the plan file. In `mode=fix` only.
 - **The waiting window** — `.pair/plan-gate.json` `{"ack_timeout_hours": 24}`: when
   the window expires and the writer has no open requests to the neighbour, the
@@ -285,7 +285,7 @@ plan artefact and the neighbour's visа (round 55):
   must not expire unnoticed.
 - **Exempt**: every step back (including reopening `done → implement` after a
   finding — a gate that blocked reopening would lock itself), and `mode=audit`,
-  where the deliverable is findings and an artefact is enough without a visа.
+  where the deliverable is findings and an artefact is enough without a visa.
 
 The gate is additive to §5a: it does not replace the evidence requirement, and it
 does not touch the writer-only rule (§6 forward belongs to the writer regardless).

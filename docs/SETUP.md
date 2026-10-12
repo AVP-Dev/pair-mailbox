@@ -1,5 +1,8 @@
 # Setup
 
+> Language: this is the English original. The Russian mirror is
+> [`SETUP.ru.md`](./SETUP.ru.md).
+
 ## Prerequisites
 
 - `python3` 3.8 or newer on `PATH` (the server has no third-party dependencies)
@@ -122,7 +125,7 @@ Normal collaboration from here. The things worth doing deliberately:
 - **Say something early.** Two agents that never talk produce one agent's opinion with extra steps.
 - **Let the critic attack the plan**, not just the diff. The cheapest disagreement is before anyone
   writes code.
-- **Hand over, do not stall.** `bin/pairctl release` then `bin/pairctl assign <роль соседа>`, then tell the
+- **Hand over, do not stall.** `bin/pairctl release` then `bin/pairctl assign <peer's role>`, then tell the
   new writer it is the writer and the old one is read-only. Doing this in both sessions is not
   optional bookkeeping; it is how each agent learns the change.
 

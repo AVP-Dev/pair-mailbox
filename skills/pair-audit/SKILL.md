@@ -3,66 +3,69 @@ name: pair-audit
 description: Verify the evidence of a finished task is real — tests failed before the change and pass after, nothing skipped, mocked or weakened to force green, and no comment promising protection that no test exercises. Use before declaring any pair task done, and whenever a task claims tests pass.
 ---
 
-# Аудит
+# Audit
 
-> **Не путать с режимом раунда `audit`.** Этот навык — про проверку доказательств
-> уже сделанной правки: падал ли тест до неё и зеленеет ли после. Раунд `mode=audit`
-> (`bin/pairctl mode audit`) — про другое: там правок нет и откатывать нечего.
-> Задача сформулирована словами «найти дефекты, ничего не меняя» — это режим раунда,
-> и его обслуживает `pair-work`; этот навык к ней не относится.
+> Language: this is the English original. The Russian mirror is [SKILL.ru.md](./SKILL.ru.md).
 
-Задача не закончена, пока не проверено, что «тесты проходит» — правда. Самая дорогая
-ошибка здесь: отчёт зелёный, а проверки не было.
+> **Not the same as the round's `audit` mode.** This skill is about verifying the
+> evidence of a change already made: did the test fail before it and go green
+> after. A round in `mode=audit` (`bin/pairctl mode audit`) is something else:
+> there are no changes there and nothing to roll back.
+> A task phrased as "find defects, change nothing" is a round mode, and it is
+> served by `pair-work`; this skill does not apply to it.
 
-## 1. Тесты ловят баг, а не просто зелёные
+A task is not finished until "tests pass" has been verified as true. The most
+expensive mistake here: a green report with no verification behind it.
 
-- Откати правку: тест обязан падать. Зелёный и до — значит ничего не проверяет.
-- Найди тест, который ловит **именно эту** ошибку, и покажи его.
-- Если такого нет — это находка, а не мелочь.
+## 1. Tests catch the bug, not just stay green
 
-## 2. Тесты не ослаблены
+- Roll back the change: the test must fail. Green even before means it verifies nothing.
+- Find the test that catches **exactly this** error, and show it.
+- If there is none — that is a finding, not a detail.
 
-Ищи `skip`, `only`, `xit`, `todo`, закомментированные ассерты, `mock`,
-`stub`, увеличенный `timeout`, `assert.ok(true)`, `.rejects` на позитивном кейсе.
+## 2. Tests are not weakened
 
-## 3. Тесты реально выполнялись
+Look for `skip`, `only`, `xit`, `todo`, commented-out asserts, `mock`,
+`stub`, increased `timeout`, `assert.ok(true)`, `.rejects` on a positive case.
 
-Не «команда вышла с 0», а **число прогнанных тестов**. Ноль прогнанных тоже выходит
-с нулём.
+## 3. Tests actually ran
 
-## 4. Нет обхода
+Not "the command exited 0", but **the number of tests run**. Zero tests run
+also exits zero.
 
-Решение не должно отключать то, что чинило: удалённый тест, ослабленный линтер,
-выключенный typecheck, `continue-on-error` в CI, сужённый `permissions`.
+## 4. No bypass
 
-## 5. Комментарий без теста — это находка
+The fix must not disable what it repaired: a deleted test, a weakened linter,
+a disabled typecheck, `continue-on-error` in CI, narrowed `permissions`.
 
-Отдельно и строго. В коде часто стоит пояснение:
+## 5. A comment without a test is a finding
+
+Separately and strictly. Code often carries an explanation:
 
 ```ts
-// числовая ветка защищает от переполнения
+// the numeric branch guards against overflow
 if (typeof id === "number") { ... }
 ```
 
-Если ни один тест не выполняет эту ветку — комментарий **врёт**. Проверь:
+If no test executes this branch — the comment is **lying**. Check:
 
-1. Откати или измени защиту так, чтобы тест должен был упасть.
-2. Прогони — если всё зелёное, защита не исполняется.
-3. Значит код мёртвый, а комментарий обещает то, чего нет.
+1. Roll back or alter the guard so the test should fail.
+2. Run it — if everything stays green, the guard never executes.
+3. Then the code is dead, and the comment promises something that is not there.
 
-Почему это важно: через полгода кто-то удалит ветку «как дублирование», посмотрев
-только на комментарий. Доказательство — два файла: строка с пояснением и файл теста,
-где этой ветки нет.
+Why this matters: in six months someone will delete the branch as "duplication"
+based on the comment alone. The evidence is two files: the line with the
+explanation and the test file where this branch is absent.
 
-## 6. Область покрыта
+## 6. The area is covered
 
-Проверяй то, что чинили. Попутно сломанное — отдельная находка, а не «мимоходом
-заметил».
+Verify what was fixed. Something broken on the side is a separate finding,
+not a "noticed in passing".
 
-## Как отчитываться
+## How to report
 
-Список пунктов с вердиктом: `подтверждено` / `не проверено` / `подозрительно`.
-Каждое непроверенное говори прямо.
+A bullet list with a verdict: `confirmed` / `not verified` / `suspicious`.
+State every unverified item directly.
 
-Молчание читается как «всё хорошо», а это ложь. Если доказать нечем — пиши
-`pair_note(kind="verdict")` с текстом «доказательств нет».
+Silence reads as "all good", and that is a lie. If you have no proof — write
+`pair_note(kind="verdict")` with the text "no evidence".

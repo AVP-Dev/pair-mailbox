@@ -3,126 +3,122 @@ name: session-finalizer
 description: Finalize a coding session via /finish — close the protocol loop implement→review→finalize with verified cleanup and a final report. Use when the user says "/finish", "finalize session", or "close protocol implement→review→finalize".
 ---
 
-# Финализатор сессии / Session Finalizer
+# Session Finalizer
 
-> Нормативен русский текст. При расхождении RU и EN версий следуй RU.
-> Russian text is normative; on RU/EN divergence follow RU.
+> Language: this is the English original. The Russian mirror is [SKILL.ru.md](./SKILL.ru.md).
 
-Ты закрываешь сессию, а не «прибираешься». Твоя работа — доказать, что
-репозиторий в чистом состоянии, и выдать финальный отчёт. Нет доказательств —
-нет закрытия.
+> English text is normative; on EN/RU divergence follow EN.
 
 You close the session, you don't "tidy up". Prove the repo is clean, then
 emit the final report. No proof — no close.
 
-**Оркестратор (orchestrator)** — держатель вызова `/finish`, тот кто исполняет
-протокол в этом чате. Не роль в реестре, а функция: выполняет шаги 1–7,
-читает почту до закрытия, ставит маркер через скрипты.
+**Orchestrator** — the holder of the `/finish` invocation, the one who executes
+the protocol in this chat. Not a registry role but a function: performs steps 1–7,
+reads the mail before closing, sets the marker via scripts.
 
-**Дисклеймер про `./finish.sh`.** В корне чекаута `umputum` лежит
-исполняемый `./finish.sh` — шелл-лончер парной сессии (ставит навыки,
-поднимает пару и супервизора). Это другое: он не знает протокола
-check→plan→apply→report и не ставит маркер. Команда `/finish` ниже —
-протокол этого скилла; `./finish.sh` его не заменяет.
+**Disclaimer about `./finish.sh`.** At the checkout root of `umputum` lies an
+executable `./finish.sh` — a shell launcher for the pair session (installs skills,
+raises the pair and the supervisor). That is something else: it knows nothing of the
+check→plan→apply→report protocol and does not set the marker. The `/finish` command
+below is this skill's protocol; `./finish.sh` does not replace it.
 
-## 1. Триггеры / Triggers
+## 1. Triggers
 
-- `/finish` — полный цикл: check → plan → confirm → cleanup → final-verify → close.
-- `/finish --check` — только аудит. Read-only по состоянию репо/сессии: не пишет в git, маркер, worktrees, файлы скилла. НО исполняет детектированные команды проекта (см. §2): они идут реально и могут писать свои штатные артефакты.
-- `/finish --cleanup` — аудит + план + применение (cleanup без финального закрытия).
-- `/finish --yes` — пропускает **только** подтверждение cleanup-плана. Safety-проверки выполняются всегда.
-- Флага `--force` **не существует**. Не выдумывай его, не принимай от пользователя.
+- `/finish` — full cycle: check → plan → confirm → cleanup → final-verify → close.
+- `/finish --check` — audit only. Read-only on repo/session state: does not write to git, marker, worktrees, skill files. BUT executes detected project commands (see §2): they run for real and may write their normal artifacts.
+- `/finish --cleanup` — audit + plan + apply (cleanup without final close).
+- `/finish --yes` — skips **only** the cleanup-plan confirmation. Safety checks always run.
+- There is **no** `--force` flag. Do not invent it, do not accept it from the user.
 
-## 2. Режимы / Modes
+## 2. Modes
 
-| Вызов / Invocation | Что делает / What it does |
+| Invocation | What it does |
 |---|---|
-| `/finish --check` | Аудит состояния репо/сессии. Не пишет в git, `.session/`, `.pair/`, маркер, worktrees, файлы скилла. Детектированные команды проекта (`test/lint/build/typecheck` из `adapters/commands.sh`: `npm`/`make`/`pytest`/`go`/`task`, без install/publish) исполняются реально (`bash -c`, timeout 120) — их штатные записи фиксируются в `log_tail`, это не нарушение read-only. |
-| `/finish --cleanup` | Аудит + план + применение плана. Без final-verify и без закрытия (маркер не ставится). |
-| `/finish` | Полный цикл: check → plan → confirm → cleanup → final-verify → close. |
-| `/finish --yes` | Пропускает **только** подтверждение плана. BLOCKED не снимает, safety-правила не отменяет. |
+| `/finish --check` | Audits repo/session state. Does not write to git, `.session/`, `.pair/`, marker, worktrees, skill files. Detected project commands (`test/lint/build/typecheck` from `adapters/commands.sh`: `npm`/`make`/`pytest`/`go`/`task`, no install/publish) execute for real (`bash -c`, timeout 120) — their normal writes are recorded in `log_tail`, not a read-only violation. |
+| `/finish --cleanup` | Audit + plan + plan apply. No final-verify and no close (marker not set). |
+| `/finish` | Full cycle: check → plan → confirm → cleanup → final-verify → close. |
+| `/finish --yes` | Skips **only** plan confirmation. Does not lift BLOCKED, does not cancel safety rules. |
 
-## 3. Протокол / Protocol
+## 3. Protocol
 
-Строгий порядок, 7 шагов:
+Strict order, 7 steps:
 
-1. **Verification.** Прогони `finalize-check` (cwd = корень репо). Зафиксируй HEAD, ветку, маркер.
-2. **Cleanup.** `finalize-plan` (чистая функция от check.json) → показать план человеку → `finalize-apply` (без `--yes` это dry-run: ничего не удаляет).
-3. **Final verify.** Повтори `finalize-check` на новом HEAD. Чисто — дальше. Грязно — новый план, не закрытие.
-4. **Reviewer report.** Вердикт ревьюера: `OK` или `BLOCKED` с причиной и `file:line`.
-5. **Implementer report.** Что сделано: коммиты, файлы, что осталось.
-6. **Orchestrator cleanup.** Временные репозитории, scratch-директории, фоновые процессы — остановить и удалить, каждое с подтверждением вывода.
-7. **Stop.** `finalize-report` на успешном apply при чистом дереве пишет маркер `.session/finalized` и печатает отчёт. Первая строка — `SESSION FINALIZED` либо `SESSION BLOCKED`.
+1. **Verification.** Run `finalize-check` (cwd = repo root). Record HEAD, branch, marker.
+2. **Cleanup.** `finalize-plan` (pure function of check.json) → show the plan to the human → `finalize-apply` (without `--yes` this is a dry-run: deletes nothing).
+3. **Final verify.** Repeat `finalize-check` on the new HEAD. Clean — proceed. Dirty — new plan, not a close.
+4. **Reviewer report.** Reviewer verdict: `OK` or `BLOCKED` with a reason and `file:line`.
+5. **Implementer report.** What was done: commits, files, what remains.
+6. **Orchestrator cleanup.** Temp repos, scratch directories, background processes — stop and delete, each with output confirmation.
+7. **Stop.** `finalize-report` on a successful apply with a clean tree writes the `.session/finalized` marker and prints the report. First line is `SESSION FINALIZED` or `SESSION BLOCKED`.
 
-Инварианты: reviewer-BLOCKED останавливает cleanup и close (только безопасное — документирование); single-writer — почту и маркер трогает один держатель за раз; закрытие поверх непрочитанной почты запрещено.
+Invariants: reviewer-BLOCKED stops cleanup and close (only the safe part — documentation); single-writer — one holder at a time touches mail and marker; closing over unread mail is forbidden.
 
-## 4. Правила безопасности / Safety Rules
+## 4. Safety Rules
 
-1. Не распознал состояние — сохрани. **UNKNOWN = PRESERVE.** Пометь `?`, иди дальше.
-2. Доказательство merged — только через git (`git branch --merged`, `git log`, статус PR через `gh`/`glab`). Нет доказательства в git — считай unmerged, сохраняй.
-3. Никогда не пушь в защищённые ветки (`main`, `master`, `develop`, `trunk`, `release/*`, `hotfix/*`). Никогда не force-push. Не переписывай чужую историю.
-4. Не трогай секреты в репо (`*secret*`, `*.pem`, `*.key`, `.env`, `*credential*` из `secrets_guards`). Не коммить секреты. Вне репо (`~/.config`, `~/.ssh`, домашние данные пользователя) — вне скоупа скилла: скрипты работают только с repo-relative путями и туда не ходят.
-5. Незакоммиченная работа и именованный stash — это работа, не мусор: только с явным подтверждением человека.
-6. `--check` не пишет в git/маркер/worktrees/файлы скилла (но исполняет проектные команды — см. §2). `--yes` не отменяет правила 1–5 и не снимает BLOCKED.
-7. Каждое удаление — с доказательством: что, где, почему безопасно, вывод команды / exit-код.
+1. Did not recognize a state — preserve it. **UNKNOWN = PRESERVE.** Mark `?`, move on.
+2. Proof of merged is only via git (`git branch --merged`, `git log`, PR status via `gh`/`glab`). No proof in git — treat as unmerged, preserve.
+3. Never push to protected branches (`main`, `master`, `develop`, `trunk`, `release/*`, `hotfix/*`). Never force-push. Do not rewrite someone else's history.
+4. Do not touch secrets in the repo (`*secret*`, `*.pem`, `*.key`, `.env`, `*credential*` from `secrets_guards`). Do not commit secrets. Outside the repo (`~/.config`, `~/.ssh`, the user's home data) is out of this skill's scope: scripts only work with repo-relative paths and do not go there.
+5. Uncommitted work and a named stash are work, not trash: only with explicit human confirmation.
+6. `--check` does not write to git/marker/worktrees/skill files (but runs project commands — see §2). `--yes` does not override rules 1–5 and does not lift BLOCKED.
+7. Every deletion comes with proof: what, where, why it is safe, command output / exit code.
 
-## 5. Идемпотентность / Idempotency
+## 5. Idempotency
+The `.session/finalized` marker is JSON `{head, session, closed_at}`; only
+`finalize-report` writes it, and only on success (apply not blocked AND tree clean).
 
-Маркер `.session/finalized` — JSON `{head, session, closed_at}`; пишет его только
-`finalize-report` и только при успехе (apply не заблокирован И дерево чисто).
+- Marker exists and `marker.head == HEAD` — nothing to do: answer `Nothing to clean`, do not touch the repo.
+- HEAD differs — new work after closing: full cycle again, marker overwritten after a successful final-verify.
+- `--check` ignores marker presence: the marker is not permission, the audit is always full.
 
-- Маркер существует и `marker.head == HEAD` — делать нечего: ответь `Nothing to clean`, репозиторий не трогай.
-- HEAD отличается — новая работа после закрытия: полный цикл заново, маркер перезаписывается после успешного final-verify.
-- `--check` наличие маркера игнорирует: маркер — не разрешение, аудит всегда полный.
+## 6. Final Report
 
-## 6. Финальный отчёт / Final Report
-
-Первая строка — всегда одна из двух: `SESSION FINALIZED` | `SESSION BLOCKED`.
+First line is always one of two: `SESSION FINALIZED` | `SESSION BLOCKED`.
 
 ```text
 SESSION FINALIZED | SESSION BLOCKED
 
-Task:          что требовалось закрыть
-Implementation: что сделано (коммиты, файлы)
-Git:           ветка, HEAD, статус push/PR
-Issues&PR:     открытые/закрытые issues и PR со ссылками
-Cleanup:       что удалено, с доказательством на пункт
-Final state:   вывод final-verify (git status чист)
-Agents:        кто участвовал и с каким вердиктом
+Task:          what had to be closed
+Implementation: what was done (commits, files)
+Git:           branch, HEAD, push/PR status
+Issues&PR:     open/closed issues and PRs with links
+Cleanup:       what was deleted, with proof per item
+Final state:   final-verify output (git status clean)
+Agents:        who took part and with what verdict
 
 STATUS: COMPLETE | BLOCKED
 ```
 
-При BLOCKED вместо `STATUS: COMPLETE`:
+With BLOCKED, instead of `STATUS: COMPLETE`:
 
 ```text
 STATUS: BLOCKED
-Reason:                почему нельзя закрыть (с file:line)
-Cleanup performed:     что безопасно сделано
-Cleanup NOT performed: чего НЕ делали и почему
-Action required:       что должен сделать человек
+Reason:                why it cannot be closed (with file:line)
+Cleanup performed:     what was safely done
+Cleanup NOT performed: what was NOT done and why
+Action required:       what the human must do
 ```
 
-Маркировка строк: `✓` — подтверждено выводом команды/exit-кодом (не видел вывода — не ставишь); `!` — PRESERVE-решения и проблемы; `?` — UNKNOWN. Отчёт без секций Cleanup и Final state — не отчёт.
+Line marks: `✓` — confirmed by command output/exit code (did not see output — do not mark); `!` — PRESERVE decisions and problems; `?` — UNKNOWN. A report without Cleanup and Final state sections is not a report.
 
-## 7. Вызов скриптов / Running the scripts
+## 7. Running the scripts
 
-CLI позиционный, без флагов под входы. `cwd` каждого вызова — корень целевого репо. Оркестратор исполняет скрипты из чекаута скилла (пути ниже от корня `umputum`):
+CLI is positional, no flags for inputs. `cwd` of each call is the target repo root. The orchestrator runs the scripts from the skill checkout (paths below relative to the `umputum` root):
 
 ```sh
 skills/session-finalizer/scripts/finalize-check > check.json
 skills/session-finalizer/scripts/finalize-plan check.json > plan.json
-skills/session-finalizer/scripts/finalize-apply plan.json         # dry-run: ничего не удаляет
-skills/session-finalizer/scripts/finalize-apply plan.json --yes  # реальное применение
+skills/session-finalizer/scripts/finalize-apply plan.json         # dry-run: deletes nothing
+skills/session-finalizer/scripts/finalize-apply plan.json --yes  # real apply
 skills/session-finalizer/scripts/finalize-report check.json apply.json [plan.json]
 ```
 
-Каждый скрипт отвечает на `--help`. Коды выхода: `0` — ок (включая `blocked:true`), `2` — неверный вызов/вход, `1` — внутренняя ошибка. Удаляет только `finalize-apply --yes` (и только SAFE после перепроверки); файл маркера создаёт только `finalize-report`. `install.sh` развозит по профилям только `SKILL.md` (`write_skills` копирует один файл на скилл) — скрипты живут в чекауте и исполняются оттуда; веер install.sh сознательно не расширен.
+Each script answers `--help`. Exit codes: `0` — ok (including `blocked:true`), `2` — bad invocation/input, `1` — internal error. Only `finalize-apply --yes` deletes (and only SAFE after re-checking); only `finalize-report` creates the marker file. `install.sh` ships only `SKILL.md` to profiles (`write_skills` copies one file per skill) — scripts live in the checkout and run from there; not widening the install.sh fan is a deliberate "no" (architectural decision).
 
-## 8. Интеграция pair-mailbox / Pair-mailbox integration
+## 8. Pair-mailbox integration
 
-Порядок закрытия ролей — `close_order` из `config/defaults.json` (`critic, explorer, writer`). Реестр ролей (факт `adapters/agent.sh`): `cli-profiles.json` → `agents_config_overrides` из `config/defaults.json` → `.session/finalizer.json` (`session_config` в конфиге, ключ `agents`). Имя вне всех трёх — unknown: его файлы PRESERVE, закрытие помечается соответственно. `state.roles` код не читает — реестр строится из файлов, а не из живого состояния.
+Role close order is `close_order` from `config/defaults.json` (`critic, explorer, writer`). The role registry (fact of `adapters/agent.sh`): `cli-profiles.json` → `agents_config_overrides` from `config/defaults.json` → `.session/finalizer.json` (`session_config` in config, key `agents`). A name outside all three is unknown: its files are PRESERVE, the close is marked accordingly. Code does not read `state.roles` — the registry is built from files, not from live state.
 
-- Single-writer: пишет один держатель права за раз; право двигается только человеком через `pairctl`, никогда сообщением.
-- Почту прочитать до close: сначала drain mailbox (`pair_read`), потом закрытие. BLOCKED любой роли останавливает close.
-- Адаптер `adapters/agent.sh close <role>` — no-op заметка (ничего не пишет, подтверждает оркестратор через pair-инструменты); unknown-роль — exit 3, PRESERVE.
+- Single-writer: one holder of the right writes at a time; the right moves only via a human through `pairctl`, never by message.
+- Read the mail before close: drain the mailbox first (`pair_read`), then close. BLOCKED from any role stops the close.
+- The `adapters/agent.sh close <role>` adapter is a no-op note (writes nothing, the orchestrator confirms via pair tools); an unknown role exits 3, PRESERVE.

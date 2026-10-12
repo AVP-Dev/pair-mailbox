@@ -1,69 +1,71 @@
-# Контракт дизайн-токенов (theme tokens)
+# Design token contract (theme tokens)
 
-> **Откуда файл.** Скопирован без изменений из `agent-starter-kit/docs/theme-tokens.md` —
-> репозитория, на который `docs/project-structure.md` §2 прямо ссылается как на
-> источник шкалы. Копия, а не ссылка: контракт, на котором стоит вёрстка
-> (`mcp/pair_mailbox/assets/board.css`), обязан лежать рядом с той вёрсткой, иначе
-> «соглашения нет» выглядит как «соглашение другое».
+> Language: this is the English original. The Russian mirror is [theme-tokens.ru.md](./theme-tokens.ru.md).
+
+> **Where this file comes from.** Copied unchanged from `agent-starter-kit/docs/theme-tokens.md` —
+> the repository that `docs/project-structure.md` §2 cites directly as the
+> source of the scale. A copy, not a link: the contract that the layout
+> (`mcp/pair_mailbox/assets/board.css`) stands on must sit next to that layout, otherwise
+> "no agreement" looks like "a different agreement".
 >
-> **Кто его соблюдает.** `mcp/pair_mailbox/assets/board.css` объявляет набор §1
-> в `:root` и в `[data-theme="dark"]` (плюс служебные `--ok/--warn/--bad/--unknown`
-> для статусов и `--gap/--pad/--row` для раскладки — они вне контракта и вёрстке
-> разрешены). Расхождение: контракт требует `--input` (граница полей ввода, §1),
-> а `board.css` его не объявляет и не использует — дашборд не рендерит полей
-> ввода. Код требует только 7 токенов (`REQUIRED_TOKENS`, `board_render.py:44`:
+> **Who follows it.** `mcp/pair_mailbox/assets/board.css` declares the §1 set
+> in `:root` and in `[data-theme="dark"]` (plus auxiliary `--ok/--warn/--bad/--unknown`
+> for statuses and `--gap/--pad/--row` for layout — they are outside the contract and permitted
+> for the layout). Divergence: the contract requires `--input` (input field borders, §1),
+> but `board.css` neither declares nor uses it — the dashboard renders no
+> input fields. The code requires only 7 tokens (`REQUIRED_TOKENS`, `board_render.py:44`:
 > `--background --foreground --card --muted --border --destructive --primary`),
-> тест — ноль жёстких цветов плюс объявленность каждого `var(--x)`
-> (`test_board_render.py:15`). Главный
-> инвариант тот же: **Zero Hardcoded Colors in Components** — ни одного
-> `#hex`/`rgb()` вне блока объявления токенов.
+> the test — zero hardcoded colors plus declaredness of every `var(--x)`
+> (`test_board_render.py:15`). The main
+> invariant is the same: **Zero Hardcoded Colors in Components** — not a single
+> `#hex`/`rgb()` outside the token declaration block.
 
-# Контракт дизайн-токенов и визуальных тем (Theme Tokens Specification)
+# Design token and visual theme contract (Theme Tokens Specification)
 
-> **Назначение документа:** Этот файл определяет единый стандарт семантических токенов для интерфейсов.
-> Главный инвариант: **Zero Hardcoded Colors in Components**.
-> Все компоненты верстаются исключительно на семантических переменных. Добавление новой темы или смена визуального стиля выполняется через объявление нового набора токенов **без изменения кода компонентов**.
+> **Purpose of this document:** this file defines a single standard of semantic tokens for interfaces.
+> Main invariant: **Zero Hardcoded Colors in Components**.
+> All components are laid out exclusively on semantic variables. Adding a new theme or changing the visual style is done by declaring a new token set **without changing component code**.
 
 ---
 
-## 1. Базовый контракт семантических токенов
+## 1. Base semantic token contract
 
-Все темы (светлая, тёмная, альтернативные палитры) обязаны реализовывать полный набор следующих CSS-переменных:
+All themes (light, dark, alternative palettes) must implement the full set of the following CSS variables:
 
 ```css
 :root {
-  /* Поверхности и фон */
-  --background: 0 0% 100%;             /* Основной фон страницы */
-  --foreground: 240 10% 3.9%;           /* Основной цвет текста */
-  --card: 0 0% 100%;                   /* Фон карточек и модулей */
-  --card-foreground: 240 10% 3.9%;      /* Текст на карточках */
-  --popover: 0 0% 100%;                /* Фон выпадающих списков и тултипов */
-  --popover-foreground: 240 10% 3.9%;   /* Текст в попапах */
+  /* Surfaces and background */
+  --background: 0 0% 100%;             /* Main page background */
+  --foreground: 240 10% 3.9%;           /* Main text color */
+  --card: 0 0% 100%;                   /* Card and module background */
+  --card-foreground: 240 10% 3.9%;      /* Text on cards */
+  --popover: 0 0% 100%;                /* Dropdown and tooltip background */
+  --popover-foreground: 240 10% 3.9%;   /* Text in popups */
 
-  /* Первичные и акцентные действия */
-  --primary: 240 5.9% 10%;             /* Primary CTA кнопка / акцент */
-  --primary-foreground: 0 0% 98%;      /* Текст на Primary кнопке */
-  --secondary: 240 4.8% 95.9%;         /* Второстепенная кнопка / бейдж */
-  --secondary-foreground: 240 5.9% 10%;/* Текст второстепенного элемента */
-  --accent: 240 4.8% 95.9%;            /* Акцентный интерактивный ховер */
-  --accent-foreground: 240 5.9% 10%;   /* Текст на акценте */
+  /* Primary and accent actions */
+  --primary: 240 5.9% 10%;             /* Primary CTA button / accent */
+  --primary-foreground: 0 0% 98%;      /* Text on the Primary button */
+  --secondary: 240 4.8% 95.9%;         /* Secondary button / badge */
+  --secondary-foreground: 240 5.9% 10%;/* Secondary element text */
+  --accent: 240 4.8% 95.9%;            /* Accent interactive hover */
+  --accent-foreground: 240 5.9% 10%;   /* Text on accent */
 
-  /* Приглушенные элементы и границы */
-  --muted: 240 4.8% 95.9%;             /* Приглушенный фон (таблицы, инпуты) */
-  --muted-foreground: 240 3.8% 46.1%;  /* Вторичный приглушенный текст / плейсхолдер */
-  --border: 240 5.9% 90%;              /* Границы карточек, разделители */
-  --input: 240 5.9% 90%;               /* Границы полей ввода */
-  --ring: 240 5.9% 10%;                /* Фокусный контур (:focus-visible) */
+  /* Muted elements and borders */
+  --muted: 240 4.8% 95.9%;             /* Muted background (tables, inputs) */
+  --muted-foreground: 240 3.8% 46.1%;  /* Secondary muted text / placeholder */
+  --border: 240 5.9% 90%;              /* Card borders, separators */
+  --input: 240 5.9% 90%;               /* Input field borders */
+  --ring: 240 5.9% 10%;                /* Focus ring (:focus-visible) */
 
-  /* Деструктивные действия */
-  --destructive: 0 84.2% 60.2%;        /* Ошибки, удаление, опасные действия */
-  --destructive-foreground: 0 0% 98%;  /* Текст на опасной кнопке */
+  /* Destructive actions */
+  --destructive: 0 84.2% 60.2%;        /* Errors, deletion, dangerous actions */
+  --destructive-foreground: 0 0% 98%;  /* Text on the dangerous button */
 
-  /* Радиусы скругления */
-  --radius: 0.5rem;                    /* Базовый радиус скругления кнопок и карточек */
+  /* Border radii */
+  --radius: 0.5rem;                    /* Base rounding radius of buttons and cards */
 }
 
-/* Тёмная тема (Dark Minimalist по умолчанию) */
+/* Dark theme (Dark Minimalist by default) */
 .dark, [data-theme="dark"] {
   --background: 240 10% 3.9%;
   --foreground: 0 0% 98%;
@@ -89,12 +91,12 @@
 
 ---
 
-## 2. Как добавлять новые темы (Zero Component Edits)
+## 2. How to add new themes (Zero Component Edits)
 
-Чтобы подключить новую тему (например, `Nord`, `Cyberpunk`, `Corporate Blue`), достаточно объявить новый селектор в CSS-файле тем проекта:
+To add a new theme (e.g. `Nord`, `Cyberpunk`, `Corporate Blue`), it suffices to declare a new selector in the project's theme CSS file:
 
 ```css
-/* Пример: Скандинавская палитра (Nord Theme) */
+/* Example: Scandinavian palette (Nord Theme) */
 [data-theme="nord"] {
   --background: 220 16% 22%;
   --foreground: 218 27% 94%;
@@ -119,19 +121,19 @@
 }
 ```
 
-**Компоненты не меняются.** Смена темы происходит простым переключением атрибута:
+**Components do not change.** Theme switching happens by simply toggling the attribute:
 ```html
 <html data-theme="nord">
 ```
 
 ---
 
-## 3. Маппинг в Tailwind CSS / фреймворки
+## 3. Mapping to Tailwind CSS / frameworks
 
-В файле конфигурации Tailwind (`tailwind.config.ts` или CSS-переменные v4):
+In the Tailwind config file (`tailwind.config.ts` or v4 CSS variables):
 
 ```typescript
-// Пример интеграции токенов в Tailwind v3/v4:
+// Example of integrating tokens into Tailwind v3/v4:
 colors: {
   background: "hsl(var(--background) / <alpha-value>)",
   foreground: "hsl(var(--foreground) / <alpha-value>)",
@@ -153,11 +155,11 @@ colors: {
 
 ---
 
-## 4. Инварианты верстки для ИИ-агента
+## 4. Layout invariants for the AI agent
 
-1. ❌ **Запрещено:** `<div className="bg-[#121212] text-gray-400">`
-2. ✅ **Обязательно:** `<div className="bg-card text-muted-foreground border border-border">`
-3. ❌ **Запрещено:** `<button className="bg-blue-600 hover:bg-blue-700">`
-4. ✅ **Обязательно:** `<button className="bg-primary text-primary-foreground hover:bg-primary/90 focus-visible:ring-2 focus-visible:ring-ring">`
-5. ❌ **Запрещено:** Кликабельный `div` со слушателем клика.
-6. ✅ **Обязательно:** Семантический `<button>` с явным типом `type="button"`.
+1. ❌ **Forbidden:** `<div className="bg-[#121212] text-gray-400">`
+2. ✅ **Required:** `<div className="bg-card text-muted-foreground border border-border">`
+3. ❌ **Forbidden:** `<button className="bg-blue-600 hover:bg-blue-700">`
+4. ✅ **Required:** `<button className="bg-primary text-primary-foreground hover:bg-primary/90 focus-visible:ring-2 focus-visible:ring-ring">`
+5. ❌ **Forbidden:** clickable `div` with a click listener.
+6. ✅ **Required:** semantic `<button>` with an explicit `type="button"`.

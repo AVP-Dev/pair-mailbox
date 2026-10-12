@@ -1,114 +1,116 @@
-# Структура проекта и гигиена файлов
+# Project structure and file hygiene
 
-> **Зачем этот документ:** в проекте девять файлов больше 300 строк, и два больше 3000
-> (`server.py` 3879, `test_protocol.py` 4034 — замер `wc -l`, потолки — в
-> `scripts/file-size-baseline.tsv`). Это перешло порог до того, как появился гейт.
-> Документ и `scripts/file-size-gate.sh` фиксируют долг честно: он назван, заморожен
-> и не может расти. Массовое разбиение делается отдельными задачами, а не попутно
-> с чужой.
+> Language: this is the English original. The Russian mirror is [project-structure.ru.md](./project-structure.ru.md).
+
+> **Why this document:** the project has nine files over 300 lines, and two over 3000
+> (`server.py` 3879, `test_protocol.py` 4034 — measured with `wc -l`, ceilings in
+> `scripts/file-size-baseline.tsv`). That crossed the threshold before the gate existed.
+> This document and `scripts/file-size-gate.sh` record the debt honestly: it is named, frozen,
+> and cannot grow. Bulk splitting is done by separate tasks, not on the side
+> of someone else's task.
 >
-> **Источник шкалы:** `agent-starter-kit`, `docs/project-structure.md` §2. Порядок тот же,
-> цифры те же, но применены к нашей фактической карте, а не скопированы.
-## 1. Главный принцип
+> **Source of the scale:** `agent-starter-kit`, `docs/project-structure.md` §2. The order is the same,
+> the numbers are the same, but applied to our actual map, not copied.
+## 1. Leading principle
 
-Маленький файл с одной ответственностью, явное имя, локальная реализация внутри владельца.
-Границы должны объясняться без чтения всей кодовой базы.
+A small file with a single responsibility, an explicit name, local implementation inside its owner.
+Boundaries must be explainable without reading the whole codebase.
 
-## 2. Размер файлов
+## 2. File sizes
 
-| Размер | Интерпретация |
+| Size | Interpretation |
 |---|---|
-| до 300 строк | нормальный целевой размер |
-| 300–500 | допустимо при одной ответственности |
-| 500–800 | обязательное ревью границ |
-| больше 800 | только с зафиксированной причиной и планом разделения |
+| up to 300 lines | normal target size |
+| 300–500 | acceptable with a single responsibility |
+| 500–800 | mandatory boundary review |
+| over 800 | only with a recorded reason and a split plan |
 
-Ориентир, а не запрет. Исключение описывается в `scripts/file-size-baseline.tsv`
-с причиной, и причина обязательна: исключение, которое никто не может объяснить,
-это просто число, прячущее проблему.
+A guideline, not a ban. An exception is described in `scripts/file-size-baseline.tsv`
+with a reason, and the reason is mandatory: an exception nobody can explain
+is just a number hiding a problem.
 
-### 2.1 Рэтчет вместо разбиения
+### 2.1 Ratchet instead of splitting
 
-Гейт не требует сегодня переписать `server.py`. Он требует, чтобы файл **перестал расти**.
+The gate does not demand rewriting `server.py` today. It demands that the file **stop growing**.
 
-Запись в baseline означает: файл проверен, у него одна ответственность, и он заморожен
-на этом потолке. Расти нельзя ни на строку без новой записи с новой причиной.
-Уменьшаться можно, и это приветствуется.
+A baseline entry means: the file has been reviewed, it has one responsibility, and it is frozen
+at that ceiling. It cannot grow by a single line without a new entry with a new reason.
+It may shrink, and that is welcome.
 
-Правило протухания намеренно узкое: запись устаревает только когда файл **перестал
-нуждаться** в исключении, то есть ушёл под жёсткий порог в 800. Cap — это потолок,
-а не точное значение, поэтому файл может годами лежать намного ниже него, и гейт
-на это не смотрит. Раньше проверка сравнивала cap с текущим размером напрямую,
-и тогда любая правка `server.py` требовала бы правки baseline — тест это сразу показал,
-а гейт стал бы обязательным препятствием вместо рэтчета.
+The expiry rule is deliberately narrow: an entry expires only when the file **no longer
+needs** the exception, i.e. it has gone under the hard 800-line threshold. Cap is a ceiling,
+not an exact value, so a file may sit far below it for years, and the gate
+does not care. Previously the check compared cap against current size directly,
+and then any edit to `server.py` would have required a baseline edit — the test showed that immediately,
+and the gate would have become a mandatory obstacle instead of a ratchet.
 
-Проверка: `bash scripts/file-size-gate_test.sh`, 30 сценариев.
+Check: `bash scripts/file-size-gate_test.sh`, 30 scenarios.
 
-## 3. Наши файлы больше 300 строк
+## 3. Our files over 300 lines
 
-Числа — из `scripts/file-size-baseline.tsv` (потолки; факт — `wc -l`):
+Numbers — from `scripts/file-size-baseline.tsv` (ceilings; actual — `wc -l`):
 
-| Файл | Потолок | Ответственность | Статус |
+| File | Ceiling | Responsibility | Status |
 |---|---|---|---|
-| `mcp/pair_mailbox/server.py` | 3879 | протокол целиком: хелперы, `Store`, `PairSession`, MCP-слой | заморожен, план ниже |
-| `mcp/pair_mailbox/test_protocol.py` | 4034 | инварианты протокола | заморожен, следует за server.py |
-| `bin/pairpilot_test.py` | 1725 | тесты сверхвизора | заморожен |
-| `bin/pairpilot` | 1567 | сверхвизор: панели, запуск ролей, троттлинг | заморожен |
-| `mcp/pair_mailbox/composer.py` | 1194 | композер и permission-меню | заморожен |
-| `install.sh` | 494 | инсталлер | заморожен |
-| `bin/pairchat` | 438 | CLI поверх `pair_send` | заморожен |
-| `mcp/pair_mailbox/pairctl_authority.py` | 367 | запись в состояние раунда | вынесен из server.py (раунд 15) |
-| `mcp/pair_mailbox/pairctl_read.py` | 328 | только чтение + обзор проектов | вынесен из server.py (раунд 15) |
-| `mcp/pair_mailbox/board_snapshot.py` | 311 | что записала пара о себе: фаза, роли, задачи, хвост журнала | дашборд, разбит по шкале |
-| `mcp/pair_mailbox/assets/board.js` | 328 | клиент: рисует снимок, тема, пауза. Данных не запрашивает | дашборд, разбит по шкале |
-| `mcp/pair_mailbox/board_render.py` | 189 | сборка одного самодостаточного HTML | дашборд, разбит по шкале |
-| `mcp/pair_mailbox/board_hosts.py` | 184 | живость на этой машине: панели, pid, процесс пилота | дашборд, разбит по шкале |
-| `bin/pairboard` | 178 | CLI: разовый проход или пересборка по таймеру | дашборд, разбит по шкале |
-Граница между `board_hosts` и `board_snapshot` — не стилистическая. Первое отвечает
-на вопросы к системе и обязано деградировать до «не знаю», второе читает то, что
-записала пара, и обязано пережить битый файл. Смешанные в одном файле, они тянут
-за собой тест, которому для зелёного результата нужен и tmux, и `/proc`.
+| `mcp/pair_mailbox/server.py` | 3879 | whole protocol: helpers, `Store`, `PairSession`, MCP layer | frozen, plan below |
+| `mcp/pair_mailbox/test_protocol.py` | 4034 | protocol invariants | frozen, follows server.py |
+| `bin/pairpilot_test.py` | 1725 | supervisor tests | frozen |
+| `bin/pairpilot` | 1567 | supervisor: panes, role launches, throttling | frozen |
+| `mcp/pair_mailbox/composer.py` | 1194 | composer and permission menu | frozen |
+| `install.sh` | 494 | installer | frozen |
+| `bin/pairchat` | 438 | CLI over `pair_send` | frozen |
+| `mcp/pair_mailbox/pairctl_authority.py` | 367 | writing to round state | extracted from server.py (round 15) |
+| `mcp/pair_mailbox/pairctl_read.py` | 328 | read-only + project overview | extracted from server.py (round 15) |
+| `mcp/pair_mailbox/board_snapshot.py` | 311 | what the pair recorded about itself: phase, roles, tasks, log tail | dashboard, split by scale |
+| `mcp/pair_mailbox/assets/board.js` | 328 | client: draws the snapshot, theme, pause. Requests no data | dashboard, split by scale |
+| `mcp/pair_mailbox/board_render.py` | 189 | assembling one self-contained HTML page | dashboard, split by scale |
+| `mcp/pair_mailbox/board_hosts.py` | 184 | liveness on this machine: panes, pids, pilot process | dashboard, split by scale |
+| `bin/pairboard` | 178 | CLI: single pass or timer-driven rebuild | dashboard, split by scale |
+The boundary between `board_hosts` and `board_snapshot` is not stylistic. The first answers
+questions to the system and must degrade to "don't know"; the second reads what
+the pair recorded, and must survive a corrupt file. Mixed in one file, they drag along
+a test that needs both tmux and `/proc` for a green result.
 
-## 4. План разбиения
+## 4. Split plan
 
-Раунд 15 вынес `pairctl` из `server.py` (CLI зависит от сервера, не наоборот;
-подробности — в `scripts/file-size-baseline.tsv`). Остаток — `class PairSession`:
-одна ответственность на класс делится по группам инструментов (состояние, связь,
-патчи, задачи). Первым следующим кандидатом назван сверхвизор (`bin/pairpilot`
-1567 строк без плана разделения — см. baseline).
+Round 15 extracted `pairctl` from `server.py` (the CLI depends on the server, not vice versa;
+details in `scripts/file-size-baseline.tsv`). The remainder is `class PairSession`:
+one responsibility per class is divided by tool groups (state, communication,
+patches, tasks). The first next candidate named is the supervisor (`bin/pairpilot` —
+1567 lines with no split plan, see baseline).
 
-Разбиение выполняется **отдельными задачами**, каждая с зелёным гейтом. Не попутно.
+Splitting is done by **separate tasks**, each with a green gate. Not on the side.
 
-## 5. Границы, которые нельзя пересекать молча
+## 5. Boundaries that must not be crossed silently
 
-- `composer.py` импортируется **лениво**, внутри функций. Это не оптимизация: он тянет
-  только `os` и `re`, а на верхнем уровне он перехватывал бы всё для всех, включая
-  `ctl`-подкоманду, которой композер не нужен.
-- `serve.sh` — транспортный запуск сервера: `exec` с `<role>` и `--state`
-  (`mcp/pair_mailbox/serve.sh:10,28`). Имя и путь `mcp/pair_mailbox/server.py`
-  менять нельзя: от него зависят `install.sh`, `finish.sh` и конфигурация MCP
-  у всех шести ролей (`cli-profiles.json`: opencode, agy, codex, claude, pi, omp).
-- Тесты запускаются как `python3 mcp/pair_mailbox/test_protocol.py`, поэтому корень
-  репозитория обязан оставаться импортируемым путём. Файл нельзя переносить.
+- `composer.py` is imported **lazily**, inside functions. That is not an optimization: it pulls in
+  only `os` and `re`, while at top level it would intercept everything for everyone, including
+  the `ctl` subcommand, which does not need the composer.
+- `serve.sh` is the transport server launch: `exec` with `<role>` and `--state`
+  (`mcp/pair_mailbox/serve.sh:10,28`). The name and path `mcp/pair_mailbox/server.py`
+  must not change: `install.sh`, `finish.sh`, and the MCP configuration
+  of all six roles depend on it (`cli-profiles.json`: opencode, agy, codex, claude, pi, omp).
+- Tests run as `python3 mcp/pair_mailbox/test_protocol.py`, so the repository
+  root must remain an importable path. The file must not be moved.
 
-## 6. Проверка
+## 6. Verification
 
-`./scripts/verify-project.sh` — единый гейт, профиль в `scripts/verification-profile.tsv`.
-Слои гейта: static → positive → integration → security; быстрый цикл `--only static,positive`,
-полный гейт добавляет инсталлер и запускается перед финализацией раунда.
-Параллельность — флагом `--jobs N` (по умолчанию 1). Правило: live-tmux сюиты
-всегда гоняются последовательно (`--jobs 1`), потому что делят общий tmux-сервер
-и сквозную нумерацию панелей — details в backlog `live-tmux-parallel-flake`.
+`./scripts/verify-project.sh` — the single gate, profile in `scripts/verification-profile.tsv`.
+Gate layers: static → positive → integration → security; fast loop `--only static,positive`,
+the full gate adds the installer and runs before round finalization.
+Parallelism via the `--jobs N` flag (default 1). Rule: live-tmux suites
+always run sequentially (`--jobs 1`), because they share one tmux server
+and end-to-end pane numbering — details in backlog `live-tmux-parallel-flake`.
 
-Профиль содержит только подтверждённые команды. Отсутствующая проверка фиксируется
-как `blocked`, а не записывается строкой, которая всегда зелёная.
-Для одного коммита — `scripts/verify-changed.sh` (static + только затронутые сюиты
-по `scripts/verify-map.tsv`).
+The profile contains only confirmed commands. A missing check is recorded
+as `blocked`, not written as a line that is always green.
+For a single commit — `scripts/verify-changed.sh` (static + only affected suites
+per `scripts/verify-map.tsv`).
 
-## 7. Рефактор
+## 7. Refactoring
 
-Рассматривается, когда файл пересекает несколько ответственностей, один модуль лезет
-в внутренности другого, размер или imports делают безопасную работу невозможной.
+Considered when a file crosses several responsibilities, one module reaches
+into another's internals, or size/imports make safe work impossible.
 
-Массовая чистка не выполняется попутно с функциональной задачей. Каждая задача
-разбиения отдельна и проходит гейт.
+Bulk cleanup is not done on the side of a functional task. Each
+split task is separate and passes the gate.

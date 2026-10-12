@@ -191,7 +191,7 @@ stays done.
 critic gets a push if the writer is silent. Moving from `scoping → plan` requires
 `.pair/intent.md` (Problem, Scope, Outcome). The writer writes `.pair/plan.md` —
 `round: N`, Goal, Invariants, Acceptance — and sends it to the neighbour for the
-visа. `plan → implement` is refused by the server until the visа (or the waiting
+visa. `plan → implement` is refused by the server until the visa (or the waiting
 window expires); stepping back and reopening are never blocked (docs/PROTOCOL.md §6).
 During execution, `budget ceiling` (§10d) protects against infinite round loops by
 measuring machine metrics (messages, phase advances, wall-clock, restarts); moving

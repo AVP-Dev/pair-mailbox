@@ -5,24 +5,27 @@ description: Systematic root-cause analysis of a bug or unexpected behaviour usi
 
 # Root cause
 
-Симптом почти никогда не является причиной. Правя симптом, получишь баг, который вернётся.
-Сначала причина, потом код.
+> Language: this is the English original. The Russian mirror is [SKILL.ru.md](./SKILL.ru.md).
 
-## Правило
+A symptom is almost never the cause. Fix the symptom and you get a bug that comes back.
+Cause first, code after.
 
-**Ни строки кода, пока причина не названа.** Два неудачных подхода к одному симптому — это не два
-решения, а новая догадка. Третий подход не пробовать: вернуться к анализу.
+## Rule
 
-## Шаги
+**Not a line of code until the cause is named.** Two failed approaches to one
+symptom are not two solutions but a new guess. Do not try a third approach:
+go back to analysis.
 
-1. **Симптом.** Что наблюдаем, как воспроизвести, что ожидалось.
-2. **5 почему.** Пять раз «почему?», каждый ответ проверяй своим инструментом. Стоп, когда
-   причина перестала быть про код и стала про решение или процесс.
-3. **Граница.** Проходит по данным, окружению, порядку, параллельности.
-4. **Назови причину.** Одним предложением. Не получается — вы нашли ещё один симптом.
-5. **Запиши.** `pair_note(kind="finding")` с причиной и проверкой, которой ты её подтвердил.
+## Steps
 
-## Стоп
+1. **Symptom.** What we observe, how to reproduce, what was expected.
+2. **5 whys.** Ask "why?" five times, verifying each answer with its own tool. Stop when
+   the cause stops being about code and becomes about a decision or a process.
+3. **Boundary.** Runs along data, environment, ordering, parallelism.
+4. **Name the cause.** One sentence. Cannot do it — you found another symptom.
+5. **Record it.** `pair_note(kind="finding")` with the cause and the check that confirmed it.
 
-- Причина названа и подтверждена — чинить.
-- Три круга без прогресса — стоп, `pair_note(kind="verdict")`, задача сложнее чем казалось.
+## Stop
+
+- Cause named and confirmed — fix.
+- Three rounds with no progress — stop, `pair_note(kind="verdict")`, the task is harder than it looked.

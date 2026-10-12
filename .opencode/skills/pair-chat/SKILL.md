@@ -5,10 +5,10 @@ description: Hold a real conversation with the other agent in this two-agent pai
 
 # Pair chat
 
-> Единственная истина про переписку пары — этот файл.
-> Упоминания в `AGENTS.md`, `docs/PROTOCOL.md`, `docs/HOW-IT-WORKS.md` —
-> контекст, не контракт: при расхождении побеждает этот файл и код
-> `mcp/pair_mailbox/server.py`.
+> The single source of truth for pair correspondence is this file.
+> Mentions in `AGENTS.md`, `docs/PROTOCOL.md`, `docs/HOW-IT-WORKS.md` are
+> context, not contract: on divergence this file and the code in
+> `mcp/pair_mailbox/server.py` win.
 
 The other agent in this pairing runs a different CLI, with a different model and no access to your
 conversation. The `pair_*` tools are the only way it finds out what you are doing.

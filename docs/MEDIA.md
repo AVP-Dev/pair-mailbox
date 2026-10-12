@@ -1,5 +1,8 @@
 # pair-mailbox Media & Showcase Guide
 
+> Language: this is the English original. The Russian mirror is
+> [`MEDIA.ru.md`](./MEDIA.ru.md).
+
 This guide describes the visual assets, screenshot specifications, and automated terminal recordings (GIF/VHS) for showcasing **pair-mailbox** in documentation, GitHub READMEs, and project presentations.
 
 ---

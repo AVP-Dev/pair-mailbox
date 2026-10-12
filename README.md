@@ -15,7 +15,7 @@
 </p>
 
 <p align="center">
-  <strong>English</strong> &bull; <a href="./README.ru.md">🇷🇺 Читать на русском</a> &bull; <a href="./docs/PROTOCOL.md">📜 Protocol</a> [<a href="./docs/PROTOCOL.ru.md">ru</a>] &bull; <a href="./docs/HOW-IT-WORKS.md">💡 How It Works</a> [<a href="./docs/HOW-IT-WORKS.ru.md">ru</a>] &bull; <a href="./docs/RUNBOOK.md">🛠 Runbook</a> [<a href="./docs/RUNBOOK.ru.md">ru</a>] &bull; <a href="./CONTRIBUTING.md">🤝 Contributing</a> &bull; <a href="./SECURITY.md">🛡️ Security</a> &bull; <a href="./skills/README.md">📦 Skills</a> &bull; <a href="./docs/MEDIA.md">📸 Media</a>
+  <strong>English</strong> &bull; <a href="./README.ru.md">🇷🇺 Russian</a> &bull; <a href="./docs/PROTOCOL.md">📜 Protocol</a> [<a href="./docs/PROTOCOL.ru.md">ru</a>] &bull; <a href="./docs/HOW-IT-WORKS.md">💡 How It Works</a> [<a href="./docs/HOW-IT-WORKS.ru.md">ru</a>] &bull; <a href="./docs/RUNBOOK.md">🛠 Runbook</a> [<a href="./docs/RUNBOOK.ru.md">ru</a>] &bull; <a href="./CONTRIBUTING.md">🤝 Contributing</a> &bull; <a href="./SECURITY.md">🛡️ Security</a> &bull; <a href="./skills/README.md">📦 Skills</a> &bull; <a href="./docs/MEDIA.md">📸 Media</a>
 </p>
 
 <p align="center">

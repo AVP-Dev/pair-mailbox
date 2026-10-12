@@ -1,62 +1,64 @@
 # Threat Model — pair-mailbox
 
-Короткая фиксация: что защищаем, от кого, где граница доверия, что вне скоупа.
-Основание — аудит раунда 74 (задача #77): векторы обхода allowlist через
-автоподтверждение, shell-метасимволы, env-префиксы и честные формулировки.
+> Language: this is the English original. The Russian mirror is [THREAT_MODEL.ru.md](./THREAT_MODEL.ru.md).
 
-## Активы
+A short statement of record: what we protect, from whom, where the trust boundary lies, and what is out of scope.
+Grounded in the round 74 audit (task #77): allowlist-bypass vectors via
+auto-approval, shell metacharacters, env prefixes, and honest phrasing.
 
-1. Машина оператора: файлы, секреты (`~/.ssh`, `.env`, токены), сеть от его имени.
-2. Репозиторий проекта: код, история git, ветки, PR.
-3. Целостность пары: state.json, транскрипт, mailbox — решения о записи и фазах.
-4. Соседние проекты на том же tmux-хосте: панели, процессы, файлы.
+## Assets
 
-## Нарушители
+1. Operator's machine: files, secrets (`~/.ssh`, `.env`, tokens), network on their behalf.
+2. Project repository: code, git history, branches, PRs.
+3. Pair integrity: state.json, transcript, mailbox — write and phase decisions.
+4. Neighbouring projects on the same tmux host: panes, processes, files.
 
-1. **Недоверенный текст в контексте агента** (главный вектор): содержимое
-   issue/PR/web-страниц, которое агент пересказывает в команду. Агент —
-   confused deputy: он не злоумышленник, но исполняет чужой текст как свой.
-2. **Вредоносная команда в разрешённой обёртке**: `pytest; rm -rf ~`,
+## Attackers
+
+1. **Untrusted text in the agent's context** (primary vector): contents of
+   issues/PRs/web pages that the agent retells as a command. The agent is a
+   confused deputy: not itself malicious, but it executes someone else's text as its own.
+2. **Malicious command in a permitted wrapper**: `pytest; rm -rf ~`,
    `LD_PRELOAD=/tmp/x.so pytest`, `cp key /etc/passwd`, `python3 -c … # test`.
-3. **Соседний процесс на общем хосте**: чужой tmux-панели, общий state.json.
-4. **НЕ нарушитель**: сам оператор (его `pairctl ok`, его allowlist-файл —
-   доверенные решения, а не атаки) и второй агент пары (у него нет мотива
-   ломать общий раунд; от него защищаемся только от ошибок, не от злобы).
+3. **Neighbour process on a shared host**: someone else's tmux panes, shared state.json.
+4. **NOT an attacker**: the operator themselves (their `pairctl ok`, their allowlist file —
+   trusted decisions, not attacks) and the second agent of the pair (it has no motive
+   to break the shared round; we defend against its mistakes only, not its malice).
 
-## Границы доверия
+## Trust boundaries
 
-- Автоподтверждение (`pair_unblock`, пилот) доверяет ТОЛЬКО матчингу
-  `permission_verdict`: NEVER поверх всего, allow строго внутри.
-  Всё остальное — человеку.
-- SHA-256-печать патчей — seal целостности между предложением и применением
-  (защита от гонки/подмены третьим процессом), НЕ подпись авторства и НЕ
-  защита от злонамеренного критика: критик сам пишет diff, хеш его не лечит.
-- `pair_evidence` — самодекларация агента, гейт закрытия ей доверяет.
-  От подлога evidence модель не защищает: это учёт, а не проверка.
-- state.json и mailbox — доверенная зона: доступ к ним = доступ к управлению
-  парой. Изоляция — правами файловой системы, не криптографией.
-- Тесты и скрипты сборки выполняются на хосте от пользователя с его полными
-  правами (P0 открыт: изоляции нет, см. out-of-scope).
+- Auto-approval (`pair_unblock`, pilot) trusts ONLY the
+  `permission_verdict` match: NEVER above everything, allow strictly inside.
+  Everything else goes to a human.
+- The SHA-256 patch seal is an integrity seal between proposal and application
+  (protection against races/substitution by a third process), NOT an authorship signature and NOT
+  protection against a malicious critic: the critic writes the diff itself, the hash does not cure that.
+- `pair_evidence` is the agent's self-declaration; the close gate trusts it.
+  The model does not protect against forged evidence: that is bookkeeping, not verification.
+- state.json and mailbox are a trusted zone: access to them = access to pair
+  control. Isolation is via filesystem permissions, not cryptography.
+- Tests and build scripts run on the host as the user with their full
+  privileges (P0 open: there is no isolation, see out-of-scope).
 
-## Что уже закрыто (раунд 74, P1)
+## Already closed (round 74, P1)
 
-- Сегментация составных команд: каждый сегмент по `; && || | &` вне кавычек
-  проверяется отдельно (`split_command_segments`, `composer.py`).
-- Env-префиксы, меняющие код процесса (`LD_PRELOAD`, `PYTHONPATH` и др.) — refuse.
-- Назначения `cp`/`mv`/`ln` вне проекта и `/tmp` — refuse.
-- Adversarial suite `test_allowlist_bypass.py` сторожит каждый закрытый обход.
+- Segmentation of compound commands: each segment split on `; && || | &` outside quotes
+  is checked separately (`split_command_segments`, `composer.py`).
+- Env prefixes that change process code (`LD_PRELOAD`, `PYTHONPATH`, etc.) — refuse.
+- `cp`/`mv`/`ln` destinations outside the project and `/tmp` — refuse.
+- The adversarial suite `test_allowlist_bypass.py` guards every closed bypass.
 
-## Out-of-scope (сознательно не защищаемся здесь)
+## Out-of-scope (deliberately not defended here)
 
-1. **P0 — изоляция запуска тестов**: тесты бегут на хосте с правами оператора.
-   Контейнер/песочница без сети и доступа к `$HOME` — отдельный раунд.
-2. **Подлог evidence агентом**: детекция вранья о прогонах — вне модели;
-   защита — ревью человека и `pairctl log`, а не механизм.
-3. **Злонамеренный второй агент**: пара — кооперация; византийских агентов
-   протокол не переживает по построению (single writer + seal ловят только
-   ошибки и гонки).
-4. **Компрометация хоста/оператора**: если враг — root или сам оператор,
-   никакие паттерны в `composer.py` не помогут.
-5. **Сеть как таковая**: `curl`/`wget` запрещены не потому, что сеть — зло,
-   а потому, что она выносит наружу то, что защищает §12, и вносит внутрь
-   то, что никто не проверял.
+1. **P0 — test-run isolation**: tests run on the host with operator privileges.
+   A container/sandbox without network and without `$HOME` access is a separate round.
+2. **Agent-forged evidence**: detecting lies about runs is outside the model;
+   the defence is human review and `pairctl log`, not a mechanism.
+3. **Malicious second agent**: the pair is a cooperation; the protocol does not
+   survive Byzantine agents by construction (single writer + seal catch only
+   mistakes and races).
+4. **Host/operator compromise**: if the enemy is root or the operator themselves,
+   no patterns in `composer.py` will help.
+5. **The network as such**: `curl`/`wget` are forbidden not because the network is evil,
+   but because it carries outwards what §12 protects, and carries inwards
+   what nobody has checked.
