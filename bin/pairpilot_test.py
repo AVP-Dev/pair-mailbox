@@ -1971,5 +1971,57 @@ class TestObligations(PilotCase):
         self.assertEqual("", pilot.pending("agy"), "общая панель — не тыкаем")
 
 
+class TestDoneParking(PilotCase):
+    """Тесты парковки пилота в фазе done для защиты токенов от холостого хода."""
+
+    def obligation(self, seq: int, sender: str, receiver: str, age: int) -> None:
+        root = self.state_dir / "obligations"
+        root.mkdir(parents=True, exist_ok=True)
+        (root / f"{seq:06d}-x.json").write_text(json.dumps({
+            "seq": seq, "from": sender, "to": receiver,
+            "opened_at": ago(age), "subject": f"вопрос {seq}",
+        }), encoding="utf-8")
+
+    def test_done_without_obligations_or_tasks_is_parked(self) -> None:
+        # Фаза done, во входящих 2 сообщения, но задач и обязательств нет
+        self.inbox("agy", 2)
+        self.write_state(phase="done", round_num=65, writer="agy",
+                         roles={"agy": {"last_seen": ago(1200), "pane": "%1"},
+                                "omp": {"last_seen": ago(1200), "pane": "%2"}})
+        pilot = self.pilot()
+        self.assertTrue(pilot.is_done_parked(pilot.state()))
+        pilot.tick()
+        # Ни писателя, ни критика не спамим толчками в композер
+        self.assertEqual("", pilot.pending("agy"))
+        self.assertEqual("", pilot.pending("omp"))
+        # Проверяем запись события pilot_parked в транскрипт
+        transcript = self.state_dir / "transcript.jsonl"
+        self.assertIn("pilot_parked", transcript.read_text(encoding="utf-8"))
+
+    def test_done_with_active_obligations_is_not_parked_and_alerts(self) -> None:
+        # Фаза done, но есть зависшее обязательство
+        self.obligation(10, "omp", "agy", age=3000)
+        self.write_state(phase="done", round_num=65, writer="agy",
+                         roles={"agy": {"last_seen": ago(1200), "pane": "%1"},
+                                "omp": {"last_seen": ago(1200), "pane": "%2"}})
+        pilot = self.pilot()
+        self.assertFalse(pilot.is_done_parked(pilot.state()))
+        pilot.tick()
+        self.assertIn("ответа в его почте нет", pilot.pending("agy"))
+
+    def test_active_phase_is_not_parked(self) -> None:
+        # Активная фаза implement — обычный unread nudge работает
+        self.inbox("agy", 1)
+        self.write_state(phase="implement", round_num=66, writer="agy",
+                         roles={"agy": {"last_seen": ago(30), "pane": "%1"},
+                                "omp": {"last_seen": ago(30), "pane": "%2"}})
+        pilot = self.pilot()
+        self.assertFalse(pilot.is_done_parked(pilot.state()))
+        pilot.tick()
+        self.assertIn("У тебя 1 непрочитанных сообщений", pilot.pending("agy"))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+

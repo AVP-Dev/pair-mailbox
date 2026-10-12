@@ -259,7 +259,7 @@ any level, `auto` included ([PROTOCOL.md §12](./docs/PROTOCOL.md)).
 deferred messages, nudges a silent agent, confirms blocked permission prompts **from an
 allowlist only** (`DEFAULT_ALLOW_PATTERNS` in `mcp/pair_mailbox/composer.py`: reads, in-project edits, tests/linters, local git, `git push` to a feature branch, `gh pr` — with `NEVER_ALLOW_PATTERNS` refused at any setting), restarts an agent whose process died while its
 window lives, reports sealed patches nobody applied, writes a checkpoint digest for the
-human in `semi`, and writes a report when the round closes.
+human in `semi`, writes a report when the round closes, automatically parks itself on `done` to prevent token quota waste (`pilot_parked`), issues smart preventive `/compact`, and audits runtime in-memory server freshness (`server_freshness`).
 
 It cannot move phases, grant or revoke write authority, commit, apply a peer's patch, or
 touch project files. Those are the boundaries that make the arrangement safe
