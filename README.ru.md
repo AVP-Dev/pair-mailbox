@@ -382,7 +382,7 @@ echo '{"allow": ["Read", "grep", "git status"]}' > .pair/permissions.json
 | Слой | Что выполняется | Когда |
 |---|---|---|
 | `static` | `shell-syntax`, `file-size`, `comment-lint` | быстрый цикл (~30с), перед каждой правкой |
-| `positive` | 23 набора: `protocol`, `obligations`, `rolekeys`, `pairctl-authority`, `pairctl-panes`, `pairctl-read`, `supervisor`, `board-hosts`, `board-snapshot`, `board-render`, `board-cli`, `doctor`, `wake`, `wake-api`, `review`, `statecache`, `liveness`, `digest`, `panes`, `composer`, `roster-heal`, `file-size-gate-tests`, `eye-deadlock` | поведение, которое обязано работать |
+| `positive` | 32 набора: `protocol`, `task-banner`, `autoperms`, `intent-gate`, `plan-gate`, `server-freshness`, `heal`, `budget`, `worktree`, `review-gate`, `obligations`, `rolekeys`, `pairctl-authority`, `pairctl-panes`, `pairctl-read`, `supervisor`, `board-hosts`, `board-snapshot`, `board-render`, `board-cli`, `doctor`, `wake`, `review`, `statecache`, `liveness`, `digest`, `panes`, `composer`, `roster-heal`, `file-size-gate-tests`, `eye-deadlock`, `wake-api` | поведение, которое обязано работать |
 | `integration` | `installer` (`python3 install_test.py`, ~6 мин) | перед финализацией |
 | `security` | `secret-baseline` (`./scripts/security-scan.sh`) | базовая линия без внешних зависимостей |
 

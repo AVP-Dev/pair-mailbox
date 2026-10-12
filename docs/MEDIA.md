@@ -47,7 +47,7 @@ To give new users an immediate visual grasp of pair-mailbox in action, take the 
 
 - **Command to generate**:
   ```bash
-  bin/pairboard --once
+  bin/pairboard
   # Open board.html in browser:
   xdg-open board.html  # or open board.html on macOS
   ```

@@ -38,6 +38,7 @@ code; for the daily start use `pairup`.
 | `--install` | put a shim into `~/.local/bin`, exit (once) |
 | `--writer <role>` | pin this project's writer and start |
 | `--swap <cli>` | replace the critic pane with another CLI; writer and authority untouched |
+| `--worktree, -w <branch>` | run pair in an isolated git worktree |
 | `--task "..."` | record the task in the shared list before starting |
 | `--state <dir>` | explicit state dir (default: walk-up from cwd, else git root) |
 

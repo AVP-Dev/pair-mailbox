@@ -386,7 +386,7 @@ The verification gate is defined by `scripts/verification-profile.tsv` (run via 
 | Layer | What runs | When |
 |---|---|---|
 | `static` | `shell-syntax`, `file-size`, `comment-lint` | fast loop (~30s), before every edit |
-| `positive` | 23 suites: `protocol`, `obligations`, `rolekeys`, `pairctl-authority`, `pairctl-panes`, `pairctl-read`, `supervisor`, `board-hosts`, `board-snapshot`, `board-render`, `board-cli`, `doctor`, `wake`, `wake-api`, `review`, `statecache`, `liveness`, `digest`, `panes`, `composer`, `roster-heal`, `file-size-gate-tests`, `eye-deadlock` | behaviour that must work |
+| `positive` | 32 suites: `protocol`, `task-banner`, `autoperms`, `intent-gate`, `plan-gate`, `server-freshness`, `heal`, `budget`, `worktree`, `review-gate`, `obligations`, `rolekeys`, `pairctl-authority`, `pairctl-panes`, `pairctl-read`, `supervisor`, `board-hosts`, `board-snapshot`, `board-render`, `board-cli`, `doctor`, `wake`, `review`, `statecache`, `liveness`, `digest`, `panes`, `composer`, `roster-heal`, `file-size-gate-tests`, `eye-deadlock`, `wake-api` | behaviour that must work |
 | `integration` | `installer` (`python3 install_test.py`, ~6 min) | before finalization |
 | `security` | `secret-baseline` (`./scripts/security-scan.sh`) | baseline with zero external dependencies |
 

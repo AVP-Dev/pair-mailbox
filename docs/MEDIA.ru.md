@@ -47,7 +47,7 @@
 
 - **Команда генерации**:
   ```bash
-  bin/pairboard --once
+  bin/pairboard
   # Открыть в браузере:
   xdg-open board.html  # на Linux, либо open board.html на macOS
   ```

@@ -2,7 +2,7 @@
 
 ## Prerequisites
 
-- `python3` 10 or newer on `PATH` (the server has no third-party dependencies)
+- `python3` 3.8 or newer on `PATH` (the server has no third-party dependencies)
 - Two agent CLIs. The pairing ships 6 profiles in `cli-profiles.json` (opencode, agy,
   codex, claude, pi, omp); the same server works for anything else that speaks MCP —
   see *Another CLI* below. `pairup --swap` switches the critic to any of them.
@@ -73,8 +73,7 @@ approval. Allow the whole server once:
 ```
 
 and add `mcp(pair/*)`. Without this, the pairing technically works and practically does not.
-
-is connected, and that its 22 tools are listed.
+Verify that the server is connected, and that its 22 tools are listed.
 
 The three agents — `pair-writer`, `pair-critic`, `pair-explorer` — appear under `/agents`.
 
