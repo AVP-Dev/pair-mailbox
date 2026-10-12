@@ -9,7 +9,7 @@
 <p align="center">
   <a href="https://github.com/AVP-Dev/pair-mailbox"><img src="https://img.shields.io/badge/Python-3.8+-3776AB?style=for-the-badge&logo=python&logoColor=white" alt="Python 3.8+" /></a>
   <a href="https://modelcontextprotocol.io/"><img src="https://img.shields.io/badge/MCP-Model_Context_Protocol-8A2BE2?style=for-the-badge" alt="MCP Protocol" /></a>
-  <img src="https://img.shields.io/badge/Dependencies-Zero_External-10B981?style=for-the-badge" alt="Zero Dependencies" />
+  <img src="https://img.shields.io/badge/Dependencies-Zero_Pip-10B981?style=for-the-badge" alt="Zero Pip Dependencies (tmux and git required)" />
   <img src="https://img.shields.io/badge/Architecture-Single_Writer_Invariant-FF8C00?style=for-the-badge" alt="Single Writer Invariant" />
   <a href="https://github.com/AVP-Dev/pair-mailbox/blob/master/LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue?style=for-the-badge" alt="License MIT" /></a>
 </p>
@@ -19,7 +19,7 @@
 </p>
 
 <p align="center">
-  <em>Turn any two autonomous AI coding agents (OpenCode, Claude Code, Antigravity, OpenAI Codex) into a disciplined, self-orchestrating pair: one writes code while the other adversarial-reviews, tests, and proposes cryptographically sealed patches — with zero manual message relaying between them. Give the task and accept the PR: by default the pair works the round to a finished PR under <code>auto</code>, with no word asked of you in between. <code>semi</code> is there when you want one word at the verify checkpoint. Secrets, deploys, migrations and irreversible deletions stop the pair in every mode.</em>
+  <em>Turn any two autonomous AI coding agents (OpenCode, Claude Code, Antigravity, OpenAI Codex) into a disciplined, self-orchestrating pair: one writes code while the other adversarial-reviews, tests, and proposes SHA-256-sealed patches (hash seal, not a cryptographic signature) — with zero manual message relaying between them. Give the task and accept the PR: by default the pair works the round to a finished PR under <code>auto</code>, with no word asked of you in between. <code>semi</code> is there when you want one word at the verify checkpoint. Secrets, deploys, migrations and irreversible deletions stop the pair in every mode.</em>
 </p>
 
 <p align="center">
@@ -61,11 +61,11 @@ An AI agent working alone is susceptible to its own assumptions: it gladly accep
 **pair-mailbox** solves this by pairing **two independent CLI agents** (running different models, different prompts, and completely isolated context windows) on the same codebase under strict, server-enforced engineering invariants:
 
 1. **Strict Single Writer Protocol Invariant**: Exactly one agent holds write authority (`pair_claim`). The MCP server strictly enforces the protocol boundaries: it refuses patch reservations from the writer (who edits directly), forbids the critic from verifying patches or advancing phases, and logs all refused attempts to the audit transcript. Agents' instructions and dynamic runtime guards (`pair-guard`) ensure the reviewer remains read-only and submits changes exclusively via sealed patches.
-2. **Cryptographically Sealed Patches**: The reviewer proposes changes through isolated patch files (`0600`), sealed with SHA-256 hashes that the writer verifies immediately before applying.
+2. **SHA-256-Sealed Patches (hash seal, not a signature)**: The reviewer proposes changes through isolated patch files (`0600`), sealed with SHA-256 hashes that the writer verifies immediately before applying.
 3. **The Mailbox Is the Guarantee, Delivery Is the Accelerator**: **A turn ends with a bounded `pair_read`** — `pair_read(wait_seconds=N)`. Nothing in any MCP implementation can inject a turn into another agent's client: MCP is client-driven, the server answers requests and cannot push the host. So the only universal wake-up is the agent reading its own mailbox, and an agent that ends its turn this way is never idle with unread mail — it is either reading or it already has the message. The body always lands in the mailbox; `pair_deliver` types only a short pointer into the peer's pane and presses Enter, which is faster where the composer is visible, but a full-screen TUI hides it, so delivery is best-effort and the mailbox always works. The human user never acts as an RFC 1149 messenger copying text between windows.
 4. **Autonomous CLI Permission Unblocking (`pair_unblock`)**: Interactive prompts like `[y/N]` or `Allow command execution?` inside tmux are automatically detected and approved by the peer or background watchdog (`pairwatch --unblock`), eliminating unattended stalls.
 5. **Atomic, Crash-Resilient State & File Locking**: Monotonic numbering (`000001-<UTC-stamp>-<role>-<token>.json`, numeric prefix sorts chronologically), atomic file writes (`replace`), and advisory `fcntl.flock` locks preventing race conditions between concurrent CLI processes. Full append-only audit trail logging every message, claim, phase change, and rejection.
-6. **Zero Dependencies**: Pure Python 3 standard library. Runs on Linux and POSIX systems with `tmux` and `python3` (8+) with zero pip packages to install.
+6. **Zero Pip Dependencies**: Pure Python 3 standard library. Runs on Linux and POSIX systems with `tmux` and `python3` (8+) with zero pip packages to install; `tmux` and `git` are required system tools.
 
 ---
 
@@ -370,7 +370,7 @@ Switch modes at runtime with a single command (`bin/pairctl mode <mode>`):
 | | `pair_propose` | Critic Only | One call instead of six steps: the server builds the unified diff itself (`git diff HEAD` over the worktree files). Refused for writers and audit mode. |
 | | `pair_patch_applied` | Writer Only | Records whether the apply succeeded. An unapplied sealed patch blocks closing the round. |
 | | `pair_patch_release` | Both | Deletes a patch file by exact absolute path (globs strictly prohibited). |
-| | `pair_evidence` | Both | Records a machine-checkable fact for this round (tests, lint, typecheck, commit, PR). `semi`/`auto` refuse to close a round without it. |
+| | `pair_evidence` | Both | Records an agent-reported fact for this round (tests, lint, typecheck, commit, PR) — self-declared by the agent, the close gate trusts it. `semi`/`auto` refuse to close a round without it. |
 | **Autonomy & Audit** | `pair_unblock` | Both | Inspects peer tmux pane for CLI prompts (`[y/N]`, `Allow execution?`). Confirms only allowlisted prompts and reports refusals. |
 | | `pair_transcript` | Both | Inspects full append-only audit trail including every rejected operation. |
 

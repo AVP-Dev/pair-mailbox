@@ -162,8 +162,9 @@ A report the writer did not read is not a report.
 
 ### 5a. A round cannot close without proof
 
-`pair_evidence(kind, value, ok)` records a machine-checkable fact about the current
-round: the test suite with its count and exit code, lint, typecheck, a diffstat, a
+`pair_evidence(kind, value, ok)` records an agent-reported fact about the current
+round (self-declared by the agent — the close gate trusts the report, it does not
+re-run the suite): the test suite with its count and exit code, lint, typecheck, a diffstat, a
 commit, a PR URL. Kinds: `test`, `lint`, `typecheck`, `build`, `diff`, `commit`,
 `pr`, `manual`.
 

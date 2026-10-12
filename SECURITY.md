@@ -18,8 +18,8 @@ pair-mailbox operates within multi-process environments driving local CLI shells
 1. **Strict Single Writer Invariant**:
    Only the verified writer agent may modify repository files or execute mutating commands. The read-only peer proposes changes exclusively through sealed patches.
 
-2. **Cryptographically Sealed Patches**:
-   Proposed patches are stored with restrictive permissions (`0600`) and signed with SHA-256 checksums. The writer recomputes and verifies the checksum immediately before application. Any mismatch halts execution immediately.
+2. **SHA-256-Sealed Patches (hash seal, not a signature)**:
+   Proposed patches are stored with restrictive permissions (`0600`) and sealed with SHA-256 checksums (integrity seal against accidental or third-party modification between proposal and application — not a cryptographic signature of authorship). The writer recomputes and verifies the checksum immediately before application. Any mismatch halts execution immediately.
 
 3. **Multi-Project tmux Isolation**:
    Tmux target panes are validated by `pane_current_path` and `pane_pid`. Commands and signals cannot cross workspace boundaries into unrelated sessions or projects.
@@ -27,8 +27,8 @@ pair-mailbox operates within multi-process environments driving local CLI shells
 4. **Guarded Permission Unblocking (`pair_unblock`)**:
    Autonomous confirmation of interactive prompts is strictly confined to an immutable allowlist (e.g. read-only inspections). Destructive commands, migrations, and secrets access are never automatically confirmed.
 
-5. **Zero External Runtime Dependencies**:
-   The engine relies solely on the Python 3 standard library, eliminating PyPI supply chain attack vectors.
+5. **Zero Pip Runtime Dependencies**:
+   The engine relies solely on the Python 3 standard library (zero pip packages), eliminating PyPI supply chain attack vectors. `tmux` and `git` are required system tools outside that seal.
 
 ---
 
