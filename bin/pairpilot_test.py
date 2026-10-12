@@ -1960,7 +1960,27 @@ class TestSmartAutoCompact(PilotCase):
             self.assertIn("pilot_server_stale", self.transcript_kinds())
         finally:
             server_freshness.check_server_freshness = orig
-
+    def test_stale_server_warns_even_when_parked(self) -> None:
+        """Stale-check осознанно живёт в парковке: замороженные фазы надо чинить."""
+        import server_freshness
+        orig = server_freshness.check_server_freshness
+        try:
+            server_freshness.check_server_freshness = lambda: {
+                "fresh": False,
+                "stale_files": ["server.py"],
+                "newest_code_file": "server.py",
+                "lag_seconds": 60.0,
+                "why": "код изменен после старта",
+            }
+            st = self.write_state(writer="agy", phase="done",
+                                  roles={"agy": {"pane": "%1", "last_seen": ago(10)}})
+            pilot = self.pilot()
+            pilot.tick()
+            self.assertTrue(pilot.is_done_parked(st),
+                            "прекондиция: раунд в done без задач припаркован")
+            self.assertIn("pilot_server_stale", self.transcript_kinds())
+        finally:
+            server_freshness.check_server_freshness = orig
 
 class TestObligations(PilotCase):
     """Запрос, на который не ответили, обязан быть виден. Иначе он тихо умирает
