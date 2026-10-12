@@ -10,6 +10,8 @@ import unittest
 from pathlib import Path
 
 import server_freshness
+from pair_test_base import PairTestCase
+from server import ProtocolError
 
 
 class TestServerFreshness(unittest.TestCase):
@@ -30,6 +32,7 @@ class TestServerFreshness(unittest.TestCase):
             )
             self.assertTrue(verdict["fresh"])
             self.assertEqual("foo.py", verdict["newest_code_file"])
+            self.assertEqual([], verdict["stale_files"])
             self.assertIn("свеж", verdict["why"])
 
     def test_stale_when_files_newer_than_start(self) -> None:
@@ -45,6 +48,7 @@ class TestServerFreshness(unittest.TestCase):
             )
             self.assertFalse(verdict["fresh"])
             self.assertEqual("bar.py", verdict["newest_code_file"])
+            self.assertEqual(["bar.py"], verdict["stale_files"])
             self.assertIn("Требуется перезапуск", verdict["why"])
             self.assertGreater(verdict["lag_seconds"], 90.0)
 
@@ -60,6 +64,79 @@ class TestServerFreshness(unittest.TestCase):
                 code_dir=tmp_path, process_start_ts=st - 1.0
             )
             self.assertTrue(verdict["fresh"])
+            self.assertEqual([], verdict["stale_files"])
+
+
+class TestServerFreshnessWiring(PairTestCase):
+    def test_pair_state_reports_server_freshness(self) -> None:
+        st = self.writer.tool_pair_state()
+        self.assertIn("server_fresh", st)
+        self.assertIn("server_stale_files", st)
+        self.assertIsInstance(st["server_fresh"], bool)
+        self.assertIsInstance(st["server_stale_files"], list)
+
+    def test_advance_refused_forward_when_stale(self) -> None:
+        # Мокаем check_server_freshness на возврат stale
+        orig = server_freshness.check_server_freshness
+        try:
+            server_freshness.check_server_freshness = lambda: {
+                "fresh": False,
+                "stale_files": ["server.py"],
+                "newest_code_file": "server.py",
+                "why": "код изменен после старта",
+            }
+            def set_writer(s: dict) -> None:
+                s["writer"] = "writer-agent"
+            self.store.mutate(set_writer)
+            # Попытка движения вперед (например scoping -> plan) должна быть отклонена
+            with self.assertRaises(ProtocolError) as ctx:
+                self.writer.tool_pair_advance("plan")
+            self.assertIn("сервер устарел", str(ctx.exception))
+            self.assertIn("server.py", str(ctx.exception.hint))
+        finally:
+            server_freshness.check_server_freshness = orig
+
+    def test_advance_backward_allowed_when_stale(self) -> None:
+        # Устанавливаем фазу implement
+        def set_phase(s: dict) -> None:
+            s["phase"] = "implement"
+        self.store.mutate(set_phase)
+
+        orig = server_freshness.check_server_freshness
+        try:
+            server_freshness.check_server_freshness = lambda: {
+                "fresh": False,
+                "stale_files": ["server.py"],
+                "newest_code_file": "server.py",
+                "why": "код изменен после старта",
+            }
+            # Шаг назад (implement -> plan) разрешен даже при stale сервере
+            res = self.writer.tool_pair_advance("plan")
+            self.assertEqual("plan", res["phase"])
+        finally:
+            server_freshness.check_server_freshness = orig
+
+    def test_reopening_refused_when_stale(self) -> None:
+        # Устанавливаем фазу done
+        def set_done(s: dict) -> None:
+            s["phase"] = "done"
+            s["writer"] = "writer-agent"
+        self.store.mutate(set_done)
+
+        orig = server_freshness.check_server_freshness
+        try:
+            server_freshness.check_server_freshness = lambda: {
+                "fresh": False,
+                "stale_files": ["server.py"],
+                "newest_code_file": "server.py",
+                "why": "код изменен после старта",
+            }
+            # Reopening (done -> implement) блокируется при stale
+            with self.assertRaises(ProtocolError) as ctx:
+                self.writer.tool_pair_advance("implement")
+            self.assertIn("сервер устарел", str(ctx.exception))
+        finally:
+            server_freshness.check_server_freshness = orig
 
 
 if __name__ == "__main__":
