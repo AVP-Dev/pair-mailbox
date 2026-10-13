@@ -166,7 +166,7 @@ A report the writer did not read is not a report.
 round (self-declared by the agent — the close gate trusts the report, it does not
 re-run the suite): the test suite with its count and exit code, lint, typecheck, a diffstat, a
 commit, a PR URL. Kinds: `test`, `lint`, `typecheck`, `build`, `diff`, `commit`,
-`pr`, `manual`.
+`pr`, `manual`, `ground-truth` (see §5d).
 
 Evidence blockers apply in every autonomy level, including `observe`, and refusal wording never names a level as the reason: `semi` only *adds* the human's word (`pairctl ok`) on top.
 
@@ -174,7 +174,8 @@ In every mode a round cannot close while:
 
 - there is no passing evidence for the current round;
 - the last run of any kind failed;
-- there is no passing `test` **from the writer** (in `mode=fix`, see below).
+- there is no passing `test` **from the writer** (in `mode=fix`, see below);
+- there is no passing `ground-truth` **from the writer** (in `mode=fix`, see §5d).
 
 Per kind, the **last** run decides: tests failed → fixed → ran again, and the round
 may close. `ok=false` is not a confession of failure but a record that holds the
@@ -195,6 +196,35 @@ still trimmed, or state would grow without bound.
 
 Why any of this is needed: 78–96% of stated model confidence is exactly 100%. "The
 critic is happy" is not a signal and must not reach `done`.
+
+### 5d. Ground-truth: claims are checked against the tree, not memory
+
+Green unit tests once certified an unconnected UI: the browser still served a
+static collection while buttons sent hardcoded mock ids (round 81). The contour
+below makes that class of fiction machine-checkable. Chain, in order:
+
+1. **Facts** (`mcp/pair_mailbox/session_facts.py` → `facts.json`): deterministic
+   snapshot — head, `dirty_hash`, touched/untracked paths, added-line mock flags,
+   AST `stub-body` flags (empty `pass` / `...` / `raise NotImplementedError`
+   bodies, `@abstractmethod` excluded), recorded test runs.
+2. **Rules** (`anti-mock.json`, versioned at the repo root): regex patterns plus
+   the `detect_stubs` switch. Missing or broken file falls back to the strict
+   built-in default; the file itself is gate-exempt (it describes the check).
+   `pairup` copies the template into every new project.
+3. **Verdict** (`mcp/pair_mailbox/anti_mock_gate.py`): combat paths block,
+   test paths warn, `local-state` goes to the critic. Exit 1 on blockers.
+4. **Summary** (`mcp/pair_mailbox/round_summary.py` → `summary.json`): aggregates
+   facts + `ledger.jsonl` slices + verdict. Only composes, never invents; emits
+   the `files`/`tests` keys the gate reads.
+5. **Gate** (`scripts/verify-ground-truth.py`): every claimed file and test run
+   must exist in `facts.json`; head and `dirty_hash` must match. Any mismatch
+   blocks (exit 1), including a lying summary that claims files git never saw.
+6. **Receipt** (`mcp/pair_mailbox/receipt.py`): `done` refuses to write
+   `.pair/RECEIPT-<round>.md` while combat mocks stand (`GroundTruthBlocked`).
+
+The `done` gate requires `pair_evidence(kind="ground-truth")` from the writer in
+`mode=fix`, same standing as `kind="test"`: another role's run is not a
+substitute, and in `mode=audit` the requirement does not apply.
 
 ### 5b. A patch without an application holds the round open
 

@@ -115,6 +115,10 @@ if [ -z "$STATE_DIR" ]; then
   # второй .pair в src/. Пары без git не бывает (нет коммитов — нечего ревьюить).
   _root="$(git rev-parse --show-toplevel 2>/dev/null || pwd -P)"
   mkdir -p "$_root/.pair/mailbox" "$_root/.pair/notes" "$_root/.pair/obligations" "$_root/.pair/patches"
+  # Ground-truth шаблон новому проекту (R84): защита едет с первого дня.
+  if [ ! -f "$_root/anti-mock.json" ] && [ -f "$PAIRUP_ROOT/anti-mock.json" ]; then
+    cp "$PAIRUP_ROOT/anti-mock.json" "$_root/anti-mock.json"
+  fi
   if [ ! -f "$_root/.pair/state.json" ]; then
     python3 - "$_root/.pair" <<'EOF'
 import json, sys, datetime
