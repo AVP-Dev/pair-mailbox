@@ -228,7 +228,7 @@ class TestWakeFileIntegrity(PilotCase):
         self.assertTrue(second, "второй повод не должен стирать висящее пробуждение")
         self.assertEqual(first_asked, second["asked_at"],
                          "срок терпения считается от первого вопроса")
-        self.assertIn("непрочитанных", " ".join(second["reasons"]),
+        self.assertIn("unread", " ".join(second["reasons"]),
                       "второй повод обязан быть виден в том же файле")
 
     def test_a_damaged_wake_file_is_removed_not_reread(self) -> None:
@@ -271,8 +271,8 @@ class TestLiveness(PilotCase):
         pilot.tick()
         wake = self.wake(pilot, "agy")
         self.assertTrue(wake, "молчащий писатель должен получить пробуждение")
-        self.assertIn("фазу", wake["reason"])
-        self.assertIn("право записи", wake["text"])
+        self.assertIn("phase", wake["reason"])
+        self.assertIn("write", wake["text"])
         self.assert_enqueued_for_push(pilot, "agy")
 
     def test_a_writer_who_woke_up_is_not_printed_at(self) -> None:
@@ -309,7 +309,7 @@ class TestLiveness(PilotCase):
         pilot.tick()
         printed = pilot.pending("agy")
         self.assertTrue(printed, "после истечения терпения печать обязана быть")
-        self.assertIn("право записи", printed)
+        self.assertIn("write", printed)
         pilot.tick()
         pilot.tick()
         self.assertEqual(printed, pilot.pending("agy"),
@@ -563,8 +563,8 @@ class TestUnread(PilotCase):
         pilot.tick()
         wake = self.wake(pilot, "agy")
         self.assertTrue(wake, "непрочитанное письмо обязано оставить след")
-        self.assertIn("непрочитанных", wake["reason"])
-        self.assertIn("непрочитанных", wake["text"])
+        self.assertIn("unread", wake["reason"])
+        self.assertIn("unread", wake["text"])
         self.assertEqual(3, wake["unread_at_ask"], "сколько именно не прочитано")
         self.assert_enqueued_for_push(pilot, "agy")
 
@@ -2313,7 +2313,7 @@ class TestDoneParking(PilotCase):
         pilot = self.pilot()
         self.assertFalse(pilot.is_done_parked(pilot.state()))
         pilot.tick()
-        self.assertIn("У тебя 1 непрочитанных сообщений", pilot.pending("agy"))
+        self.assertIn("You have 1 unread messages", pilot.pending("agy"))
 
 
 if __name__ == "__main__":

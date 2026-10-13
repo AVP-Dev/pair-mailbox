@@ -899,7 +899,7 @@ class Pilot:
             return False
         try:
             line = composer_line(capture(self.tmux, pane))
-        except Exception:  # noqa: BLE001 - панель могла исчезнуть между проверками
+        except Exception:  # noqa: BLE001 - the pane may vanish between checks
             return False
         if line is None:
             return True
@@ -917,8 +917,8 @@ class Pilot:
         return len(list(inbox.glob("*.json"))) if inbox.exists() else 0
 
     def is_done_parked(self, state: dict) -> bool:
-        """В фазе done при отсутствии открытых задач и обязательств пилот припаркован.
-        В этом состоянии эскалация тишины и спам толчками запрещены для экономии токенов.
+        """Parked in done phase with no open tasks or obligations.
+        Silence escalation and nudge spam are banned in this state to save tokens.
         """
         if state.get("phase") != "done":
             return False
@@ -930,46 +930,46 @@ class Pilot:
         key = f"parked-{state.get('round')}"
         if self.remember(key, ttl=3600):
             self.store.append_transcript("pilot_parked", "pairpilot", round=state.get("round"))
-            log(f"раунд {state.get('round')} в done: пилот припаркован, спам отключён")
+            log(f"round {state.get('round')} in done: pilot parked, spam off")
         return True
 
     def unread_peers(self, state: dict) -> list[str]:
-        """Кого разбудить из-за непрочитанного. Почтальон на чеку: письмо в ящике
-        без толчка не лежит — память (wake) и толчок (outbox) пишутся вместе.
-        Память — чтобы было видно, кого будили и когда, толчок — чтобы спящий
-        узнал сейчас: следующий flush (этот же тик) вбивает его в композер.
+        """Who to wake over unread mail. The postman on watch: a letter in the box
+        never sits without a push — memory (wake) and push (outbox) are written together.
+        Memory shows who was woken and when; push lets the sleeper learn it
+        now: the next flush (this same tick) drives it into the composer.
         """
         out = []
         if self.is_done_parked(state):
-            # В фазе done без открытых задач и обязательств пилот припаркован:
-            # не спамим агентов толчками «предложи следующий кусок работы».
+            # In done phase with no open tasks or obligations the pilot is parked:
+            # no spamming agents with “suggest the next chunk” pushes.
             return out
         for role in state.get("roles", {}):
             if role in self.skip:
                 continue
             missing = self.unread(state, role)
             if missing <= 0:
-                # Прочитал — штамп сбрасывается: следующее письмо будит заново.
-                # Без этого второе письмо не будило никогда (раунд 43).
+                # Read once — the stamp resets: the next letter wakes anew.
+                # Without it the second letter never woke (round 43).
                 self.unremember(f"unread-{role}")
                 continue
             out.append(role)
             key = f"unread-{role}"
             if self.remember(key):
-                text = (f"[pairpilot] У тебя {missing} непрочитанных сообщений. "
-                        f"Вызови pair_read и ответь соседу. Если всё сделано — "
-                        f"предложи следующий кусок работы через pair_note.")
-                self.mark_wake(state, role, f"{missing} непрочитанных", text)
+                text = (f"[pairpilot] You have {missing} unread messages. "
+                        f"Call pair_read and answer your neighbour. If all is done — "
+                        f"suggest the next chunk via pair_note.")
+                self.mark_wake(state, role, f"{missing} unread", text)
                 self.enqueue(role, text)
                 self.store.append_transcript("pilot_unread_nudge", "pairpilot",
                                              target=role, unread=missing)
-                log(f"{role}: {missing} непрочитанных, толкаю сразу")
+                log(f"{role}: {missing} unread, pushing at once")
         return out
 
     def stale_writer(self, state: dict) -> None:
-        """Писатель молчит дольше порога, а фаза не закрыта. Хуже всего это
-        заканчивается ночью: двигать фазу может только он, поэтому её никто не
-        сдвинет, и работа встанет до утра."""
+        """The writer is silent past the threshold while the phase stays open. Its
+        worst ending is at night: only it may move the phase, so nobody moves
+        it, and the work stands till morning."""
         writer = state.get("writer")
         if not writer or state.get("phase") == "done":
             return
@@ -980,9 +980,9 @@ class Pilot:
             return
         pane = info.get("pane")
         if pane and self.visibly_busy(pane):
-            # last_seen меряет участие в протоколе, а не работу. Писатель,
-            # погружённый в длинную правку, не зовёт pair_* инструменты, и часы
-            # у него сходят, хотя он работает. Видимая занятость — честнее часов.
+            # last_seen measures protocol participation, not work. A writer
+            # deep in a long edit never calls pair_* tools, and its clock
+            # runs out while it works. Visible busyness is fairer than clocks.
             return
         age = self.role_seen_age(info)
         if age < self.silence:
@@ -990,33 +990,33 @@ class Pilot:
         key = f"stale-writer-{state.get('round')}"
         if not self.remember(key):
             return
-        text = (f"[pairpilot] Ты молчишь {int(age // 60)} минут, а держишь право "
-                f"записи в фазе {state.get('phase')!r}. Двигать фазу больше некому, "
-                f"и работа встанет до утра. Продолжай свою часть, закрой фазу, "
-                f"либо пиши в заметку, что заблокировано и чем. Помечать «делаю» "
-                f"не считается: нужен реальный шаг или явная блокировка.")
-        self.mark_wake(state, writer, f"молчит {int(age // 60)} мин и держит фазу", text)
+        text = (f"[pairpilot] You are silent {int(age // 60)} minutes while holding write "
+                f"rights in phase {state.get('phase')!r}. Nobody else can move the phase, "
+                f"and the work will stand till morning. Continue your part, close the phase, "
+                f"or write to the note what blocks and how. Marking “doing” "
+                f"does not count: a real step or an explicit block is needed.")
+        self.mark_wake(state, writer, f"silent {int(age // 60)} min holding the phase", text)
         self.enqueue(writer, text)
-        log(f"{writer} молчит {int(age // 60)} мин и держит фазу {state.get('phase')!r} "
-            f"— толкаю сразу")
+        log(f"{writer} silent {int(age // 60)} min holding phase {state.get('phase')!r} "
+            f"— pushing at once")
 
     def idle_roles(self, state: dict) -> None:
-        """Молчащая роль без входящих — не «ему нечего сказать», а отсутствие связи.
+        """A silent role with no incoming is not "nothing to say" but lost contact.
 
-        Триггеры пилота были реактивными: непрочитанная почта
-        (`unread_peers`), обязательства (`pending_answers`) и молчащий
-        ПИСАТЕЛЬ (`stale_writer`, порог self.silence применён только к нему).
-        У пассивного критика в новой сессии входных событий нет вообще: задача
-        пишется только в state.json, mailbox пуст. Замерено 2026-10-11 по
-        транскрипту: в 2 раундах из 8 писатель не отправил соседу ни одного
-        сообщения до смены фазы, и критика никто не будил — симптом человека
-        «один агент работает, второй молчит».
+        The pilot triggers used to be reactive: unread mail (`unread_peers`),
+        obligations (`pending_answers`) and the silent WRITER (`stale_writer`,
+        with self.silence applied to it alone). A passive critic in a new session
+        has no incoming events at all: the task is written only to state.json,
+        the mailbox is empty. Measured 2026-10-11 from the transcript: in 2 of 8
+        rounds the writer sent the neighbour not a single message before the
+        phase moved, and nobody woke the critic — the human symptom of "one
+        agent works, the other is silent".
 
-        Поэтому порог молчания симметрично применяется к роли, у которой нет
-        входящих: ни непрочитанной почты, ни видимого источника работы.
-        Толчок ОДИН на раунд (`remember` с TTL в два порога) — иначе это тот же
-        спам, что запрещён в `ring`. Закрытый раунд не будим: там молчать —
-        норма. Писателя не трогаем: за него отвечает `stale_writer`.
+        So the silence threshold applies symmetrically to a role with no
+        incoming: neither unread mail nor a visible work source. One push per
+        round (`remember` with a two-threshold TTL) — otherwise it is the same
+        spam banned in `ring`. A closed round is never woken: there silence is
+        normal. The writer stays untouched: `stale_writer` owns it.
         """
         writer = state.get("writer")
         if not writer or state.get("phase") == "done":
@@ -1026,12 +1026,12 @@ class Pilot:
                 continue
             pane = info.get("pane")
             if pane and self.visibly_busy(pane):
-                # Занятый композер — работа, а не молчание: то же правило,
-                # что у писателя в stale_writer.
+                # A busy composer is work, not silence: the same rule as the writer’s
+                # in stale_writer.
                 continue
             if self.unread(state, role) > 0:
-                # Почта разбудит свой путь (unread_peers), второй толчок
-                # тем же текстом — спам.
+                # Mail wakes its own path (unread_peers); a second push with
+                # the same text is spam.
                 continue
             age = self.role_seen_age(info)
             if age < self.silence:
@@ -1039,28 +1039,28 @@ class Pilot:
             key = f"stale-role-{state.get('round')}-{role}"
             if not self.remember(key, ttl=self.silence * 2):
                 continue
-            text = (f"[pairpilot] Ты молчишь {int(age // 60)} минут и у тебя нет "
-                    f"входящих, фаза {state.get('phase')!r}, писатель {writer}. "
-                    f"Вызови pair_digest: там задача раунда и что уже сделано. "
-                    f"Бери следующий кусок или пиши в заметку, чем заблокирован — "
-                    f"«делаю» не считается, нужен шаг или явная блокировка.")
-            self.mark_wake(state, role, f"молчит {int(age // 60)} мин без входящих", text)
+            text = (f"[pairpilot] You are silent {int(age // 60)} minutes with no "
+                    f"incoming, phase {state.get('phase')!r}, writer {writer}. "
+                    f"Call pair_digest: the round task and what is done live there. "
+                    f"Take the next chunk or write to the note what blocks you — "
+                    f"“doing” does not count, a step or an explicit block is needed.")
+            self.mark_wake(state, role, f"silent {int(age // 60)} min with no incoming", text)
             self.enqueue(role, text)
             self.store.append_transcript("pilot_idle_role", "pairpilot", target=role,
                                          minutes=int(age // 60))
-            log(f"{role} молчит {int(age // 60)} мин без входящих — толкаю сразу")
+            log(f"{role} silent {int(age // 60)} min with no incoming — pushing at once")
 
     def check_stalled_busy(self, state: dict) -> None:
-        """Детекция зависшего агента в состоянии 'Working...' (> stall_timeout zero-delta).
+        """Stuck-agent detection in ‘Working...’ state (> stall_timeout zero-delta).
 
-        Агент, зависший на стриме API (timeout) или раздутом контексте (>75%),
-        показывает спиннер, из-за чего visibly_busy() считает его работающим.
-        Если экран не меняется дольше stall_timeout, отправляем Escape, ждём ввода
-        и выполняем /compact с фиксацией в журнале и заметках.
+        An agent stuck on an API stream (timeout) or a bloated context (>75%)
+        shows the spinner, so visibly_busy() counts it as working. If the screen
+        stays unchanged past stall_timeout, send Escape, wait for input,
+        and run /compact, logging to the journal and notes.
         """
         if self.tmux is None:
             return
-        # Не компактаем во время запечатанных патчей (риск прервать review/apply)
+        # No compacting amid sealed patches (risk of interrupting review/apply)
         for _p, rec in (state.get("patches") or {}).items():
             if rec.get("sealed") and not rec.get("applied"):
                 return
@@ -1097,7 +1097,7 @@ class Pilot:
                 continue
 
             compact_ok = self.supports_compact(role)
-            log(f"{role}: завис в Working... {int(stalled_duration)}с (zero-delta) — шлю Escape" + (" и /compact" if compact_ok else " (CLI не понимает /compact — только Escape)"))
+            log(f"{role}: stuck in Working... {int(stalled_duration)}with (zero-delta) — sending Escape" + (" and /compact" if compact_ok else " (CLI has no /compact — Escape only)"))
             try:
                 subprocess.run([self.tmux, "send-keys", "-t", pane, "Escape"],
                                capture_output=True, text=True, timeout=5)
@@ -1105,7 +1105,7 @@ class Pilot:
                 if compact_ok:
                     deliver(pane, "/compact", wait_for_empty=3.0, submit=True)
             except Exception as exc:  # noqa: BLE001
-                log(f"{role}: авто-компакт не удался: {exc}")
+                log(f"{role}: auto-compact failed: {exc}")
                 continue
 
             self._screen_hashes.pop(role, None)
@@ -1114,20 +1114,20 @@ class Pilot:
             self.store.append_transcript("pilot_auto_compact", "pairpilot",
                                          target=role, reason="stalled_busy",
                                          duration_seconds=int(stalled_duration))
-            # Фиксация инцидента в заметках
+            # Recording the incident in notes
             try:
                 notes_dir = self.state_dir / "notes"
                 notes_dir.mkdir(parents=True, exist_ok=True)
                 note_file = notes_dir / "fix.md"
                 with note_file.open("a", encoding="utf-8") as f:
                     f.write(f"\n## {now_iso()} — pairpilot\n\n"
-                            f"Smart Auto-Compact: {role} завис в 'Working...' на "
-                            f"{int(stalled_duration)}с без изменения экрана. Отправлен Escape + /compact.\n")
+                            f"Smart Auto-Compact: {role} stuck in ‘Working...’ for "
+                            f"{int(stalled_duration)}with no screen change. Sent Escape + /compact.\n")
             except OSError:
                 pass
 
     def preventive_compact(self, state: dict) -> None:
-        """Превентивный /compact для живых ролей при phase == 'done'."""
+        """Preventive /compact for live roles at phase == ‘done’."""
         if state.get("phase") != "done" or self.tmux is None:
             return
         round_num = state.get("round", 0)
@@ -1143,7 +1143,7 @@ class Pilot:
                 continue
             try:
                 if not self.supports_compact(role):
-                    log(f"{role}: превентивный /compact пропущен — CLI его не понимает")
+                    log(f"{role}: preventive /compact skipped — the CLI has none")
                     continue
                 line = composer_line(capture(self.tmux, pane))
                 if line is not None and is_composer_empty(line):
@@ -1151,17 +1151,17 @@ class Pilot:
                     self.store.append_transcript("pilot_auto_compact", "pairpilot",
                                                  target=role, reason="preventive_done",
                                                  round=round_num)
-                    log(f"{role}: превентивный /compact на фазе done")
+                    log(f"{role}: preventive /compact at done phase")
             except Exception as exc:  # noqa: BLE001
-                log(f"{role}: превентивный компакт не удался: {exc}")
+                log(f"{role}: preventive compact failed: {exc}")
 
     def check_server_freshness(self, state: dict) -> None:
-        """Проверить свежесть MCP-сервера и зафиксировать в транскрипте при устаревании.
+        """Check MCP server freshness and log to the transcript when stale.
 
-        Осознанно работает и в припаркованном done: устаревший сервер замораживает
-        фазовые переходы (assert_server_fresh), и молчание о нём стоило бы дороже
-        сэкономленных токенов. Авторесета нет: MCP-серверы спавнит клиент
-        (`opencode serve --service`), пилот умеет только предупреждать.
+        Deliberately runs in parked done too: a stale server freezes phase
+        transitions (assert_server_fresh), and silence about it would cost more
+        than the saved tokens. No auto-reset: MCP servers are spawned by the
+        client (`opencode serve --service`); the pilot can only warn.
         """
         try:
             import server_freshness
@@ -1173,17 +1173,17 @@ class Pilot:
                         "pilot_server_stale", "pairpilot",
                         newest_file=verdict.get("newest_code_file"),
                         lag_seconds=int(verdict.get("lag_seconds", 0)),
-                        note="MCP-сервер в памяти исполняет устаревший код; требуется перезапуск"
+                        note="MCP server in memory runs stale code; restart required"
                     )
-                    log(f"ВНИМАНИЕ: MCP-сервер устарел ({verdict.get('why')})")
+                    log(f"WARNING: MCP server is stale ({verdict.get('why')})")
         except Exception:  # noqa: BLE001
             pass
 
     def pending_answers(self, state: dict) -> None:
-        """Отправили запрос, ответа нет. Это хуже молчания: молчание может означать
-        «работаю», а отсутствие ответа на конкретный вопрос — что вопрос умер в
-        ящике. Сначала дёргаем того, кому отвечать: обычно он просто не дочитал.
-        Потом, если молчит и автор, — того, кто ждёт."""
+        """A request was sent, no answer came. Worse than silence: silence may mean
+        "working", but no answer to a concrete question means the question died
+        in the box. First nudge the one who owes the answer: usually it just
+        went unread. Then, if the author is silent too — the one who waits."""
         root = self.state_dir / "obligations"
         if not root.is_dir():
             return
