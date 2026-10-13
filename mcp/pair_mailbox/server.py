@@ -2813,9 +2813,9 @@ class PairSession:
             raise ProtocolError("`value` is required: the machine's own output, not a verdict.")
 
         def apply(state: dict[str, Any]) -> dict[str, Any]:
-            # К какой задаче относится факт. По умолчанию — единственная открытая:
-            # обычно в работе она одна, и спрашивать каждый раз значило бы
-            # заставлять агента повторять то, что уже следует из списка.
+            # Which task the fact belongs to. Default — the single open one: usually one
+            # runs, and asking every time would force the agent to repeat what the list implies.
+            # forcing the agent to repeat what the list implies.
             still_open = [item["id"] for item in open_tasks(state)]
             owner = int(task) if task is not None else (still_open[0] if len(still_open) == 1 else None)
             record = {
@@ -2826,14 +2826,14 @@ class PairSession:
                 "ok": bool(ok),
                 "note": str(note or "").strip(),
                 "task": owner,
-                # Снимок открытых задач в момент записи. Если их было несколько,
-                # факт не привязан ни к одной — врать не хочется, но и терять
-                # его нельзя: по этому списку журнал поймёт, к чему относилось.
+                # A snapshot of open tasks at record time. With several, the fact binds to none —
+                # lying is unwelcome, but losing it is banned either: the journal tells by this list
+                # what it belonged to.
                 "tasks_open": still_open,
                 "at": utcnow(),
             }
             entries = state.setdefault("evidence", [])
-            try:  # без ключа факт уходит без подписи, подпись не роняет запись
+            try:  # with no key the fact leaves unsigned, the signature never drops the record
                 import rolekeys as _keys
                 sk = _keys.load_signing_key(self.store.root, self.role)
                 if sk is not None:
@@ -2844,11 +2844,11 @@ class PairSession:
             except Exception:  # noqa: BLE001
                 pass
             entries.append(record)
-            # Записи текущего раунда не вытесняются никогда. Гейт закрытия читает
-            # их из state, а не из транскрипта, поэтому вытесненная запись о падении
-            # просто перестаёт учитываться: раунд с красными тестами закрывался
-            # потому, что журнал переполнился. Полоса для прошлых раундов остаётся,
-            # иначе state растёт бесконечно.
+            # Current-round records never evict. The close gate reads them from state, not the
+            # transcript, so an evicted failure record simply stops counting: a round with red
+            # tests would close because the author described in words that all is well. A band
+            # for past rounds stays, or state grows without bound.
+            # or state grows without bound.
             current = int(state.get("round", 0))
             older = [item for item in entries if int(item.get("round", 0)) != current]
             mine = [item for item in entries if int(item.get("round", 0)) == current]
@@ -2930,16 +2930,16 @@ class PairSession:
         return record
 
     def _releasable_patch(self, state: dict[str, Any], path: str) -> tuple[dict[str, Any], bool]:
-        """Запись патча, который эта роль имеет право снять, и сняла ли его писатель.
+        """Record the outcome of applying a sealed patch. Writer only, after a matched verify.
 
-        Своё — всегда. Чужое — только у писателя и только пока патч не решён.
+        Own — always. Another — only the writer and only while the patch stays unresolved.
 
-        Раньше чужой патч не мог снять никто: автор может, но если он ушёл —
-        некому. `pair_patch_applied` не помогает, он требует `verified_match`,
-        а файла может уже не быть. На этом раунд закрывался невозможно, и я
-        наступил на это вживую: патч соседа висел, а сервер отказал мне в
-        `pair_patch_release`. Запись в транскрипте при этом обязательна —
-        «снял писатель» и «снял автор» это разные вещи, и отчёт обязан их различать.
+        A foreign patch used to drop for nobody: the author may, but gone means nobody.
+        `pair_patch_applied` never helps — it demands `verified_match` while the file
+        may be gone. The round closed impossibly on that, and I stepped in live: the
+        neighbour patch hung while the server refused my `pair_patch_release`. The
+        transcript record stays mandatory — "dropped by writer" and "dropped by author"
+        differ, and the report must tell them apart.
         """
         record = state.get("patches", {}).get(path)
         if not record:
@@ -3033,15 +3033,14 @@ class PairSession:
         }
 
     def tool_pair_propose(self, files: list[str], subject: str = "") -> dict[str, Any]:
-        """Одна команда вместо шести шагов reserve→seal→send→verify→applied.
+        """One command instead of six reserve→seal→send→verify→applied steps.
 
-        Сервер сам строит unified diff по worktree (`git diff HEAD -- files`),
-        сам резервирует и запечатывает патч, сам кладёт письмо писателю
-        с path+hash через `pair_send` с `expects_reply`. Критик только
-        называет файлы — церемония с 0600 и sha вручную исчезает.
-        Только для не-писателя: писатель правит дерево напрямую.
-        Ручной путь (reserve→seal) остаётся для экзотики, в протоколе
-        помечен legacy.
+        The server builds the unified diff over the worktree itself (`git diff HEAD --
+        files`), reserves and seals the patch itself, drops the writer letter with
+        path+hash via `pair_send` with `expects_reply`. The critic only names files —
+        the 0600-and-sha ceremony vanishes by hand. Non-writers only: the writer edits
+        the tree directly. The manual path (reserve→seal) stays for exotica, marked
+        legacy in the protocol.
         """
         self._require_fix_mode("propose a patch")
         self._require_not_writer("propose patches")
@@ -3070,8 +3069,8 @@ class PairSession:
         writer = self.store.read().get("writer")
         sent = self.tool_pair_send(
             to=str(writer or ""), subject=subject or f"propose: {', '.join(clean)}",
-            text=f"Патч {path} sha256 {sealed['sha256']}: diff по {', '.join(clean)}. "
-                 f"Проверь pair_patch_verify и примени.",
+            text=f"Patch {path} sha256 {sealed['sha256']}: diff over {', '.join(clean)}. "
+                 f"Check pair_patch_verify and apply.",
             expects_reply=True)
         return {"path": path, "sha256": sealed["sha256"],
                 "size": sealed.get("size"), "files": clean,
@@ -3178,11 +3177,11 @@ class PairSession:
 
     @staticmethod
     def _note_body_lines(lines: list[str]) -> list[str]:
-        """Строки после шапки, с обрезкой по границе записи.
+        """Lines past the header, cut on the record edge.
 
-        Заметка состоит из блоков `## <время> — <роль>`. Обрезать по строкам
-        нельзя: половина записи хуже отсутствия записи, потому что читающий
-        примет её за полную. Поэтому хвост начинается с первой целой записи.
+        A note holds `## <time> — <role>` blocks. Cutting by lines is banned: half a
+        record reads worse than no record, because the reader takes it for whole. So
+        the tail starts at the first whole record.
         """
         start = 0
         for index, line in enumerate(lines):
@@ -3192,13 +3191,12 @@ class PairSession:
         return lines[start:] if start else lines
 
     def _rotate_note(self, kind: str, path: Path) -> None:
-        """Унести старые записи в archive, оставив в файле хвост и указатель.
+        """Carry old records into archive, leaving the tail and a pointer in the file.
 
-        Точка отсчёта считается сразу, а НЕ подбирается итеративно. Итеративный
-        вариант был написан первым и зависал навсегда: после обрезки по границе
-        записи следующая запись всегда оказывалась в индексе 0, поэтому счётчик
-        не рос и цикл не заканчивался. Отсчёт назад от длины файла тривиален и
-        не может зациклиться.
+        The count computes at once, NEVER picked iteratively. The iterative form was
+        written first and hung forever: past the record-edge cut the next record always
+        landed at index 0, so the counter never grew and the loop never ended. Counting
+        back from the file length is trivial and cannot loop.
         """
         lines = path.read_text(encoding="utf-8").splitlines()
         if len(lines) <= NOTE_LINE_CAP:
@@ -3208,8 +3206,8 @@ class PairSession:
             return
         body_start = lines.index(body[0])
         head = lines[:body_start]
-        # Первая позиция, с которой хвост влезает в потолок, округлённая
-        # вперёд до границы записи, чтобы не разорвать запись пополам.
+        # The first position where the tail fits the ceiling, rounded forward to the
+        # record edge, never tearing a record in half.
         target = max(body_start, len(lines) - NOTE_LINE_CAP)
         while target < len(lines) and not lines[target].startswith("## "):
             target += 1
@@ -3222,10 +3220,10 @@ class PairSession:
         archive = archive_dir / f"{kind}-{stamp}.md"
         archive.write_text("\n".join(archived) + "\n", encoding="utf-8")
         pointer = [
-            f"**{len(archived)} записей унесены в "
-            f"[archive/{archive.name}](archive/{archive.name}).** Файл растёт только "
-            f"в хвост, и это осознанно: читать его целиком перестаёт быть разумным, "
-            f"читайте хвост через `pair_note_read`.",
+            f"**{len(archived)} records carried into "
+            f"[archive/{archive.name}](archive/{archive.name}).** The file grows only "
+            f"into the tail, deliberately: reading it whole stops making sense, "
+            f"read the tail via `pair_note_read`.",
             "",
         ]
         path.write_text("\n".join(pointer + lines[target:]) + "\n", encoding="utf-8")
@@ -3234,14 +3232,14 @@ class PairSession:
             archived_lines=len(archived), kept_lines=len(lines) - target)
 
     def tool_pair_ping(self) -> dict[str, Any]:
-        """Дешёвый признак жизни: только `last_seen` (+`pid`), короткий ответ.
+        """A cheap sign of life: only `last_seen` (+`pid`), a short answer.
 
-        Любой `pair_*`-вызов уже двигает `last_seen` (heartbeat в `invoke`),
-        но полный ответ `pair_state` стоит ~939 токенов. Агент, который
-        20 минут пишет код без вызовов, для пилота мёртв, для дела жив —
-        отсюда ложные ALARM в момент глубокой работы. Пинг — тот же
-        heartbeat ценой в три поля: CLI шлют его сами каждые N минут,
-        пилот различает «молчит, но пингует» и «молчит и не пингует».
+        Every `pair_*` call already moves `last_seen` (heartbeat in `invoke`), but a
+        full `pair_state` answer costs ~939 tokens. An agent writing code for 20
+        minutes with no calls reads dead to the pilot, alive to the cause — hence
+        false ALARMs mid deep work. A ping is the same heartbeat at a three-field
+        price: CLIs send it themselves every N minutes, the pilot tells "silent but
+        pinging" from "silent and not pinging" apart.
         """
         state = self.store.read()
         entry = (state.get("roles") or {}).get(self.role) or {}
@@ -3249,11 +3247,10 @@ class PairSession:
                 "pid": entry.get("pid")}
 
     def tool_pair_note_index(self) -> dict[str, Any]:
-        """Список заметок с размером и свежестью — чтобы увидеть кучу, не читая её.
+        """The note list with size and freshness — seeing the heap without reading it.
 
-        Заметок накапливаются десятки, и самая большая стоит около 19 тысяч
-        токенов. Этот список позволяет решить, что читать, не тратя на это
-        ни одного токена содержимого.
+        Notes pile to dozens, the biggest near 19 thousand tokens. This list decides
+        what to read, spending zero content tokens on it.
         """
         root = self.store.notes_root
         out: list[dict[str, Any]] = []
@@ -3277,13 +3274,13 @@ class PairSession:
                 "notes": out}
 
     def tool_pair_note_read(self, kind: str, tail_lines: int = NOTE_READ_DEFAULT, limit: int | None = None) -> dict[str, Any]:
-        """Прочитать ХВОСТ заметки, а не её целиком.
+        """Read the note TAIL, never the whole.
 
-        Заметка растёт только в хвост, и читать её целиком не нужно почти
-        никогда: актуально последнее, а не всё накопленное за всю историю.
-        `tail_lines` ограничен сверху, ответ всегда обрезан по границе записи,
-        и в ответе прямо сказано, было ли обрезание — иначе читающий примет
-        хвост за полным текстом. `limit` — алиас `tail_lines` (привычка pair_read/transcript).
+        A note grows tail-only, and reading it whole is needless almost always: the
+        latest matters, not all history ever stored. `tail_lines` caps above, the answer
+        always cuts on the record edge, stating outright whether it cut — or the reader
+        takes the tail for the whole text. `limit` aliases `tail_lines` (the
+        pair_read/transcript habit).
         """
         if limit is not None: tail_lines = limit
         kind = (kind or "").strip()
@@ -3294,11 +3291,11 @@ class PairSession:
         tail_lines = min(tail_lines, NOTE_READ_MAX)
         path = self.store.notes_root / f"{kind}.md"
         if not path.is_file():
-            raise ProtocolError(f"нет заметки `{kind}`")
+            raise ProtocolError(f"no note `{kind}`")
         lines = path.read_text(encoding="utf-8").splitlines()
         body = self._note_body_lines(lines)
-        # Считаем ДО обрезки: иначе total_lines стал бы равен returned_lines,
-        # и признак обрезания стал бы бесполезным.
+        # Count BEFORE cutting: or total_lines would equal returned_lines, and the cut
+        # mark would turn useless.
         available = len(body)
         truncated = available > tail_lines
         if truncated:
@@ -3307,11 +3304,11 @@ class PairSession:
                 cut += 1
             body = body[cut:]
             if not any(line.startswith("## ") for line in body):
-                # Хвост не влез даже в одну запись: возвращать пустой текст нельзя,
-                # вызывающий не отличит «заметка пуста» от «хвост слишком мал».
-                # Отдаём последнюю ЗАПИСЬ целиком — она и есть самое свежее. Именно
-                # запись, а не последнюю строку: последняя строка это тело записи,
-                # то есть ровно та половина, которой нельзя показывать.
+                # A tail too small for even one record: returning empty text is banned — the caller
+                # never tells "empty note" from "tail too small". The last whole RECORD serves — the
+                # freshest. Exactly the record, not the last line: the last line is the record body,
+                # the very half that must never show.
+                # body — exactly the half that must never show.
                 everything = self._note_body_lines(lines)
                 starts = [i for i, line in enumerate(everything) if line.startswith("## ")]
                 if not starts:
@@ -3319,10 +3316,10 @@ class PairSession:
                 else:
                     body = everything[starts[-1]:]
                 cut = available - len(body)
-        # total_lines — это размер ЧИТАЕМОГО хвоста, а не файла: иначе при
-        # отсутствии обрезания returned_lines не совпадал бы с total_lines
-        # из-за служебной пустой строки, и «обрезано» выглядело бы ложно.
-        # Размер файла на диске — отдельное поле, чтобы его тоже было видно.
+        # total_lines sizes the READABLE tail, not the file: or with no cut returned_lines
+        # would mismatch total_lines over the service blank line, with "cut" reading false.
+        # would mismatch total_lines over the service blank line, with "cut" reading false.
+        # The on-disk file size is its own field, to keep it visible too.
         return {"kind": kind, "total_lines": available, "returned_lines": len(body),
                 "truncated": truncated, "tail_lines": tail_lines,
                 "file_lines": len(lines),
@@ -3344,42 +3341,42 @@ class PairSession:
         with self.store.lock():
             with target.open("a", encoding="utf-8") as stream:
                 stream.write(f"\n## {utcnow()} — {self.role}\n\n{text.strip()}\n")
-            # Ротация при достижении 10 КБ: заметки растут без ограничений, и чтение
-            # хвоста из файла на 72 КБ стоит ~18000 токенов. Ротация держит активную
-            # часть компактной, а старое уходит в archive/.
+            # Rotation at 10 KB: notes grow unbounded, and a tail read from a 72 KB file costs
+            # ~18000 tokens. Rotation keeps the active part compact, the old leaving for archive/.
+            # leaving for archive/.
             if target.stat().st_size > 10 * 1024:
                 self._rotate_note(kind, target)
         self.store.append_transcript("note", self.role, note_kind=kind, chars=len(text))
         if kind == "verdict" or kind.startswith("verdict-"):
-            # Привязка вердикта к ревизии живёт в review рядом со snapshot.
-            # Молчаливое применение вердикта к уехавшей ревизии хуже
-            # отсутствия вердикта. Fail-open: без git пишется пустой снимок.
+            # The verdict-to-revision bind lives in review next to snapshot. Silently applying a
+            # verdict to a drifted revision beats missing verdict. Fail-open: with no git an empty
+            # snapshot writes.
             try:
                 from review import pin_verdict
                 pin_verdict(self.store, self.role, kind, text, utcnow)
-            except Exception:  # noqa: BLE001 - снимок не роняет вердикт
+            except Exception:  # noqa: BLE001 - the snapshot never drops the verdict
                 pass
-            # Вердикт без обязательства — тупик: критик сдал, писатель ждёт,
-            # а сторожить нечего. Obligation писателю «забери вердикт и
-            # закрой раунд» замыкает цикл без человека: пилот пинает
-            # получателя через reply_grace, автора — через reply_hard.
-            # Измерено 2026-10-06: вердикт seq 252 лежал 3.5 часа,
-            # писатель стоял на recap «жду вердикт», пилот молчал —
-            # сторожить было нечего, obligation-файла не было.
+            # A verdict with no obligation is a dead end: the critic passed, the writer awaits,
+            # with nothing to watch. An obligation on the writer — "take the verdict and close
+            # the round" — closes the loop with no human: the pilot nudges the recipient via
+            # reply_grace, the author via reply_hard. Measured 2026-10-06: verdict seq 252 lay
+            # 3.5 hours, the writer stood on a "waiting verdict" recap, the pilot silent — nothing
+            # to watch, no obligation file.
+            # to watch, no obligation file.
             try:
                 writer = (self.store.read().get("writer") or "").strip()
                 if writer and writer != self.role:
                     self._open_obligation(
                         self.role, writer, int(self.store.read().get("seq", 0)),
-                        subject=f"вердикт {kind} — забери и закрой раунд")
-            except Exception:  # noqa: BLE001 - обязательство не роняет вердикт
+                        subject=f"verdict {kind} — take it and close the round")
+            except Exception:  # noqa: BLE001 - the obligation never drops the verdict
                 pass
-        # Заметки — тихие: без веерного звонка всем ролям
-        # (карточка pair-note-rings-everyone, done). Wake-файл ниже —
-        # единственный сигнал; его опрашивает пилот через wake_grace.
-        # Кто ждёт ответа — pair_send (точечный ring) или obligation
-        # на вердикте выше. Ключ woke_peers оставлен пустым ради
-        # совместимости ответа.
+        # Notes stay quiet: with no fan-out ring to all roles (the pair-note-rings-everyone
+        # card, done). The wake file below is the only signal; the pilot polls it via wake_grace.
+        # card, done). The wake file below is the only signal; the pilot polls it via wake_grace.
+        # Who awaits an answer — pair_send (the point ring) or an obligation on the verdict
+        # above. The woke_peers key stays empty for answer compatibility.
+        # compatibility.
         try:
             from wake import record_wake
             snapshot = self.store.read()
@@ -3387,13 +3384,13 @@ class PairSession:
                 if other == self.role:
                     continue
                 try:
-                    record_wake(self.store.root, snapshot, other, f"заметка/{kind}",
-                                f"[pair] {self.role}: новая заметка {kind}, прочитай pair_note_read")
+                    record_wake(self.store.root, snapshot, other, f"note/{kind}",
+                                f"[pair] {self.role}: new note {kind}, read pair_note_read")
                     self.store.append_transcript("wake_pending", self.role, to=other,
-                                                 reason=f"заметка/{kind}")
-                except Exception:  # noqa: BLE001 - wake-файл не роняет заметку
+                                                 reason=f"note/{kind}")
+                except Exception:  # noqa: BLE001 - the wake file never drops the note
                     pass
-        except Exception:  # noqa: BLE001 - импорт wake не роняет заметку
+        except Exception:  # noqa: BLE001 - the wake import never drops the note
             pass
         return {"kind": kind, "path": str(target), "woke_peers": {}}
     def invoke(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
@@ -3405,19 +3402,19 @@ class PairSession:
         exactly the event worth keeping.
         """
         handler = HANDLERS.get(name)
-        # Признак жизни — сам вызов, а не выборочный инструмент: любой звонок
-        # двигает `last_seen`, иначе агент, пишущий заметки в закрытом раунде,
-        # выглядит брошенным (карточка last-seen-stale, done). Только метка
-        # времени: панели и pin трогает исключительно `_register`. Heartbeat
-        # идёт до инструмента, а не после: отказ — тоже признак жизни, иначе
-        # агент, получивший `refusal`, выглядел бы мёртвым, хотя он только
-        # что говорил с сервером. Неизвестного инструмента это не касается:
-        # опечатка в имени — не признак жизни, и раздувать ростер под неё
-        # незачем.
+        # The sign of life is the call itself, not a picked tool: every ring moves
+        # `last_seen`, or an agent writing notes in a closed round reads abandoned
+        # (the last-seen-stale card, done). Only the timestamp: panels and pin belong to
+        # `_register` alone. Heartbeat runs before the tool, not after: a refusal is also
+        # a sign of life, or an agent handed a `refusal` would read dead while just talking
+        # to the server. An unknown tool misses this: a name typo is no sign of life, and
+        # growing the roster over it is needless.
+        # needless.
+        # needless.
         if handler is not None:
             try:
                 self.store.mutate(self._heartbeat)
-            except Exception:  # noqa: BLE001 - heartbeat не роняет инструмент
+            except Exception:  # noqa: BLE001 - heartbeat never drops the tool
                 pass
         else:
             raise ProtocolError(f"unknown tool {name!r}")
@@ -3428,23 +3425,23 @@ class PairSession:
             raise
 
     def tool_pair_digest(self, budget: int = DIGEST_TOKEN_BUDGET) -> dict[str, Any]:
-        """Срез состояния пары в жёстком лимите токенов — вместо чтения истории.
+        """The pair-state slice under a hard token cap — instead of reading history.
 
-        Ориентация в паре стоит 3724 токена, если читать `pair_state`, `pair_task`
-        и `pair_transcript`. Этот вызов укладывается в `budget` по умолчанию и
-        отвечает на вопрос «что сейчас решаем, что меня ждёт, что было решено
-        последним», ничего не читая из истории.
+        Orientation in the pair costs 3724 tokens reading `pair_state`, `pair_task`
+        and `pair_transcript`. This call fits the default `budget`, answering "what
+        we decide now, what awaits me, what was decided last" with nothing read from
+        history.
 
-        Поверх него историю всё ещё можно читать — дайджест не отменяет журнал,
-        он просто позволяет не платить за него, чтобы понять, читать ли его.
+        History still reads on top — the digest never cancels the journal, it just
+        lets you skip paying for it to learn whether to read it.
         """
         text = build_digest(self.store, self.role, budget)
         return {
             "digest": text,
             "tokens": estimate_tokens(text),
             "budget": budget,
-            "note_kind": "verdict-* для последнего вердикта, "
-                         "полный текст — в `pair_note_read`",
+            "note_kind": "verdict-* for the last verdict, "
+                         "full text — in `pair_note_read`",
         }
 
     def tool_pair_transcript(self, limit: int = 20) -> dict[str, Any]:
