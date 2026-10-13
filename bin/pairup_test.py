@@ -1,8 +1,8 @@
-"""Тесты bootstrap bin/pairup: шаблон anti-mock.json новому проекту.
+"""Bootstrap tests for bin/pairup: the anti-mock.json template for new projects.
 
-Гоняется файловый фрагмент bootstrap в изолированном tmp git-проекте:
-полный pairup тянет pilot/CLI и не hermetic. Проверяется контракт R84:
-шаблон копируется при создании, существующий не затирается.
+Runs the bootstrap file fragment in an isolated tmp git project: the full
+pairup drags pilot/CLI and is not hermetic. Checks the R84 contract: the
+template copies on creation, an existing one is never overwritten.
 """
 from __future__ import annotations
 
@@ -24,9 +24,9 @@ mkdir -p "$_root/.pair/mailbox"
 
 
 def _snippet() -> str:
-    """Строки копирования шаблона из bin/pairup — тест едет за кодом."""
+    """Template-copy lines from bin/pairup — the test rides the code."""
     text = PAIRUP.read_text(encoding="utf-8")
-    start = text.index("# Ground-truth шаблон новому проекту")
+    start = text.index("# Ground-truth template for the new project")
     end = text.index("fi", start) + len("fi")
     return text[start:end]
 
