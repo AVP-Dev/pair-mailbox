@@ -232,28 +232,45 @@ class TestWakeFileIntegrity(PilotCase):
                       "второй повод обязан быть виден в том же файле")
 
     def test_a_damaged_wake_file_is_removed_not_reread(self) -> None:
-        """Битый wake-файл удаляется, а не читается каждый тик.
+        """A damaged wake file is removed, not re-read every tick.
 
-        Без удаления каждый тик падает на разборе, пишет
-        `pilot_wake_damaged` и оставляет файл — бесконечная запись
-        в транскрипт о том же битом файле. Опрос зовём напрямую:
-        полный `tick()` до опроса ставит свежие пробуждения
-        (`unread_peers`) и перетёр бы битую фикстуру валидным файлом.
+        Without removal every tick fails parsing, writes `pilot_wake_damaged`
+        and keeps the file — an endless transcript loop about the same file.
+        Full `tick()` (no unread mail, so nothing overwrites the fixture):
+        the damaged file is gone after the tick and reported once.
         """
-        state = self.write_state(writer="agy", roles={"agy": {"last_seen": now_iso(), "pid": 1, "pane": "%1"}})
+        self.write_state(writer="agy", roles={"agy": {"last_seen": now_iso(), "pid": 1, "pane": "%1"}})
         pilot = self.pilot()
         damaged = pilot.wake_root / "agy.json"
         damaged.parent.mkdir(parents=True, exist_ok=True)
         damaged.write_text("{not json", encoding="utf-8")
-        pilot.poll_wakes(state)
+        pilot.tick()
         self.assertFalse(damaged.exists(),
-                         "битый файл обязан исчезнуть после опроса")
+                         "the damaged file must be gone after the tick")
         self.assertIn("pilot_wake_damaged", self.transcript_kinds(),
-                      "факт битого файла обязан попасть в транскрипт")
+                      "the damaged file must reach the transcript")
         before = len(self.transcript_entries())
-        pilot.poll_wakes(state)
+        pilot.tick()
         self.assertEqual(before, len(self.transcript_entries()),
-                         "повторный опрос не пишет о том же файле: его уже нет")
+                         "the second tick writes nothing about the same file: it is gone")
+
+    def test_a_damaged_wake_file_overwritten_still_reports(self) -> None:
+        """A damaged file healed by overwrite (unread=1) still reports.
+
+        `mark_wake` reads the old file to amend it; a damaged one used to be
+        replaced silently, so \"were there damaged wakes\" depended on whether
+        the role had unread mail that tick. Now both paths record
+        `pilot_wake_damaged`.
+        """
+        self.inbox("agy", 1)
+        self.write_state(writer="agy", roles={"agy": {"last_seen": now_iso(), "pid": 1, "pane": "%1"}})
+        pilot = self.pilot()
+        damaged = pilot.wake_root / "agy.json"
+        damaged.parent.mkdir(parents=True, exist_ok=True)
+        damaged.write_text("{not json", encoding="utf-8")
+        pilot.tick()
+        self.assertIn("pilot_wake_damaged", self.transcript_kinds(),
+                      "overwrite-heal must not swallow the damage report")
 
 
 
@@ -721,6 +738,27 @@ class TestOutboxStaleness(PilotCase):
         state = self.write_state(roles={"agy": {"pane": "%1", "pid": os.getpid()}}, seen={"agy": 1})
         p.drop_stale_outbox(state)
         self.assertFalse(path.exists(), "a stale EN pointer leaves the queue")
+
+    def test_producer_text_still_matches_consumer_matcher(self) -> None:
+        """Round-trip (F3 seq 1153): the consumer classifies the producer output.
+
+        Uses the REAL queued text, not a literal: if unread_peers changes its
+        wording and nudge_still_true does not follow (or vice versa), the stale
+        pointer survives and this goes red. Independent of any RU literal, so
+        translation cannot silently disarm it.
+        """
+        p = self.pilot()
+        self.inbox("agy", 1)
+        state = self.write_state(roles={"agy": {"pane": "%1", "pid": os.getpid()}}, seen={})
+        p.unread_peers(state)
+        produced = p.pending("agy")
+        self.assertTrue(produced, "producer must queue a pointer")
+        self.assertTrue(p.nudge_still_true(state, "agy", produced),
+                        "live pointer holds while mail is unread")
+        read_state = self.write_state(roles={"agy": {"pane": "%1", "pid": os.getpid()}},
+                                      seen={"agy": 1})
+        self.assertFalse(p.nudge_still_true(read_state, "agy", produced),
+                         "producer text must die with its condition, or the queue never drops it")
 
     def test_foreign_pane_blocks_delivery_not_heal(self) -> None:
         """F7 (round 87): delivery checks pane ownership against the project.

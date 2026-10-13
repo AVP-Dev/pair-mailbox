@@ -110,6 +110,7 @@ def case_logic_change_refuses(root):
     reps = _rep_file(dump, ["# EN\nx = 999", '"EN"'])
     proc = _run(sys.executable, APPLY, path, reps)
     assert proc.returncode != 0, "logic change must refuse"
+    assert "normalized AST differs" in proc.stderr, proc.stderr
 
 
 def case_optimize_refuses(root):
