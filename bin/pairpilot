@@ -603,15 +603,15 @@ class Pilot:
             return 0.0
 
     def poll_wakes(self, state: dict) -> None:
-        """Опросить висящие пробуждения и решить по каждому: проснулся или нет.
+        """Poll hanging wake-ups and decide each: awake or not.
 
-        Три исхода, и каждый виден в журнале:
-        - **проснулся** — `last_seen` сдвинулся или непрочитанных стало ноль.
-          Ничего не печатаем: роль уже в работе, и будить её значило бы мешать.
-        - **терпение кончилось** — роль молчит дольше `wake_grace`. Тогда печатаем,
-          один раз, и это уже эскалация, а не первый шаг.
-        - **всё ещё ждём** — тишина. Молчание, за которым смотрит супервизор,
-          обходится в ноль токенов.
+        Three outcomes, each visible in the journal:
+        - **awake** — `last_seen` moved or unread dropped to zero.
+          Print nothing: the role is already working, waking it would disturb.
+        - **patience spent** — the role is silent past `wake_grace`. Then print,
+          once, and that is escalation, not the first step.
+        - **still waiting** — silence. Silence watched by the supervisor
+          costs zero tokens.
         """
         if not self.wake_root.is_dir():
             return
@@ -620,8 +620,8 @@ class Pilot:
             try:
                 wake = json.loads(path.read_text(encoding="utf-8"))
             except (OSError, json.JSONDecodeError):
-                # Битый файл пробуждения нельзя чинить догадками: он удаляется,
-                # потому что иначе он будет висеть вечно, а роль так и не услышит.
+                # A damaged wake file cannot be fixed by guessing: it is removed,
+                # because otherwise it would hang forever and the role would never hear.
                 path.unlink(missing_ok=True)
                 self.store.append_transcript("pilot_wake_damaged", "pairpilot",
                                              file=path.name)
@@ -633,10 +633,10 @@ class Pilot:
             unread_now = self.unread(state, role)
             woke = (seen_now != seen_ask) or (unread_now < int(wake.get("unread_at_ask", 0)))
             if woke:
-                # Порядок обязателен: раньше файл сначала удалялся, и `stat`
-                # потом всегда давал «нет файла», то есть since_seconds был
-                # всегда 0 — поле, по которому судят, сколько роль молчала,
-                # не сказало ничего.
+                # The order is mandatory: the file used to be removed first, and `stat`
+                # afterwards always said “no file”, so since_seconds stayed
+                # at 0 forever — the field that tells how long the role was silent
+                # said nothing.
                 try:
                     since = int(now - path.stat().st_mtime)
                 except OSError:
@@ -645,38 +645,39 @@ class Pilot:
                 self.store.append_transcript("pilot_wake_acknowledged", "pairpilot",
                                              target=role, reason=wake.get("reason"),
                                              since_seconds=since)
-                log(f"{role}: проснулся сам, печать не понадобилась")
+                log(f"{role}: woke on its own, no printing needed")
                 continue
             if self.is_done_parked(state):
-                # В фазе done пилот припаркован: не эскалируем wake-файлы в композер.
+                # In done phase the pilot is parked: do not escalate wake files into the composer.
                 continue
             asked = parse_iso(wake.get("asked_at"))
             age = now - asked.timestamp() if asked else 0.0
             if age < self.wake_grace:
                 continue
-            # Пауза между повторами и причина — в may_escalate_again.
+            # The pause between repeats and its reason live in may_escalate_again.
             if not self.may_escalate_again(wake, now):
                 continue
             self.store.append_transcript("pilot_wake_escalated", "pairpilot",
                                          target=role, reason=wake.get("reason"),
                                          age_seconds=int(age),
                                          repeat=bool(wake.get("escalated")))
-            log(f"{role}: молчит {int(age // 60)} мин после пробуждения — печатаю")
+            log(f"{role}: silent {int(age // 60)} min past the wake-up — printing")
             self.enqueue(role, str(wake.get("text") or ""))
             wake["escalated"] = True
             wake["escalated_at"] = utcnow()
             path.write_text(json.dumps(wake, ensure_ascii=False, indent=2), encoding="utf-8")
 
     def may_escalate_again(self, wake: dict, now: float) -> bool:
-        """Пора ли повторить эскалацию: роль молчит, а пауза с прошлой прошла.
+        """Whether an escalation repeat is due: the role is silent and the pause passed.
 
-        Прежний контракт был «ровно один раз за жизнь роли», и это ловушка без
-        выхода: файл удаляется только когда роль ПРОСНУЛАСЬ, поэтому у молчащей
-        роли вторая эскалация невозможна в принципе. Найдено вживую — pi молчал
-        час, файл висел с escalated, супервизор писал «ждёт 40 мин» и не печатал.
+        The old contract was "exactly once per role lifetime", and that is a trap
+        with no exit: the file is removed only when the role WAKES UP, so a silent
+        role can never get a second escalation. Found live — pi was silent an
+        hour, the file hung with escalated, the supervisor wrote "waiting 40 min"
+        and never printed.
 
-        Пауза обязана быть меньше срока жизни отложенного, иначе повтор протухнет
-        в очереди, не доехав до композера.
+        The pause must be shorter than the queued item’s lifetime, otherwise the
+        repeat goes stale in queue before reaching the composer.
         """
         if not wake.get("escalated"):
             return True
@@ -695,21 +696,21 @@ class Pilot:
             except OSError:
                 old = ""
             if old.strip() and old != text:
-                # Вытеснение без следа — дыра в аудите: напоминание выглядит
-                # «не бывшим». Пишем замену в журнал (раунд 43).
+                # Eviction without a trace is an audit hole: the nudge looks like it
+                # "never was". Write the replacement into the journal (round 43).
                 self.store.append_transcript("pilot_outbox_replaced", "pairpilot",
                                              to=role, old=old[:120], new=text[:120])
         path.write_text(text, encoding="utf-8")
 
     def mailbox_fallback(self, role: str, text: str) -> int | None:
-        """Дублировать указатель в mailbox получателя как письмо от пилота.
+        """Mirror the pointer into the recipient mailbox as a pilot letter.
 
-        Outbox протухает, если композер занят дольше TTL: агент работает,
-        печатать нельзя, указатель выбрасывается — и агент никогда не узнаёт,
-        что его ждали. Mailbox не протухает: агент заберёт письмо через
-        `pair_read`, когда сам решит. Измерено 2026-10-06: два nudge_expired
-        подряд, оба агента живы, оба ничего не получили.
-        Возвращает seq письма или None, если дублировать нечего/некуда.
+        Outbox goes stale when the composer stays busy past TTL: the agent works,
+        printing is forbidden, the pointer is dropped — and the agent never learns
+        it was waited for. Mailbox never goes stale: the agent picks the letter up
+        via `pair_read` when it chooses. Measured 2026-10-06: two nudge_expired in
+        a row, both agents alive, both got nothing.
+        Returns the letter seq or None when there is nothing/nowhere to mirror.
         """
         if not text.strip():
             return None
@@ -750,21 +751,20 @@ class Pilot:
         return path.read_text(encoding="utf-8").strip() if path.exists() else ""
 
     def outbox_file(self, role: str) -> Path:
-        """Файл отложенного для роли. Метод, чтобы путь очереди не собирали руками."""
+        """The queued-item file for a role. A method so the queue path is never hand-built."""
         return self.outbox / f"{role}.txt"
 
     def flush_outbox(self, state: dict) -> None:
-        """Доставить отложенное. Пока композер занят, текст остаётся на месте —
-        следующий проход попробует снова. Это и есть переживающая доставка.
+        """Deliver the queued item. While the composer is busy the text stays put —
+        the next pass tries again. That is surviving delivery.
 
-        Но переживающая доставка без срока жизни становится доставкой
-        протухшего: очередь переживала сессию, и человек получал вопрос, который
-        уже не имел отношения к делу. Наблюдалось вживую — напоминание про
-        обязательство, закрытое почти за три часа до того, как было составлено,
-        лежало в очереди ещё 22 минуты и было доставлено как свежее.
+        But surviving delivery with no lifetime becomes stale delivery: the queue
+        outlived the session, and the human got a question that no longer meant
+        anything. Observed live — a nudge about an obligation closed almost three
+        hours before it was composed sat in queue 22 more minutes and landed as fresh.
 
-        Поэтому у отложенного есть срок. Молчаливую выброску не делаем: она
-        записывается в транскрипт, иначе выброшенное выглядит как «доставлено».
+        So a queued item has a lifetime. Silent drops are forbidden: a drop is
+        recorded in the transcript, otherwise a dropped item looks "delivered".
         """
         if self.tmux is None:
             return
@@ -785,8 +785,8 @@ class Pilot:
                     "pilot_nudge_expired", "pairpilot", to=role,
                     age_seconds=int(age), text=text[:120],
                     fallback_seq=seq)
-                log(f"отложенное для {role} протухло в композере "
-                    f"{int(age // 60)} мин — дублирую в ящик (seq {seq})")
+                log(f"queued for {role} went stale in the composer "
+                    f"{int(age // 60)} min — mirroring into the mailbox (seq {seq})")
                 continue
             pane = info.get("pane")
             try:
@@ -825,15 +825,15 @@ class Pilot:
             if result.get("delivered"):
                 path.unlink(missing_ok=True)
                 self.store.append_transcript("pilot_deliver", "pairpilot", to=role, text=text[:120])
-                log(f"доставил отложенное для {role}")
+                log(f"delivered the queued item for {role}")
 
     def drop_stale_outbox(self, state: dict) -> None:
-        """Снять протухшее в очереди до попытки печати (#18).
+        """Drop what went stale in queue before trying to print (#18).
 
-        Отдельно от `flush_outbox`, потому что тот без tmux выходит сразу
-        и перепроверка не срабатывала бы ни в тестах, ни в проекте без
-        tmux. Порядок в `tick` — после `stalled_patches`, до `flush_outbox`:
-        свежее условие уже записано, протухшее снимается здесь.
+        Separate from `flush_outbox` because that one exits early without tmux,
+        and the re-check would never fire in tests or in a tmux-less project.
+        Order in `tick` — after `stalled_patches`, before `flush_outbox`:
+        the fresh condition is already recorded, the stale one drops here.
         """
         now = time.time()
         for role in state.get("roles", {}):
@@ -851,24 +851,24 @@ class Pilot:
             self.store.append_transcript(
                 "pilot_nudge_stale", "pairpilot", to=role,
                 age_seconds=int(age), text=text[:120])
-            log(f"отложенное для {role} снято: условие протухло, пока ждало")
+            log(f"queued for {role} dropped: its condition went stale while waiting")
 
     def nudge_still_true(self, state: dict, role: str, text: str) -> bool:
-        """Протухло ли условие отложенного, пока оно ждало композер (#18).
+        """Whether the queued item’s condition went stale while it waited (#18).
 
-        Измерено 2026-10-06: напоминание про sealed-патч zmtcbrb9 легло в
-        очередь до `patch_applied`, а доставлено после — агент получил
-        ложный «висит неприменённым» при applied=true. Условие читается
-        из свежего состояния здесь, а не из момента постановки.
-        Измерено 2026-10-07 (backlog pilot-nudge-about-closed-obligation):
-        напоминание про запрос 370 ушло после закрытия obligation-файла.
-        Поэтому текст про запрос/seq проверяется по файлу
-        obligations/<seq>-*.json: нет файла — условие протухло.
-        Неопознанный текст не трогаем: лучше доставить лишнее, чем молча
-        выбросить то, чего не поняли.
+        Measured 2026-10-06: a nudge about sealed patch zmtcbrb9 queued before
+        `patch_applied` but delivered after — the agent got a false "hangs
+        unapplied" at applied=true. The condition reads from fresh state here,
+        not from the moment of queueing.
+        Measured 2026-10-07 (backlog pilot-nudge-about-closed-obligation):
+        a nudge about request 370 left after its obligation file closed.
+        So request/seq text checks against the file obligations/<seq>-*.json:
+        no file — the condition went stale. Unrecognized text stays untouched:
+        better to deliver extra than to silently drop what we did not parse.
         """
         low = text.lower()
-        if "непрочитанных" in low or "непрочитанн" in low:
+        # Bilingual: old RU pointers ("непрочитанных") and new EN ones ("unread").
+        if "непрочитанных" in low or "непрочитанн" in low or "unread" in low:
             # Unread-pointer: the condition is checked against state, not text.
             # Measured 2026-10-13 (finding-round87): a pointer raised at unread=1
             # was delivered 62s later at unread=0. Stale — drop it, otherwise
@@ -889,11 +889,11 @@ class Pilot:
         return False
 
     def visibly_busy(self, pane: str) -> bool:
-        """Видно ли по панели, что агент работает прямо сейчас.
+        """Whether the panel shows the agent working right now.
 
-        Композер занят — агент печатает или ждёт. Композера не видно вовсе —
-        TUI перерисовывается, и бить в этот момент тоже нельзя. Оба случая
-        означают «не трогать».
+        Composer busy means the agent types or waits. No composer visible at
+        all means the TUI redraws, and striking then is forbidden too. Both mean
+        "hands off".
         """
         if self.tmux is None or not pane_alive(self.tmux, pane):
             return False

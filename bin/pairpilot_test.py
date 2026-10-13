@@ -706,6 +706,22 @@ class TestOutboxStaleness(PilotCase):
         p.drop_stale_outbox(state)
         self.assertTrue(path.exists(), "a live pointer stays in the queue")
 
+    def test_unread_nudge_en_pointer_goes_stale_when_mail_is_read(self) -> None:
+        """EN twin of the F6 test: the bilingual matcher catches new pointers.
+
+        Same commit as the matcher change (no window with a green gate and a
+        one-sided matcher). Goes red if "unread" leaves the matcher.
+        """
+        p = self.pilot()
+        self.inbox("agy", 1)
+        path = self._queue(p, "agy", "[pairpilot] You have 1 unread messages. Call pair_read")
+        state = self.write_state(roles={"agy": {"pane": "%1", "pid": os.getpid()}}, seen={})
+        self.assertTrue(p.nudge_still_true(state, "agy", p.pending("agy")),
+                        "with unread mail the EN pointer still holds")
+        state = self.write_state(roles={"agy": {"pane": "%1", "pid": os.getpid()}}, seen={"agy": 1})
+        p.drop_stale_outbox(state)
+        self.assertFalse(path.exists(), "a stale EN pointer leaves the queue")
+
     def test_foreign_pane_blocks_delivery_not_heal(self) -> None:
         """F7 (round 87): delivery checks pane ownership against the project.
 
