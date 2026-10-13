@@ -137,6 +137,40 @@ class TestLoadPatterns(unittest.TestCase):
                                                  ["x = 'mock-abc'"]), [])
 
 
+class TestScanStubs(unittest.TestCase):
+    SRC = (
+        "def stub_pass():\n    pass\n"
+        "async def stub_nie():\n    raise NotImplementedError\n"
+        "def stub_ellipsis():\n    ...\n"
+        "def legit():\n    return 1\n"
+        "def handler():\n    try:\n        f()\n"
+        "    except ValueError:\n        pass\n"
+        "import abc\n"
+        "class B(abc.ABC):\n    @abc.abstractmethod\n"
+        "    def contract(self):\n        pass\n")
+
+    def test_stubs_flagged_with_lines(self) -> None:
+        flags = session_facts.scan_stubs("app/m.py", self.SRC)
+        self.assertEqual(len(flags), 3)
+        self.assertTrue(all(f["pattern"] == "stub-body" for f in flags))
+        self.assertEqual([f["line"] for f in flags], [1, 3, 5])
+
+    def test_no_false_positives(self) -> None:
+        matches = [f["match"] for f in
+                   session_facts.scan_stubs("app/m.py", self.SRC)]
+        self.assertFalse(any("legit" in m or "handler" in m
+                             or "contract" in m for m in matches))
+
+    def test_non_python_and_broken_empty(self) -> None:
+        self.assertEqual(session_facts.scan_stubs("a.js", "x"), [])
+        self.assertEqual(session_facts.scan_stubs("b.py", "def ("), [])
+
+    def test_stubs_flag_respects_config(self) -> None:
+        self.assertTrue(session_facts.stubs_enabled())
+        self.assertFalse(session_facts.stubs_enabled(
+            config={"detect_stubs": False}))
+
+
 class TestRoundTrip(unittest.TestCase):
     def setUp(self) -> None:
         self.repo = TempRepo()

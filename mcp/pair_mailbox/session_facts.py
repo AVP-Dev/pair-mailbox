@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import hashlib
 import json
 import re
@@ -81,6 +82,24 @@ def _find_config(start: Path | str) -> Path | None:
             return None
         current = current.parent
     return None
+
+
+def load_config(repo_root=None):
+    """Весь anti-mock.json; без/битый — пустой dict (все детекторы вкл)."""
+    found = _find_config(repo_root) if repo_root is not None else None
+    if found is None:
+        return {}
+    try:
+        data = json.loads(found.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def stubs_enabled(repo_root=None, config=None) -> bool:
+    """Детектор заглушек вкл, пока конфиг явно не выключил (detect_stubs)."""
+    cfg = config if config is not None else load_config(repo_root)
+    return cfg.get("detect_stubs", True) is not False
 
 
 def load_patterns(
@@ -172,6 +191,71 @@ def _parse_added(diff_text: str) -> list[tuple[str, int, str]]:
     return found
 
 
+ABSTRACT_DECORATORS = ("abstractmethod",)
+
+
+def _is_stub_body(node) -> bool:
+    """Тело-заглушка: только pass / ... / raise NotImplementedError."""
+    body = [st for st in node.body
+            if not (isinstance(st, ast.Expr)
+                    and isinstance(st.value, ast.Constant)
+                    and isinstance(st.value.value, str))]
+    if not body:
+        return False
+    for st in body:
+        if isinstance(st, ast.Pass):
+            continue
+        if (isinstance(st, ast.Expr) and isinstance(st.value, ast.Constant)
+                and st.value.value is Ellipsis):
+            continue
+        if (isinstance(st, ast.Raise)
+                and isinstance(st.exc, ast.Name)
+                and st.exc.id == "NotImplementedError"):
+            continue
+        if (isinstance(st, ast.Raise)
+                and isinstance(st.exc, ast.Call)
+                and isinstance(st.exc.func, ast.Name)
+                and st.exc.func.id == "NotImplementedError"):
+            continue
+        return False
+    return True
+
+
+def _is_abstract(node) -> bool:
+    """Абстрактный метод — контракт, а не заглушка."""
+    for dec in node.decorator_list:
+        name = dec.id if isinstance(dec, ast.Name) else (
+            dec.attr if isinstance(dec, ast.Attribute) else "")
+        if name in ABSTRACT_DECORATORS:
+            return True
+    return False
+
+
+def scan_stubs(path, source) -> list:
+    """AST-поиск функций-заглушек; не-Python и битый синтаксис — пусто."""
+    if is_gate_exempt(path) or not path.endswith(".py"):
+        return []
+    try:
+        tree = ast.parse(source)
+    except (SyntaxError, ValueError):
+        return []
+    flags = []
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        if _is_abstract(node) or not _is_stub_body(node):
+            continue
+        flags.append({
+            "file": path,
+            "line": node.lineno,
+            "pattern": "stub-body",
+            "match": "def %s(...): ..." % node.name,
+            "reason": "пустое тело функции — заглушка вместо реализации",
+            "test_path": is_test_path(path),
+        })
+    return flags
+
+
 def scan_text(path, start, lines, patterns=None):
     """Scan lines; default patterns are MOCK_PATTERNS."""
     if is_gate_exempt(path):
@@ -206,16 +290,27 @@ def collect_facts(repo_root, test_runs=None, patterns=None):
     dirty_hash = hashlib.sha256(porcelain.encode()).hexdigest()[:16]
     stat = _git(repo, "diff", "HEAD", "--stat", "--", ".") if touched else ""
     flags: list[dict[str, Any]] = []
+    want_stubs = stubs_enabled(repo)
     if touched:
         added = _parse_added(_git(repo, "diff", "HEAD", "-U0", "--", "."))
         for path, line, text in added:
             flags.extend(scan_text(path, line, [text], active))
+        if want_stubs:
+            for path in {p for p, _, _ in added if p.endswith(".py")}:
+                try:
+                    src = (repo / path).read_text(encoding="utf-8",
+                                                  errors="strict")
+                except (OSError, UnicodeDecodeError):
+                    continue
+                flags.extend(scan_stubs(path, src))
     for path in untracked:
         try:
             content = (repo / path).read_text(encoding="utf-8", errors="strict")
         except (OSError, UnicodeDecodeError):
             continue
         flags.extend(scan_text(path, 1, content.splitlines(), active))
+        if want_stubs:
+            flags.extend(scan_stubs(path, content))
     return {
         "version": FACTS_VERSION,
         "repo": str(repo),
