@@ -162,7 +162,7 @@ class TestWriteAuthority(PairTestCase):
         self.peer.tool_pair_state()
         main(["--state", str(self.root), "assign", "reviewer-agent"])
 
-        self.assertEqual(self.store.read()["writer_reason"], "назначено человеком")
+        self.assertEqual(self.store.read()["writer_reason"], "assigned by human")
 
     def test_why_command_reports_the_reason(self) -> None:
         self.writer.tool_pair_state()
@@ -2276,7 +2276,7 @@ class TestMCPStdio(PairTestCase):
             # обещанной экономии и навык pair-work врёт.
             self.assertLess(payload["tokens"], DIGEST_TOKEN_BUDGET_FOR_TEST,
                             "дайджест дороже своего потолка")
-            self.assertIn("РАУНД", payload["digest"])
+            self.assertIn("ROUND", payload["digest"])
         finally:
             process.stdin.close()
             process.wait(timeout=10)
@@ -3989,7 +3989,7 @@ class TestPaneIdentityIsNotLiveness(PairTestCase):
         finally:
             composer.pane_identity = orig
         self.assertTrue(foreign, "панель чужого проекта печатать нельзя")
-        self.assertIn("другому проекту", why)
+        self.assertIn("another project", why)
 
     def test_our_own_pane_is_allowed(self) -> None:
         import composer
@@ -4015,7 +4015,7 @@ class TestPaneIdentityIsNotLiveness(PairTestCase):
         finally:
             composer.pane_identity = orig
         self.assertTrue(foreign)
-        self.assertIn("не доказана", why)
+        self.assertIn("unproven", why)
 
     def test_a_dead_pane_is_refused(self) -> None:
         """Мутация показала, что этот случай не покрыт: зелёное ничего не значило."""
@@ -4029,7 +4029,7 @@ class TestPaneIdentityIsNotLiveness(PairTestCase):
         finally:
             composer.pane_identity = orig
         self.assertTrue(foreign, "в мёртвую панель не печатаем")
-        self.assertIn("мертва", why)
+        self.assertIn("dead", why)
 
     def test_a_missing_pane_is_refused(self) -> None:
         """tmux на несуществующую панель отвечает кодом 0 и ПУСТЫМ выводом.
@@ -4047,7 +4047,7 @@ class TestPaneIdentityIsNotLiveness(PairTestCase):
         finally:
             composer.pane_identity = orig
         self.assertTrue(foreign, "фантомная панель не проходит")
-        self.assertIn("отсутствует", why)
+        self.assertIn("missing", why)
 
     def test_a_nonexistent_pane_is_not_reported_as_existing(self) -> None:
         """Живой tmux, а не мок: именно мок эту ошибку и не поймал бы.
@@ -4121,7 +4121,7 @@ class TestPaneIdentityIsNotLiveness(PairTestCase):
         finally:
             composer.pane_identity = orig
         self.assertTrue(foreign)
-        self.assertIn("другому проекту", why)
+        self.assertIn("another project", why)
 
     def test_ring_falls_back_to_a_pointer_on_another_projects_pane(self) -> None:
         """Недоказанная панель: typed-печать запрещена, фолбэк —
