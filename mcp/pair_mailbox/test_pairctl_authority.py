@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Тесты команд человека, меняющих раунд: `pairctl assign/roles/mode/autonomy/task`.
+"""Tests for the human commands that change the round: `pairctl assign/roles/mode/autonomy/task`.
 
-Соответствуют `pairctl_authority.py` — по одному тест-файлу на исходник. Общая
-база живёт в `pair_test_base.py`, это приспособление, а не третий тест-файл.
+Match `pairctl_authority.py` — one test file per source. The shared base lives
+in `pair_test_base.py`: an adaptation, not a third test file.
 
-Запуск:  python3 mcp/pair_mailbox/test_pairctl_authority.py
+Run:  python3 mcp/pair_mailbox/test_pairctl_authority.py
 """
 from __future__ import annotations
 
@@ -23,8 +23,7 @@ from pairctl_read import project_row, render_table  # noqa: E402
 from server import Store, main  # noqa: E402
 
 class TestGlobalRoles(PairTestCase):
-    """Расстановка, заданная разом для всех проектов, должна реально действовать,
-    а не просто лежать в файле."""
+    """A policy set once for all projects must actually hold, not just lie in a file."""
 
     def setUp(self) -> None:
         super().setUp()
@@ -42,15 +41,15 @@ class TestGlobalRoles(PairTestCase):
     def test_global_policy_applies_to_a_project_without_one(self) -> None:
         self._roles_file.write_text(
             json.dumps({"writer": "writer-agent", "critic": "reviewer-agent"}), encoding="utf-8")
-        self.writer.tool_pair_state()  # обе роли должны появиться в ростере
+        self.writer.tool_pair_state()  # both roles must appear in the roster
         self.peer.tool_pair_state()
         standing = self.peer.tool_pair_state()["my_standing"]
         self.assertIn("критик", standing)
         self.assertIn("writer-agent", standing)
 
     def test_global_policy_is_ignored_when_its_roles_never_show_up(self) -> None:
-        """Ролизация «opencode пишет» в проекте, где opencode не запускают, не
-        должна оставлять проект без писателя: это тихая остановка работы."""
+        """Pinning "opencode writes" in a project where opencode never runs must not
+        leave the project writerless: a quiet work stop."""
         self._roles_file.write_text(
             json.dumps({"writer": "opencode", "critic": "agy"}), encoding="utf-8")
         self.writer.tool_pair_state()
@@ -76,7 +75,7 @@ class TestGlobalRoles(PairTestCase):
         self._roles_file.write_text(json.dumps({"critic": "reviewer-agent"}), encoding="utf-8")
         self.writer.tool_pair_state()
         self.peer.tool_pair_state()
-        self.assertIn("гонк", self.writer.tool_pair_state()["my_standing"])
+        self.assertIn("не задано, определяется гонкой", self.writer.tool_pair_state()["my_standing"])
 
     def test_status_shows_effective_policy_with_source(self) -> None:
         self._roles_file.write_text(
@@ -93,7 +92,7 @@ class TestGlobalRoles(PairTestCase):
 
 
 class TestAutonomyCommand(PairTestCase):
-    """pairctl autonomy и pairctl ok: две команды человека, которыми он рулит."""
+    """pairctl autonomy and pairctl ok: the two human commands it steers by."""
 
     def ctl(self, *argv: str) -> int:
         return main(["--state", str(self.root), *argv])
@@ -105,7 +104,7 @@ class TestAutonomyCommand(PairTestCase):
         self.assertIn("autonomy", kinds)
 
     def test_unknown_autonomy_is_refused(self) -> None:
-        # argparse печатает usage и выходит с 2 — так же, как у `pairctl mode`.
+        # argparse prints usage and exits 2 — same as `pairctl mode`.
         with self.assertRaises(SystemExit) as caught:
             self.ctl("autonomy", "ludicrous")
         self.assertEqual(caught.exception.code, 2)
@@ -116,7 +115,7 @@ class TestAutonomyCommand(PairTestCase):
         entries = self.store.read()["human_ok"]
         self.assertEqual(len(entries), 1)
         self.assertEqual(self.ctl("ok"), 0)
-        self.assertEqual(len(self.store.read()["human_ok"]), 1, "повторное «да» не плодит записи")
+        self.assertEqual(len(self.store.read()["human_ok"]), 1, "a repeated \u201cyes\u201d breeds no records")
 
     def test_ok_is_scoped_to_the_round(self) -> None:
         self.writer.tool_pair_claim(reason="writer")
@@ -154,9 +153,9 @@ class TestControlSurface(PairTestCase):
         self.assertEqual(self.store.read()["writer"], "reviewer-agent")
 
     def test_bare_roles_is_a_read_not_a_clear(self) -> None:
-        # Голый вызов раньше снимал policy: без флагов wanted пуст и ветка
-        # clear срабатывала с записью в транскрипт. Теперь это чтение.
-        # Writer-pin: --critic принят и проигнорирован, в policy только writer.
+        # A bare call used to drop policy: with no flags wanted is empty and the clear
+        # branch fired with a transcript write. Now it is a read.
+        # Writer-pin: --critic accepted and ignored, policy holds only the writer.
         self._ctl("roles", "--writer", "writer-agent", "--critic", "reviewer-agent")
         before = len(self.store.read_transcript(1000))
         buffer = io.StringIO()
@@ -166,8 +165,8 @@ class TestControlSurface(PairTestCase):
         self.assertEqual(len(self.store.read_transcript(1000)), before)
 
     def test_writer_pin_single_name_and_critic_ignored(self) -> None:
-        # finish.sh --roles одним именем: только писатель, без критика.
-        # Старые вызовы с --critic не падают, критик молча отбрасывается.
+        # finish.sh --roles with one name: only the writer, no critic.
+        # Old --critic calls never fall, the critic drops quietly.
         self._ctl("roles", "--writer", "writer-agent")
         self.assertEqual(self.store.read()["policy"], {"writer": "writer-agent"})
         buffer = io.StringIO()
@@ -178,8 +177,8 @@ class TestControlSurface(PairTestCase):
         self.assertEqual(self.store.read()["policy"], {"writer": "writer-agent"})
 
     def test_critic_alone_does_not_clear_the_policy(self) -> None:
-        # --critic без --writer — чтение, а не снос: иначе «установка» критика
-        # молча снимала бы policy через ветку not wanted.
+        # --critic without --writer is a read, not a wipe: otherwise "setting" the critic
+        # would quietly drop policy through the not wanted branch.
         self._ctl("roles", "--writer", "writer-agent")
         before = len(self.store.read_transcript(1000))
         buffer = io.StringIO()
@@ -199,9 +198,9 @@ class TestControlSurface(PairTestCase):
         self.assertEqual(self.store.read()["task"], "")
 
     def test_reset_archives_the_transcript_and_warns_about_fix(self) -> None:
-        """reset стирал append-only транскрипт (§11) и молча возвращал fix.
-        Теперь архив transcript-<дата>.jsonl, новый журнал начинается с reset,
-        а вывод предупреждает о выключенном audit-гарде."""
+        """reset used to wipe the append-only transcript (\u00a711) and quietly return fix.
+        Now the archive is transcript-<date>.jsonl, the new journal starts with reset,
+        and the output warns about the disabled audit guard."""
         self._ctl("task", "something to lose")
         before = len(self.store.read_transcript(1000))
         self.assertGreater(before, 0)
@@ -214,41 +213,41 @@ class TestControlSurface(PairTestCase):
         self.assertEqual(self.store.read().get("mode"), "fix")
 
     def test_task_wakes_the_writer(self) -> None:
-        """#16: задача от человека обязана будить держателя записи.
+        """#16: a human task must wake the record holder.
 
-        До правки `pairctl task` молча менял состояние: ни письма, ни заметки,
-        ни wake-файла — писатель узнавал о новой работе только следующим
-        случайным чтением. Проверяются обе стороны: добавление будит, закрытие
-        будит, а без держателя записи будить некого и wake-файла быть не должно.
+        Before the fix `pairctl task` quietly changed state: no letter, no note,
+        no wake file — the writer learned of new work only on the next random
+        read. Both sides are checked: adding wakes, closing wakes, and with no
+        record holder there is nobody to wake and no wake file to expect.
         """
         self._ctl("assign", "writer-agent")
 
         self._ctl("task", "wake me up")
         wake = self.root / "wake" / "writer-agent.json"
-        self.assertTrue(wake.exists(), "новая задача обязана будить писателя")
+        self.assertTrue(wake.exists(), "a new task must wake the writer")
         payload = json.loads(wake.read_text(encoding="utf-8"))
         self.assertIn("task", payload["reasons"])
 
         self._ctl("task", "--done", "1")
         payload = json.loads(wake.read_text(encoding="utf-8"))
         self.assertIn("task", payload["reasons"],
-                      "закрытие задачи тоже меняет работу писателя")
+                      "closing a task also changes the writer work")
 
     def test_task_drop_wakes_the_writer(self) -> None:
-        """--drop идёт тем же кодом, что --done: писатель должен проснуться."""
+        """--drop rides the same code as --done: the writer must wake."""
         self._ctl("assign", "writer-agent")
         self._ctl("task", "drop me with reason")
         self._ctl("task", "--drop", "1", "--reason", "not needed")
         wake = self.root / "wake" / "writer-agent.json"
-        self.assertTrue(wake.exists(), "дроп задачи обязан будить писателя")
+        self.assertTrue(wake.exists(), "a task drop must wake the writer")
         payload = json.loads(wake.read_text(encoding="utf-8"))
         self.assertIn("task", payload["reasons"])
 
     def test_task_wake_failure_does_not_fail_the_command(self) -> None:
-        """Находка pi: упавший record_wake не должен ронять cmd_task.
+        """pi finding: a fallen record_wake must not drop cmd_task.
 
-        Задача уже записана через mutate выше по коду; wake — best-effort,
-        как в server.py (record_wake + wake_pending под try/except).
+        The task is already recorded via mutate higher in the code; the wake is
+        best-effort, as in server.py (record_wake + wake_pending under try/except).
         """
         import unittest.mock
         self._ctl("assign", "writer-agent")
@@ -259,13 +258,13 @@ class TestControlSurface(PairTestCase):
         self.assertEqual("open", tasks[0]["status"])
 
     def test_task_without_writer_wakes_nobody(self) -> None:
-        """Будеть некого — не будим никого и не падаем."""
+        """Nobody to wake — wake nobody and never fall."""
         self._ctl("release")
         self._ctl("task", "work with no holder")
         wake_dir = self.root / "wake"
         leftovers = list(wake_dir.glob("*.json")) if wake_dir.is_dir() else []
         self.assertEqual([], leftovers,
-                         "без держателя записи wake-файлов быть не должно")
+                         "with no record holder there must be no wake files")
 
 
 
@@ -284,7 +283,7 @@ class TestStateFlagPlacement(PairTestCase):
         self.assertEqual(Store(self.root).read()["task"], "resolve the retry storm")
 
 class TestKeysCommand(PairTestCase):
-    """`pairctl keys gen` даёт роли стабильного подписанта вместо pid/pane."""
+    """`pairctl keys gen` gives the role a stable signer instead of pid/pane."""
 
     def _ctl(self, *args: str) -> int:
         return main(["--state", str(self.root), *args])
@@ -339,8 +338,8 @@ class TestRoundMode(PairTestCase):
             self.assertIn("not edit", state["mode_meaning"].lower().replace("do not", "not"))
 
     def test_audit_text_allows_backlog_and_bans_code(self) -> None:
-        """Карточка audit-mode-defines-itself-contradictorily: 'не меняй код,
-        backlog можно и нужно' — в обоих местах (server.py + pair-guard.ts)."""
+        """The audit-mode-defines-itself-contradictorily card: \u2018never touch code,
+        backlog may and must\u2019 — in both places (server.py + pair-guard.ts)."""
         self._ctl("mode", "audit")
         meaning = self.writer.tool_pair_state()["mode_meaning"]
         self.assertIn("docs/backlog", meaning)
@@ -351,7 +350,7 @@ class TestRoundMode(PairTestCase):
         audit_block = guard[guard.index("if (audit)"):guard.index("// The verifier")]
         self.assertIn("No code gets changed", audit_block)
         self.assertIn("allowed result, not a code change", audit_block)
-        # Вне audit-блока фраза легитимна (строка критика: не-писатель файлы не правит).
+        # Outside the audit block the phrase is legitimate (the critic line: a non-writer never edits files).
         self.assertNotIn("Do not edit project files", audit_block)
 
     def test_audit_refuses_a_patch_and_records_the_refusal(self) -> None:
@@ -430,10 +429,10 @@ class TestRoundMode(PairTestCase):
         # as one that refuses too little. In an audit round the notes ARE the deliverable.
         self._ctl("mode", "audit")
 
-        note = self.writer.tool_pair_note(kind="finding-F-01", text="store.py:1 — гонка")
+        note = self.writer.tool_pair_note(kind="finding-F-01", text="store.py:1 — the race")
         self.assertTrue(Path(note["path"]).exists())
 
-        self.writer.tool_pair_send(to="reviewer-agent", text="находка F-01")
+        self.writer.tool_pair_send(to="reviewer-agent", text="F-01 finding")
         self.assertEqual(len(self.peer.tool_pair_read()["messages"]), 1)
 
     def test_claim_note_does_not_tell_a_writer_to_edit_in_an_audit_round(self) -> None:
