@@ -134,11 +134,16 @@ def main(argv):
         if kept not in full:
             return _refuse(f"keep-string lost: {kept!r}")
     parent = os.path.dirname(os.path.abspath(path))
+    try:
+        mode = os.stat(path).st_mode
+    except OSError as exc:
+        return _refuse(f"cannot stat target: {exc}")
     tmp = None
     try:
         fd, tmp = tempfile.mkstemp(dir=parent, prefix=".i18n-")
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             handle.write(full)
+        os.chmod(tmp, mode)
         os.replace(tmp, path)
     except OSError as exc:
         if tmp is not None:

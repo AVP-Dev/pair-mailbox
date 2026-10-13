@@ -1,38 +1,38 @@
 #!/usr/bin/env python3
-"""Сверхвизор пары: держит работу, когда на неё никто не смотрит.
+"""Pair supervisor: keeps the work moving when nobody watches it.
 
-Зачем он. Агенты пассивны по устройству: отработав шаг, они возвращаются в
-состояние ожидания ввода. Пока оба не пишут друг другу — пара стоит, и разбудить
-её может только человек. Именно это стоило нам ночи: поломался канал доставки,
-оба агента остались свободны, а единственным работающим путём остался терминал
-оператора.
+Why it exists. Agents are passive by design: after a step they return to
+waiting for input. While neither writes to the other, the pair stands still,
+and only a human can wake it. That is what cost us a night: the delivery
+channel broke, both agents stayed idle, and the only working path left was
+the operator terminal.
 
-Поэтому у пары обязан быть кто-то, кто смотрит на неё извне. Этот скрипт.
-Он умеет ровно семь вещей и не умеет ни одной восьмой:
+So the pair needs someone watching it from the outside. This script.
+It does exactly seven things, and not an eighth:
 
-  1. доставить отложенное сообщение, когда композер соседа освободился
-     (переживающая доставка: сообщение живёт в outbox, пока не долетело);
-  2. подтолкнуть молчающего агента — молчание дольше порога это дефект, а не норма;
-  3. подтвердить зависший запрос разрешения, но только из белого списка;
-  4. перезапустить агента, процесс которого умер, а окно ещё живо;
-  5. сказать про зависший sealed-патч обеим сторонам и не дать раунду закрыться;
-  6. собрать дайджест для человека на чекпоинте semi;
-  7. написать отчёт, когда раунд закрылся.
+  1. deliver a queued message once the peer composer frees up
+     (surviving delivery: the message lives in outbox until it lands);
+  2. nudge a silent agent — silence past the threshold is a defect, not normal;
+  3. confirm a stuck permission request, but only from the allowlist;
+  4. restart an agent whose process died while its pane is still alive;
+  5. report a stuck sealed patch to both sides and hold the round open;
+  6. assemble a digest for the human at the semi checkpoint;
+  7. write a report when the round closes.
 
-И принципиально НЕ умеет: двигать фазу, выдавать или забирать право записи,
-коммитить, применять чужие патчи, трогать файлы проекта. Право записи перемещает
-только человек, и если сверхвизор сможет его выдать, то он перестаёт быть
-ограничением (PROTOCOL.md §2). Поэтому спор о том, кто пишет, он разрешает
-только сообщением: «ты молчишь вот столько, вот твоя обязанность по последнему
-событию».
+And on principle it does NOT: move phases, grant or take write authority,
+commit, apply someone else’s patches, touch project files. Only a human moves
+write authority, and if the supervisor could grant it, it would stop being a
+constraint (PROTOCOL.md §2). So it settles disputes about who writes
+with a message only: "you have been silent this long, here is your duty
+from the last event".
 
-Запуск:
+Run:
 
-    bin/pairpilot                 # следить
-    bin/pairpilot --once          # один проход, для проверки вручную
-    bin/pairpilot --silence 300   # порог молчания, секунд
-    bin/pairpilot --launch agy=agy # как поднимать роль, если её процесс умер
-    bin/pairpilot --allow 'r"^git status' # что ещё можно подтверждать само
+    bin/pairpilot                 # watch
+    bin/pairpilot --once          # single pass, for manual checks
+    bin/pairpilot --silence 300   # silence threshold, seconds
+    bin/pairpilot --launch agy=agy # how to raise a role whose process died
+    bin/pairpilot --allow 'r"^git status' # what else may be self-confirmed
 """
 from __future__ import annotations
 
@@ -65,12 +65,12 @@ try:
         pane_role_pid,
         resolve_permission_prompt,
     )
-    from panes import pane_belongs_to_project  # noqa: E402 - принадлежность панели проекту
-except Exception as error:  # noqa: BLE001 - причина должна быть видна сразу
-    print(f"pairpilot: не удалось подключить composer: {error}", file=sys.stderr)
+    from panes import pane_belongs_to_project  # noqa: E402 - the pane's project membership
+except Exception as error:  # noqa: BLE001 - the reason must stay visible
+    print(f"pairpilot: could not attach composer: {error}", file=sys.stderr)
     raise SystemExit(1)
 
-from server import (  # noqa: E402  - после sys.path
+from server import (  # noqa: E402  - after sys.path
     Store,
     autonomy_of,
     done_blockers,
@@ -84,40 +84,40 @@ from server import (  # noqa: E402  - после sys.path
 
 DEFAULT_INTERVAL = 15.0
 DEFAULT_SILENCE = 600.0
-# Сколько ждать ответа на запрос, прежде чем дёрнуть получателя, и сколько —
-# прежде чем сказать об этом автору запроса. 180с: затык «оба молчат +
-# обязательство висит» будится пилотом за <5 мин без человека (раунд 33, P1).
+# How long to wait for a request answer before nudging its recipient, and
+# how long before telling the request author. 180s: the “both silent +
+# obligation hanging” stall wakes via pilot in <5 min with no human (round 33, P1).
 DEFAULT_REPLY_GRACE = 180.0
-# Срок жизни отложенного напоминания. Переживающая доставка полезна, пока
-# вопрос жив: пока композер занят, минута-другая ожидания уместна. Но вопрос,
-# провисевший дольше, уже не помогает — он только отвлекает. Наблюдалось
-# вживую: напоминание ждало композер 22 минуты и было доставлено как свежее.
+# Lifetime of a queued nudge. Surviving delivery helps while the question
+# is alive: with the composer busy, a minute or two of waiting is fine. But a
+# question that hung longer stops helping — it only distracts. Observed
+# live: a nudge waited 22 minutes for the composer and landed as if fresh.
 #
-# Должно быть ЗАВЕДОМО больше WAKE_ESCALATE_REPEAT_SECONDS, и это условие
-# работоспособности, а не вкус: при 600 против 900 эскалация протухала в очереди
-# раньше, чем повтор в неё попадал. Соотношение проверяется тестом.
+# Must be KNOWINGLY above WAKE_ESCALATE_REPEAT_SECONDS, and this is a
+# health condition, not taste: at 600 vs 900 the escalation went stale in queue
+# before the repeat reached it. A test pins the ratio.
 DEFAULT_OUTBOX_TTL = 1800.0
-# Сколько молчит роль, прежде чем пробуждение печатью станет эскалацией.
+# How long a role stays silent before a printed wake-up becomes escalation.
 #
-# Порядок намеренно перевёрнут относительно прежнего: раньше печать в композер была
-# ПЕРВЫМ шагом, и молчание означало «доставлю позже» — то есть почти всегда
-# печать. Теперь печать это исключение, а не правило: сначала пишем факт в файл,
-# затем опрашиваем, и если роль проснулась сама, не печатаем ничего.
+# The order is deliberately flipped from before: printing into the composer was
+# the FIRST step, and silence meant “deliver later” — which almost always meant
+# printing. Now printing is the exception, not the rule: first write the fact to a file,
+# then poll, and if the role woke on its own, print nothing.
 DEFAULT_WAKE_GRACE = 240.0
-# Как часто можно повторить эскалацию, если роль так и не проснулась. Не «один раз
-# навсегда» — причина в may_escalate_again. Пауза заведомо больше wake_grace.
+# How often an escalation may repeat while the role still sleeps. Not “once
+# forever” — see may_escalate_again for why. The pause is knowingly above wake_grace.
 WAKE_ESCALATE_REPEAT_SECONDS = 900.0
 DEFAULT_REPLY_HARD = 2400.0
-# Как часто повторять напоминание о зависшем запросе, пока обязательство висит.
-# Не «один раз навсегда»: штамп reply без TTL будил ровно один раз за жизнь
-# проекта (раунд 43), и зависший запрос умирал в тишине.
+# How often to re-nudge a stuck request while its obligation hangs.
+# Not "once forever": a reply stamp with no TTL woke exactly once per
+# project lifetime (round 43), and the stuck request died in silence.
 DEFAULT_REPLY_REPEAT = 7200.0
-# Сколько провисает sealed-патч, прежде чем это станет дефектом, а не делом,
-# которое писатель возьмёт через минуту.
+# How long a sealed patch hangs before it becomes a defect, not business
+# the writer will pick up in a minute.
 DEFAULT_PATCH_GRACE = 1800.0
-# Потолок перезапусков на роль в скользящем окне. Нужен потому, что ключ по pid
-# не спасает: команда может быть известна и неверна, pid будет каждый раз новый,
-# и без потолка это цикл падения, а не восстановление.
+# Restart ceiling per role in a sliding window. Needed because the pid key
+# does not save us: the command may be known and wrong, the pid will be new
+# every time, and without a ceiling that is a crash loop, not recovery.
 DEFAULT_RESTART_LIMIT = 3
 DEFAULT_RESTART_WINDOW = 600.0
 DEFAULT_STALL_TIMEOUT = 300.0
@@ -126,32 +126,32 @@ AUTONOMIES = ("observe", "semi", "auto")
 
 
 def autonomy(state: dict) -> str:
-    """Уровень самостоятельности из состояния, без выдуманных значений.
+    """Autonomy level from state, with no invented values.
 
-    Неизвестное значение читается как observe — тот уровень, который делает
-    меньше всего. Состояние, записанное более новой сборкой, не должно выдать
-    этой сборке больше прав, чем человек просил.
+    An unknown value reads as observe — the level that does the least.
+    State written by a newer build must not grant this build more rights
+    than the human asked for.
     """
     return autonomy_of(state)
 
 
 def stable_tag(text: str) -> str:
-    """Короткий стабильный отпечаток строки.
+    """Short stable fingerprint of a string.
 
-    Встроенный hash() для строк рандомизирован на каждый запуск процесса, а эти
-    отметки должны переживать перезапуск: иначе после рестарта сверхвизор
-    «забывает», что уже дёргал соседа, и пишет то же самое снова — всю ночь.
+    The builtin hash() for strings is randomized per process run, but these
+    marks must survive restarts: otherwise after a restart the supervisor
+    "forgets" it already nudged the peer and writes the same thing again — all night.
     """
     return hashlib.sha256(text.encode("utf-8", "replace")).hexdigest()[:8]
 
 
 def stamp_name(key: str) -> str:
-    """Имя файла-отметки для ключа.
+    """Mark-file name for a key.
 
-    Ключи строятся из путей (например, пути патча), а путь в имени файла
-    превращается в каталоги, которых нет: `remember()` падал с FileNotFoundError
-    на первом же патче. Поэтому ключ сначала приводится к безопасному виду, а
-    для уникальности к нему добавляется стабильный отпечаток.
+    Keys are built from paths (a patch path, say), and a path inside a file
+    name turns into directories that do not exist: `remember()` died with
+    FileNotFoundError on the very first patch. So the key is first made safe,
+    and a stable fingerprint is appended for uniqueness.
     """
     safe = re.sub(r"[^A-Za-z0-9._-]+", "_", key).strip("_")[:80]
     return f"{safe}.{stable_tag(key)}"
@@ -200,8 +200,8 @@ class Pilot:
         self.outbox_ttl = max(1.0, float(outbox_ttl))
         self.stall_timeout = max(1.0, float(stall_timeout))
         self._screen_hashes: dict[str, tuple[str, float]] = {}
-        # Store умеет root — это сам каталог состояния: server.py делает ровно
-        # то же. Со state_dir.parent мы бы читали несуществующий state.json.
+        # Store knows root — the state directory itself: server.py does exactly
+        # the same. With state_dir.parent we would read a missing state.json.
         self.store = Store(state_dir)
         self.outbox = state_dir / "pilot"
         self.outbox.mkdir(parents=True, exist_ok=True)
@@ -215,32 +215,31 @@ class Pilot:
             self.tmux: str | None = _tmux()
         except Exception:
             self.tmux = None
-        # Панель, в которой живёт сам сверхвизор. Это, обычно, панель оператора,
-        # а иногда и панель агента, который его запустил. Вбивать туда что-либо
-        # нельзя: там ждёт ввод человека, и мы бы съели его текст.
-        # Демон обязан стартовать БЕЗ TMUX_PANE в окружении: наследованный адрес
-        # панели агента превращает его роль в «свою» и молча выкидывает её из
-        # обслуживания (измерено 2026-10-07: пилот с TMUX_PANE=%3332 вечно
-        # пропускал omp через own_pane-skip). Запуск из панели агента без
-        # очистки окружения — это тихая остановка надзора за этой ролью.
+        # The pane the supervisor itself lives in. Usually the operator pane,
+        # sometimes the pane of the agent that launched it. Typing anything there
+        # is forbidden: human input waits there, and we would eat its text.
+        # The daemon must start WITHOUT TMUX_PANE in the environment: an inherited
+        # agent-pane address turns its role into "ours" and silently drops it from
+        # service (measured 2026-10-07: a pilot with TMUX_PANE=%3332 kept
+        # skipping omp via own_pane-skip). Launching from an agent pane without
+        # scrubbing the environment quietly stops supervision of that role.
         self.own_pane = os.environ.get("PAIR_PILOT_PANE") or None
         self._explicit_launch = dict(launch or {})
 
     # ------------------------------------------------------------- restart map
 
     def _launch_commands(self, given: dict[str, str] | None = None) -> dict[str, str]:
-        """Как запустить роль, если её процесс умер.
+        """How to launch a role when its process died.
+        Source order from "explicit" to "guessed": what the human wrote
+        themselves, then the profile in cli-profiles.json, then the environment.
+        Nothing is guessed by name: a command that does not exist is worse than
+        no command, because the pane comes alive and dies at once.
 
-        Порядок источников от «явного» к «угаданному»: то, что человек написал
-        сам, потом профиль в cli-profiles.json, потом переменная окружения.
-        Ничего не угадываем по имени: команда, которой не существует, хуже
-        отсутствия команды, потому что панель оживает и сразу падает.
-
-        Карта пересобирается на каждом обращении (см. `launch_command`), а не
-        морозится в `__init__`: иначе профиль, добавленный позже (как `pi`
-        2026-10-06), и правка `restart.json` вступают в силу только после
-        перезапуска пилота. Измерено: пилот от 05.10 не знал команду `pi` и
-        писал `pilot_restart_impossible`, хотя профиль уже был на диске.
+        The map is rebuilt on every access (see `launch_command`), not frozen
+        in `__init__`: otherwise a later-added profile (like `pi` on
+        2026-10-06) and a `restart.json` edit take effect only after a pilot
+        restart. Measured: a 10-05 pilot did not know the `pi` command and wrote
+        `pilot_restart_impossible` while the profile was already on disk.
         """
         explicit = dict(getattr(self, "_explicit_launch", None)
                         if given is None else (given or {}))
@@ -252,7 +251,7 @@ class Pilot:
                 if isinstance(data, dict):
                     out.update({str(k): str(v) for k, v in data.items()})
         except (OSError, json.JSONDecodeError):
-            log("restart.json не читается, команды запуска беру из профилей")
+            log("restart.json is unreadable, taking launch commands from profiles")
         profiles = ROOT / "cli-profiles.json"
         try:
             data = json.loads(profiles.read_text(encoding="utf-8"))
@@ -272,12 +271,12 @@ class Pilot:
         return self._launch_commands().get(role, "").strip()
 
     def supports_compact(self, role: str) -> bool:
-        """Понимает ли CLI роли команду /compact (флаг в cli-profiles.json).
+        """Whether the role CLI understands /compact (flag in cli-profiles.json).
 
-        pi, omp, opencode. Читается на каждом обращении, как
-        `_launch_commands`: правка профиля вступает в силу без перезапуска
-        пилота. Неизвестная роль и нечитаемый файл — False (default-deny:
-        чужой ввод лучше не трогать, чем слать туда мусор).
+        pi, omp, opencode. Read on every access, like `_launch_commands`:
+        a profile edit takes effect without a pilot restart. An unknown role
+        and an unreadable file mean False (default-deny: better to leave
+        someone else's input alone than to send garbage there).
         """
         profiles = ROOT / "cli-profiles.json"
         try:
@@ -294,7 +293,7 @@ class Pilot:
         return self.outbox / f".restarts-{role}"
 
     def restart_history(self, role: str) -> list[float]:
-        """Когда именно роль перезапускали. Один timestamp на строку."""
+        """When exactly the role was restarted. One timestamp per line."""
         try:
             raw = self.restarts_file(role).read_text(encoding="utf-8").split()
         except OSError:
