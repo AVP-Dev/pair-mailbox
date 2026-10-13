@@ -713,18 +713,18 @@ def _transcript_entry(raw: str) -> dict | None:
 
 
 def _transcript_tail(path: Path, limit: int) -> list[dict]:
-    """Последние `limit` записей, читаемые с конца файла.
+    """The last `limit` records, read from the file end.
 
-    Растёт от конца блоками и возвращает ответ, когда набрано достаточно строк.
-    Смещение ищет начало строки: иначе первая попавшаяся строка была бы огрызком
-    чужой записи, и в ответе появилась бы запись, которой никогда не было.
+    Grows from the block end, answering once enough lines gather. The offset seeks
+    the line start: or the first caught line would be a stub of another record,
+    and the answer would grow a record that never was.
     """
     with path.open("rb") as handle:
         handle.seek(0, os.SEEK_END)
         position = handle.tell()
-        # `pending` — то, что прочитано, но ещё не нашло своего конца строки.
-        # В файле, который мы читаем с конца, неполной может быть только ГОЛОВА
-        # накопленного, поэтому она одна и держится отдельно.
+        # `pending` is what is read but never met its line end.
+        # In a file read from the end, only the HEAD of the stash can run partial —
+        # hence it alone is held apart.
         pending = b""
         lines: list[bytes] = []
         while position > 0 and len(lines) <= limit:
@@ -734,16 +734,16 @@ def _transcript_tail(path: Path, limit: int) -> list[dict]:
             pending = handle.read(block) + pending
             parts = pending.split(b"\n")
             pending = parts[0]
-            # Пустые куски отбрасываются сразу: перевод строки в конце файла даёт
-            # лишний пустой элемент, и он иначе занимает место в хвосте — минус
-            # одна настоящая запись в ответе, то есть «последние 20» приходят
-            # девятнадцатью.
+            # Empty chunks drop at once: a trailing newline yields one extra empty item,
+            # taking tail room — minus one real record in the answer, so the "last 20" arrive
+            # nineteen.
+            # nineteen.
             lines = [line for line in parts[1:] if line.strip()] + lines
         if pending.strip():
             lines.insert(0, pending)
-        # `lines` уже в порядке файла: каждый следующий блок читается раньше
-        # предыдущего, поэтому кладётся в начало. Ответ — последние `limit`
-        # записей в хронологическом порядке, как при чтении подряд.
+        # `lines` already run in file order: every next block reads earlier than the
+        # previous, so it lands at the start. The answer is the last `limit` records in
+        # chronological order, as on a straight read.
         out = []
         for raw in lines[-limit:]:
             entry = _transcript_entry(raw.decode("utf-8", "replace"))
@@ -806,18 +806,16 @@ class Store:
 
     @property
     def project_root(self) -> Path:
-        """Корень проекта, а НЕ каталог состояния.
+        """The project root, NOT the state dir.
 
-        Состояние живёт в `<проект>/.pair`, поэтому `self.root` — это `.pair`,
-        и сравнивать его с cwd панели бессмысленно: панель своего проекта
-        находится уровнем выше. Именно на этом ломался `pane_is_foreign`:
-        передавали `.pair` и получали отказ «панель принадлежит другому
-        проекту» для панели своего же соседа, то есть защита от межпроектной
-        инъекции блокировала и законную доставку внутри проекта.
+        State lives in `<project>/.pair`, so `self.root` is `.pair`, and matching
+        it against a pane cwd is meaningless: a pane of our own project stands
+        one level up. Exactly here `pane_is_foreign` broke: `.pair` passed in, and
+        "the pane belongs to another project" refused for our own neighbour pane —
+        the cross-project injection guard blocked lawful in-project delivery too.
 
-        Отдельное свойство, а не молчаливое `parent` на месте использования:
-        подменять корень в одном вызывающем месте и забыть в другом — это
-        ровно тот способ, которым ошибка и появилась.
+        A separate property, not a silent `parent` at the use site: swapping the
+        root in one caller and forgetting in another is exactly how the bug arrived.
         """
         return self.root.parent if self.root.name == ".pair" else self.root
 
@@ -825,10 +823,10 @@ class Store:
         return {
             "task": "",
             "mode": "fix",
-            # Дефолт — auto, и это ровно то, что задал человек: он даёт задачу,
-            # пара отрабатывает её сама и приходит с одним выводом. Раньше здесь был
-            # semi, и свежий проект начинал с вопроса о `ok` на фазе verify, которого
-            # никто не ждал.
+            # Default is auto — exactly what the human set: it gives a task, the pair works
+            # it alone and returns with one output. `semi` used to stand here, and a fresh
+            # project started asking for `ok` on verify phase, which nobody awaited.
+            # awaited.
             "autonomy": "auto",
             "writer": None,
             "phase": "scoping",
@@ -857,11 +855,11 @@ class Store:
             return self.default_state()
         state = self.default_state()
         state.update(data)
-        # Старые состояния держали одну строку task. Переносим её в список, чтобы
-        # текст задачи не исчез: дальше он дописывается, а не перезаписывается.
-        # Мигрируем только если ключа tasks нет вовсе — то есть состояние
-        # правда старше списка. Явный пустой список значит «уже перешли на
-        # новый язык», и поднимать из него задачу снова нельзя.
+        # Old states held one task line. Carry it into the list, so the task text never
+        # vanishes: past that it appends, never overwrites.
+        # Migrate only when no tasks key exists at all — the state truly predates the list.
+        # An explicit empty list means "already moved to the new language": raising the
+        # task from it again is banned.
         legacy = str(state.get("task") or "").strip()
         if legacy and "tasks" not in data:
             state["tasks"] = [{
@@ -906,15 +904,15 @@ class Store:
             return False
 
     def role_lock_path(self, role: str) -> Path:
-        """Файл синглтона на роль: живой процесс держит LOCK_EX, второй падает."""
+        """The per-role singleton file: a live process holds LOCK_EX, the second falls."""
         return self.root / f".server-{role}.lock"
 
     def acquire_role_lock(self, role: str) -> Any:
-        """Занять слот роли: второй живой процесс той же роли — отказ, а не
-        молчаливая коллизия pid. Неблокирующий LOCK_EX|LOCK_NB: блокироваться
-        здесь — значит встать намертво, а отказ виден сразу и пишется в журнал.
-        Хэндл живёт пока жив процесс: закрытие = отпускание, мёртвый lock
-        не залипает по построению (ядро отпускает за умершим)."""
+        """Take the role slot: a second live process of the same role means refusal, not
+        a silent pid collision. Non-blocking LOCK_EX|LOCK_NB: blocking here means
+        standing dead, while a refusal shows at once and writes into the journal.
+        The handle lives while the process lives: close means release, a dead lock
+        never sticks by construction (the kernel releases for the dead)."""
         path = self.role_lock_path(role)
         handle = path.open("a+")
         try:
@@ -923,10 +921,10 @@ class Store:
             handle.close()
             if exc.errno in (errno.EACCES, errno.EAGAIN):
                 raise ProtocolError(
-                    f"роль {role!r} уже занята живым сервером; "
-                    "второй процесс на той же роли не запускается.",
-                    "Одна живая роль — один живой процесс: убей дубль и "
-                    "перезапусти. Пересадка — волей человека.",
+                    f"role {role!r} is already held by a live server; "
+                    "a second process on the same role never launches.",
+                    "One live role means one live process: kill the double and "
+                    "restart. A move is the human will.",
                 )
             raise
         return handle
@@ -964,31 +962,31 @@ class Store:
             return False
 
     def _transcript_last_hash(self) -> str:
-        """Хвост цепи под тем же lock, что и append: два конкурентных append
-        иначе прочитают один хвост и цепь форкнется. Вызывать только под lock."""
+        """The chain tail under the same lock as append: two racing appends would read one
+        tail and fork the chain. Call only under lock."""
         tail = _transcript_tail(self.transcript_path, 1) if self.transcript_path.exists() else []
         if not tail:
             return CHAIN_GENESIS
         return _transcript_hash(tail[0])
 
     def _rotate_transcript(self) -> None:
-        """Скользящее окно: активный файл не растёт бесконечно.
+        """Sliding window: the active file never grows without bound.
 
-        Журнал append-only — и это правильно, — но «навсегда» здесь означало «пока
-        хватает диска». Мерить надо было раньше, и замер сделан: `pair_transcript`
-        по умолчанию берёт 40 записей (~2k токенов), то есть агент в свой контекст
-        файл целиком не тащит и никогда не тащил. Поэтому ротация НЕ «снимает 46k
-        токенов», как стояло в плане: эти 46k — размер файла, делённый на 4, и в
-        контекст они не попадали.
+        The append-only journal — rightly so — but "forever" here meant "while disk
+        lasts". Measuring had to come earlier, and the measure came: `pair_transcript`
+        by default takes 40 records (~2k tokens), so the agent never drags the whole
+        file into its context and never did. So rotation does NOT "remove 46k tokens"
+        as the plan stood: those 46k are the file size divided by 4, never reaching
+        context.
 
-        Что ротация действительно чинит, и оба пункта измеримы:
-        - чтение хвоста перестаёт разбирать весь файл (было 69 мс и 2 МБ на файле
-          в 11 830 строк ради 20 строк ответа);
-        - `pairctl log` без `--limit` перестаёт вливать пол-мегабайта в терминал.
+        What rotation truly fixes, both points measured:
+        - tail reading stops parsing the whole file (69 ms and 2 MB on an 11,830-line
+          file for 20 reply lines);
+        - limitless `pairctl log` stops pouring half a megabyte into the terminal.
 
-        Старое не выбрасывается молча: уходит в `transcript-archive/`, откуда его
-        можно достать. Удалять историю молча нельзя — потерянная запись о
-        `role_collision` стоила нам ночи, и человек должен иметь её под рукой.
+        The old never drops silently: it leaves for `transcript-archive/`, where it stays
+        reachable. Deleting history silently is banned — a lost `role_collision` record
+        cost us a night, and the human must hold it at hand.
         """
         try:
             if self.transcript_path.stat().st_size <= TRANSCRIPT_MAX_BYTES:
@@ -996,14 +994,14 @@ class Store:
         except OSError:
             return
         archive = self.root / "transcript-archive"
-        # Цепь продолжается через ротацию: last_hash хвоста читается ДО сдвига,
-        # пока файл ещё на месте. После os.replace читать нечего — был бы генезис.
+        # The chain continues through rotation: the tail last_hash reads BEFORE the shift,
+        # while the file still stands. Past os.replace nothing reads — a genesis.
         last = self._transcript_last_hash()
         try:
             archive.mkdir(parents=True, exist_ok=True)
-            # Сдвиг: самый старый кусок уходит в `.1`, и так далее. Чисел хватает
-            # на 99 сдвигов, а при 99 лучше удалить самый старый, чем упасть с
-            # FileExistsError посреди записи в журнал.
+            # The shift: the oldest chunk leaves for `.1`, and so on. Numbers last 99 shifts,
+            # and at 99 deleting the oldest beats falling with FileExistsError mid journal-write.
+            # FileExistsError mid a journal write.
             for index in range(TRANSCRIPT_ARCHIVES - 1, 0, -1):
                 older = archive / f"{index}.jsonl"
                 if not older.exists():
@@ -1014,24 +1012,24 @@ class Store:
                     older.rename(archive / f"{index + 1}.jsonl")
             os.replace(self.transcript_path, archive / "1.jsonl")
         except OSError:
-            # Ротация обязана быть безвредной: сбой записи важнее, чем её порядок.
-            # Молча упасть здесь нельзя, но и ронять всё остальное из-за архива
-            # тоже незачем, поэтому след остаётся в самом журнале.
+            # Rotation must stay harmless: a write failure outranks its order. Falling silent
+            # here is banned, but dropping everything else over the archive is needless too —
+            # so the trace stays in the journal itself.
             return
         with self.transcript_path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps({
                 "ts": utcnow(), "kind": "transcript_rotated", "role": "system",
                 "archive": "transcript-archive/1.jsonl",
-                "why": f"активный журнал превысил {TRANSCRIPT_MAX_BYTES} байт",
+                "why": f"the active journal breached {TRANSCRIPT_MAX_BYTES} bytes",
                 "prev_hash": last, "last_hash": last,
             }, ensure_ascii=False) + "\n")
 
     def read_transcript(self, limit: int = 0) -> list[dict[str, Any]]:
-        """Записи журнала; `limit` — сколько последних, 0 значит «весь активный».
+        """Journal records; `limit` counts the last ones, 0 means "the whole active".
 
-        Хвост читается с конца файла, а не разбором всего подряд. Разбор целиком
-        ради двадцати строк ответа — это не аккуратность, а отказ по времени на
-        большом журнале, и журнал у нас растёт сам собой.
+        The tail reads from the file end, never parsing all in a row. Parsing whole
+        for twenty reply lines is no diligence but a time failure on a big journal, and
+        our journal grows on its own.
         """
         if not self.transcript_path.exists():
             return []
@@ -1046,12 +1044,11 @@ class Store:
         return _transcript_tail(self.transcript_path, limit)
 
     def transcript_entry_count(self) -> int:
-        """Сколько записей в активном файле, без их разбора.
+        """How many records the active file holds, with no parsing.
 
-        Нужно, чтобы `pairctl log` мог сказать «показаны 50 из 900», а не
-        выглядеть полным журналом. Разбирать строки ради числа нельзя: на файле
-        в сотни мегабайт это тот же отказ по времени, ради которого чтение хвоста
-        и переписано.
+        Needed so `pairctl log` can say "shown 50 of 900" instead of reading as a
+        full journal. Parsing lines for a count is banned: on a hundreds-of-megabytes
+        file the same time failure the tail read was rewritten for.
         """
         try:
             with self.transcript_path.open("rb") as handle:
@@ -1074,11 +1071,11 @@ def atomic_write_json(path: Path, payload: Any) -> None:
 
 
 def _next_entry(lines: list[str]) -> int:
-    """Индекс следующей целой записи в списке строк заметки.
+    """The next whole record index in the note-lines list.
 
-    Записи начинаются с `## `. Возврат len(lines), когда следующей записи нет,
-    означает «резать дальше нечего» — вызывающий обязан это учесть, иначе он
-    унесёт в архив всё.
+    Records start with `## `. Returning len(lines) when no next record exists means
+    "nothing left to cut" — the caller must take it, or it carries everything
+    into the archive.
     """
     for index, line in enumerate(lines):
         if line.startswith("## "):
@@ -1089,22 +1086,21 @@ def _next_entry(lines: list[str]) -> int:
 def is_pid_alive(pid: Any) -> bool:
     """True if pid is an integer of a currently running process.
 
-    Обёртка над `liveness.pid_alive`: проверка одна, а зовут её и протокол, и
-    чтение состояния — две копии разъехались бы при первой же правке.
+    A wrapper over `liveness.pid_alive`: one check, called by both the protocol and
+    state reading — two copies would drift on the very first edit.
     """
     return liveness.pid_alive(pid)
 
 
 def same_pane(left, right) -> bool:
-    """`composer.same_pane` с найденным tmux. Логика — в composer, рядом с
-    `pane_identity`: сравнение панелей это часть разбора панели, а не протокола.
-    Обёртка нужна потому, что зовут её три места протокола, а composer
-    импортируется лениво.
+    """`composer.same_pane` with tmux found. The logic lives in composer, next to
+    `pane_identity`: pane comparison belongs to pane parsing, not the protocol. The
+    wrapper exists because three protocol places call, while composer imports lazily.
 
-    Тождество двух ссылок доказывается БЕЗ tmux: одинаковые строки — это
-    одна и та же панель по определению. Раньше обёртка отвечала False на
-    отсутствие tmux, и проверка «не звоним в собственную панель» молча
-    выключалась на машине без tmux — то есть ровно там, где соседа и нет.
+    Two references prove identical with NO tmux: identical lines are one and the
+    same pane by definition. The wrapper used to answer False on missing tmux, and
+    the "never ring our own pane" check silently died on a tmux-less machine —
+    exactly where no neighbour lives.
     """
     if not left or not right:
         return False
@@ -1161,31 +1157,29 @@ class PairSession:
     # ---------------------------------------------------------------- helpers
 
     def _git_fingerprint(self) -> Any:
-        """Снимок HEAD+dirty для отпечатка состояния.
+        """The HEAD+dirty snapshot for the state fingerprint.
 
-        Гасится в `None`: отсутствие git — повод не различать два состояния по
-        этой части отпечатка, а не повод не ответить агенту вообще.
+        Quenched into `None`: no git means no telling two states apart on this
+        fingerprint part — never a reason to leave the agent unanswered at all.
         """
         try:
             from review import snapshot as git_snapshot
 
             return git_snapshot(self.store.project_root)
-        except Exception:  # noqa: BLE001 - снимок не должен ронять кэш
+        except Exception:  # noqa: BLE001 - the snapshot must never drop the cache
             return None
 
     def _heartbeat(self, state: dict[str, Any]) -> None:
-        """Отметить, что эта роль жива: только `last_seen` (+ `pid`), ничего больше.
+        """Mark this role alive: only `last_seen` (+ `pid`), nothing more.
 
-        `_register` ниже — тяжёлая машинерия (панели, pin, сверка соседей,
-        записи в транскрипт), и зовут его лишь 4 инструмента из 19. Агент,
-        который пишет заметки или двигает evidence, молчал по часам, хотя
-        работал: `last_seen` старел, `_writer_is_abandoned` срабатывал, и
-        сосед забирал авторитет у активного писателя
-        (карточка last-seen-stale, done).
+        writes), called by only 4 tools of 19. An agent writing notes or moving evidence
+        stayed silent for hours while working: `last_seen` aged, `_writer_is_abandoned`
+        fired, and the neighbour took authority from the active writer
+        (the last-seen-stale card, done).
 
-        Heartbeat идёт в начале каждого `invoke`, поэтому признак жизни —
-        это сам вызов, а не выборочный инструмент. Панели здесь нет
-        осознанно: адресация доставки меняется только в `_register`.
+        Heartbeat runs at the start of every `invoke`, so the liveness mark is the call
+        itself, not a picked tool. No pane here on purpose: delivery addressing changes
+        only in `_register`.
         """
         roles = state.setdefault("roles", {})
         entry = roles.setdefault(
@@ -1199,15 +1193,15 @@ class PairSession:
         entry = roles.setdefault(self.role, {"first_seen": utcnow(), "reads": 0, "sends": 0})
         tmux = shutil.which("tmux")
 
-        # Переопределение человека решается первым, потому что оно определяет,
-        # ЧЬЯ это панель, а всё остальное в этой функции смотрит на панель, которая
-        # и так вывелась из окружения процесса. Порядок не косметический: проверка
-        # «панель занята другой ролью» ниже обязана видеть именно ту панель,
-        # которая будет записана, иначе переопределение молча создаст двух
-        # претендентов на один композер.
-        # Проверка закрепления живёт в `pairctl_panes` рядом с командой, которая им
-        # пользуется, и импортируется лениво по той же причине, что и `composer`:
-        # модуль импортирует `server`, и на верхнем уровне был бы цикл.
+        # The human override resolves first, because it decides WHOSE pane this is, while
+        # everything else in this function looks at the pane derived from the process
+        # environment anyway. The order is no cosmetics: the "pane held by another role"
+        # check below must see exactly the pane that records — or the override silently
+        # breeds two contenders for one composer.
+        # contenders for one composer.
+        # The pin check lives in `pairctl_panes` next to the command using it, imported
+        # lazily for the same reason as `composer`: the module imports `server`, and at
+        # top level that would cycle.
         from pairctl_panes import PIN_OK, PIN_UNKNOWN, pin_verdict
         from composer import pane_belongs_to_project as _belongs
         from composer import pane_identity as _ident
@@ -1221,34 +1215,34 @@ class PairSession:
             if verdict == PIN_OK:
                 pane = pin
             elif verdict == PIN_UNKNOWN:
-                # Проверить нечем — не значит «адрес мёртв». Закрепление остаётся в
-                # силе, но печатать в эту панель нельзя, поэтому `pane` остаётся
-                # пустым и адрес не выводится никуда. Событие попадает в транскрипт,
-                # иначе молчаливое «не напечатал» выглядело бы как доставленное.
+                # Nothing to check with never means "dead address". The pin stays in force, but
+                # printing into that pane is banned, so `pane` stays empty with the address shown
+                # nowhere. The event lands in the transcript, or a silent "never printed" would
+                # read as delivered.
                 pin_unverified = True
                 pane = ""
                 self.store.append_transcript("pane_pin_unverified", self.role,
                                              pin=pin, why=pin_why)
             else:
-                # Закрепление с протухшим адресом снимается, но не молча: молча
-                # снятое переопределение неотличимо от того, которого не было
-                # никогда, и человек считал бы, что оно в силе.
+                # A pin with a stale address drops, but never silently: a silently dropped override
+                # reads as one that never was, and the human would believe it holds.
+                # never was, and the human would believe it holds.
                 entry.pop("pane_pin", None)
                 entry.pop("pane_pin_why", None)
                 self.store.append_transcript("pane_pin_dropped", self.role,
                                              pin=pin, why=pin_why)
                 pin = ""
 
-        # Маршрут: pin, затем явный канал, затем env, затем ancestry.
-        # Явный канал (--pane или PAIR_PANE) выигрывает у унаследованного
-        # TMUX_PANE (например, от оторванного сервиса/демона с чужим env).
-        # env — НЕ доказательство личности, а заявленный адрес: OpenCode MCP-дёмон
-        # наследует панель запускающей шелл (измерено 2026-10-07: opencode-дёмон с TMUX_PANE
-        # от панели omp). Поэтому явный канал и env принимаются только если:
-        # (1) панель жива и проектна — доказывает belongs_to_project,
-        # (2) в ней НЕ зарегистрирована другая ЖИВАЯ роль — иначе адрес чужой.
-        # Опровергнутый маршрут не становится адресом (fail-closed): событие
-        # "pane_explicit_stale" или "pane_env_stale", активная доставка mailbox-only.
+        # Route: pin, then the explicit channel, then env, then ancestry.
+        # The explicit channel (--pane or PAIR_PANE) beats inherited TMUX_PANE (say, from
+        # a detached service/daemon with a foreign env). Env is NO identity proof but a claimed
+        # address: the OpenCode MCP daemon inherits the launching shell pane (measured
+        # 2026-10-07: the opencode daemon with omp-pane TMUX_PANE). So the explicit channel
+        # and env take only when: (1) the pane lives and is project — belongs_to_project
+        # proves; (2) no other LIVE role holds it — or the address is foreign.
+        # A refuted route never becomes an address (fail-closed): a "pane_explicit_stale" or
+        # "pane_env_stale" event, active delivery mailbox-only.
+        # mailbox-only.
         explicit_pane = (self._explicit_pane or os.environ.get("PAIR_PANE") or "").strip()
         env_pane = os.environ.get("TMUX_PANE") or ""
         pane = pin or ""
@@ -1277,7 +1271,7 @@ class PairSession:
             else:
                 self.store.append_transcript(
                     "pane_explicit_stale", self.role, pane=explicit_pane, proved=proved_explicit,
-                    why="явный канал не подтвержден как маршрут (жива, проектна, без чужой живой роли)")
+                    why="the explicit channel never confirmed as a route (alive, project, no foreign live role)")
         proved_env = ""
         if not pane and env_pane and tmux and not pin:
             try:
@@ -1303,32 +1297,32 @@ class PairSession:
             else:
                 self.store.append_transcript(
                     "pane_env_stale", self.role, pane=env_pane, proved=proved_env,
-                    why="env-панель не подтверждена как маршрут (жива, проектна, без чужой живой роли)")
+                    why="the env pane never confirmed as a route (alive, project, no foreign live role)")
         if not pane and tmux and os.environ.get("PAIR_DISABLE_ANCESTRY_PANE") != "1":
-            # Живая реплика ищется по дереву процессов; тестовая фикстура ставит
-            # флаг, чтобы fill не получал лишнюю запись адреса (287ff1d).
+            # A live line is sought over the process tree; the test fixture plants a flag so
+            # fill takes no extra address record (287ff1d).
             from composer import find_own_pane
             pane = find_own_pane(tmux) or ""
-        # Адрес, отвергнутый как чужой. Пуст, пока отвергать нечего: иначе при
-        # `pane == ""` переменная осталась бы неопределённой и уборка устаревших
-        # записей падала бы NameError на каждом вызове без панели.
+        # An address refused as foreign. Empty while nothing to refuse: or with `pane == ""`
+        # the variable would stay undefined and stale-record cleanup would fall with NameError
+        # on every paneless call.
         rejected = ""
 
-        # Панель ДОКАЗЫВАЕТСЯ до записи в ростер, и это не паранойя, а
-        # воспроизведённый дефект.
+        # The pane PROVES before the roster records, and that is no paranoia but a
+        # reproduced defect.
         #
-        # `TMUX_PANE` приходит от tmux, а не от проекта: агент, запущенный из
-        # панели чужого проекта, честно видит свою панель — и она была записана в
-        # ростер этого проекта как своя. Ростер на этой машине общий на роль, а
-        # проектов несколько, поэтому один проект получал в соседи чужую панель:
-        # `pair_deliver` уходил в чужой композер (защита `pane_is_foreign` его
-        # отбивала), а `pair_state` показывал соседа с панелью, лежащей в другом
-        # репозитории. Человек видел «агент работает в другом проекте», и это
-        # было буквально верно.
+        # `TMUX_PANE` arrives from tmux, not the project: an agent project pane launched from another
+        # project pane honestly sees its pane — recorded into this project roster as ours.
+        # The roster on this machine is shared per role, while projects run several: one
+        # project took another pane as neighbour: `pair_deliver` left for another composer
+        # (the `pane_is_foreign` guard beat it off), while `pair_state` showed a neighbour
+        # with a pane lying in another repo. The human saw "the agent works in another
+        # project", literally true.
+        # project", literally true.
         #
-        # Fail-closed, как в `pane_is_foreign`: доказать своё нельзя — не пишем.
-        # Пустая панель безопаснее неверной, потому что неверная адресует чужой
-        # композер, а пустая просто лишает доставку.
+        # Fail-closed, as in `pane_is_foreign`: unprovable ours means never record.
+        # An empty pane beats a wrong one, because a wrong one addresses another composer
+        # while an empty one just takes delivery away.
         provisional = ""
         if pane and not pin:
             from composer import pane_belongs_to_project
@@ -1339,33 +1333,33 @@ class PairSession:
                 self.store.append_transcript(
                     "pane_env_rejected", self.role, pane=pane, why=why_not_ours,
                 )
-                # Недоказанная панель хранится как provisional, а не сносится:
-                # печать в неё запрещена (fail-closed держит), но адрес живёт
-                # и чинится следующим доказательством, а не руками человека.
+                # An unproven pane stores as provisional, never dropped: printing into it is banned
+                # (fail-closed holds), but the address lives on, healed by the next proof instead of
+                # human hands.
                 provisional = pane
                 rejected = pane
                 pane = ""
-        # Одна живая роль — один живой процесс (#19.2). Второй процесс на том же
-        # имени роли с другой панели — не рестарт, а дубль: молчаливое
-        # перезаписывание pid делило слот между двумя агентами, и доставка била
-        # не туда. Поэтому отказ (ProtocolError превращается в `refusal` с
-        # записью в транскрипт в invoke), а не запись: ростер не тронут.
+        # One live role means one live process (#19.2). A second process under the same role
+        # name from another pane is no restart but a double: silently overwriting the pid
+        # split the slot between two agents, and delivery struck wide. So refusal
+        # (ProtocolError turns into a `refusal` with a transcript record in invoke), not a
+        # record: the roster untouched.
         #
-        # Отказ — только когда проверять есть чем, иначе ложный отказ станет
-        # вечным lockout легитимного агента:
-        # - записанный pid жив (os.kill видит и чужой процесс, поэтому одного
-        #   этого факта мало — pid переиспользуется);
-        # - у пришедшего есть своя панель — безадресный вызов ни на какой
-        #   композер не претендует;
-        # - удержанная панель известна: pin человека выигрывает у старой записи,
-        #   иначе пересадка роли человеком отбивалась бы как дубль;
-        # - удержанная панель жива в tmux: протухший адрес + живой процесс — это
-        #   рестарт после смерти панели, а не второй агент (без tmux pane_exists
-        #   всегда False, то есть без tmux отказа нет вообще — проверить нечем);
-        # - панели разные через same_pane: та же панель — рестарт того же
-        #   агента, pid обновляется ниже как раньше.
-        # Не сошлось хоть что-то — только `role_collision` в транскрипт, как
-        # раньше: сказать, а не отбить.
+        # Refusal only when something checks by — or a false refusal becomes an eternal
+        # lockout of a legitimate agent:
+        # - a recorded pid lives (os.kill sees another process too, so this fact alone never
+        #   suffices — pids recycle);
+        # - the comer owns a pane — an addressless call claims no composer;
+        # - the held pane is known: the human pin beats the old record, or a human role
+        #   move would bounce as a double;
+        # - the held pane lives in tmux: a stale address plus a live process means a restart
+        #   after a pane death, not a second agent (with no tmux pane_exists always False —
+        #   no tmux means no refusal at all, nothing to check by);
+        # - panes differ through same_pane: the same pane means the same agent restarting,
+        #   the pid updates below as before.
+        #   the pid updates below as before.
+        # Anything unconverged means only `role_collision` in the transcript, as before:
+        # tell, never beat off.
         existing = roles.get(self.role)
         if existing and existing.get("pid") and existing["pid"] != current_pid:
             if is_pid_alive(existing["pid"]):
@@ -1378,13 +1372,13 @@ class PairSession:
                 held = pin or entry.get("pane")
                 if pane and held and pane_exists(held) and not same_pane(pane, held):
                     raise ProtocolError(
-                        f"роль {self.role!r} уже занята живым процессом "
-                        f"(pid {existing['pid']}, панель {held}); второй процесс "
-                        "на той же роли не регистрируется.",
-                        "Одна живая роль — один живой процесс: выйди из дубля и "
-                        "зайди под своим именем роли. Пересадка — волей человека: "
-                        "`pairctl pane <role> <панель>`, тогда новая панель станет "
-                        "удержанной и отказ уйдёт.",
+                        f"role {self.role!r} is already held by a live process "
+                        f"(pid {existing['pid']}, pane {held}); the second process "
+                        "never registers on the same role.",
+                        "One live role means one live process: leave the double and "
+                        "come in under your own role name. A move is the human will: "
+                        "`pairctl pane <role> <pane>`, then the new pane turns "
+                        "held, and the refusal leaves.",
                     )
 
         # Another role claims this pane. Clearing its pane on a dead pid alone cost
@@ -1397,7 +1391,7 @@ class PairSession:
         # panel is absent too, which is what makes this correct in the other
         # direction — never clearing would leave a phantom %1 pointing at whatever
         # window now owns that id.
-        # Уборка устаревших записей идёт по адресу, а не по факту «своя панель»:
+        # Stale-record cleanup walks the address, not the "own pane" fact:
         # если свою панель отвергли как чужую, уборка всё равно нужна, иначе
         # роль с мёртвым pid и несуществующей панелью осталась бы в ростере
         # навсегда. Проверка «есть ли своя панель» молча выключала бы её.
