@@ -2800,16 +2800,16 @@ class TestTranscriptWindow(PairTestCase):
         self.fill(5)
         entries = self.store.read_transcript(0)
         self.assertEqual(self.server.CHAIN_GENESIS, entries[0].get("prev_hash"),
-                         "первая строка ссылается на генезис")
+                         "the first line refers to genesis")
         for prev, cur in zip(entries, entries[1:]):
             self.assertEqual(self.server._transcript_hash(prev), cur.get("prev_hash"),
-                             "каждая строка ссылается на хэш предыдущей")
+                             "every line refers to the previous hash")
         result = self.writer.tool_pair_transcript(limit=0)
-        self.assertTrue(result["chain"]["ok"], "целая цепь обязана проверяться")
-        self.assertEqual(5, result["chain"]["checked"], "все пять строк посчитаны")
+        self.assertTrue(result["chain"]["ok"], "the whole chain must verify")
+        self.assertEqual(5, result["chain"]["checked"], "all five lines counted")
 
     def test_chain_breaks_loudly_on_tampering(self) -> None:
-        """Подмена середины краснеет: разрыв виден явно, а не молчаливым пропуском."""
+        """A mid-chain swap reddens: the break shows explicit, never a silent skip."""
         self.fill(5)
         lines = self.store.transcript_path.read_text(encoding="utf-8").splitlines()
         mid = json.loads(lines[2])
@@ -2817,50 +2817,51 @@ class TestTranscriptWindow(PairTestCase):
         lines[2] = json.dumps(mid, ensure_ascii=False)
         self.store.transcript_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
         result = self.writer.tool_pair_transcript(limit=0)
-        self.assertFalse(result["chain"]["ok"], "подмена обязана рвать цепь")
-        self.assertEqual(3, result["chain"]["bad_at"], "разрыв виден на следующей строке")
+        self.assertFalse(result["chain"]["ok"], "a swap must break the chain")
+        self.assertEqual(3, result["chain"]["bad_at"], "the break shows on the next line")
 
     def test_chain_breaks_loudly_on_a_damaged_line(self) -> None:
-        """Дамадж-строка — тоже видимый разрыв, а не пропуск: иначе обрыв при
-        убитом процессе выглядел бы как не бывшее событие."""
+        """A damage line is a visible break too, not a skip: or a cut on a killed process
+        would read as an event that never was."""
         self.fill(2)
         with self.store.transcript_path.open("a", encoding="utf-8") as handle:
-            handle.write("{это не json вовсе\n")
+            handle.write("{not json at all\n")
         result = self.writer.tool_pair_transcript(limit=0)
-        self.assertFalse(result["chain"]["ok"], "битая строка рвёт цепь видимо")
+        self.assertFalse(result["chain"]["ok"], "a broken line breaks the chain visibly")
         self.assertIn("damaged", result["chain"]["reason"])
 
     def test_rotation_carries_the_chain_across_the_marker(self) -> None:
-        """Ротация — горизонт верификации: активный файл начинается с маркера,
-        хвост до него унесён в архив, цепь активного хвоста проверяется с маркера."""
+        """Rotation is the verification horizon: the live file starts at a marker, the tail
+        before it leaves for the archive, the live-tail chain verifies from the marker."""
         with mock.patch.object(self.server, "TRANSCRIPT_MAX_BYTES", 20_000):
             self.fill(400, payload="y" * 40)
         entries = self.store.read_transcript(0)
         markers = [e for e in entries if e.get("kind") == "transcript_rotated"]
-        self.assertTrue(markers, "маркер ротации обязан быть")
+        self.assertTrue(markers, "the rotation marker must stand")
         marker = markers[0]
         archive = self.store.root / "transcript-archive" / "1.jsonl"
         archived = [json.loads(line) for line in
                     archive.read_text(encoding="utf-8").splitlines() if line.strip()]
         self.assertEqual(marker["last_hash"], self.server._transcript_hash(archived[-1]),
-                         "маркер несёт хэш хвоста унесённого файла, а не генезис")
+                         "the marker carries the carried-away tail hash, not genesis")
         self.assertNotEqual(marker["last_hash"], self.server.CHAIN_GENESIS,
-                            "генезис в маркере — признак чтения после сдвига")
+                            "genesis in the marker means reading past a shift")
         result = self.writer.tool_pair_transcript(limit=0)
-        self.assertTrue(result["chain"]["ok"], "цепь после ротации обязана проверяться")
+        self.assertTrue(result["chain"]["ok"], "the post-rotation chain must verify")
 
     def test_chain_slice_from_the_middle_verifies(self) -> None:
-        """Срез limit=N — не разрыв: первая строка среза якорь, цепь внутри цела.
-        До раунда 42 tool_pair_transcript(limit=20) всегда отдавал chain broken,
-        потому что срез сверялся с генезиса."""
+        """A limit=N slice is no break: the slice first line is the anchor, the chain inside
+        whole. Before round 42 tool_pair_transcript(limit=20) always returned chain
+        broken, because the slice verified from genesis.
+        """
         self.fill(10)
         result = self.writer.tool_pair_transcript(limit=4)
-        self.assertEqual(4, result["count"], "срез отдан хвостом")
-        self.assertTrue(result["chain"]["ok"], "цепь внутри среза обязана проверяться")
-        self.assertEqual(4, result["chain"]["checked"], "все четыре строки среза посчитаны")
+        self.assertEqual(4, result["count"], "the slice serves as tail")
+        self.assertTrue(result["chain"]["ok"], "the chain inside the slice must verify")
+        self.assertEqual(4, result["chain"]["checked"], "all four slice lines counted")
 
     def test_chain_slice_tampering_is_visible(self) -> None:
-        """Подмена внутри среза рвёт цепь: хэш якоря не сходится со второй строкой."""
+        """A swap inside the slice breaks the chain: the anchor hash mismatches line two."""
         self.fill(10)
         lines = self.store.transcript_path.read_text(encoding="utf-8").splitlines()
         mid = json.loads(lines[8])
@@ -2868,35 +2869,35 @@ class TestTranscriptWindow(PairTestCase):
         lines[8] = json.dumps(mid, ensure_ascii=False)
         self.store.transcript_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
         result = self.writer.tool_pair_transcript(limit=4)
-        self.assertFalse(result["chain"]["ok"], "подмена внутри среза обязана рвать цепь")
+        self.assertFalse(result["chain"]["ok"], "a swap inside the slice must break the chain")
 
     def test_chain_legacy_head_without_prev_hash_is_pre_chain(self) -> None:
-        """Строки старше цепи без prev_hash — доцепная эпоха, а не разрыв."""
+        """Lines older than the chain with no prev_hash mean a pre-chain era, not a break."""
         self.store.transcript_path.write_text(
             json.dumps({"ts": "2020-01-01T00:00:00+00:00", "kind": "test", "role": "writer", "i": -1},
                        ensure_ascii=False) + "\n", encoding="utf-8")
         self.fill(3)
         result = self.writer.tool_pair_transcript(limit=0)
-        self.assertTrue(result["chain"]["ok"], "legacy-голова не рвёт цепь")
-        self.assertEqual(1, result["chain"]["pre_chain"], "одна доцепная строка посчитана")
-        self.assertEqual(3, result["chain"]["checked"], "три цепные строки проверены")
+        self.assertTrue(result["chain"]["ok"], "a legacy head never breaks the chain")
+        self.assertEqual(1, result["chain"]["pre_chain"], "one pre-chain line counted")
+        self.assertEqual(3, result["chain"]["checked"], "three chain lines verified")
 
 
-    # ----------------------------------------------------------------- ротация
+    # ---------------------------------------------------- rotation
 
     def test_rotation_moves_old_entries_out_and_keeps_them(self) -> None:
-        """Старое уходит из активного файла, но не исчезает: актив + архивы
-        покрывают непрерывный хвост, самые свежие записи все на месте.
+        """Old leaves the live file but never vanishes: live plus archives cover one
+        continuous tail, the freshest records all in place.
 
-        Удалять историю молча нельзя: потерянная запись о `role_collision` стоила
-        нам ночи. Ротация обязана быть перемещением, а не утилизацией.
+        History never deletes silent: a lost `role_collision` record cost us a night.
+        Rotation must move, never dispose.
         """
         with mock.patch.object(self.server, "TRANSCRIPT_MAX_BYTES", 20_000):
             self.fill(400, payload="y" * 40)
         active = self.store.read_transcript(0)
-        self.assertLess(len(active), 400, "активный файл обязан уменьшиться")
+        self.assertLess(len(active), 400, "the live file must shrink")
         archive = sorted((self.store.root / "transcript-archive").glob("*.jsonl"))
-        self.assertTrue(archive, "ротация обязана что-то куда-то унести")
+        self.assertTrue(archive, "rotation must carry something somewhere")
         archived = [e for piece in archive
                     for e in (json.loads(line) for line in
                               piece.read_text(encoding="utf-8").splitlines() if line.strip())]
@@ -2904,13 +2905,13 @@ class TestTranscriptWindow(PairTestCase):
         kept = [e["i"] for e in archived if "i" in e]
         self.assertEqual(list(range(400 - len(live) - len(kept), 400)),
                          sorted(live + kept),
-                         "актив + архивы — непрерывный хвост без дыр")
+                         "live plus archives — one continuous tail with no holes")
 
     def test_rotation_says_that_it_happened(self) -> None:
-        """Ротация записывается в журнал, а не проходит молча.
+        """Rotation writes into the journal, never passes silent.
 
-        Иначе журнал однажды окажется короче без видимой причины, и «куда делись
-        события» станет неразрешимым вопросом.
+        Or the journal lands shorter one day for no visible reason, and "where did the
+        events go" turns unanswerable.
         """
         with mock.patch.object(self.server, "TRANSCRIPT_MAX_BYTES", 20_000):
             self.fill(400, payload="y" * 40)
@@ -2918,25 +2919,25 @@ class TestTranscriptWindow(PairTestCase):
         self.assertIn("transcript_rotated", kinds)
 
     def test_a_failed_rotation_does_not_lose_the_entry(self) -> None:
-        """Сбой архива не должен ронять запись в журнал.
+        """An archive failure must never drop the journal write.
 
-        Порядок журнала важен, целостность записи — важнее. Поэтому сбой
-        ротации переживается, а не превращается в потерю события.
+        Journal order matters, record integrity matters more. So a rotation failure
+        survives, never turns into a lost event.
         """
         with mock.patch.object(self.server, "TRANSCRIPT_MAX_BYTES", 10):
-            with mock.patch("os.replace", side_effect=OSError("диск полон")):
+            with mock.patch("os.replace", side_effect=OSError("disk full")):
                 self.store.append_transcript("test", "writer", i=7)
         self.assertIn("i", self.store.read_transcript(1)[0],
-                      "запись обязана пережить сбой ротации")
+                      "the write must survive a rotation failure")
 
     # --------------------------------------------------------- `pairctl log`
 
     def test_log_prints_a_tail_by_default(self) -> None:
-        """Дефолтный лимит вместо «всего».
+        """A default limit instead of "everything".
 
-        Замер: без лимита команда вываливала в терминал весь активный журнал —
-        ~50k токенов на раунд, в том числе у человека, который просто посмотрел,
-        что происходит. Те, кому нужен весь файл, просят об этом явно.
+        Measured: with no limit the command dumped the whole live journal into the
+        terminal — ~50k tokens a round, including for a human who merely looked at what
+        happens. Those needing the whole file ask for it explicit.
         """
         self.fill(200)
         out = io.StringIO()
@@ -2946,10 +2947,10 @@ class TestTranscriptWindow(PairTestCase):
         self.assertEqual(self.server.LOG_DEFAULT_LIMIT, len(lines))
 
     def test_log_says_that_it_truncated(self) -> None:
-        """Молча отдать 50 строк вместо 200 — это выглядит как полный журнал.
+        """Silently serving 50 lines for 200 reads as the full journal.
 
-        Человек, который читает журнал, чтобы разобраться в случившемся, обязан
-        знать, что видит не всё.
+        A human reading the journal to understand what happened must know the view
+        is partial.
         """
         self.fill(200)
         err = io.StringIO()
@@ -2960,7 +2961,7 @@ class TestTranscriptWindow(PairTestCase):
         self.assertIn("--all", err.getvalue())
 
     def test_log_all_prints_everything_and_says_nothing_about_truncation(self) -> None:
-        """`--all` — это явное «покажи всё», и оно не жалуется."""
+        """`--all` means an explicit "show all", and it never complains."""
         self.fill(200)
         out, err = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
@@ -2970,7 +2971,7 @@ class TestTranscriptWindow(PairTestCase):
         self.assertEqual("", err.getvalue().strip())
 
     def test_log_does_not_warn_when_it_showed_everything(self) -> None:
-        """Предупреждение о обрезании при отсутствии обрезания — шум."""
+        """A truncation warning with no truncation is noise."""
         self.fill(3)
         err = io.StringIO()
         with contextlib.redirect_stderr(err):
@@ -2979,17 +2980,17 @@ class TestTranscriptWindow(PairTestCase):
         self.assertEqual("", err.getvalue().strip())
 
 class TestSessionAddressing(PairTestCase):
-    """Адресация панелей по имени сессии вместо сквозного номера `%N`.
+    """Pane addressing by session name instead of the server-wide `%N` number.
 
-    Причина правки измерена: номер `%N` сквозной внутри одного tmux-сервера, он
-    перенумеровывается при пересоздании панелей и протухает в окружении процесса,
-    а `<сессия>:<окно>.<панель>` переживает и то и другое.
+    The fix reason measured: the `%N` number runs server-wide inside one tmux server, it
+    renumbers on pane recreation and rots in the process env, while
+    `<session>:<window>.<pane>` survives both.
 
-    Цена этого перехода измерена тоже, и она неочевидна: tmux на НЕСУЩЕСТВУЮЩУЮ
-    панель отвечает кодом 0 и не ошибкой, а СОСЕДНЕЙ ЖИВОЙ панелью того же окна.
-    На `%N` такого нет. Поэтому адрес сессии без сверки с запросом хуже, а не
-    лучше: протухший адрес молча указывает на чужую панель, и вместо отказа
-    сообщение уходит соседу.
+    The move price measured too, and it hides: tmux answers a MISSING pane with code
+    0 and not an error but the NEIGHBOUR LIVE pane of the same window. `%N` never
+    does that. So a session address without a query check reads worse, not better: a
+    rotten address silently points at a foreign pane, and instead of a refusal the
+    message leaves for the neighbour.
     """
 
     def setUp(self) -> None:
@@ -2998,28 +2999,28 @@ class TestSessionAddressing(PairTestCase):
         self.server = server
 
     def live_pane(self) -> str:
-        """Панель этого набора, возвращённая в окружение.
+        """The pane of this suite, returned into the env.
 
-        Базовый setUp убирает `TMUX_PANE`, чтобы роли в наборе не слали спам в
-        окно оператора. Здесь это неуместно: адресация проверяется на живой
-        панели, а агент узнаёт свою панель именно из этой переменной. Без
-        возврата переменной тесты проходили бы, ничего не проверив.
+        The base setUp drops `TMUX_PANE` so suite roles never spam the operator
+        window. Unfit here: addressing checks against a live pane, and the agent
+        learns its pane exactly from this variable. Without returning it the tests
+        would pass checking nothing.
 
-        Панель создаётся внутри `self.root` — то есть в корне проекта набора, а
-        не в панели оператора. `_register` сверяет cwd панели с корнем проекта и
-        отказывается записывать чужую, и это ровно тот дефект, который чинился:
-        показывать панель оператора было бы проверкой не той ветки. Своя панель
-        нужна и для остальных проверок этого класса — они тоже адресуют %.
+        The pane rises inside `self.root` — the suite project root, not the operator
+        pane. `_register` matches the pane cwd against the project root and refuses
+        writing a foreign one, exactly the defect being fixed: showing the operator
+        pane would check the wrong branch. Our own pane serves the rest of this class
+        checks too — they address % as well.
         """
         pane = self._own_pane()
         if not pane:
-            self.skipTest("набор запущен вне tmux")
-        # `previous` читается ДО присваивания, и это не опечатка: capture после
-        # записи даёт `previous == pane`, то есть восстановление возвращает
-        # собственную панель набора вместо прежнего значения. Дальше
-        # `PairTestBase.setUp` следующего теста читает `TMUX_PANE` и запоминает
-        # его как «панель оператора» — уже убитую, и набор падал на
-        # `pane_exists` в зависимости от порядка тестов.
+            self.skipTest("the suite runs outside tmux")
+        # `previous` reads BEFORE assigning, and that is no typo: a capture past the write
+        # gives `previous == pane`, so restoring returns the suite own pane instead of the
+        # prior value. Further down the next test `PairTestBase.setUp` reads `TMUX_PANE`
+        # and remembers it as the "operator pane" — already killed, and the suite fell on
+        # `pane_exists` depending on test order.
+        # `pane_exists` depending on test order.
         previous = os.environ.get("TMUX_PANE")
         os.environ["TMUX_PANE"] = pane
         self.addCleanup(
@@ -3028,18 +3029,17 @@ class TestSessionAddressing(PairTestCase):
         return pane
 
     def _own_pane(self) -> str:
-        """Живая панель с cwd внутри корня проекта набора, один раз на тест.
+        """A live pane with cwd inside the suite project root, once per test.
 
-        Создаётся один раз и переиспользуется: `split-window` на каждый вызов
-        оставил бы после теста десяток окон, а панель набора всё равно должна
-        быть одна и та же.
+        Rises once and reuses: a `split-window` per call would leave a dozen windows
+        past the test, while the suite pane must stay one and the same.
         """
         cached = getattr(self, "_own_pane_cache", None)
         if cached is not None:
             return cached or ""
-        # Панель создаётся в корне ПРОЕКТА, а не в каталоге состояния: `project_root`
-        # у `Store` — это родитель `.pair`, и панель, запущенная из `.pair`,
-        # была бы объявлена чужой собственному проекту.
+        # The pane rises in the PROJECT root, not the state dir: the `project_root` of
+        # `Store` is the `.pair` parent, and a pane launched from `.pair` would stand
+        # foreign to its own project.
         project = self.store.project_root
         project.mkdir(parents=True, exist_ok=True)
         pane = ""
@@ -3057,64 +3057,64 @@ class TestSessionAddressing(PairTestCase):
         return pane
 
     def test_a_session_address_is_recognised_as_a_pane(self) -> None:
-        """Синтаксис адреса отличается от номера, и обе формы обязаны проходить.
+        """Address syntax differs from the number, and both forms must pass.
 
-        Правая часть — про сервер, а не про composer: `server.pane_exists` и
-        `composer.pane_alive` обязаны понимать одинаковый набор ссылок, иначе
-        ростер удалит запись о живом соседе как о фантоме.
+        The right side is about the server, not composer: `server.pane_exists` and
+        `composer.pane_alive` must understand the same reference set, or the roster
+        deletes a live-neighbour record as a phantom.
         """
         import composer
         self.assertEqual("address", composer.pane_ref_format("mail:0.1"))
         self.assertEqual("id", composer.pane_ref_format("%1"))
         self.assertEqual("", composer.pane_ref_format("opencode"),
-                         "имя процесса не панель")
-        self.assertEqual("", composer.pane_ref_format("mail"), "сессия без окна и панели")
-        self.assertEqual("", composer.pane_ref_format("mail:x.y"), "окно и панель — числа")
-        self.assertEqual("", composer.pane_ref_format("a:b:0.0"), "имя сессии без двоеточия")
+                         "a process name is no pane")
+        self.assertEqual("", composer.pane_ref_format("mail"), "a session with no window and pane")
+        self.assertEqual("", composer.pane_ref_format("mail:x.y"), "window and pane are numbers")
+        self.assertEqual("", composer.pane_ref_format("a:b:0.0"), "a session name with no colon")
 
     def test_a_live_session_address_is_alive(self) -> None:
-        """Регрессия на баг, который правка внесла бы в тот же шаг.
+        """A regression on a bug the fix would bring in the same step.
 
-        `pane_exists` проверял форму строки регуляркой `%[0-9]+`, поэтому
-        `mail:0.0` — живая панель — отвечала False. Дальше это значит ровно
-        одно: `roster --prune` удалил бы роль, которая сидит прямо сейчас.
+        `pane_exists` checked the line shape with a `%[0-9]+` regex, so `mail:0.0` — a
+        live pane — answered False. Past that it means exactly one thing:
+        `roster --prune` would delete a role sitting right now.
         """
         import server
         pane = self.live_pane()
         if not shutil_which("tmux"):
-            self.skipTest("tmux не установлен")
+            self.skipTest("tmux not installed")
         from composer import session_address
         resolved = session_address(shutil_which("tmux"), pane)
-        self.assertTrue(resolved, f"адрес живой панели {pane} обязан получаться")
+        self.assertTrue(resolved, f"a live pane address {pane} must resolve")
         self.assertTrue(server.pane_exists(resolved),
-                        f"живая панель по адресу {resolved} — живая, а не фантом")
-        self.assertTrue(server.pane_exists(pane), "номер той же панели тоже остаётся живым")
+                        f"a live pane at {resolved} — alive, not a phantom")
+        self.assertTrue(server.pane_exists(pane), "the number of the same pane stays alive too")
 
     def test_a_stale_session_address_is_not_the_neighbour_pane(self) -> None:
-        """Главный риск перехода, проверенный на живом tmux, а не на моке.
+        """The move main risk, checked on live tmux, not a mock.
 
-        Сессия из двух панелей; `.1` умирает. Адрес `<сессия>:0.1` указывает на
-        панель, которой больше нет, и tmux молча отвечает про `.0` — соседнюю
-        живую. Без сверки адреса с запросом доставка уходит в чужой композер, и
-        отказа не происходит вовсе.
+        A two-pane session; `.1` dies. The `<session>:0.1` address points at a pane
+        that is gone, and tmux silently answers about `.0` — the neighbour live one.
+        Without matching the address against the query the delivery leaves for a
+        foreign composer, with no refusal at all.
         """
         import composer
         tmux = shutil_which("tmux")
         if not tmux:
-            self.skipTest("tmux не установлен")
+            self.skipTest("tmux not installed")
         session = f"pairtest-{os.getpid()}-{os.urandom(4).hex()}"
         self.addCleanup(subprocess.run, [tmux, "kill-session", "-t", session],
                         capture_output=True, timeout=10)
         made = subprocess.run([tmux, "new-session", "-d", "-s", session],
                               capture_output=True, text=True, timeout=10)
         if made.returncode != 0:
-            self.skipTest(f"tmux не даёт создать сессию: {made.stderr.strip()[:80]}")
+            self.skipTest(f"tmux refuses to create a session: {made.stderr.strip()[:80]}")
         subprocess.run([tmux, "split-window", "-t", session],
                        capture_output=True, timeout=10)
         stale = f"{session}:0.1"
         survivor = f"{session}:0.0"
 
-        # До смерти адрес настоящий: обе проверки обязаны его подтвердить.
+        # Before death the address is real: both checks must confirm it.
         self.assertTrue(composer.pane_identity(tmux, stale)["exists"])
         self.assertTrue(composer.pane_identity(tmux, survivor)["exists"])
 
@@ -3122,68 +3122,66 @@ class TestSessionAddressing(PairTestCase):
 
         ghost = composer.pane_identity(tmux, stale)
         self.assertFalse(ghost["exists"],
-                         "протухший адрес сессии — это не панель, даже когда tmux "
-                         "отвечает про соседнюю живую")
+                         "a rotten session address is no pane, even when tmux "
+                         "answers about the neighbour live one")
         self.assertFalse(ghost["alive"])
         self.assertEqual("", ghost["path"],
-                         "cwd соседней панели не выдаётся за cwd протухшей: иначе "
-                         "pane_is_foreign признал бы чужую панель своей")
+                         "a neighbour-pane cwd never passes for a rotten one: or "
+                         "pane_is_foreign would own a foreign pane as ours")
         self.assertFalse(composer.pane_alive(tmux, stale))
         self.assertFalse(self.server.pane_exists(stale))
-        # Сосед при этом жив, и он обязан остаться различимым с фантомом.
+        # The neighbour stays alive here, and must remain distinct from the phantom.
         self.assertTrue(composer.pane_identity(tmux, survivor)["exists"])
         self.assertTrue(self.server.pane_exists(survivor))
 
     def test_the_same_pane_is_recognised_across_both_formats(self) -> None:
-        """Своя панель приходит из окружения как `%N`, а в состоянии лежит адресом.
+        """Our own pane arrives from the env as `%N`, lying in state as an address.
 
-        Равенство строк на этом расходится, и проверки, построенные на нём,
-        перестают срабатывать молча: `_ring` начинает звонить в собственную панель,
-        а ростер считает две разные панели там, где одна. Сверка обязана быть
-        сделана через tmux — только он знает, что это одна и та же панель.
+        Line equality diverges on that, and checks built on it silently stop working:
+        `_ring` starts ringing our own pane, while the roster counts two panes where
+        one stands. Matching must run through tmux — only it knows both are one pane.
         """
         import server
         pane = self.live_pane()
         if not shutil_which("tmux"):
-            self.skipTest("tmux не установлен")
+            self.skipTest("tmux not installed")
         from composer import session_address
         address = session_address(shutil_which("tmux"), pane)
         if not address:
-            self.skipTest("адрес сессии получить не удалось")
+            self.skipTest("failed to get the session address")
         self.assertTrue(server.same_pane(pane, address),
-                        f"{pane} и {address} — одна панель")
-        self.assertTrue(server.same_pane(address, pane), "порядок не важен")
+                        f"{pane} and {address} — one pane")
+        self.assertTrue(server.same_pane(address, pane), "order never matters")
         self.assertFalse(server.same_pane(address, "%999999"),
-                         "фантом не совпадает с живой панелью")
-        self.assertFalse(server.same_pane("", address), "пустая ссылка — не панель")
+                         "a phantom never matches a live pane")
+        self.assertFalse(server.same_pane("", address), "an empty reference is no pane")
         self.assertFalse(server.same_pane(address, None))
 
     def test_a_registered_role_is_recorded_by_session_address(self) -> None:
-        """Что именно меняется в состоянии: в `%N` больше не пишется.
+        """What exactly changes in state: `%N` writes no more.
 
-        Адрес берётся из окружения (`TMUX_PANE`), потому что так агент знает свою
-        панель; в состояние уходит устойчивая форма. Проверка на живом tmux: с
-        моком любая реализация прошла бы, а именно тут пришлось бы чинить
-        расхождение форматов.
+        The address comes from the env (`TMUX_PANE`), because that is how the agent
+        knows its pane; state takes the stable form. A live-tmux check: with a mock
+        any implementation would pass, while exactly here the format drift had to be
+        fixed.
         """
         pane = self.live_pane()
         session = PairSession("agy", self.store)
         session.tool_pair_state()
         recorded = self.store.read()["roles"]["agy"].get("pane")
-        self.assertTrue(recorded, "панель записана")
+        self.assertTrue(recorded, "pane recorded")
         self.assertNotEqual(pane, recorded,
-                            f"ожидался адрес сессии, а записан номер {pane}")
+                            f"expected a session address, but a number stands: {pane}")
         self.assertTrue(self.server.pane_exists(recorded),
-                        "то, что записано, обязано быть живой панелью — иначе "
-                        "следующий же _register сотрёт его как протухшее")
+                        "what stands recorded must be a live pane — or "
+                        "the very next _register wipes it as rotten")
 
     def test_the_old_number_format_still_works_after_the_switch(self) -> None:
-        """Обратная совместимость проверяется на живых записях, а не на словах.
+        """Backwards compatibility checks on live records, not words.
 
-        В состоянии лежат `%N` от прежних запусков. Если бы чтение перестало их
-        принимать, обновление сломало бы доставку у всех живых ролей сразу и
-        одним шагом — то есть обновление, которым мы чиним протухание, само
-        стало бы причиной недоставки.
+        State holds `%N` from prior runs. If reading stopped accepting them, the
+        upgrade would break delivery for all live roles at once in one step — the
+        very upgrade fixing the rot would cause the non-delivery.
         """
         pane = self.live_pane()
         self.store.mutate(lambda s: s.setdefault("roles", {}).setdefault("agy", {}).update(
@@ -3191,26 +3189,26 @@ class TestSessionAddressing(PairTestCase):
         newcomer = PairSession("claude", self.store)
         newcomer.tool_pair_state()
         self.assertEqual(pane, self.store.read()["roles"]["agy"].get("pane"),
-                         "старая запись в формате %N обязана остаться принятой")
+                         "an old %N-format record must stay accepted")
 
     def test_a_failed_address_lookup_is_visible_in_the_transcript(self) -> None:
-        """Молчаливый откат на `%N` — это неявное решение за человека.
+        """A silent fallback to `%N` decides for the human implicitly.
 
-        Если имя сессии получить не удалось, адресация остаётся неустойчивой, и
-        человек должен это видеть. Иначе причина протухания панелей навсегда
-        остаётся невидимой, а в транскрипте нет ни слова о ней.
+        If the session name never resolves, addressing stays unstable, and the human
+        must see it. Or the pane-rot reason stays invisible forever, with not a word
+        about it in the transcript.
         """
         self.live_pane()
         import composer
-        # Подмена бьёт по адресу-записи, а не по `pane_identity`: тот же вызов
-        # обслуживает проверку «панель своя», и пустой ответ оттуда объявил бы
-        # панель несуществующей. Проверяется отказ адресации, а не отказ панели.
+        # The stub hits the address record, not `pane_identity`: the same call serves the
+        # "pane ours" check, and an empty answer from there would declare the pane
+        # missing. An addressing refusal checks, not a pane refusal.
         real_write = composer.session_address
         identity_calls = []
 
         def fake(tmux_arg, pane_arg):
             if pane_arg == self._own_pane_cache:
-                return ""                      # адрес не получился
+                return ""                      # the address never resolved
             identity_calls.append(pane_arg)
             return real_write(tmux_arg, pane_arg)
 
@@ -3219,18 +3217,18 @@ class TestSessionAddressing(PairTestCase):
         session = PairSession("agy", self.store)
         session.tool_pair_state()
         pane = self.store.read()["roles"]["agy"].get("pane")
-        self.assertTrue(pane, "запись не теряется: работать надо и на %N")
+        self.assertTrue(pane, "the record never drops: it must work on %N too")
         self.assertEqual(pane, self._own_pane_cache,
-                         "без адреса сессии остаётся %N")
+                         "with no session address %N stays")
         kinds = [e["kind"] for e in self.store.read_transcript()]
         self.assertIn("pane_address_unavailable", kinds)
 
     def test_a_successful_address_switch_is_recorded_once(self) -> None:
-        """Запись в транскрипт не должна повторяться на каждом вызове.
+        """A transcript write must never repeat on every call.
 
-        `_register` вызывается перед каждым инструментом, и при буквальном
-        сравнении запись падала бы в транскрипт десятки раз за сессию — то есть
-        ровно тот потолок роста, который эта же задача чинит.
+        `_register` runs before every tool, and on literal comparing the record would
+        fall into the transcript dozens of times a session — exactly the growth ceiling
+        this same task fixes.
         """
         self.live_pane()
         session = PairSession("agy", self.store)
@@ -3242,18 +3240,18 @@ class TestSessionAddressing(PairTestCase):
         switches = [e for e in self.store.read_transcript()
                     if e["kind"] == "pane_address_canonical"]
         self.assertEqual(1, len(switches),
-                         "смена формата адреса — событие один раз, а не на каждом вызове")
+                         "an address-format change is one event, not every call")
 
 class TestDeliveryRollback(PairTestCase):
-    """Откат доставки не должен быть разрушительным на непроверенном выводе.
+    """Delivery rollback must never destroy on an unverified screen.
 
-    Найдено вживую: pair_deliver вернул delivered=false с «откатил», а сообщение
-    лежало в композере соседа. Причина — один неподтверждённый кадр.
+    Found live: pair_deliver returned delivered=false with "rolled back", while the
+    message lay in the neighbour composer. Cause — one unconfirmed frame.
     """
 
     def lagging_tui(self, body: str, lag_after: int = 1):
-        """TUI, который перерисовывается не сразу:lag_after кадров после ввода
-       .capture отдаёт устаревший экран, и только потом — настоящий."""
+        """A TUI that redraws late: lag_after frames past input .capture serve a stale screen,
+       only then the real one."""
         import composer
 
         state = {"typed": False, "frames": 0, "erased": 0}
@@ -3263,7 +3261,7 @@ class TestDeliveryRollback(PairTestCase):
             if not state["typed"]:
                 return ["$ ", ">"]
             if state["frames"] <= lag_after:
-                return ["$ ", ">"]           # экран ещё не перерисован
+                return ["$ ", ">"]           # the screen not yet redrawn
             return ["$ ", "> " + body]
 
         def fake_type(tmux, pane, text):
@@ -3296,45 +3294,44 @@ class TestDeliveryRollback(PairTestCase):
              composer._tmux) = saved
 
     def test_a_stale_frame_is_retried_before_believed(self) -> None:
-        """Один устаревший кадр — не доказательство, что вставки нет.
+        """One stale frame never proves the insert missed.
 
-        Замерено вживую на панели 30x70: одиночный BSpace отражается в capture
-        через ~2с. Проверка через 0.35с после ввода ~1900 символов therefore
-        читает пустой экран как «текст не дошёл» — и откатывает то, что дошло.
+        Measured live on a 30x70 pane: a lone BSpace shows in capture after ~2s.
+        Checking 0.35s past typing ~1900 chars therefore reads a blank screen as "text
+        never arrived" — and rolls back what arrived.
         """
-        body = "проверка повторной попытки"
+        body = "a retry check"
         result, state = self.deliver_to_lagging_pane(body, lag_after=2)
         self.assertTrue(
             result.get("delivered"),
-            f"после перерисовки доставка обязана быть засчитана, а не откачена: {result}",
+            f"past the redraw the delivery must count delivered, never rolled back: {result}",
         )
-        self.assertEqual(0, state["erased"], "успешную доставку откатывать нечего")
+        self.assertEqual(0, state["erased"], "a delivered delivery never rolls back")
 
     def test_an_unverifiable_pane_is_not_rolled_back_blindly(self) -> None:
-        """Откат на непрочитанном экране стирает композер вслепую.
+        """Rolling back on an unread screen wipes the composer blind.
 
-        `erase(len(body))` не знает, чей это ввод. Сосед или человек печатали в
-        этой же панели — и BSpace съедают их текст, пока протокол рапортует
-        «откатил». Непроверяемую доставку надо назвать непроверяемой, а не
-        уничтожить содержимое чужой панели.
+        `erase(len(body))` never knows whose input that is. The neighbour or the human
+        typed in this same pane — and BSpaces eat their text while the protocol reports
+        "rolled back". An unverifiable delivery must say unverifiable, never destroy a
+        foreign pane content.
         """
-        body = "сообщение соседу, которое не поместится на один экран"
+        body = "a neighbour message too long for one screen"
         result, state = self.deliver_to_lagging_pane(body, lag_after=99)
         self.assertLess(
             state["erased"], len(body),
-            f"откат по непрочитанному кадру стёр {state['erased']} символов "
-            f"в панели, где может лежать чужой ввод: {result}",
+            f"rolling back on an unread frame erased {state['erased']} chars "
+            f"in a pane that may hold foreign input: {result}",
         )
 
 class TestPermissionMenu(PairTestCase):
-    """Промпт-меню, а не «[y/N]». Найдено соседом, и это была моя регрессия.
+    """A prompt menu, not "[y/N]". Found by the neighbour, and it was my regression.
 
-    `Permission required` вычеркнули из PERMISSION_PATTERNS в b030d70, а
-    detect_permission_prompt смотрит только на две последние строки, где в меню
-    лежит подсказка про клавиши. Итог: промпт opencode не опознавался вовсе,
-    resolve_permission_prompt возвращал verdict=none и не нажимал ничего —
-    белый список раунда 7 на этой панели был мёртвым кодом, и каждое
-    подтверждение висело до прихода человека.
+    `Permission required` left PERMISSION_PATTERNS in b030d70, while
+    detect_permission_prompt reads only the last two lines, where the menu holds the
+    key hint. Result: the opencode prompt never recognized at all,
+    resolve_permission_prompt returned verdict=none pressing nothing — the round-7
+    allowlist stood dead code on this pane, and every confirmation hung for a human.
     """
 
     MODAL = [
@@ -3353,15 +3350,15 @@ class TestPermissionMenu(PairTestCase):
         self.assertIsNotNone(detect_permission_menu(self.MODAL))
 
     def test_a_menu_header_alone_is_not_a_prompt(self) -> None:
-        """«Permission required» в обычном выводе ничего не разрешает: без
-        вариантов и клавиш это строка лога, а не вопрос."""
+        """`"Permission required"` in plain output allows nothing: with no options and keys
+        it is a log line, not a question."""
         from composer import detect_permission_menu
-        self.assertIsNone(detect_permission_menu(["Permission required", "устанавливаю пакеты"]))
+        self.assertIsNone(detect_permission_menu(["Permission required", "installing packages"]))
         self.assertIsNone(detect_permission_menu(["Allow once Always allow Reject"]))
 
     def test_the_command_decides_not_the_header(self) -> None:
-        """Вердикт выносится по команде из тела модалки: «Permission required»
-        не содержит ничего, что можно разрешить или запретить."""
+        """The verdict reads on the command from the modal body: `"Permission required"`
+        holds nothing to allow or deny."""
         from composer import extract_permission_context
         ctx = extract_permission_context(self.MODAL, "△ Permission required")
         self.assertIn("git status", ctx)
@@ -3369,27 +3366,28 @@ class TestPermissionMenu(PairTestCase):
     def test_allowed_command_in_a_menu_is_confirmed(self) -> None:
         from composer import resolve_permission_prompt
         keys = self.resolve_keys(self.MODAL)
-        self.assertEqual([["Enter"]], keys, "в меню подтверждает Enter, «y» там не значит согласие")
+        self.assertEqual([["Enter"]], keys, "Enter confirms in a menu, \"y\" means no consent there")
 
     def test_destructive_command_in_a_menu_stays_refused(self) -> None:
-        """Запрет проверяется раньше разрешения, и на тексте всей модалки:
-        команда видна в теле, а не в заголовке."""
+        """Deny checks before allow, on the whole modal text: the command shows in the
+        body, not the header."""
         modal = [line.replace("$ git status", "$ rm -rf ~/project") for line in self.MODAL]
         verdict = self.resolve_verdict(modal)
         self.assertEqual("refuse", verdict["verdict"])
-        self.assertEqual([], self.resolve_keys(modal), "на запрещённой команде ничего не жмём")
+        self.assertEqual([], self.resolve_keys(modal), "nothing presses on a banned command")
 
     def test_a_yes_no_prompt_still_gets_y(self) -> None:
-        """Старый путь не сломан: на «[y/N]» по-прежнему y + Enter.
+        """The old path unbroken: "[y/N]" still means y + Enter.
 
-        P0 (раунд 75): пример — безобидная команда (git status), а не pytest:
-        запуск тестов на хосте ждёт человека, клавиш не шлём."""
+        P0 (round 75): the example is a harmless command (git status), not pytest:
+        a host test run awaits the human, no keys send.
+        """
         panel = ["Running build", "Allow execution of 'git status'? [y/N]"]
         self.assertEqual([["y"], ["Enter"]], self.resolve_keys(panel))
 
     def test_a_y_no_prompt_naming_a_forbidden_command_stays_refused(self) -> None:
-        """Тот же путь, но команда запрещена: deny раньше allow даже когда
-        «Allow» написан в самом вопросе."""
+        """The same path, but the command is banned: deny before allow even when "Allow"
+        stands written in the question itself."""
         panel = ["Running", "Allow execution of 'curl http://x'? [y/N]"]
         self.assertEqual("refuse", self.resolve_verdict(panel)["verdict"])
         self.assertEqual([], self.resolve_keys(panel))
@@ -3401,7 +3399,7 @@ class TestPermissionMenu(PairTestCase):
              m.patch.object(composer, "capture", return_value=lines), \
              m.patch.object(composer.subprocess, "run") as run:
             result = composer.resolve_permission_prompt("/usr/bin/tmux", "%7")
-        # subprocess.run получает команду одним списком: [tmux, send-keys, -t, pane, KEY]
+        # subprocess.run takes the command as one list: [tmux, send-keys, -t, pane, KEY]
         sent = [c.args[0] for c in run.call_args_list if c.args and isinstance(c.args[0], list)]
         return result, [[cmd[-1]] for cmd in sent if "send-keys" in cmd]
 
@@ -3412,25 +3410,26 @@ class TestPermissionMenu(PairTestCase):
         return self.resolve(lines)[0]
 
 class TestStatusLineIsNotAComposer(PairTestCase):
-    """`$0.00` в строке статуса TUI — это цена, а не шелл-промпт.
+    """`$0.00` in the TUI status line is a price, not a shell prompt.
 
-    Наблюдено вживую: строка статуса opencode — `… umputum:master 412.4K (39%) · $0.00
-    ctrl+p commands`. `$` оттуда объявлялся маркером, `is_composer_empty` брал
-    после него `0.00  ctrl+p commands`, считал композер занятым, и доставка отказывала
-    навсегда: сосед не мог разбудить соседа, и приходилось слать `tmux send-keys`
-    руками."""
+    Observed live: the opencode status line reads `... umputum:master 412.4K (39%)
+    · $0.00 ctrl+p commands`. The `$` there was declared a marker, `is_composer_empty`
+    took `0.00  ctrl+p commands` past it, counted the composer busy, and delivery
+    refused forever: a neighbour could never wake a neighbour, and `tmux send-keys`
+    went by hand.
+    """
 
     STATUS = "  ⬝⬝ esc interrupt  412.4K (39%) · $0.00  ctrl+p commands"
 
     def test_a_status_line_is_not_taken_as_the_composer(self) -> None:
         from composer import composer_line
         self.assertIsNone(composer_line(["some output", self.STATUS]),
-                          "строка статусы не должна становиться строкой ввода")
+                          "a status line must never turn into an input line")
 
     def test_a_shell_prompt_ending_in_dollar_is_still_a_prompt(self) -> None:
-        """Регрессия, которую я внёс первой версией правки: настоящий промпт
-        `user@host:~$` не начинается со знака, и я принял его за статусную строку —
-        то есть сломал бы доставку в обычный шелл."""
+        """A regression my first fix version brought: a real prompt `user@host:~$` never
+        starts with the sign, and I took it for a status line — meaning it would break
+        delivery into a plain shell."""
         from composer import composer_line, is_composer_empty
         for prompt, expect_empty in ((["user@host:~$ "], True),
                                      (["user@host:~$ rm -rf"], False),
@@ -3451,8 +3450,8 @@ class TestStatusLineIsNotAComposer(PairTestCase):
         self.assertFalse(is_composer_empty(composer_line(["> half typed"]) or ""))
 
     def test_the_cost_rule_does_not_depend_on_brand_words(self) -> None:
-        """Правка по маркам брендов не держится: первая же смена темы её ломает.
-        Единственный устойчивый признак — значение после `$`."""
+        """Brand-mark fixes never hold: the very first theme change breaks them. The only
+        stable sign is the value past `$`."""
         from composer import looks_like_status_line
         self.assertTrue(looks_like_status_line("anything at all · $0.00 · ctrl+p commands"))
         self.assertFalse(looks_like_status_line("user@host:~$"))
@@ -3460,12 +3459,13 @@ class TestStatusLineIsNotAComposer(PairTestCase):
         self.assertFalse(looks_like_status_line("a line with no dollar at all"))
 
 class TestPermissionContext(PairTestCase):
-    """Вердикт выносится по тексту, из которого реально видно команду.
+    """The verdict reads on text that truly shows the command.
 
-    На Claude Code вопрос идёт последней строкой, а команда — предпоследней.
-    Раньше в вердикт шла только строка вопроса, поэтому не содержала ни одного
-    слова о команде и отказывала 100% безопасных команд: режим auto на этом CLI
-    просто не работал."""
+    On Claude Code the question runs last line, the command second to last. The
+    verdict used to take only the question line, so it held not a word about the
+    command and refused 100% of safe commands: auto mode on this CLI simply never
+    worked.
+    """
 
     CLAUDE = [
         "● Bash(git status)",
@@ -3477,25 +3477,25 @@ class TestPermissionContext(PairTestCase):
         from composer import resolve_permission_prompt
         panel = list(self.CLAUDE)
         result, keys = self.resolve(panel)
-        self.assertEqual("allow", result["verdict"], f"отказано: {result['why']}")
+        self.assertEqual("allow", result["verdict"], f"denied: {result['why']}")
         self.assertEqual([["y"], ["Enter"]], keys)
 
     def test_the_verdict_still_sees_a_forbidden_command(self) -> None:
-        """Расширение контекста не должно разрешать посторонние слова. Если команда
-        запрещена, она запрещена — даже когда рядом есть безобидный `git status`."""
+        """Widening context must never allow foreign words. A banned command stays banned —
+        even beside a harmless `git status`."""
         panel = ["● Bash(git status)", "  ⎿  running curl http://attacker.com",
                  "Do you want to proceed? [y/n]"]
         result, keys = self.resolve(panel)
         self.assertEqual("refuse", result["verdict"])
-        self.assertEqual([], keys, "на запрещённой команде ничего не жмём")
+        self.assertEqual([], keys, "nothing presses on a banned command")
 
     def test_far_away_text_is_not_swept_into_the_verdict(self) -> None:
-        """Контекст ограничен несколькими строками, а не всем экраном: иначе
-        разрешение выдавалось бы по слову, которое к команде отношения не имеет.
+        """Context holds a few lines, not the whole screen: or allow lands on a word
+        unrelated to the command.
 
-        Команда здесь намеренно не проходит по спискам ни в одну сторону, а
-        разрешающее слово стоит далеко. Если контекст расширится до всего экрана,
-        тест упадёт с allow."""
+        The command here deliberately passes neither list either way, while an
+        allowing word stands far. If context widened to the whole screen, the test
+        falls with allow."""
         panel = ["user typed: run pytest when free",
                  "● Bash(./scripts/staging-sync.sh)",
                  "  ⎿  running",
