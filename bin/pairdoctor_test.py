@@ -1,11 +1,11 @@
-"""Тесты диагностики (`bin/pairdoctor`).
+"""Diagnostics tests (`bin/pairdoctor`).
 
-Проверяется то, ради чего чинился парсинг: итог unittest лежит в stderr,
-и чтение только stdout давало пустой tail навсегда.
+Checked for what the parsing fix was about: the unittest summary lives in
+stderr, and reading stdout alone gave an empty tail forever.
 
-Функция грузится через AST без исполнения файла: на верхнем уровне
-pairdoctor сразу гоняет проверки (print + subprocess), и exec всего
-файла виснет на прогоне test_protocol внутри импорта.
+The function loads via AST without executing the file: at top level
+pairdoctor immediately runs checks (print + subprocess), and exec of the
+whole file hangs running test_protocol inside the import.
 """
 from __future__ import annotations
 
@@ -35,12 +35,12 @@ freshness_lines = _load_fn("freshness_lines")
 
 class TestUnittestTail(unittest.TestCase):
     def test_stderr_carries_the_count(self) -> None:
-        """unittest пишет Ran/OK в stderr: tail находится в объединённом."""
+        """unittest writes Ran/OK to stderr: the tail lives in the merged output."""
         self.assertEqual(["Ran 3 tests in 0.011s", "OK"],
                          unittest_tail("", "Ran 3 tests in 0.011s\nOK\n"))
 
     def test_stdout_alone_is_not_enough(self) -> None:
-        """Чтение только stdout — пустой tail: исходный дефект карточки."""
+        """Reading stdout alone — empty tail: the card’s original defect."""
         self.assertEqual([], unittest_tail("", ""))
 
     def test_failure_tail_is_found(self) -> None:
@@ -68,7 +68,7 @@ class TestRound86Fixes(unittest.TestCase):
     def test_none_is_warn_not_bad(self) -> None:
         text = (ROOT / "bin" / "pairdoctor").read_text(encoding="utf-8")
         self.assertIn("composer busy (not visible) — delivery deferred", text)
-        # рядом с None не должно быть bad()
+        # no bare bad() next to None
         idx = text.find("if _line is None:")
         block = text[idx:idx + 300]
         self.assertNotIn("bad(", block)
@@ -83,17 +83,17 @@ class TestRound86Fixes(unittest.TestCase):
         self.assertIn("list_stale_files", text)
 
     def test_freshness_compares_against_servers(self) -> None:
-        """Секция обязана мерять от старта серверов, а не врача.
+        """The section must count from the server start, not the doctor’s.
 
-        Измерено 2026-10-13: list_stale_files() без process_start_ts
-        сравнивает с /proc/self — врач только что запущен, список пуст
-        всегда, секция зелёная на устаревшем сервере."""
+        Measured 2026-10-13: list_stale_files() without process_start_ts
+        compares against /proc/self — the doctor just launched, the list is
+        always empty, the section green on a stale server."""
         text = (ROOT / "bin" / "pairdoctor").read_text(encoding="utf-8")
         self.assertIn("process_start_ts=", text)
-        # рядом с вызовом нет голого list_stale_files() без аргумента
+        # no bare list_stale_files() without an argument next to the call
         import re
         bare = [m for m in re.finditer(r"list_stale_files\(\)", text)]
-        self.assertEqual([], bare, "голый вызов меряет старт врача, а не серверов")
+        self.assertEqual([], bare, "a bare call counts the doctor start, not the servers")
 
     def test_freshness_section_calls_freshness_lines(self) -> None:
         """Round 87: the [6] section routes through freshness_lines(targets).
