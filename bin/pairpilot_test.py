@@ -588,13 +588,16 @@ class TestOutboxStaleness(PilotCase):
         path = self._queue(p, "agy", "свежее напоминание")
         state = self.write_state(roles={"agy": {"pane": "%1", "pid": os.getpid()}})
         orig_alive, orig_deliver = pairpilot.pane_alive, pairpilot.deliver
+        orig_belongs = pairpilot.pane_belongs_to_project
         pairpilot.pane_alive = lambda tmux, pane: True
+        pairpilot.pane_belongs_to_project = lambda tmux, pane, root: (True, "")
         pairpilot.deliver = lambda pane, text, wait_for_empty=0.0: {"delivered": True}
         try:
             p.tmux = "tmux"
             p.flush_outbox(state)
         finally:
             pairpilot.pane_alive, pairpilot.deliver = orig_alive, orig_deliver
+            pairpilot.pane_belongs_to_project = orig_belongs
         self.assertFalse(path.exists(), "свежее напоминание доставляется и убирается")
 
     def test_stale_nudge_is_dropped_and_never_delivered(self) -> None:
@@ -605,13 +608,16 @@ class TestOutboxStaleness(PilotCase):
         state = self.write_state(roles={"agy": {"pane": "%1", "pid": os.getpid()}})
         calls = []
         orig_alive, orig_deliver = pairpilot.pane_alive, pairpilot.deliver
+        orig_belongs = pairpilot.pane_belongs_to_project
         pairpilot.pane_alive = lambda tmux, pane: True
+        pairpilot.pane_belongs_to_project = lambda tmux, pane, root: (True, "")
         pairpilot.deliver = lambda pane, text, wait_for_empty=0.0: calls.append(text) or {"delivered": True}
         try:
             p.tmux = "tmux"
             p.flush_outbox(state)
         finally:
             pairpilot.pane_alive, pairpilot.deliver = orig_alive, orig_deliver
+            pairpilot.pane_belongs_to_project = orig_belongs
         self.assertEqual(calls, [], "протухшее не доставляется даже при свободном композере")
         self.assertFalse(path.exists(), "протухшее убирается из очереди")
         kinds = [e.get("kind") for e in p.store.read_transcript(limit=0)]
@@ -645,6 +651,82 @@ class TestOutboxStaleness(PilotCase):
         kinds = [e.get("kind") for e in p.store.read_transcript(limit=0)]
         self.assertIn("pilot_mailbox_fallback", kinds)
 
+    def test_unread_nudge_goes_stale_when_mail_is_read(self) -> None:
+        """F6 (round 87): an unread-pointer is dropped once its condition dies.
+
+        Measured 2026-10-13: a pointer raised at unread=1 was delivered 62s
+        later at unread=0. The check is by state (unread), not by text.
+        Goes red if the nudge_still_true branch is removed: the file stays.
+        """
+        p = self.pilot()
+        # 1 letter in the box, seen=0 -> unread=1: condition holds
+        self.inbox("agy", 1)
+        path = self._queue(p, "agy", "[pairpilot] У тебя 1 непрочитанных сообщений. Вызови pair_read")
+        state = self.write_state(roles={"agy": {"pane": "%1", "pid": os.getpid()}}, seen={})
+        self.assertTrue(p.nudge_still_true(state, "agy", p.pending("agy")),
+                        "with unread mail the pointer still holds")
+        # mail read: seen=1 -> unread=0, the condition is dead
+        state = self.write_state(roles={"agy": {"pane": "%1", "pid": os.getpid()}}, seen={"agy": 1})
+        p.drop_stale_outbox(state)
+        self.assertFalse(path.exists(), "a stale pointer leaves the queue")
+        self.assertIn("pilot_nudge_stale", self.transcript_kinds(),
+                      "the drop is visible in the transcript")
+
+    def test_unread_nudge_survives_while_mail_unread(self) -> None:
+        """A pointer with a live condition survives — the guard spares fresh nudges."""
+        p = self.pilot()
+        self.inbox("agy", 2)
+        path = self._queue(p, "agy", "[pairpilot] У тебя 2 непрочитанных сообщений. Вызови pair_read")
+        state = self.write_state(roles={"agy": {"pane": "%1", "pid": os.getpid()}}, seen={})
+        p.drop_stale_outbox(state)
+        self.assertTrue(path.exists(), "a live pointer stays in the queue")
+
+    def test_foreign_pane_blocks_delivery_not_heal(self) -> None:
+        """F7 (round 87): delivery checks pane ownership against the project.
+
+        Asymmetry: discovery checks (pane_belongs_to_project on the heal path),
+        delivery did not. Stub belongs to refuse: deliver must not fire,
+        the transcript gets pilot_pane_foreign. Stubbing deliver itself is
+        banned — then the test would discriminate nothing.
+        """
+        p = self.pilot()
+        path = self._queue(p, "agy", "свежее напоминание")
+        state = self.write_state(roles={"agy": {"pane": "%9", "pid": os.getpid()}})
+        calls = []
+        orig_deliver = pairpilot.deliver
+        orig_belongs = pairpilot.pane_belongs_to_project
+        pairpilot.deliver = lambda pane, text, wait_for_empty=0.0: calls.append((pane, text)) or {"delivered": True}
+        pairpilot.pane_belongs_to_project = lambda tmux, pane, root: (False, "foreign")
+        try:
+            p.tmux = "tmux"
+            p.flush_outbox(state)
+        finally:
+            pairpilot.deliver = orig_deliver
+            pairpilot.pane_belongs_to_project = orig_belongs
+        self.assertEqual(calls, [], "never print into a foreign pane")
+        self.assertFalse(path.exists(), "a refusal leaves the queue instead of hanging")
+        self.assertIn("pilot_pane_foreign", self.transcript_kinds(),
+                      "the refusal is visible in the transcript, with reason")
+
+    def test_own_pane_delivery_unaffected_by_belongs_gate(self) -> None:
+        """An owned pane delivers as before — the gate spares the normal path."""
+        p = self.pilot()
+        path = self._queue(p, "agy", "свежее напоминание")
+        state = self.write_state(roles={"agy": {"pane": "%1", "pid": os.getpid()}})
+        calls = []
+        orig_deliver = pairpilot.deliver
+        orig_belongs = pairpilot.pane_belongs_to_project
+        pairpilot.deliver = lambda pane, text, wait_for_empty=0.0: calls.append((pane, text)) or {"delivered": True}
+        pairpilot.pane_belongs_to_project = lambda tmux, pane, root: (True, "")
+        try:
+            p.tmux = "tmux"
+            p.flush_outbox(state)
+        finally:
+            pairpilot.deliver = orig_deliver
+            pairpilot.pane_belongs_to_project = orig_belongs
+        self.assertEqual(1, len(calls), "an owned pane is delivered")
+        self.assertFalse(path.exists(), "delivered mail leaves the queue")
+
     def test_a_busy_composer_does_not_expire_a_fresh_nudge(self) -> None:
         """Переживающая доставка остаётся: пока композер занят, ждать уместно."""
         p = self.pilot()
@@ -656,13 +738,16 @@ class TestOutboxStaleness(PilotCase):
             raise pairpilot.ComposerBusy("занято")
 
         orig_alive, orig_deliver = pairpilot.pane_alive, pairpilot.deliver
+        orig_belongs = pairpilot.pane_belongs_to_project
         pairpilot.pane_alive = lambda tmux, pane: True
+        pairpilot.pane_belongs_to_project = lambda tmux, pane, root: (True, "")
         pairpilot.deliver = busy
         try:
             p.tmux = "tmux"
             p.flush_outbox(state)
         finally:
             pairpilot.pane_alive, pairpilot.deliver = orig_alive, orig_deliver
+            pairpilot.pane_belongs_to_project = orig_belongs
         self.assertTrue(path.exists(), "свежее напоминание переживает занятый композер")
 
 
@@ -1744,15 +1829,20 @@ class TestVisibleWork(PilotCase):
         pairpilot.pane_alive = lambda tmux, pane: True
         pairpilot.composer_line = lambda lines: line
         pairpilot.is_composer_empty = lambda _line: empty
+        # Delivery checks pane ownership (F7, round 87): in the sandbox the
+        # pane is owned by construction; real belongs on a fake tmux would refuse.
+        pairpilot.pane_belongs_to_project = lambda tmux, pane, root: (True, "")
 
     def setUp(self) -> None:
         self._line = pairpilot.composer_line
         self._empty = pairpilot.is_composer_empty
+        self._belongs = pairpilot.pane_belongs_to_project
         super().setUp()
 
     def tearDown(self) -> None:
         pairpilot.composer_line = self._line
         pairpilot.is_composer_empty = self._empty
+        pairpilot.pane_belongs_to_project = self._belongs
         super().tearDown()
 
     def silent_writer_state(self) -> None:

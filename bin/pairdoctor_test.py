@@ -16,18 +16,21 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 
 
-def _load_tail_fn():
+def _load_fn(name):
+    import json as _json
+    import sys as _sys
     tree = ast.parse((ROOT / "bin" / "pairdoctor").read_text(encoding="utf-8"))
     for node in tree.body:
-        if isinstance(node, ast.FunctionDef) and node.name == "unittest_tail":
+        if isinstance(node, ast.FunctionDef) and node.name == name:
             mod = ast.Module(body=[node], type_ignores=[])
-            ns: dict = {}
+            ns: dict = {"sys": _sys, "json": _json, "Path": Path, "ROOT": ROOT}
             exec(compile(mod, "pairdoctor_fn", "exec"), ns)
-            return ns["unittest_tail"]
-    raise AssertionError("unittest_tail не найден в bin/pairdoctor")
+            return ns[name]
+    raise AssertionError(name + " not found in bin/pairdoctor")
 
 
-unittest_tail = _load_tail_fn()
+unittest_tail = _load_fn("unittest_tail")
+freshness_lines = _load_fn("freshness_lines")
 
 
 class TestUnittestTail(unittest.TestCase):
@@ -92,26 +95,61 @@ class TestRound86Fixes(unittest.TestCase):
         bare = [m for m in re.finditer(r"list_stale_files\(\)", text)]
         self.assertEqual([], bare, "голый вызов меряет старт врача, а не серверов")
 
-    def test_freshness_warns_on_stale_server(self) -> None:
-        """Поведенческий: .py новее старта сервера — список не пуст.
+    def test_freshness_section_calls_freshness_lines(self) -> None:
+        """Round 87: the [6] section routes through freshness_lines(targets).
 
-        Старту сервера 60с назад при свежем .py обязан найтись stale;
-        старту через 60с в будущее — ничего. Краснеет, если сравнение
-        подменят на /proc/self врача.
+        Structural (AST), not a substring: walks the module body outside any
+        def and requires a Call to freshness_lines. Goes red if the section
+        is rewired to a hardcoded ok or a bare list_stale_files().
         """
+        tree = ast.parse((ROOT / "bin" / "pairdoctor").read_text(encoding="utf-8"))
+        calls = []
+
+        class Visitor(ast.NodeVisitor):
+            def visit_FunctionDef(self, node):
+                pass  # the def itself does not count; only its callers do
+
+            def visit_Call(self, node):
+                func = node.func
+                if isinstance(func, ast.Name) and func.id == "freshness_lines":
+                    calls.append(node)
+                self.generic_visit(node)
+
+        Visitor().visit(tree)
+        self.assertEqual(1, len(calls), "section [6] must call freshness_lines once")
+        self.assertTrue(any(isinstance(a, ast.Name) and a.id == "targets"
+                            for a in calls[0].args),
+                        "the call must pass the live targets, not a fixture")
+
+    def test_freshness_section_fires_through_its_own_call(self) -> None:
+        """Round 87: the section is tested through its own call, not the library.
+
+        A sandbox state.json carries the live pid; a probe .py newer than the
+        process start must surface as warn. Goes red if the section is rewired
+        back to a bare list_stale_files() (doctor-fresh by construction).
+        """
+        import json
+        import os
         import sys
+        import tempfile
         sys.path.insert(0, str(ROOT / "mcp" / "pair_mailbox"))
         import server_freshness as fresh
-        import tempfile, time
         with tempfile.TemporaryDirectory() as tmp:
-            probe = Path(tmp) / "probe.py"
+            code = Path(tmp) / "code"
+            code.mkdir()
+            probe = code / "probe.py"
             probe.write_text("x = 1\n", encoding="utf-8")
-            stale = fresh.list_stale_files(code_dir=Path(tmp),
-                                           process_start_ts=time.time() - 60)
-            self.assertEqual(["probe.py"], stale)
-            fresh_now = fresh.list_stale_files(code_dir=Path(tmp),
-                                               process_start_ts=time.time() + 60)
-            self.assertEqual([], fresh_now)
+            now = probe.stat().st_mtime
+            os.utime(probe, (now + 30, now + 30))
+            st = {"roles": {"srv": {"pid": os.getpid()}}}
+            box = Path(tmp) / ".pair"
+            box.mkdir()
+            (box / "state.json").write_text(json.dumps(st), encoding="utf-8")
+            level, msg = freshness_lines([box], code_dir=code)[0]
+            self.assertEqual("warn", level)
+            self.assertIn("probe.py", msg)
+            self.assertNotEqual([], fresh.list_stale_files(
+                code_dir=code, process_start_ts=now - 60))
 
 
 if __name__ == "__main__":

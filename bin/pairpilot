@@ -790,6 +790,20 @@ class Pilot:
                 continue
             pane = info.get("pane")
             try:
+                ours, why = pane_belongs_to_project(
+                    self.tmux, pane, self.store.project_root)
+            except Exception:
+                ours, why = False, "ownership check unavailable"
+            if not ours:
+                # Round-87 asymmetry: discovery checks pane ownership,
+                # delivery did not. Never print into a foreign pane; log it.
+                path.unlink(missing_ok=True)
+                self.store.append_transcript(
+                    "pilot_pane_foreign", "pairpilot", to=role,
+                    pane=pane, reason=why, text=text[:120])
+                log(f"not delivering for {role} into foreign pane {pane}: {why}")
+                continue
+            try:
                 result = deliver(pane, text, wait_for_empty=0)
             except ComposerBusy:
                 continue
@@ -839,6 +853,12 @@ class Pilot:
         выбросить то, чего не поняли.
         """
         low = text.lower()
+        if "непрочитанных" in low or "непрочитанн" in low:
+            # Unread-pointer: the condition is checked against state, not text.
+            # Measured 2026-10-13 (finding-round87): a pointer raised at unread=1
+            # was delivered 62s later at unread=0. Stale — drop it, otherwise
+            # every fast reply round-trips a bogus nudge.
+            return self.unread(state, role) > 0
         match = re.search(r"(?:запрос|seq)\s+(\d+)", text, re.IGNORECASE)
         if match:
             prefix = f"{int(match.group(1)):06d}-"
