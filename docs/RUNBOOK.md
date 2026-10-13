@@ -27,7 +27,9 @@ pairup --task "..."     # record the task before raising the pair
 ```
 No critic assigned — `pairup` raises the first installed CLI itself (writer
 untouched) and starts the writer in the current pane, so a fresh checkout
-works with one command and no questions.
+works with one command and no questions. Creating `.pair` also copies the
+`anti-mock.json` ground-truth template into the project root (an existing file
+is never overwritten).
 
 `./finish.sh` is the heavy path: install + full test suites (5–10 min) +
 supervisor + pair. Use it for the first setup or after changing this repo's

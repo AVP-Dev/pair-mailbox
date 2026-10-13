@@ -198,6 +198,9 @@ measuring machine metrics (messages, phase advances, wall-clock, restarts); movi
 forward is refused on breach, while `done` and backward steps always remain open.
 Upon closing into `done`, a machine `Task Receipt` (`.pair/RECEIPT-<round>.md`) is
 automatically emitted with tasks, evidences, and final budget metrics.
+In `mode=fix` the round cannot close without writer-run proof of both kinds:
+`test` and `ground-truth` (PROTOCOL §5a, §5d) — claims are checked against the
+tree (`facts.json`, `anti-mock` verdict, `verify-ground-truth`), not memory.
 If regressions or failing evidence (`ok=false`) are reported in `done`, `pair-heal` (§10f)
 automatically reopens the round into `implement` (capped at 3 attempts).
 Reset limits: `bin/pairctl budget --reset`.

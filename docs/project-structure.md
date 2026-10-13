@@ -3,7 +3,7 @@
 > Language: this is the English original. The Russian mirror is [project-structure.ru.md](./project-structure.ru.md).
 
 > **Why this document:** the project has nine files over 300 lines, and two over 3000
-> (`server.py` 3879, `test_protocol.py` 4034 — measured with `wc -l`, ceilings in
+> (`server.py` 4119, `test_protocol.py` 4381 — measured with `wc -l`, ceilings in
 > `scripts/file-size-baseline.tsv`). That crossed the threshold before the gate existed.
 > This document and `scripts/file-size-gate.sh` record the debt honestly: it is named, frozen,
 > and cannot grow. Bulk splitting is done by separate tasks, not on the side
@@ -52,8 +52,8 @@ Numbers — from `scripts/file-size-baseline.tsv` (ceilings; actual — `wc -l`)
 
 | File | Ceiling | Responsibility | Status |
 |---|---|---|---|
-| `mcp/pair_mailbox/server.py` | 3879 | whole protocol: helpers, `Store`, `PairSession`, MCP layer | frozen, plan below |
-| `mcp/pair_mailbox/test_protocol.py` | 4034 | protocol invariants | frozen, follows server.py |
+| `mcp/pair_mailbox/server.py` | 4119 | whole protocol: helpers, `Store`, `PairSession`, MCP layer | frozen, plan below |
+| `mcp/pair_mailbox/test_protocol.py` | 4381 | protocol invariants | frozen, follows server.py |
 | `bin/pairpilot_test.py` | 1725 | supervisor tests | frozen |
 | `bin/pairpilot` | 1567 | supervisor: panes, role launches, throttling | frozen |
 | `mcp/pair_mailbox/composer.py` | 1194 | composer and permission menu | frozen |
