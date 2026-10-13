@@ -57,6 +57,7 @@ composer-bypass	positive	1	python3 mcp/pair_mailbox/test_allowlist_bypass.py	ser
 roster-heal	positive	1	python3 mcp/pair_mailbox/test_roster_heal.py
 session-facts	positive	1	python3 mcp/pair_mailbox/test_session_facts.py
 anti-mock	positive	1	python3 mcp/pair_mailbox/test_anti_mock_gate.py
+receipt	positive	1	python3 mcp/pair_mailbox/test_receipt.py
 ledger	positive	1	python3 mcp/pair_mailbox/test_ledger.py
 ground-truth	positive	1	python3 mcp/pair_mailbox/test_ground_truth.py
 file-size-gate-tests	positive	1	bash scripts/file-size-gate_test.sh

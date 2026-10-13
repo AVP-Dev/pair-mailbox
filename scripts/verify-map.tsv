@@ -16,7 +16,8 @@ mcp/pair_mailbox/test_protocol.py	protocol
 mcp/pair_mailbox/test_obligations.py	obligations
 mcp/pair_mailbox/intent_gate.py	intent-gate
 mcp/pair_mailbox/test_intent_gate.py	intent-gate
-mcp/pair_mailbox/receipt.py	intent-gate
+mcp/pair_mailbox/receipt.py	receipt
+mcp/pair_mailbox/test_receipt.py	receipt
 mcp/pair_mailbox/server_freshness.py	server-freshness
 mcp/pair_mailbox/test_server_freshness.py	server-freshness
 mcp/pair_mailbox/heal.py	heal
