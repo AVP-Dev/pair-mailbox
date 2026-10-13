@@ -1584,6 +1584,8 @@ class TestCheckpoint(PilotCase):
         # без фазы и факт без роли — это не то же самое.
         self.verify_state(autonomy="semi", human_ok=[{"round": 4, "phase": "verify"}],
                           evidence=[{"round": 4, "kind": "test", "value": "117 passed",
+                                     "ok": True, "role": "agy"},
+                                    {"round": 4, "kind": "ground-truth", "value": "PASS",
                                      "ok": True, "role": "agy"}])
         pilot = self.pilot()
         pilot.tick()
