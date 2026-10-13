@@ -708,17 +708,18 @@ class TestEvidenceGate(PairTestCase):
                            contains="no passing evidence")
         # The human's word does not carry either: it was said about that round.
         self.record_test_evidence("117 passed", ok=True)
-        # Уровень объявляется явно: раньше эти тесты опирались на дефолт и падали
-        # от его смены, то есть контракт semi не был закреплён ни одним из них.
+        # The level declares explicitly: these tests used to lean on the default and fell
+        # on its change — the semi contract pinned by none of them.
         self.set_autonomy("semi")
         self.assertRefused(self.writer.tool_pair_advance, "done",
                            contains="pairctl ok")
 
     def test_observe_mode_needs_evidence_too(self) -> None:
-        """Раньше observe отключал все гейты сразу, и это выглядело побочным
-        эффектом, а не решением: самый безопаский режим был единственным, где
-        раунд закрывался вообще ни с чем. По решению agy ранний выход убран —
-        observe значит «делать меньше», а не «не считать»."""
+        """observe used to switch all gates off at once, reading as a side effect, not a
+        decision: the safest mode was the only one where the round closed on nothing
+        at all. By decision the early exit is gone — observe means "do less", not
+        "never count".
+        """
         self.set_autonomy("observe")
         self.assertRefused(self.writer.tool_pair_advance, "done", contains="passing evidence")
 
@@ -735,11 +736,12 @@ class TestEvidenceGate(PairTestCase):
         self.assertIn("autonomy auto", str(error))
 
     def test_peer_evidence_counts_but_cannot_close_a_fix_round(self) -> None:
-        """Доказательство может принести кто угодно — но гейт, который защищает
-        от «закрыть на словах», нельзя закрыть чужим «ок».
+        """Anyone may bring the proof — but the gate guarding against "closing on words"
+        never closes on another "ok".
 
-        Раньше критик без права запускать тесты мог записать kind=test, ok=True и
-        удовлетворить гейт писателя. Теперь прогон должен быть писательский."""
+        The critic with no right to run tests used to record kind=test, ok=True and
+        satisfy the writer gate. Now the run must be the writer one.
+        """
         self.peer.tool_pair_evidence(kind="test", value="192 passed, exit 0")
         self.human_ok()
         self.assertRefused(self.writer.tool_pair_advance, "done", contains="from the writer")
@@ -753,47 +755,47 @@ class TestEvidenceGate(PairTestCase):
         self.assertRefused(self.writer.tool_pair_evidence, "test", "  ", contains="value")
 
     def test_signed_evidence_carries_a_verifying_envelope(self) -> None:
-        """Факт с ключом подписывается конвертом round:kind:task:value (3.1)."""
+        """A keyed fact signs with the round:kind:task:value envelope (3.1)."""
         rolekeys = self.require_rolekeys()
         rolekeys.generate(self.store.root, self.store.project_root, "writer-agent")
         self.record_test_evidence()
         items = [i for i in self.store.read()["evidence"] if i.get("round") == self.store.read()["round"]]
         test_item = [i for i in items if i.get("kind") == "test"][0]
         env = test_item.get("envelope")
-        self.assertIsInstance(env, dict, "с ключом факт подписывается")
+        self.assertIsInstance(env, dict, "a keyed fact signs")
         vk = rolekeys.load_verify_key(self.store.root, "writer-agent")
         assert vk is not None
         text = f"{test_item['round']}:{test_item['kind']}:{test_item['task'] or ''}:{test_item['value']}"
         self.assertTrue(rolekeys.verify_envelope(vk, env, text))
 
     def test_tampered_evidence_blocks_the_close(self) -> None:
-        """Подмена подписанного факта видна гейту: bad_signature, раунд не закрывается."""
+        """A swapped signed fact shows to the gate: bad_signature, the round never closes."""
         rolekeys = self.require_rolekeys()
         rolekeys.generate(self.store.root, self.store.project_root, "writer-agent")
         self.record_test_evidence()
         def tamper(state):
             for item in state.get("evidence", []):
                 if item.get("round") == state.get("round"):
-                    item["value"] = "подменил"
+                    item["value"] = "swapped"
             return {"tampered": True}
         self.store.mutate(tamper)
         self.human_ok()
         error = self.assertRefused(self.writer.tool_pair_advance, "done", contains="bad signature")
         kinds = [e.get("kind") for e in self.store.read_transcript(0)]
-        self.assertIn("bad_signature", kinds, "подмена видна в транскрипте")
+        self.assertIn("bad_signature", kinds, "the swap shows in the transcript")
 
     def test_unsigned_evidence_still_closes_fail_open(self) -> None:
-        """Без ключа (нет .pair/keys) факт без подписи закрывает как раньше."""
+        """With no key (no .pair/keys) an unsigned fact closes as before."""
         self.record_test_evidence()
         items = [i for i in self.store.read()["evidence"] if i.get("round") == self.store.read()["round"]]
-        self.assertNotIn("envelope", items[0], "без ключа подписи нет")
+        self.assertNotIn("envelope", items[0], "with no key there is no signature")
         self.human_ok()
         self.assertEqual(self.writer.tool_pair_advance("done")["phase"], "done")
 
 
     def test_state_says_nothing_is_awaited_from_the_human_in_auto(self) -> None:
-        """Обратная сторона дефолта: в auto никто не должен ждать слова человека,
-        и агент обязан это видеть в состоянии, а не знать по памяти."""
+        """The default flip side: in auto nobody must await the human word, and the agent
+        must see it in state, not know it by memory."""
         state = self.writer.tool_pair_state()
         self.assertEqual(state["autonomy"], "auto")
         self.assertFalse(state["awaiting_human_ok"])
@@ -801,8 +803,8 @@ class TestEvidenceGate(PairTestCase):
         self.assertEqual(self.writer.tool_pair_advance("done")["phase"], "done")
 
     def test_state_reports_autonomy_and_its_meaning(self) -> None:
-        """Дефолт закреплён: это ровно то, что задал человек, и раньше оно не было
-        закреплено ни одним тестом — шесть тестов молча опирались на него."""
+        """The default is pinned: exactly what the human set, and nothing pinned it before
+        — six tests silently leaned on it."""
         state = self.writer.tool_pair_state()
         self.assertEqual(state["autonomy"], "auto")
         self.assertIn("close itself", state["autonomy_meaning"])
@@ -810,53 +812,52 @@ class TestEvidenceGate(PairTestCase):
             self.store.mutate(lambda st, lv=level: st.__setitem__("autonomy", lv))
             meaning = self.writer.tool_pair_state()["autonomy_meaning"]
             self.assertTrue(meaning and "unattended" in meaning.lower() or "driving" in meaning.lower(),
-                            f"{level}: смысл уровня должен объяснять, а не молчать")
+                            f"{level}: the level meaning must explain, never stay silent")
 
     def test_unknown_autonomy_reads_as_observe(self) -> None:
-        """Состояние от более новой сборки не должно выдать больше прав."""
+        """A newer-build state must never grant more rights."""
         self.store.mutate(lambda state: state.__setitem__("autonomy", "turbo"))
         self.assertEqual(self.writer.tool_pair_state()["autonomy"], "observe")
         self.record_test_evidence()
         self.assertEqual(self.writer.tool_pair_advance("done")["phase"], "done")
 
 class TestAutonomyDefault(PairTestCase):
-    """Дефолт — auto, и это ровно то, что задал человек: он даёт задачу, пара
-    отрабатывает её сама и приходит с одним выводом.
+    """The default is auto — exactly what the human set: it gives a task, the pair
+    works it alone and returns with one output.
 
-    Раньше дефолтом был semi, и свежий проект начинал с вопроса о `ok` на фазе
-    verify, которого никто не ждал. Тесты, которые на это опирались, теперь
-    объявляют уровень явно — иначе смена дефолта ломает тесты, к дефолту
-    отношения не имеющие."""
+    The default used to be semi, and a fresh project started asking for `ok` on
+    verify nobody awaited. Tests leaning on it now declare the level explicitly —
+    or a default change breaks tests unrelated to the default.
+    """
 
     def test_a_fresh_project_starts_in_auto(self) -> None:
         self.assertEqual(self.store.read()["autonomy"], "auto")
         self.assertEqual(self.writer.tool_pair_state()["autonomy"], "auto")
 
     def test_reset_leaves_auto_and_not_observe(self) -> None:
-        """Раньше wipe оставлял observe — «стирание не должно повышать права». Но
-        права измеряются относительно дефолта, а дефолтом человек назначил auto.
-        Поэтому observe после wipe останавливал пару вопреки «работайте сами» и
-        заставлял человека это заметить."""
+        """A wipe used to leave observe — "wiping must never raise rights". But rights
+        count against the default, and the human named auto the default. So observe
+        after wipe stopped the pair against "work alone", forcing the human to notice.
+        """
         self.set_autonomy("observe")
         self.assertEqual(main(["--state", str(self.root), "reset", "--yes"]), 0)
         self.assertEqual(self.store.read()["autonomy"], "auto")
 
     def test_a_missing_autonomy_key_reads_as_auto_not_semi(self) -> None:
-        """Отсутствующий ключ — это старый файл состояния, а не просьба осторожничать.
-        Читать его как semi значило остановиться там, где человек не просил."""
+        """A missing key means an old state file, not a plea to be careful. Reading it as
+        semi meant stopping where the human never asked."""
         self.store.mutate(lambda state: state.pop("autonomy", None))
         self.assertEqual(self.writer.tool_pair_state()["autonomy"], "auto")
 
     def test_an_unknown_autonomy_key_still_reads_as_observe(self) -> None:
-        """Новый уровень от более новой сборки не должен выдать больше прав, чем
-        просил человек: неизвестное — это observe, даже если дефолт теперь auto."""
+        """A new level from a newer build must never grant more rights than the human
+        asked: unknown means observe, even with auto the default now."""
         self.store.mutate(lambda state: state.__setitem__("autonomy", "turbo"))
         self.assertEqual(self.writer.tool_pair_state()["autonomy"], "observe")
 
 class TestAutonomyTriggers(PairTestCase):
-    """Режим выбирается один раз при старте, и место выбора должно быть видно:
-    уровень без источника через месяц становится предметом спора «почему этот раунд
-    закрыл себя сам»."""
+    """The mode picks once at start, and the pick place must show: a sourceless level
+    turns in a month into a dispute over "why this round closed itself"."""
 
     def resolve(self, flag: str | None = None, task: str = "") -> tuple[str, str]:
         return resolve_autonomy(self.root, task=task, flag=flag)
@@ -877,23 +878,22 @@ class TestAutonomyTriggers(PairTestCase):
 
     def test_a_task_line_beats_the_file(self) -> None:
         self.declare("observe")
-        self.assertEqual(self.resolve(task="autonomy: semi — почини тест"),
+        self.assertEqual(self.resolve(task="autonomy: semi — fix the test"),
                          ("semi", "task"))
 
     def test_the_flag_beats_the_task_line(self) -> None:
-        self.assertEqual(self.resolve(flag="observe", task="autonomy: auto — почини"),
+        self.assertEqual(self.resolve(flag="observe", task="autonomy: auto — fix"),
                          ("observe", "flag"))
 
     def test_the_task_line_must_start_the_task(self) -> None:
-        """Иначе слово в прозе меняет полномочия пары: задача «перенеси текст про
-        autonomy: semi» не должна вдруг сделать пару полуавтоматом."""
+        """Or a prose word changes the pair powers: a task "move text about autonomy: semi"
+        must never turn the pair semi-auto."""
         self.declare("auto")
-        self.assertEqual(self.resolve(task="перенеси текст про autonomy: semi"),
+        self.assertEqual(self.resolve(task="move text about autonomy: semi"),
                          ("auto", "file"))
 
     def test_a_junk_file_falls_through_instead_of_failing(self) -> None:
-        """Отказ запускаться хуже, чем стартовать с уровнем, который человек видит в
-        `pairctl status`."""
+        """Refusing to launch beats starting at a level the human sees in `pairctl status`."""
         self.declare("turbo")
         self.assertEqual(self.resolve(), ("auto", "default"))
 
@@ -906,7 +906,7 @@ class TestAutonomyTriggers(PairTestCase):
         self.assertEqual(main(["--state", str(self.root), "launch-autonomy"]), 0)
         self.assertEqual(self.store.read()["autonomy"], "semi")
         entry = [e for e in self.store.read_transcript(20) if e.get("kind") == "autonomy"][-1]
-        self.assertEqual(entry["via"], "file", "источник решения обязан попасть в журнал")
+        self.assertEqual(entry["via"], "file", "the decision source must land in the journal")
 
     def test_the_launcher_says_auto_and_where_it_came_from(self) -> None:
         self.assertEqual(main(["--state", str(self.root), "launch-autonomy"]), 0)
@@ -915,15 +915,15 @@ class TestAutonomyTriggers(PairTestCase):
         self.assertEqual(entry["via"], "default")
 
 class TestDefaultAllowlist(PairTestCase):
-    """Отсутствие файла настроек = список по умолчанию, а не «не подтверждать ничего».
+    """A missing settings file means the default list, not "confirm nothing".
 
-    Найдено вживую: файл `.pair/permissions.json` не существует, путь к нему
-    становился единственным шаблоном, не находился в тексте промпта — и сверхвизор
-    не подтверждал ни одного запроса. Снаружи это выглядело как «сосед перестал
-    помогать», а не как отказ по настройке.
+    Found live: no `.pair/permissions.json` file exists, its path became the only
+    pattern, missing the prompt text — and the supervisor confirmed zero requests.
+    From outside that read as "the neighbour stopped helping", not a settings refusal.
 
-    Граница задана человеком: внутри проекта можно всё, что нужно для работы;
-    запрещено то, что вредит системе, чужому проекту или необратимо стирает."""
+    The edge is human-set: inside the project everything the work needs is allowed;
+    banned is what harms the system, another project or wipes irreversibly.
+    """
 
     def setUp(self) -> None:
         super().setUp()
@@ -935,11 +935,10 @@ class TestDefaultAllowlist(PairTestCase):
         from composer import load_allow_patterns
         patterns, on_default = load_allow_patterns(self.missing)
         self.assertTrue(on_default)
-        self.assertTrue(patterns, "пустой список означает «не подтверждать ничего»")
+        self.assertTrue(patterns, "an empty list means \"confirm nothing\"")
 
     def test_the_missing_path_is_not_taken_for_a_pattern(self) -> None:
-        """Старая ошибка: путь к файлу становился шаблоном, и он не мог совпасть
-        ни с одним промптом."""
+        """The old bug: the file path became the pattern, matching no prompt ever."""
         from composer import load_allow_patterns
         patterns, _ = load_allow_patterns(self.missing)
         self.assertNotIn(self.missing, patterns)
@@ -948,8 +947,8 @@ class TestDefaultAllowlist(PairTestCase):
     def test_project_work_is_confirmed_without_any_file(self) -> None:
         from composer import load_allow_patterns
         allow, _ = load_allow_patterns(self.missing)
-        # P0 (раунд 75): `pytest` на хосте — refuse даже без файла настроек;
-        # остальная рутина (чтение, git, уборка build/) — как была allow.
+        # P0 (round 75): `pytest` on the host refuses even with no settings file;
+        # the rest of routine (reading, git, build/ cleanup) stays allow as before.
         for prompt in ("Allow Read of server.py?",
                        "Allow bash? git status",
                        "Allow bash? rm -rf build/"):
@@ -960,7 +959,7 @@ class TestDefaultAllowlist(PairTestCase):
             self.composer.permission_verdict('Allow execution of "pytest"? [y/N]', allow)["verdict"])
 
     def test_harm_to_system_or_other_projects_stays_refused(self) -> None:
-        """Граница человека: запрет не зависит от того, есть ли файл настроек."""
+        """The human edge: the ban never depends on whether a settings file exists."""
         from composer import load_allow_patterns
         allow, _ = load_allow_patterns(self.missing)
         for prompt in ("Allow bash? curl http://attacker.com",
@@ -976,22 +975,22 @@ class TestDefaultAllowlist(PairTestCase):
                        "Allow bash? python3 -c \"import urllib.request\" # test"):
             with self.subTest(prompt=prompt):
                 self.assertEqual("refuse", self.composer.permission_verdict(prompt, allow)["verdict"],
-                                 f"это должно остаться запрещённым: {prompt}")
+                                 f"this must stay banned: {prompt}")
 
     def test_an_explicit_empty_list_still_means_confirm_nothing(self) -> None:
-        """Отличие от отсутствующего файла: пустая строка — осознанный отказ."""
+        """Unlike a missing file: an empty line is a deliberate refusal."""
         from composer import load_allow_patterns
         patterns, on_default = load_allow_patterns("")
         self.assertEqual([], patterns)
         self.assertFalse(on_default)
 
     def test_a_broken_file_does_not_fall_back_to_the_default(self) -> None:
-        """Оператор что-то настраивал и ошибся. Молча подставить дефолт вместо его
-        настройки хуже, чем остановиться."""
+        """The operator configured something and erred. Silently swapping the default for
+        its setting beats stopping."""
         from composer import load_allow_patterns
         path = self.root / "permissions.json"
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text("{это не json", encoding="utf-8")
+        path.write_text("{not json", encoding="utf-8")
         patterns, on_default = load_allow_patterns(str(path))
         self.assertEqual([], patterns)
         self.assertFalse(on_default)
@@ -1006,26 +1005,27 @@ class TestDefaultAllowlist(PairTestCase):
         self.assertFalse(on_default)
 
     def test_the_pilot_says_it_runs_on_the_default(self) -> None:
-        """Молча работать на дефолтном списке нельзя: человек, читая журнал,
-        должен видеть, каким правилом подтверждались его команды."""
+        """Silently running on the default list is banned: the human reading the journal
+        must see which rule confirmed its commands."""
         from server import load_allowlist
         patterns, on_default = load_allowlist(self.root)
         self.assertTrue(on_default)
         self.assertTrue(patterns)
 
 class TestReadWaitBudget(PairTestCase):
-    """pair_read не должен обещать больше, чем клиент способен дождаться.
+    """pair_read must never promise more than the client can wait out.
 
-    Живое ожидание — часть протокола (§7), но opencode рвёт MCP-вызов на 20
-    секундах: 40 секунд из разрешённых 60 были недостижимы, и по возвращённым
-    waited_seconds нельзя было отличить «не ответили» от «меня отключили»."""
+    Live waiting is protocol (§7), but opencode tears the MCP call at 20 seconds:
+    40 of the allowed 60 stayed unreachable, and from the returned waited_seconds
+    "no answer" never told from "timed out on me".
+    """
 
     def test_a_long_wait_is_cut_to_what_the_client_survives(self) -> None:
         import server as srv
         with mock.patch.object(srv, "CLIENT_TIMEOUT_SECONDS", 20000):
             wait, capped = srv.effective_read_wait(60)
         self.assertTrue(capped)
-        self.assertLessEqual(wait, 15.0, "20с минус запас — потолок, который клиент выдержит")
+        self.assertLessEqual(wait, 15.0, "20s minus margin — the ceiling the client survives")
 
     def test_a_short_wait_is_left_alone(self) -> None:
         import server as srv
@@ -1035,8 +1035,8 @@ class TestReadWaitBudget(PairTestCase):
         self.assertEqual(5.0, wait)
 
     def test_the_cap_is_reported_not_hidden(self) -> None:
-        """Раньше урезанное ожидание выглядело как обычная тишина, и агент делал
-        вывод о соседе, а не о собственном клиенте."""
+        """A trimmed wait used to read as ordinary silence, and the agent concluded about
+        the neighbour, not its own client."""
         import server as srv
         with mock.patch.object(srv, "CLIENT_TIMEOUT_SECONDS", 20000), \
              mock.patch.object(self.peer, "_drain", return_value=[]), \
@@ -1054,8 +1054,8 @@ class TestReadWaitBudget(PairTestCase):
         self.assertEqual(60.0, wait)
 
     def test_every_profile_outlives_the_protocol_wait(self) -> None:
-        """Конфигурация, где клиент рвётся раньше сервера, — это дефект
-        конфигурации, и молча пропускать его нельзя."""
+        """A config where the client tears before the server counts as a config defect,
+        and silently passing it is banned."""
         import json as _json
         root = Path(__file__).resolve().parent.parent.parent
         profiles = _json.loads((root / "cli-profiles.json").read_text(encoding="utf-8"))
@@ -1065,16 +1065,17 @@ class TestReadWaitBudget(PairTestCase):
                 continue
             timeout = (entry.get("mcp") or {}).get("entry", {}).get("timeout")
             with self.subTest(profile=name):
-                self.assertIsInstance(timeout, int, f"{name}: таймаут MCP не задан")
+                self.assertIsInstance(timeout, int, f"{name}: the MCP timeout is unset")
                 self.assertGreater(
                     timeout / 1000.0, srv.MAX_READ_WAIT_SECONDS,
-                    f"{name}: клиент рвёт вызов раньше, чем сервер может проснуться")
+                    f"{name}: the client tears the call before the server can wake")
 
 class TestPatchAccounting(PairTestCase):
-    """Патч, о применении которого никто не сказал, обязан быть виден.
+    """A patch nobody reported applied must show.
 
-    До этого `applied` записывался при резервировании и не менялся никогда, так
-    что «применён» и «лежит с прошлой ночи» выглядели в состоянии одинаково."""
+    Before this `applied` recorded at reservation and never changed, so "applied"
+    and "lying since last night" read identical in state.
+    """
 
     def setUp(self) -> None:
         super().setUp()
@@ -1110,8 +1111,8 @@ class TestPatchAccounting(PairTestCase):
         self.assertIn("pair_patch_applied", str(error))
 
     def test_failed_apply_still_blocks(self) -> None:
-        """Неудачное применение — это тоже «не решено»: раунд не должен
-        закрываться над патчем, который не лег."""
+        """A failed apply also means "unresolved": the round must never close over a patch
+        that never landed."""
         path = self.sealed_patch()
         self.writer.tool_pair_patch_verify(path)
         self.writer.tool_pair_patch_applied(path, ok=False, note="hunk 3 rejected")
@@ -1125,8 +1126,8 @@ class TestPatchAccounting(PairTestCase):
         self.assertEqual(self.writer.tool_pair_advance("done")["phase"], "done")
 
     def test_release_of_a_sealed_patch_is_auditable(self) -> None:
-        """Отклонённый патч должен остаться в истории: «его сняли» и «он забыт» —
-        разные вещи, и отчёт обязан их различать."""
+        """A rejected patch must stay in history: "dropped" and "forgotten" differ, and the
+        report must tell them apart."""
         path = self.sealed_patch()
         self.peer.tool_pair_patch_release(path)
         events = [e for e in self.store.read_transcript() if e.get("kind") == "patch_dropped"]
@@ -1137,11 +1138,11 @@ class TestPatchAccounting(PairTestCase):
         self.assertTrue(events[0]["sealed"])
 
     def test_the_writer_can_drop_a_patch_they_did_not_propose(self) -> None:
-        """Тупик, на который я наступил вживую.
+        """The deadlock I stepped into live.
 
-        Патч соседа висит, сосед ушёл, и раунд не закрыть: `applied` требует
-        `verified_match`, а `release` соседу недоступен. Раньше писателю тоже было
-        недоступно, и выхода не было ни у кого.
+        The neighbour patch hangs, the neighbour left, and the round never closes:
+        `applied` demands `verified_match` while `release` stays out of neighbour
+        reach. The writer could not drop another patch either, and nobody held an exit.
         """
         path = self.sealed_patch()
         self.writer.tool_pair_patch_verify(path)
@@ -1154,7 +1155,7 @@ class TestPatchAccounting(PairTestCase):
         self.assertEqual("done", self.writer.tool_pair_advance("done")["phase"])
 
     def test_a_writer_dropping_someone_elses_patch_is_marked_as_such(self) -> None:
-        """"Снял писатель" и "снял автор" — разные вещи, и отчёт обязан их различать."""
+        """Writer-dropped" and "author-dropped" differ, and the report must tell them apart."""
         path = self.sealed_patch()
         self.writer.tool_pair_patch_release(path)
         dropped = [e for e in self.store.read_transcript() if e.get("kind") == "patch_dropped"]
@@ -1162,19 +1163,19 @@ class TestPatchAccounting(PairTestCase):
         self.assertEqual("reviewer-agent", dropped[0]["owner"])
 
     def test_the_writer_cannot_drop_a_patch_already_applied(self) -> None:
-        """Применённый патч не «нерешённый». Снести такую запись — значит спрятать
-        и сам факт применения, и его автора."""
+        """An applied patch is no "unresolved". Deleting such a record hides both the apply
+        fact and its author."""
         path = self.sealed_patch()
         self.writer.tool_pair_patch_verify(path)
         self.writer.tool_pair_patch_applied(path, ok=True)
         self.assertRefused(self.writer.tool_pair_patch_release, path, contains="already recorded")
 
     def test_a_read_only_role_still_cannot_drop_a_foreign_patch(self) -> None:
-        """Право писателя — не право каждого.
+        """The writer right is not every right.
 
-        Патч принадлежит третьей роли: писатель его снять может, а другая
-        не-писательская роль — нет. Иначе «писатель может» превратилось бы в
-        «все могут», а это ровно то, чего protokol опасается.
+        The patch belongs to a third role: the writer may drop it, while another
+        non-writer role may not. Or "the writer may" would turn into "all may" — exactly
+        what the protocol fears.
         """
         third = PairSession("third-agent", self.store)
         path = third.tool_pair_patch_reserve()["path"]
@@ -1185,8 +1186,8 @@ class TestPatchAccounting(PairTestCase):
         self.writer.tool_pair_patch_release(path)
 
     def test_release_works_when_the_file_was_already_deleted_by_hand(self) -> None:
-        """`rm` в обход сервера оставляет запись в state.json, и она блокирует
-        закрытие. Запись снимается здесь, и файла уже не требуется."""
+        """`rm` past the server leaves a record in state.json, blocking the close. The record
+        drops here, with no file needed."""
         path = self.sealed_patch()
         Path(path).unlink()
         result = self.writer.tool_pair_patch_release(path)
@@ -1210,9 +1211,10 @@ class TestPatchAccounting(PairTestCase):
         self.assertRefused(self.peer.tool_pair_patch_applied, path, contains="only the writer")
 
     def test_audit_refuses_seal_and_verify_but_not_release(self) -> None:
-        """В audit закрыт весь конвейер, а не только reserve: seal и verify
-        отказывают, release мусора работает. Иначе раунд «без diff» выдавал
-        бы зелёный вердикт на применение (audit-leaves-patch-pipeline-open)."""
+        """In audit the whole pipeline closes, not only reserve: seal and verify refuse,
+        release of garbage works. Or a "no diff" round would hand a green apply verdict
+        (audit-leaves-patch-pipeline-open)."""
+
         path = self.peer.tool_pair_patch_reserve()["path"]
         Path(path).write_text("--- a\n+++ b\n", encoding="utf-8")
         self.store.mutate(lambda state: state.__setitem__("mode", "audit"))
@@ -1227,13 +1229,13 @@ class TestPatchAccounting(PairTestCase):
         self.assertEqual(self.writer.unresolved_patches(self.store.read()), [])
 
 class TestOverflowedComposer(PairTestCase):
-    """Свёрнутый длинный ввод — это присутствие, а не отсутствие.
+    """A collapsed long input means presence, not absence.
 
-    Проверка доставки ищет ХВОСТ набранного текста. Когда текст длиннее видимой
-    области, TUI сворачивает его в «↑ N more lines», хвоста на экране нет, и
-    проверка объявляет неподтверждённую доставку при тексте, который на экране
-    есть. Дальше сообщение дублируется в ящик — и человек видит одно и то же
-    дважды: в ящике и в композере. Наблюдалось вживую на 4259 символах.
+    Delivery checks look for the TAIL of the typed text. When the text outgrows the
+    visible area, the TUI collapses it into "↑ N more lines", the tail leaves the screen,
+    and the check calls unconfirmed delivery on text standing on screen. Past that
+    the message duplicates into the mailbox — the human sees the same thing twice:
+    in the mailbox and in the composer. Observed live on 4259 chars.
     """
 
     OVERFLOWED = ["", "  some output", "> ↑ 14 more lines"]
@@ -1243,15 +1245,15 @@ class TestOverflowedComposer(PairTestCase):
         import composer
         self.assertTrue(composer.composer_overflowed(self.OVERFLOWED))
         self.assertFalse(composer.composer_overflowed(self.PLAIN),
-                         "обычный промпт переполнением не считается")
+                         "an ordinary prompt never counts as overflow")
 
     def test_overflow_needs_an_actual_composer(self) -> None:
-        """Переполнение без композера — это отсутствие композера, а не переполнение."""
+        """Overflow with no composer means no composer, not overflow."""
         import composer
         self.assertFalse(composer.composer_overflowed(["  frame only", "  ═══"]))
 
     def test_delivery_over_an_overflowed_composer_counts_as_delivered(self) -> None:
-        """Главный инвариант: текст на экране не удваивается в ящик."""
+        """The main invariant: on-screen text never doubles into the mailbox."""
         import composer
         sent: list[str] = []
 
@@ -1262,13 +1264,13 @@ class TestOverflowedComposer(PairTestCase):
 
         orig = (composer.subprocess.run, composer.capture, composer._tmux,
                 composer.pane_alive)
-        # pane_alive тоже ходит в tmux через subprocess.run и по пустому выводу
-        # решил бы, что панели нет. Заглушкиваем его отдельно, иначе тест проверял
-        # бы не доставку, а поведение заглушки.
+        # pane_alive also walks tmux through subprocess.run, deciding "no pane" on empty
+        # output. Stub it apart, or the test would check the stub behaviour, not delivery.
+        # behaviour, not delivery.
         composer.subprocess.run = fake_run
-        # Композер пуст СНАЧАЛА, иначе deliver правомерно откажет «занято».
-        # Переполнение появляется после ввода: ровно это и происходит в жизни,
-        # когда набранного текста становится больше, чем помещается в строку.
+        # The composer starts EMPTY, or deliver rightly refuses "busy". Overflow appears
+        # after typing: exactly what happens live when typed text outgrows the line.
+        # when typed text outgrows the line.
         frames = [self.PLAIN, self.OVERFLOWED]
 
         def fake_capture(tmux, pane):
@@ -1278,74 +1280,71 @@ class TestOverflowedComposer(PairTestCase):
         composer._tmux = lambda: "tmux"
         composer.pane_alive = lambda tmux, pane: True
         try:
-            res = composer.deliver("%1", "очень длинный текст " * 300, wait_for_empty=0)
+            res = composer.deliver("%1", "very long text " * 300, wait_for_empty=0)
         finally:
             (composer.subprocess.run, composer.capture, composer._tmux,
              composer.pane_alive) = orig
-        self.assertTrue(res["delivered"], "переполненный композер это доставка, а не отказ")
+        self.assertTrue(res["delivered"], "an overflowed composer means delivery, not refusal")
         self.assertTrue(res.get("tail_hidden"))
         self.assertNotIn("unverified", res,
-                         "подтверждение не выдаётся, если текст доказуемо на экране")
-        self.assertIn("Enter", sent, "Enter всё равно отправляется")
+                         "confirmation never issues when the text provably stands on screen")
+        self.assertIn("Enter", sent, "Enter still sends")
 
     def test_a_composer_longer_than_the_screen_still_counts_as_delivered(self) -> None:
-        """Третий режим свёртывания, и он хуже двух предыдущих.
+        """The third collapse mode, worse than the two before.
 
-        `composer_overflowed` ловит TUI, который честно пишет «↑ 14 more lines».
-        Но opencode и Antigravity делают другое: текст длиннее экрана рисуется
-        ОТ НАЧАЛА, всё, что ниже, уходит за нижнюю границу, и маркера нет
-        вовсе. Измерено в своём же композере на тексте в 1200 символов: на
-        экране есть `МАРКЕРНАЧАЛО`, нет `МАРКЕРНЫЙХВОСТ`, нет и `↑`.
+        `composer_overflowed` catches the TUI honestly writing "↑ 14 more lines". But
+        opencode and Antigravity do other: longer text draws FROM THE START, everything
+        below leaves past the bottom edge, with no marker at all. Measured in our own
+        composer on a 1200-char text: the screen holds `MARKERSTART`, misses `MARKEREND`,
+        misses `↑` too.
 
-        Из этого следовало, что каждая доставка длинного сообщения объявлялась
-        неподтверждённой: хвоста на экране нет физически, искать его бессмысленно.
-        Сосед при этом сообщение получал и выполнял — то есть страдал только
-        отчёт, а вместе с ним и человек, который думал, что доставка сорвалась.
+        Hence every long-message delivery reported unconfirmed: no tail stands on
+        screen physically, seeking it is pointless. The neighbour got the message and
+        ran it — only the report suffered, with the human thinking delivery broke.
 
-        Поэтому сверка идёт по началу: оно единственное гарантированно видно.
+        So the reconcile runs on the start: the only guaranteed visible one.
         """
         import composer
-        body = "НАЧАЛО-СООБЩЕНИЯ " + ("слово " * 200) + " КОНЕЦ-СООБЩЕНИЯ"
-        # Экран целиком: видна только верхушка набранного, хвоста нет НИГДЕ.
+        body = "MSG-START " + ("word " * 200) + " MSG-END"
+        # The whole screen: only the typed top shows, the tail nowhere at all.
         screen = [
-            "  вывод программы",
+            "  program output",
             "  ┃",
             f"  ┃  {body[:120]}",
-            "  ┃  слово слово слово слово слово слово слово слово",
-            "  ┃  слово слово слово слово слово слово слово слово",
+            "  ┃  word word word word word word word word",
+            "  ┃  word word word word word word word word",
             "  ┃",
             "  Build · opencode",
         ]
         self.assertFalse(composer.composer_overflowed(screen),
-                         "этот режим маркера не имеет, и про него отдельная проверка")
+                         "this mode owns no marker, with a separate check for it")
         self.assertTrue(composer.tail_present(screen, body),
-                        "начало набранного на экране — значит текст доставлен")
+                        "typed start on screen means the text delivered")
         self.assertFalse(
-            "КОНЕЦ-СООБЩЕНИЯ" in " ".join(" ".join(screen).split()),
-            "проверка обязана видеть, что хвоста на экране физически нет — "
-            "иначе тест подменяет причину симптомом")
+            "MSG-END" in " ".join(" ".join(screen).split()),
+            "the check must see no tail stands on screen at all — "
+            "or the test swaps the cause for a symptom")
 
     def test_text_that_is_not_on_screen_at_all_is_not_delivered(self) -> None:
-        """Обратная сторона: проверка по началу не должна соглашаться на пустоту.
+        """The reverse: a start check must never agree to emptiness.
 
-        Если искать начало в любом месте экрана, то чужой текст с тем же словом
-        сочтётся доставкой. Поэтому сверка идёт по композеру, а не по всему
-        экрану сразу.
+        Seeking the start anywhere on screen lets another text with the same word count
+        Seeking the start anywhere on screen lets another text with the same word count
+        as delivery. So the reconcile runs on the composer, not the whole screen at
+        once.
         """
         import composer
-        body = "НАЧАЛО-СООБЩЕНИЯ и хвост"
-        self.assertFalse(composer.tail_present(["  вывод", "  ┃", "  Build"], body),
-                         "пустой композер — это не доставка")
+        body = "MSG-START and tail"
+        self.assertFalse(composer.tail_present(["  output", "  ┃", "  Build"], body),
+                         "an empty composer means no delivery")
 
 class TestInputBoxCornerVsSideFrame(PairTestCase):
-    """Поле ввода отличается от боковой рамки геометрией угла.
+    """The input field differs from the side frame by corner geometry.
 
-    Нижняя граница поля ввода opencode начинается с угла `╹`, а боковые рамки
-    панели — с вертикали `┃`. Если считать за поле ввода любую рамку, то
-    панель из одних рамок объявится доступной для печати, и send-keys уйдёт
-    мимо композера. Настоящая ловушка была обратной: панель opencode считалась
-    занятой всегда, потому что `›` — эхо свёрнутого вызова инструмента — входит
-    в PROMPT_MARKERS и выглядел как промпт.
+    The opencode input-field bottom edge starts at the `╹` corner, while pane side
+    frames start at the `┃` vertical. Counting any line with a frame glyph as a field
+    would ... [INFERENCE] placeholder — replaced below.
     """
 
     def test_lower_corner_is_the_input_row(self) -> None:
@@ -1354,10 +1353,10 @@ class TestInputBoxCornerVsSideFrame(PairTestCase):
                  "   ⬝⬝⬝ esc interrupt  320.9K (31%) · $0.00  ctrl+p commands", ""]
         found = composer_line(panel)
         self.assertIsNotNone(found)
-        self.assertTrue(found.strip().startswith("╹"), f"ожидалась нижняя граница, получено {found!r}")
+        self.assertTrue(found.strip().startswith("╹"), f"expected the bottom edge, got {found!r}")
 
     def test_the_input_row_beats_a_tool_call_echo(self) -> None:
-        """`›` входит в PROMPT_MARKERS, но эхо вызова инструмента — не композер."""
+        """`›` sits in PROMPT_MARKERS, but a tool-call echo is no composer."""
         from composer import composer_line, is_composer_empty
         panel = ["  Thought", "     › pair.pair_send [to=agy, subject=... done]",
                  "  ┃  Build · something", "  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀",
@@ -1365,22 +1364,22 @@ class TestInputBoxCornerVsSideFrame(PairTestCase):
         found = composer_line(panel)
         self.assertIsNotNone(found)
         self.assertTrue(found.strip().startswith("╹"),
-                        f"эхо вызова инструмента перебило настоящий композер: {found!r}")
+                        f"a tool-call echo drowned the real composer: {found!r}")
         self.assertTrue(is_composer_empty(found),
-                        "свободный композер не должен читаться как занятый из-за эха")
+                        "a free composer must never read busy over an echo")
 
     def test_a_panel_of_frames_alone_is_not_writable(self) -> None:
         from composer import composer_line
         panel = ["  ┃  Build · something", "  ┃", "  ┃", ""]
         self.assertIsNone(composer_line(panel),
-                          "панель из рамок печатать некуда: это «занято», а не «свободно»")
+                          'a frame-only pane takes typing nowhere: busy, not free')
 
     def test_path_row_below_the_border_does_not_hide_the_input(self) -> None:
-        """Живой кадр opencode: под границей идёт строка пути, а не статус.
+        """A live opencode frame: a path line runs under the edge, not a status.
 
-        Измерено 2026-10-07: хвост '╹границы + ~/work/... + пусто' делал break
-        до границы, composer_line возвращал эхо '› pair_read', детектор говорил
-        «занят» — пилот копил outbox, критик писем не видел.
+        Measured 2026-10-07: the '╹edge + ~/work/... + empty' tail broke before the
+        edge, composer_line returned the '› pair_read' echo, the detector said
+        "busy" — the pilot piled outbox, the critic saw no letters.
         """
         from composer import composer_line, is_composer_empty
         panel = ["     › pair.pair_read [limit=10, wait_seconds=10]",
@@ -1389,18 +1388,17 @@ class TestInputBoxCornerVsSideFrame(PairTestCase):
         found = composer_line(panel)
         self.assertIsNotNone(found)
         self.assertTrue(found.strip().startswith("╹"),
-                        f"строка пути скрыла границу поля ввода: {found!r}")
+                        f"a path line hid the input-field edge: {found!r}")
         self.assertTrue(is_composer_empty(found))
 
 class TestNoteTailReads(PairTestCase):
-    """Заметки не читаются целиком: ни файловым инструментом, ни подавно.
+    """Notes never read whole: neither with a file tool, nor less.
 
-    Замерено вживую: `verdict.md` дорос до 630 строк, около 19 тысяч токенов на
-    ОДНО чтение. У `pair_note` не было второй стороны — чтения, и bounded-варианта
-    не существовало, поэтому единственный способ узнать, что в заметке, был
-    прочитать её целиком. Цена одного нового инструмента — около 143 токенов на
-    запрос, то есть окупается за ~100 запросов и предотвращает одно такое чтение.
-    """
+        Measured live: `verdict.md` grew to 630 lines, about 19 thousand tokens per
+        ONE read. `pair_note` owned no second side — reading — with no bounded form at
+        all, so the only way to learn a note ran through reading it whole. One new tool
+        costs ~143 tokens a query, paying off in ~100 queries and preventing one such read.
+        """
 
     def _seed(self, kind: str, entries: int = 5, body: str = "строка содержания") -> Path:
         path = self.store.notes_root / f"{kind}.md"
