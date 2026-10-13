@@ -123,7 +123,7 @@ class TestPaneBelongsToProject(PaneOwnershipBase):
         """
         ours, why = panes.pane_belongs_to_project(TMUX, "%999999", self.project)
         self.assertFalse(ours)
-        self.assertIn("отсутствует", why)
+        self.assertIn("pane missing", why)
 
     def test_an_unreported_cwd_is_not_proven(self) -> None:
         """Нет cwd — нет доказательства, и это не «своя»."""
@@ -147,7 +147,7 @@ class TestPaneBelongsToProject(PaneOwnershipBase):
         time.sleep(0.3)
         ours, why = panes.pane_belongs_to_project(TMUX, self.pane, self.project)
         self.assertFalse(ours)
-        self.assertIn("отсутствует", why)
+        self.assertIn("pane missing", why)
 
     def test_a_live_pane_is_not_mistaken_for_a_dead_one(self) -> None:
         """Обратная сторона: живая панель доказывает принадлежность, а не «нет».
@@ -163,7 +163,7 @@ class TestPaneIsForeignStillRefusesToPrint(PaneOwnershipBase):
     def test_a_phantom_cannot_be_printed_to(self) -> None:
         foreign, why = panes.pane_is_foreign(TMUX, "%999999", self.project)
         self.assertTrue(foreign)
-        self.assertIn("отсутствует", why)
+        self.assertIn("pane missing", why)
 
     def test_a_pane_that_died_cannot_be_printed_to(self) -> None:
         """Противоположная сторона: печатать нельзя, даже если проект тот же.
@@ -175,13 +175,13 @@ class TestPaneIsForeignStillRefusesToPrint(PaneOwnershipBase):
         time.sleep(0.3)
         foreign, why = panes.pane_is_foreign(TMUX, self.pane, self.project)
         self.assertTrue(foreign)
-        self.assertIn("отсутствует", why)
+        self.assertIn("pane missing", why)
 
     def test_another_projects_pane_is_refused(self) -> None:
         self.other_project()
         foreign, why = panes.pane_is_foreign(TMUX, self.other_pane, self.project)
         self.assertTrue(foreign)
-        self.assertIn("другому проекту", why)
+        self.assertIn("another project", why)
 
     def test_our_own_pane_is_printable(self) -> None:
         foreign, why = panes.pane_is_foreign(TMUX, self.pane, self.project)
