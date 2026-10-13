@@ -2101,11 +2101,11 @@ class TestHeartbeatIsEveryCall(PairTestCase):
         self.assertNotEqual(old, fresh)
 
     def test_ping_moves_last_seen_with_a_short_answer(self) -> None:
-        """Пинг — тот же heartbeat ценой в три поля, а не 939 токенов.
+        """A ping is the same heartbeat at a three-field price, not 939 tokens.
 
-        Карточка pilot-heartbeat-not-just-silence: агент 20 минут пишет
-        код без вызовов — для пилота он мёртв, для дела жив. Пинг шлётся
-        сам каждые N минут; пилот различает «молчит, но пингует».
+        The pilot-heartbeat-not-just-silence card: an agent writing code for 20
+        minutes with no calls reads dead to the pilot, alive to the cause. A ping goes
+        out alone every N minutes; the pilot tells "silent, yet pinging" apart.
         """
         self.writer.invoke("pair_state", {})
         old = self._backdate_writer()
@@ -2228,37 +2228,30 @@ class TestMCPStdio(PairTestCase):
             process.wait(timeout=10)
 
     def test_every_advertised_tool_is_dispatchable(self) -> None:
-        """Объявленный в tools/list инструмент обязан быть вызываемым.
+        """A tool declared in tools/list must stay callable.
 
-        `pair_digest` был объявлен в `tool_definitions()`, но отсутствовал в
-        `HANDLERS`, и `invoke` отвечал на него "unknown tool". Агент, который
-        читает список, видел инструмент и брал его за рабочий, а на деле
-        получал отказ — и молчал об этом, потому что отказ это законный ответ
-        сервера, а не ошибка. Тест на список этого не ловил: он сверял
-        tools/list с tool_definitions(), то есть объявление с объявлением.
-
-        Поэтому проверяем второе свойство: каждый объявленный инструмент
-        разрешается в непустой обработчик. Список берём у сервера, а не
-        перечисляем руками — иначе проверка выродилась бы в повторение того
-        же объявления.
+        `pair_digest` was declared in `tool_definitions()` but missed in `HANDLERS`,
+        and `invoke` answered it "unknown tool". Property: every declared tool resolves
+        to a non-empty handler. The list comes from the server, never hand-listed — or
+        the check would rot into repeating the same declaration.
         """
         from server import HANDLERS, tool_definitions
 
         advertised = {tool["name"] for tool in tool_definitions()}
-        self.assertTrue(advertised, "сервер не объявил ни одного инструмента")
+        self.assertTrue(advertised, "the server declared zero tools")
         unhandled = sorted(
             name for name in advertised
             if HANDLERS.get(name) is None or not callable(HANDLERS.get(name))
         )
-        self.assertEqual(unhandled, [], "объявлены, но не вызываемы: " + ", ".join(unhandled))
+        self.assertEqual(unhandled, [], "declared but uncallable: " + ", ".join(unhandled))
 
     def test_pair_digest_answers_over_mcp(self) -> None:
-        """Дайджест должен работать через MCP, а не только через `pairctl digest`.
+        """The digest must work over MCP, not only via `pairctl digest`.
 
-        Навык pair-work велит начинать раунд с `pair_digest` ради экономии
-        токенов, и кэш `pair_state` отсылает к нему же. Если инструмент не
-        вызывается, инструкция в навыке ведёт в отказ, а экономия обещана
-        тем, кто её не получает.
+        The pair-work skill orders starting the round with `pair_digest` for token
+        savings, and the `pair_state` cache refers to it too. An uncallable tool turns
+        the skill instruction into a refusal, while the savings were promised to those
+        who never get them.
         """
         process = self._start("writer-agent")
         try:
@@ -2275,19 +2268,19 @@ class TestMCPStdio(PairTestCase):
             payload = json.loads(called["result"]["content"][0]["text"])
             self.assertIn("digest", payload)
             self.assertIn("tokens", payload)
-            # Дайджест обязан быть дешевле полного среза: иначе он не даёт
-            # обещанной экономии и навык pair-work врёт.
+            # The digest must run cheaper than the full slice: or it gives no promised
+            # savings and the pair-work skill lies.
             self.assertLess(payload["tokens"], DIGEST_TOKEN_BUDGET_FOR_TEST,
-                            "дайджест дороже своего потолка")
+                            "the digest runs past its ceiling")
             self.assertIn("ROUND", payload["digest"])
         finally:
             process.stdin.close()
             process.wait(timeout=10)
 
     def test_notify_with_a_match_does_not_deadlock(self) -> None:
-        """Дедлок критика seq 434: notify держал Lock и звал send с тем же
-        Lock — вотч вис на первом уведомлении, push мёртв. Мутация RLock->Lock
-        обязана виснуть (доказано таймаутом 6с живьём), этот тест — страж."""
+        """The critic deadlock seq 434: notify held the Lock calling send under the same
+        Lock — the watch hung on the first notification, push dead. The RLock->Lock
+        mutation must hang (proven by a 6s timeout live), this test is the guard."""
         import threading
         import server as _srv
         srv = _srv.MCPServer(self.writer)
@@ -2298,7 +2291,7 @@ class TestMCPStdio(PairTestCase):
             done.set()
         worker = threading.Thread(target=call, daemon=True)
         worker.start()
-        self.assertTrue(done.wait(timeout=5), "notify с матчем обязан вернуться, а не висеть")
+        self.assertTrue(done.wait(timeout=5), "a matched notify must return, never hang")
         worker.join(timeout=5)
 
     def test_malformed_input_gets_a_jsonrpc_error_not_a_crash(self) -> None:
@@ -2352,12 +2345,13 @@ class TestMCPStdio(PairTestCase):
                 process.wait(timeout=10)
 
 class TestStalePaneSurvives(PairTestCase):
-    """Ростер не должен сносить панель у живой роли.
+    """The roster must never drop a live role pane.
 
-    Так стоило нам ночи: панель была жива, pid принадлежал роли, которая просто
-    перезапустилась, регистрация другой роли решила «pid чужой и мёртвый» и
-    снесла `pane`. Доставка к живому соседу после этого отказывала с «нет
-    панели tmux», а сосед сидел в соседнем окне и ждал."""
+    Such cost us a night: the pane lived, the pid belonged to a role that merely
+    restarted, and registering another role decided "the pid is foreign and dead" and
+    dropped `pane`. Delivery to the live neighbour then refused with "no tmux pane",
+    while the neighbour sat in the next window waiting.
+    """
 
     def setUp(self) -> None:
         super().setUp()
@@ -2365,15 +2359,13 @@ class TestStalePaneSurvives(PairTestCase):
         self.server = server
 
     def pane_alive(self, value: bool):
-        """Подменяем pane_exists на время теста и обязательно возвращаем.
+        """Swap pane_exists for the test run and always return it.
 
-        Подмена ставится здесь, а не в setUp, потому что два теста ниже проверяют
-        сам pane_exists — со стабильной подменой они проверяли бы её же.
-
-        Подменяется и `pane_is_foreign`, потому что `_register` спрашивает у
-        composer оба вопроса: панель жива ли И своя ли она. Одной подмены
-        мало — вторая проверка пошла бы в настоящий tmux, и тест про «мёртвую
-        панель» получал бы верный ответ по не той причине.
+        The stub plants here, not in setUp, because two tests below check pane_exists
+        itself — with a stable stub it would answer right for the wrong reason.
+        Both pane questions check here: is the pane alive AND is it ours. One stub
+        never suffices — the second check would reach the real tmux, and the "dead
+        pane" test would pass for the wrong reason.
         """
         import composer
 
@@ -2385,10 +2377,10 @@ class TestStalePaneSurvives(PairTestCase):
             composer.pane_is_foreign = lambda tmux, pane, root: (False, "")
             composer.pane_belongs_to_project = lambda tmux, pane, root: (True, "")
         else:
-            composer.pane_is_foreign = lambda tmux, pane, root: (True, "панель отсутствует")
-            # Мёртвая панель проекту принадлежит — она просто мёртвая. Путать эти
-            # два факта нельзя, иначе проверка «своя» отвечала бы «нет» и снимала
-            # запись ростера не тем путём, который здесь проверяется.
+            composer.pane_is_foreign = lambda tmux, pane, root: (True, "pane missing")
+            # A dead pane belongs to the project — merely dead. Confusing these two facts
+            # is banned, or the "ours" check would answer "no" and drop the roster record by
+            # the wrong path checked here.
             composer.pane_belongs_to_project = lambda tmux, pane, root: (True, "")
         self.addCleanup(setattr, self.server, "pane_exists", real)
         self.addCleanup(setattr, composer, "pane_is_foreign", real_foreign)
@@ -2400,11 +2392,10 @@ class TestStalePaneSurvives(PairTestCase):
         return PairSession(role, self.store)
 
     def join_pane(self, pane: str) -> None:
-        """Новая роль заходит на панель, и _register начинает её проверять.
+        """A new role enters a pane, and _register starts checking it.
 
-        Это обязательный шаг теста, а не украшение: конфликт панелей находится
-        только там, где у РЕГИСТРИРУЮЩЕЙСЯ роли есть своя TMUX_PANE. Без неё
-        проверка просто не выполняется, и тест проходит бы, ничего не проверив.
+        A mandatory test step, not decor: the pane conflict only surfaces where the
+        REGISTERING role owns a pane.
         """
         previous = os.environ.get("TMUX_PANE")
         os.environ["TMUX_PANE"] = pane
@@ -2412,16 +2403,16 @@ class TestStalePaneSurvives(PairTestCase):
                         if previous is not None else os.environ.pop("TMUX_PANE", None))
 
     def test_live_pane_of_a_restarted_role_is_kept(self) -> None:
-        """Роль перезапустилась: pid сменился, но окно то же. Панель обязана
-        остаться, иначе сосед станет недоступен ровно тогда, когда он нужен."""
-        self.pane_alive(True)                        # окно живо, pid — нет
+        """A role restarted: the pid changed, but the window stays. The pane must hold, or
+        the neighbour turns unreachable exactly when needed."""
+        self.pane_alive(True)                        # the window lives, the pid does not
         self.register("agy", "%20", 999999)
         newcomer = PairSession("claude", self.store)
         newcomer.tool_pair_state()
         self.assertEqual(self.store.read()["roles"]["agy"].get("pane"), "%20")
 
     def test_pane_is_cleared_when_both_facts_hold(self) -> None:
-        """pid мёртв И панели нет в tmux — тогда панель действительно мёртва."""
+        """A dead pid AND no pane in tmux means the pane is truly dead."""
         self.pane_alive(False)
         self.register("agy", "%20", 999999)
         self.join_pane("%20")
@@ -2433,8 +2424,8 @@ class TestStalePaneSurvives(PairTestCase):
         self.assertIn("pane_stale_cleared", kinds)
 
     def test_live_pid_on_the_same_pane_is_still_a_collision(self) -> None:
-        """Две живые роли на одной панели — это неразличимо, и об этом надо
-        сказать, а не молча выбрать одну."""
+        """Two live roles on one pane means indistinguishable, and that must be said, never
+        silently picking one."""
         self.pane_alive(True)
         self.register("agy", "%20", os.getpid())
         self.join_pane("%20")
@@ -2445,12 +2436,11 @@ class TestStalePaneSurvives(PairTestCase):
         self.assertEqual(self.store.read()["roles"]["agy"].get("pane"), "%20")
 
     def test_two_roles_on_one_unique_pane_id_is_a_collision(self) -> None:
-        """Две роли на одном уникальном ID панели — коллизия по UID (#защита).
+        """Two roles on one unique pane ID means a UID collision (#guard).
 
-        Адрес `ml:0.2` плавает при сплитах, `%N` — при рестарте tmux; `%2751`
-        уникален и умирает вместе с панелью. Совпадение UID двух ролей —
-        та же неразличимость, что и совпадение адресов, и молчать о ней
-        нельзя: иначе доставка бьёт в чужой композер.
+        The `ml:0.2` address floats on splits, `%N` on tmux restarts; `%2751` is unique
+        and dies with the pane. Two roles sharing a UID means the same indistinction
+        as sharing addresses, never silent: or delivery lands in a foreign composer.
         """
         self.pane_alive(True)
         self.register("agy", "%20", os.getpid())
@@ -2468,17 +2458,18 @@ class TestStalePaneSurvives(PairTestCase):
         self.assertIn("pane_uid_collision", kinds)
 
     def test_daemon_foreign_env_explicit_channel_wins(self) -> None:
-        """Демон с чужим TMUX_PANE получает адрес из явного канала (--pane/PAIR_PANE).
+        """A daemon with foreign TMUX_PANE takes its address from the explicit channel
+        (--pane/PAIR_PANE).
 
-        OpenCode демон наследует TMUX_PANE другого проекта (напр. gala:0.1).
-        Явный канал от запускающей стороны выигрывает у env и ancestry.
+        The OpenCode daemon inherits another project TMUX_PANE (say gala:0.1). The
+        explicit channel from the launching side wins over env and ancestry.
         """
         import composer
         self.pane_alive(True)
         self.join_pane("%foreign_pane")
         real_belongs = composer.pane_belongs_to_project
         composer.pane_belongs_to_project = lambda tmux, pane, root: (
-            (True, "") if str(pane) in ("%explicit_pane", "%explicit_env", "proj:0.1") else (False, "чужой проект")
+            (True, "") if str(pane) in ("%explicit_pane", "%explicit_env", "proj:0.1") else (False, "another project")
         )
         self.addCleanup(setattr, composer, "pane_belongs_to_project", real_belongs)
         newcomer = PairSession("claude", self.store, pane="%explicit_pane")
@@ -2487,11 +2478,10 @@ class TestStalePaneSurvives(PairTestCase):
         self.assertEqual(roles["claude"].get("pane"), "%explicit_pane")
 
     def test_deadlock_living_host_takes_over_dead_occupant_pane(self) -> None:
-        """Дедлок: живой хозяин получает панель мёртвого держателя.
+        """Deadlock: a live owner takes a dead holder pane.
 
-        Панель жива и проектна, держатель мёртв (pid 999999). Приходящая живая
-        роль с той же панелью снимает старую запись с pane_stale_cleared и
-        получает панель себе.
+        The pane lives and is project, the holder is dead (pid 999999). The incoming
+        live role with the same pane drops the old record with pane_seen.
         """
         self.pane_alive(True)
         self.register("agy", "%20", 999999)
@@ -2505,94 +2495,88 @@ class TestStalePaneSurvives(PairTestCase):
         self.assertIn("pane_stale_cleared", kinds)
 
     def test_a_malformed_id_is_not_vouched_for(self) -> None:
-        """После ребута %1 может принадлежать совсем другому окну, поэтому
-        панель проверяется только настоящим запросом к tmux, а не формой строки."""
+        """Past a reboot %1 may belong to a wholly other window, so the pane checks only by
+        a real tmux query, never by line shape."""
         self.assertFalse(self.server.pane_exists(""))
-        self.assertFalse(self.server.pane_exists("%999999999"), "несуществующая панель — не живая")
-        self.assertFalse(self.server.pane_exists("opencode"), "имя процесса — не панель")
+        self.assertFalse(self.server.pane_exists("%999999999"), "a missing pane is not alive")
+        self.assertFalse(self.server.pane_exists("opencode"), "a process name is not a pane")
 
     def test_a_live_pane_is_recognised(self) -> None:
         if not shutil_which("tmux"):
-            self.skipTest("tmux не установлен")
+            self.skipTest("tmux not installed")
         mine = self._pane_at_startup
         if not mine:
-            self.skipTest("набор запущен вне tmux")
+            self.skipTest("the suite runs outside tmux")
         self.assertTrue(self.server.pane_exists(mine))
 
     def test_the_two_pane_checks_never_disagree(self) -> None:
-        """server.pane_exists и composer.pane_alive делают одно и то же.
+        """server.pane_exists and composer.pane_alive do the same thing.
 
-        Правка про фантомные панели попала сначала в одну функцию, а вторую с
-        тем же именем и той же работой пропустили: `pairpilot` зовёт именно её,
-        и `%999999` остался «живым» навсегда. Расхождение проще всего не допустить
-        сравнением — правка одной функции без другой уронит этот тест.
+        The phantom-pane fix first landed in one function, while the second with the
+        same name and job went missing: `pairpilot` calls exactly it, and `%999999`
+        stayed "alive" forever. Easiest never to let diverge is comparing — a fix to
+        one function without the other drops this test.
         """
         from composer import pane_alive
         if not shutil_which("tmux"):
-            self.skipTest("tmux не установлен")
+            self.skipTest("tmux not installed")
         tmux = shutil_which("tmux")
         for pane in ("%999999", "%998877", "%0"):
             self.assertEqual(
                 self.server.pane_exists(pane), pane_alive(tmux, pane),
-                f"{pane}: server и composer обязаны отвечать одинаково")
+                f"{pane}: server and composer must answer alike")
 
     def test_a_phantom_pane_is_not_alive_for_the_pilot_either(self) -> None:
-        """Конкретный фантом, на котором ловился баг: несуществующая панель,
-        которой tmux отвечает кодом 0 и пустой строкой."""
+        """The concrete phantom the bug was caught on: a missing pane answered by tmux
+        with code 0 and an empty line."""
         from composer import pane_alive
         if not shutil_which("tmux"):
-            self.skipTest("tmux не установлен")
+            self.skipTest("tmux not installed")
         self.assertFalse(pane_alive(shutil_which("tmux"), "%999999"))
         mine = self._pane_at_startup
         if mine:
-            self.assertTrue(pane_alive(shutil_which("tmux"), mine), "живая панель живая")
+            self.assertTrue(pane_alive(shutil_which("tmux"), mine), "a live pane is alive")
 
     def test_real_tmux_answers_both_ways(self) -> None:
-        """Единственная здесь проверка, которую нельзя подменить: настоящий tmux,
-        оба ответа.
+        """The only check here no stub may replace: a real tmux, both answers.
 
-        Остальные тесты этого класса подменяют pane_exists, поэтому функция,
-        которая отвечала бы False всегда, прошла бы весь набор зелёным — а это
-        ровно старый баг: живая панель объявлена мёртвой, запись стёрта, живой
-        сосед становится недоступен. Свой tmux здесь поднимает сам тест, поэтому
-        проверка не зависит от того, внутри tmux ли запущен набор.
+        The rest of this class stubs pane_exists, so a function answering wrongly
+        would pass regardless of whether the suite runs inside tmux.
 
-        Второй ответ важнее первого: после смерти сессии %N — имя без
-        содержимого, и именно его pane_exists обязан назвать фантомом.
+        The second answer matters more than the first: past the session death %N is
+        a name with no content, and pane_exists must name exactly it a phantom.
         """
         tmux = shutil_which("tmux")
         if not tmux:
-            self.skipTest("tmux не установлен")
-        # Имя с случайным суффиксом и без чужого kill-session до создания. Раньше здесь
-        # стояло `pairtest-<pid>` и безусловный `kill-session` ДО new-session, то
-        # есть два параллельных прогона с одним pid, а чаще — убийство чужой
-        # сессии с тем же именем. Убираем и то, и другое.
+            self.skipTest("tmux not installed")
+        # A randomly suffixed name with no foreign kill-session before creating. It used to
+        # stand `pairtest-<pid>` with an unconditional `kill-session` BEFORE new-session —
+        # two parallel runs sharing one pid, and more often killing a foreign session with the
+        # same name. Dropping both.
         session = f"pairtest-{os.getpid()}-{os.urandom(4).hex()}"
         self.addCleanup(subprocess.run, [tmux, "kill-session", "-t", session],
                         capture_output=True, timeout=10)
         made = subprocess.run([tmux, "new-session", "-d", "-s", session],
                               capture_output=True, text=True, timeout=10)
         if made.returncode != 0:
-            self.skipTest(f"tmux не даёт создать сессию: {made.stderr.strip()[:80]}")
+            self.skipTest(f"tmux refuses to create a session: {made.stderr.strip()[:80]}")
         listed = subprocess.run([tmux, "list-panes", "-t", session, "-F", "#{pane_id}"],
                                 capture_output=True, text=True, timeout=10)
         panes = listed.stdout.split()
-        self.assertTrue(panes, "у сессии есть панель")
+        self.assertTrue(panes, "the session owns a pane")
         pane = panes[0]
-        self.assertTrue(self.server.pane_exists(pane), f"живая панель {pane} — живая")
+        self.assertTrue(self.server.pane_exists(pane), f"a live pane {pane} — alive")
 
         subprocess.run([tmux, "kill-session", "-t", session], capture_output=True, timeout=10)
         self.assertFalse(self.server.pane_exists(pane),
-                         f"{pane} после смерти сессии — фантом, а не панель")
+                         f"{pane} past the session death — a phantom, not a pane")
 
 class TestSingleLiveProcessPerRole(PairTestCase):
-    """Одна живая роль — один живой процесс (#19.2).
+    """One live role means one live process (#19.2).
 
-    Второй процесс на том же имени роли с другой панели при живом записанном
-    pid — дубль, а не рестарт: регистрация отказывает, ростер не тронут.
-    Но pid переиспользуется, а адрес панели протухает, поэтому отказ — только
-    когда проверять есть чем. Каждый тест ниже фиксирует одну сторону этого
-    условия: ложный отказ здесь — вечный lockout легитимного агента."""
+    A second process under the same role name from another pane with a live recorded
+    pid is a double, not a restart: registration refuses, the roster untouched.
+    """
 
     def setUp(self) -> None:
         super().setUp()
@@ -2600,13 +2584,13 @@ class TestSingleLiveProcessPerRole(PairTestCase):
         self.server = server
 
     def live_pid(self, value: bool):
-        """Подменить живость записанного pid: чужой pid в тесте мёртв всегда."""
+        """Stub the recorded-pid liveness: a foreign test pid is always dead."""
         patcher = mock.patch.object(self.server, "is_pid_alive", return_value=value)
         patcher.start()
         self.addCleanup(patcher.stop)
 
     def same_pane_as(self, value: bool):
-        """Подменить сравнение панелей: граница tmux, в unit — мок."""
+        """Stub the pane comparison: the tmux edge, a mock in unit."""
         patcher = mock.patch.object(self.server, "same_pane", return_value=value)
         patcher.start()
         self.addCleanup(patcher.stop)
@@ -2631,32 +2615,33 @@ class TestSingleLiveProcessPerRole(PairTestCase):
             {"pane": pane, "pid": pid}))
 
     def test_second_server_process_on_the_same_role_is_refused(self) -> None:
-        """Синглтон: два живых server.py на одной роли — второй падает отказом.
-        Старый guard держался на pid+is_pid_alive (флипает при рестарте, измерено:
-        два живых процесса делили слот opencode). flock на .server-<role>.lock
-        отбивает дубль сразу, без разбора кто чей pid."""
+        """Singleton: two live server.py on one role means the second falls refused.
+        The old guard stood on pid+is_pid_alive (flipping on restart, measured: two
+        live processes shared the opencode slot). A flock on .server-<role>.lock
+        refuses the double at once, with no sorting whose pid is whose.
+        """
         first = self.store.acquire_role_lock("agy")
         with self.assertRaises(ProtocolError):
             self.store.acquire_role_lock("agy")
         first.close() if hasattr(first, "close") else None
 
     def test_role_lock_is_released_when_the_process_dies(self) -> None:
-        """Мёртвый lock не залипает: закрытие хэндла отпускает, новый процесс
-        той же роли занимает слот без ручной чистки."""
+        """A dead lock never sticks: closing the handle releases, and a new process of the
+        same role takes the slot with no manual cleanup."""
         first = self.store.acquire_role_lock("agy")
         first.close()
         second = self.store.acquire_role_lock("agy")
         second.close() if hasattr(second, "close") else None
 
     def test_different_roles_do_not_block_each_other(self) -> None:
-        """Слоты независимы: omp и agy держат свои lock параллельно."""
+        """Slots stay independent: omp and agy hold their locks in parallel."""
         omp = self.store.acquire_role_lock("omp")
         agy = self.store.acquire_role_lock("agy")
         omp.close() if hasattr(omp, "close") else None
         agy.close() if hasattr(agy, "close") else None
 
     def test_second_live_process_on_another_pane_is_refused(self) -> None:
-        """Дубль: живой pid, живая удержанная панель, другая пришедшая — отказ."""
+        """A double: a live pid, a live held pane, another comer — refusal."""
         self.register("agy", "%20", 999999)
         self.live_pid(True)
         self.pane_alive(True)
@@ -2671,7 +2656,7 @@ class TestSingleLiveProcessPerRole(PairTestCase):
         self.assertIn("role_collision", kinds)
 
     def test_restart_on_the_same_pane_updates_pid(self) -> None:
-        """Рестарт: pid сменился, панель та же — регистрация проходит."""
+        """A restart: the pid changed, the pane stays — registration passes."""
         self.register("agy", "%20", 999999)
         self.live_pid(False)
         self.pane_alive(True)
@@ -2681,10 +2666,11 @@ class TestSingleLiveProcessPerRole(PairTestCase):
         self.assertEqual(self.store.read()["roles"]["agy"].get("pid"), os.getpid())
 
     def test_reused_pid_on_the_same_pane_is_not_a_refusal(self) -> None:
-        """Переиспользованный pid: записанный «жив», но панель та же — не отказ.
+        """A reused pid: the recorded "alive" one, but the pane matches — no refusal.
 
-        os.kill(pid, 0) видит чужой процесс как живой, поэтому один факт живого
-        pid без второго факта (другая панель) отказывать не вправе."""
+        os.kill(pid, 0) sees a foreign process as living, so one live-pid fact with no
+        second fact (another pane) never refuses.
+        """
         self.register("agy", "%20", 999999)
         self.live_pid(True)
         self.pane_alive(True)
@@ -2694,13 +2680,13 @@ class TestSingleLiveProcessPerRole(PairTestCase):
         self.assertEqual(self.store.read()["roles"]["agy"].get("pid"), os.getpid())
 
     def test_no_pane_means_no_refusal(self) -> None:
-        """Безадресный вызов ни на какой композер не претендует — не отказ."""
+        """An addressless call claims no composer — no refusal."""
         self.register("agy", "%20", 999999)
         self.live_pid(True)
         self.pane_alive(True)
         self.same_pane_as(False)
-        # Поиск своей панели по дереву процессов (раунд 32) в наборе находит
-        # панель запускающего shell — тест перестал бы быть безадресным.
+        # Finding our own pane over the process tree (round 32) finds the launching-shell
+        # pane in the suite — the test would stop being addressless.
         import composer
         real_find = composer.find_own_pane
         composer.find_own_pane = lambda tmux: ""
@@ -2712,7 +2698,7 @@ class TestSingleLiveProcessPerRole(PairTestCase):
         self.assertIn("role_collision", kinds)
 
     def test_dead_held_pane_means_restart_not_duplicate(self) -> None:
-        """Удержанная панель мертва, процесс жив: рестарт после смерти панели."""
+        """A held pane dead, the process alive: a restart past the pane death."""
         self.register("agy", "%20", 999999)
         self.live_pid(True)
         self.pane_alive(False)
@@ -2722,14 +2708,13 @@ class TestSingleLiveProcessPerRole(PairTestCase):
         self.assertEqual(self.store.read()["roles"]["agy"].get("pid"), os.getpid())
 
 class TestTranscriptWindow(PairTestCase):
-    """Скользящее окно транскрипта: чтение хвоста и ротация (пункт 4).
+    """The transcript sliding window: tail reading and rotation (item 4).
 
-    Что чинится, измерено, а не предположено. Цифра «46 тысяч токенов» стояла в
-    плане в трёх местах и оказалась размером ФАЙЛА, делённым на 4: в контекст
-    агента она не попадала никогда, потому что `pair_transcript` по умолчанию
-    берёт 40 записей (~2k). Ротация потому и не «снимет 46k», а решает другое:
-    чтение хвоста не разбирает весь файл, и `pairctl log` без `--limit` больше не
-    вываливает весь журнал в терминал.
+    What it fixes, measured, not guessed. The "46 thousand tokens" figure stood in
+    the plan in three places, turning out the FILE size, while the tail read
+    by default takes 40 records (~2k). Rotation solves another thing than "dropping
+    46k": the tail read never parses the whole file, and `pairctl log` without
+    `--limit` no longer dumps the whole journal into the terminal.
     """
 
     def setUp(self) -> None:
@@ -2747,14 +2732,14 @@ class TestTranscriptWindow(PairTestCase):
     def ctl(self, *argv: str) -> int:
         return main(["--state", str(self.root), *argv])
 
-    # ------------------------------------------------------------- чтение хвоста
+    # ---------------------------------------------- tail reading
 
     def test_the_tail_equals_the_last_entries(self) -> None:
-        """Хвост — это хвост, а не «что-то похожее на хвост».
+        """A tail is a tail, not "something tail-like".
 
-        Порядок тоже проверяется: чтение с конца файла обязано вернуть записи в
-        том же порядке, что и чтение подряд, иначе журнал читается задом наперёд,
-        и по нему невозможно понять, что было до чего.
+        Order checks too: reading from the file end must return records in the same
+        order as a straight read, or the journal reads backwards, and no before-after
+        ever reads from it.
         """
         self.fill(500)
         whole = self.store.read_transcript(0)
@@ -2762,19 +2747,19 @@ class TestTranscriptWindow(PairTestCase):
             with self.subTest(limit=limit):
                 self.assertEqual(self.indexes(whole[-limit:]),
                                  self.indexes(self.store.read_transcript(limit)),
-                                 "хвост обязан совпадать с концом полного чтения")
+                                 "the tail must match the full-read end")
 
     def test_a_limit_beyond_the_file_returns_everything(self) -> None:
-        """Просят больше, чем есть, — отдают всё, а не пустоту и не ошибку."""
+        """Asked for more than exists — all serves, never blank or error."""
         self.fill(10)
         self.assertEqual(10, len(self.store.read_transcript(999)))
 
     def test_a_line_longer_than_the_read_block_is_not_torn(self) -> None:
-        """Запись длиннее порции чтения обязана выйти целой.
+        """A record longer than the read portion must arrive whole.
 
-        Нарезка по байтам режет и перенос строки, и строку пополам. Склеивание
-        неполной головы — единственное, что спасает здесь, а потерянная запись
-        в журнале аудита не восстанавливается.
+        Byte slicing cuts both the newline and the line in half. Gluing the partial
+        head is the only rescue here, while a lost record never restores in an audit
+        journal.
         """
         big = "z" * 400_000
         with self.store.transcript_path.open("a", encoding="utf-8") as handle:
@@ -2783,21 +2768,21 @@ class TestTranscriptWindow(PairTestCase):
             handle.write(json.dumps({"kind": "last", "i": 2}, ensure_ascii=False) + "\n")
         got = self.store.read_transcript(3)
         self.assertEqual(["small", "huge", "last"], [e["kind"] for e in got])
-        self.assertEqual(big, got[1]["blob"], "длинная запись обязана прийти целой")
+        self.assertEqual(big, got[1]["blob"], "a long record must arrive whole")
 
     def test_a_damaged_line_is_marked_and_does_not_stop_the_read(self) -> None:
-        """Обрыв на середине строки — обычное дело при убитом процессе.
+        """A mid-line cut is routine with a killed process.
 
-        Молча пропустить такую строку можно, молча выкинуть — нельзя: событие
-        выглядит как не бывшее. Поэтому запись помечается, а чтение продолжается.
+        Silently skipping such a line is allowed, silently dropping is banned: the event
+        reads as never was. So the record marks it, and reading goes on.
         """
         with self.store.transcript_path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps({"kind": "first", "i": 1}, ensure_ascii=False) + "\n")
-            handle.write("{это не json вовсе\n")
+            handle.write("{not json at all\n")
             handle.write(json.dumps({"kind": "after", "i": 2}, ensure_ascii=False) + "\n")
         got = self.store.read_transcript(3)
         self.assertEqual(1, sum(1 for e in got if e.get("_damaged")),
-                         "битая строка обязана быть видна, а не исчезнуть")
+                         "a broken line must show, never vanish")
         self.assertEqual(["first", "after"],
                          [e["kind"] for e in got if not e.get("_damaged")],
                          "записи по обе стороны обрыва обязаны читаться")
