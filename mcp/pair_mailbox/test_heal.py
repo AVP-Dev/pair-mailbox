@@ -26,7 +26,7 @@ class TestPairHeal(PairTestCase):
 
     def test_heal_triggers_on_failing_evidence_in_done(self) -> None:
         self.advance_phases(("plan", "implement", "verify"))
-        self.writer.tool_pair_evidence(kind="test", value="tests ok", ok=True)
+        self.record_test_evidence("tests ok")
         self.writer.tool_pair_advance("done")
         self.assertEqual(self.store.read()["phase"], "done")
         self.assertEqual(self.store.read()["round"], 1)
@@ -51,7 +51,7 @@ class TestPairHeal(PairTestCase):
         heal.save_heal_state(self.store.root, {"attempts": 3, "last_heal": None})
 
         self.advance_phases(("plan", "implement", "verify"))
-        self.writer.tool_pair_evidence(kind="test", value="tests ok", ok=True)
+        self.record_test_evidence("tests ok")
         self.writer.tool_pair_advance("done")
 
         # При превышении лимита фаза остается done

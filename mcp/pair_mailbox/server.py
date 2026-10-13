@@ -173,7 +173,8 @@ AUTONOMIES = ("observe", "semi", "auto")
 # What may be recorded as proof that the round did something. Every kind here is
 # something a machine can produce on its own; "the peer seemed happy" is not one
 # of them, which is the whole point.
-EVIDENCE_KINDS = ("test", "lint", "typecheck", "build", "diff", "commit", "pr", "manual")
+EVIDENCE_KINDS = ("test", "lint", "typecheck", "build", "diff", "commit", "pr", "manual",
+                  "ground-truth")
 
 EVIDENCE_KEEP = 50
 
@@ -466,6 +467,17 @@ def done_blockers(state: dict[str, Any]) -> list[str]:
             f"with what the machine actually printed. kind=lint, typecheck or a commit hash "
             f"is not a substitute, another role's 'ok' is not a substitute either, and neither "
             f"is a verdict that things look right."
+        )
+
+    # [R82] Без PASS живого прогона гейтов от писателя — не закрыться (R81).
+    if state.get("mode", "fix") != "audit" and not any(
+            item.get("kind") == "ground-truth" and item.get("ok")
+            and item.get("role") == state.get("writer")
+            for item in latest.values()):
+        blockers.append(
+            f"round {round_number} has no passing ground-truth run from the writer. "
+            f"Run session_facts + anti-mock gate + verify-ground-truth, then "
+            f"pair_evidence(kind=\"ground-truth\", value=\"PASS ...\")."
         )
 
     if autonomy == "semi" and not human_ok_for_round(state):
@@ -2675,11 +2687,15 @@ class PairSession:
                 state["round"] = int(state.get("round", 0)) + 1
             elif phase == "done":
                 state["closed_at"] = utcnow()
+                from receipt import GroundTruthBlocked, generate_receipt
                 try:
-                    from receipt import generate_receipt
                     generate_receipt(self.store.root, state)
+                except GroundTruthBlocked as exc:
+                    raise ProtocolError(f"round cannot be closed: {exc}",
+                                        "Уберите боевые моки, закоммитьте и повторите.")
                 except Exception:
-                    pass
+                    import traceback
+                    traceback.print_exc()
 
         self.store.mutate(apply)
         self.store.append_transcript(

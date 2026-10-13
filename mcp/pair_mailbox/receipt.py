@@ -8,6 +8,9 @@
 - Собранные доказательства (evidences);
 - Фактические метрики бюджета (сообщения, переходы, часы, рестарты);
 - Хэш HEAD и дату закрытия.
+- [R82] Секцию Ground Truth: dirty_hash фактов, вердикт anti-mock
+  (PASS/BLOCKED + число), ссылку на запись ledger. Квитанция fail-closed:
+  при боевых моках квитанция не пишется, а бросается GroundTruthBlocked.
 """
 from __future__ import annotations
 
@@ -15,6 +18,12 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+
+class GroundTruthBlocked(Exception):
+    """Факты запрещают квитанцию: боевые моки или расхождение с diff."""
+
+
 
 
 def generate_receipt(state_dir: Path, state: dict[str, Any], head_commit: str = "") -> Path:
@@ -49,6 +58,9 @@ def generate_receipt(state_dir: Path, state: dict[str, Any], head_commit: str = 
     except Exception:
         pass
 
+    # [R82] Ground Truth: факты живьём из корня репозитория, вердикт гейта,
+    # ссылка на ledger. Fail-closed: боевые моки — исключение до записи.
+    ground_lines = _ground_truth_lines(state_dir, round_number)
     now_iso = datetime.now(timezone.utc).isoformat()
 
     lines = [
@@ -89,8 +101,45 @@ def generate_receipt(state_dir: Path, state: dict[str, Any], head_commit: str = 
         "## Budget Metrics",
         metrics_str,
         "",
+        "## Ground Truth",
+        *ground_lines,
+        "",
     ])
 
     content = "\n".join(lines)
     target.write_text(content, encoding="utf-8")
     return target
+
+
+def _ground_truth_lines(state_dir: Path, round_number: int) -> list[str]:
+    """Секция Ground Truth: факты, вердикт, ledger. Блок — исключением."""
+    import anti_mock_gate
+    import session_facts
+    from ledger import read_round
+    repo = state_dir.resolve()
+    while not (repo / ".git").is_dir() and repo.parent != repo:
+        repo = repo.parent
+    if not (repo / ".git").is_dir():
+        # Вне репозитория фактов нет — UNKNOWN, не блок (договор: PRESERVE).
+        return ["- facts: UNKNOWN (state вне git-дерева)"]
+    facts = session_facts.collect_facts(repo)
+    verdict = anti_mock_gate.judge(facts)
+    if not verdict["ok"]:
+        first = verdict["blockers"][0]
+        raise GroundTruthBlocked(
+            f"anti-mock BLOCKED ({len(verdict['blockers'])}): "
+            f"{first['file']}:{first['line']} [{first['pattern']}]")
+    ledger_ref = "—"
+    try:
+        records = read_round(state_dir, round_number)
+        if records:
+            ledger_ref = f"ledger.jsonl: {len(records)} запис(ь/ей) раунда {round_number}"
+    except Exception:
+        pass
+    return [
+        f"- dirty_hash: {facts.get('dirty_hash', '—')}",
+        f"- anti-mock: PASS ({len(verdict['blockers'])} blockers, "
+        f"{len(verdict['warnings'])} warnings)",
+        f"- ledger: {ledger_ref}",
+    ]
+

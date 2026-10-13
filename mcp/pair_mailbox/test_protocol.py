@@ -623,6 +623,14 @@ class TestEvidenceGate(PairTestCase):
         self.human_ok()
         self.assertEqual(self.writer.tool_pair_advance("done")["phase"], "done")
 
+    def test_done_refused_without_writer_ground_truth(self) -> None:
+        """[R82] Тесты без прогона гейтов и чужой прогон — отказ (R81)."""
+        self.writer.tool_pair_evidence(kind="test", value="117 passed, exit 0", ok=True)
+        self.human_ok()
+        self.assertRefused(self.writer.tool_pair_advance, "done", contains="ground-truth")
+        self.peer.tool_pair_evidence(kind="ground-truth", value="PASS", ok=True)
+        self.assertRefused(self.writer.tool_pair_advance, "done", contains="ground-truth")
+
     def test_an_audit_round_does_not_demand_a_test_run(self) -> None:
         """В mode=audit результат работы — находки в заметках, и прогона тестов
         может не быть по существу. Гейт не должен требовать то, чего в этом
@@ -738,12 +746,12 @@ class TestEvidenceGate(PairTestCase):
         rolekeys.generate(self.store.root, self.store.project_root, "writer-agent")
         self.record_test_evidence()
         items = [i for i in self.store.read()["evidence"] if i.get("round") == self.store.read()["round"]]
-        self.assertEqual(1, len(items))
-        env = items[0].get("envelope")
+        test_item = [i for i in items if i.get("kind") == "test"][0]
+        env = test_item.get("envelope")
         self.assertIsInstance(env, dict, "с ключом факт подписывается")
         vk = rolekeys.load_verify_key(self.store.root, "writer-agent")
         assert vk is not None
-        text = f"{items[0]['round']}:{items[0]['kind']}:{items[0]['task'] or ''}:{items[0]['value']}"
+        text = f"{test_item['round']}:{test_item['kind']}:{test_item['task'] or ''}:{test_item['value']}"
         self.assertTrue(rolekeys.verify_envelope(vk, env, text))
 
     def test_tampered_evidence_blocks_the_close(self) -> None:

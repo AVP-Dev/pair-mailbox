@@ -112,12 +112,15 @@ if ! printf '%s' "$REPORT" | grep -q "^Cleanup:" || ! printf '%s' "$REPORT" | gr
   echo "report: missing required section" >&2
   exit 1
 fi
-# Marker gate: successful apply (blocked==false) AND clean tree, else no
-# file. Same HEAD is a no-op ("Nothing to clean").
+# Marker gate: successful apply (blocked==false) AND clean tree AND
+# ground-truth PASS/UNKNOWN (BLOCKED — нет маркера), else no file.
+# Same HEAD is a no-op ("Nothing to clean").
 BLOCKED="$(printf '%s' "$REPORT" | head -1 | grep -q BLOCKED && echo yes || echo no)"
 TREE_CLEAN="$(git status --porcelain=v1 2>/dev/null | grep -q . && echo no || echo yes)"
+GT_BLOCKED="$(python3 -c 'import json,sys; print(\"yes\" if json.load(open(sys.argv[1])).get(\"ground_truth\",{}).get(\"status\")==\"BLOCKED\" else \"no\")' "$CHECK" 2>/dev/null || echo no)"
 HEAD_NOW="$(git rev-parse HEAD 2>/dev/null || echo UNKNOWN)"
-if [ "$BLOCKED" = "yes" ] || [ "$TREE_CLEAN" = "no" ]; then
+if [ "$BLOCKED" = "yes" ] || [ "$TREE_CLEAN" = "no" ] || [ "$GT_BLOCKED" = "yes" ]; then
+  [ "$GT_BLOCKED" = "yes" ] && echo "report: ground-truth BLOCKED, marker withheld" >&2
   exit 0
 fi
 mkdir -p "$ROOT/$(dirname "$MARKER")"

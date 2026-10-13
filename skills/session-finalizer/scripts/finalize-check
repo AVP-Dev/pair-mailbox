@@ -33,7 +33,7 @@ STATUS_EXIT=0; git status --porcelain=v1 >/dev/null 2>&1 || STATUS_EXIT=$?
 DETECT_JSON="$("$SKILL/adapters/commands.sh" detect "$ROOT" 2>/dev/null || echo '{}')"
 PR_RAW="$("$SKILL/adapters/hosting.sh" pr "$BRANCH" 2>/dev/null || echo UNKNOWN)"
 ARTS="$("$SKILL/adapters/agent.sh" artifacts "$ROOT" 2>/dev/null || true)"
-export ROOT BRANCH BASE UPSTREAM CFG PORC DIFFCHECK_OUT DIFFCHECK_EXIT STATUS_EXIT DETECT_JSON PR_RAW ARTS
+export ROOT BRANCH BASE UPSTREAM CFG PORC DIFFCHECK_OUT DIFFCHECK_EXIT STATUS_EXIT DETECT_JSON PR_RAW ARTS SKILL
 python3 - <<'PY'
 import fnmatch, json, os, re, subprocess
 root = os.environ["ROOT"]; branch = os.environ["BRANCH"]; base = os.environ["BASE"]
@@ -212,9 +212,41 @@ for name in slots if isinstance(slots, list) and slots else ("test", "lint", "bu
 def fnprotected(br):
     pats = cfg.get("protected_patterns", []) + cfg.get("protected_branches", [])
     return any(fnmatch.fnmatch(br, p) for p in pats)
+# [R82] Ground Truth: факты живьём + вердикт anti-mock. Путь к модулям —
+# от каталога скилла к корню umputum (SKILL/../..). Нет модулей или не git —
+# UNKNOWN (PRESERVE), боевые моки — блок. Read-only: только status/diff.
+ground_truth = {"status": "UNKNOWN", "blockers": [], "warnings": 0,
+                 "dirty_hash": "", "reason": "not evaluated"}
+try:
+    import sys as _sys
+    _up = os.path.join(os.environ.get("SKILL", ""), "..", "..")
+    _mb = os.path.normpath(os.path.join(_up, "mcp", "pair_mailbox"))
+    if _mb not in _sys.path:
+        _sys.path.insert(0, _mb)
+    import session_facts as _sf
+    import anti_mock_gate as _am
+    _facts = _sf.collect_facts(root)
+    _verdict = _am.judge(_facts)
+    ground_truth = {
+        "status": "PASS" if _verdict["ok"] else "BLOCKED",
+        "blockers": ["%s:%s [%s]" % (f.get("file"), f.get("line"),
+                                      f.get("pattern"))
+                     for f in _verdict["blockers"][:10]],
+        "warnings": len(_verdict["warnings"]),
+        "dirty_hash": _facts.get("dirty_hash", ""),
+        "reason": ("ok" if _verdict["ok"] else
+                   "%d боев. мок-флаг(ов)" % len(_verdict["blockers"])),
+    }
+except Exception as e:
+    ground_truth = {"status": "UNKNOWN", "blockers": [], "warnings": 0,
+                    "dirty_hash": "", "reason": "PRESERVE: %s" % str(e)[:120]}
 # Blocked is a JSON signal, never an exit code: dirty tree, unpushed
 # commits, unmerged non-base branch, or any real check failure.
 block_reasons = []
+if ground_truth.get("status") == "BLOCKED":
+    block_reasons.append("ground-truth BLOCKED: %s (%s)"
+                         % (ground_truth.get("reason"),
+                            ", ".join(ground_truth["blockers"][:3])))
 if porc_lines:
     block_reasons.append("dirty tree: %d changed/untracked path(s)" % len(porc_lines))
 if unpushed:
@@ -237,6 +269,7 @@ doc = {"branch": branch, "base": base, "repo_root": root, "git_porcelain": porc_
        "upstream": "" if upstream == "null" else upstream,
        "merged_in_base": merged, "pr": pr, "todos_in_diff": todos[:20],
        "worktrees": worktrees, "temp_files": temps, "session_artifacts": artifacts,
-       "checks": checks, "blocked": len(block_reasons) > 0, "block_reasons": block_reasons}
+       "checks": checks, "ground_truth": ground_truth,
+       "blocked": len(block_reasons) > 0, "block_reasons": block_reasons}
 print(json.dumps(doc, indent=2))
 PY

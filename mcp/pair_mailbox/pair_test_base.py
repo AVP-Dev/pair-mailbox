@@ -103,6 +103,15 @@ class PairTestCase(unittest.TestCase):
                              task: int | None = None) -> None:
         """Record what a closing round needs: a machine-produced fact for THIS round."""
         self.writer.tool_pair_evidence(kind="test", value=value, ok=ok, task=task)
+        if ok:
+            # [R82] Настоящая пара перед закрытием гоняет и гейты: без
+            # writer-ground-truth done_blockers держит раунд (инцидент R81).
+            self.record_ground_truth()
+
+    def record_ground_truth(self, value: str = "PASS anti-mock 0 blockers", ok: bool = True) -> None:
+        """[R82] Живой прогон гейтов: настоящая пара пишет его перед закрытием."""
+        self.writer.tool_pair_evidence(kind="ground-truth", value=value, ok=ok)
+
 
     def human_ok(self) -> None:
         """The one word a human says at a semi checkpoint, without leaving Python."""

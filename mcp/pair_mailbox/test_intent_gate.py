@@ -63,9 +63,7 @@ class TestTaskReceipt(PairTestCase):
         self.writer.tool_pair_task(action="done", id=1)
 
         # Запишем доказательство
-        self.writer.tool_pair_evidence(kind="test", value="tests ok", ok=True)
-
-        # Закрываем раунд
+        self.record_test_evidence("tests ok")
         res = self.writer.tool_pair_advance("done")
         self.assertEqual(res["phase"], "done")
 

@@ -168,7 +168,7 @@ class TestBudgetServerIntegration(PairTestCase):
         self.writer.tool_pair_send(to="reviewer-agent", subject="work", text="msg 4")
 
         # Запишем evidence
-        self.writer.tool_pair_evidence(kind="test", value="tests pass", ok=True)
+        self.record_test_evidence("tests pass")
         # Прочитаем все входящие
         self.writer.tool_pair_read()
 
