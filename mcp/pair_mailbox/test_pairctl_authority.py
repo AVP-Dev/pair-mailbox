@@ -174,7 +174,7 @@ class TestControlSurface(PairTestCase):
         with contextlib.redirect_stderr(buffer):
             self.assertEqual(self._ctl("roles", "--writer", "writer-agent",
                                        "--critic", "reviewer-agent"), 0)
-        self.assertIn("проигнорирован", buffer.getvalue())
+        self.assertIn("ignored", buffer.getvalue())
         self.assertEqual(self.store.read()["policy"], {"writer": "writer-agent"})
 
     def test_critic_alone_does_not_clear_the_policy(self) -> None:
@@ -227,11 +227,11 @@ class TestControlSurface(PairTestCase):
         wake = self.root / "wake" / "writer-agent.json"
         self.assertTrue(wake.exists(), "новая задача обязана будить писателя")
         payload = json.loads(wake.read_text(encoding="utf-8"))
-        self.assertIn("задача", payload["reasons"])
+        self.assertIn("task", payload["reasons"])
 
         self._ctl("task", "--done", "1")
         payload = json.loads(wake.read_text(encoding="utf-8"))
-        self.assertIn("задача", payload["reasons"],
+        self.assertIn("task", payload["reasons"],
                       "закрытие задачи тоже меняет работу писателя")
 
     def test_task_drop_wakes_the_writer(self) -> None:
@@ -242,7 +242,7 @@ class TestControlSurface(PairTestCase):
         wake = self.root / "wake" / "writer-agent.json"
         self.assertTrue(wake.exists(), "дроп задачи обязан будить писателя")
         payload = json.loads(wake.read_text(encoding="utf-8"))
-        self.assertIn("задача", payload["reasons"])
+        self.assertIn("task", payload["reasons"])
 
     def test_task_wake_failure_does_not_fail_the_command(self) -> None:
         """Находка pi: упавший record_wake не должен ронять cmd_task.

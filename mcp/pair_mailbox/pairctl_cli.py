@@ -1,24 +1,23 @@
-"""`pairctl`: CLI человека поверх состояния пары. Точка входа и разбор аргументов.
+"""`pairctl`: the human CLI over pair state. Entry point and argument parsing.
 
-Вынесено из `server.py` отдельной ответственностью: здесь только грамматика
-команд и маршрутизация, а сами команды живут в трёх соседних модулях по
-владению состоянием:
+Split out of `server.py` as its own responsibility: only command grammar and
+routing live here, while the commands themselves live in three neighbouring
+modules by state ownership:
 
-- `pairctl_authority.py` — меняет раунд: кто пишет, режим, автономия, чекпоинт,
-  леджер задач, сброс;
-- `pairctl_panes.py` — адреса панелей tmux;
-- `pairctl_read.py` — только чтение: дайджест, ящик, журнал, заметки, обзор
-  проектов (последнее оттуда же импортирует `bin/pairchat`).
+- `pairctl_authority.py` — changes the round: who writes, mode, autonomy,
+  checkpoint, task ledger, reset;
+- `pairctl_panes.py` — tmux pane addresses;
+- `pairctl_read.py` — reading only: digest, mailbox, journal, notes, project
+  overview (`bin/pairchat` imports the last from there).
 
-Почему не один модуль `pairctl_cli.py` на 725 строк, как это было в `server.py`:
-упаковка была не разбиением по границам, а переносом монолита в новое место.
-Границы здесь проходят по тому, кто владеет состоянием, и по ним видно, что
-изменение попадёт в журнал: команда из `pairctl_read.py` не может ничего
-испортить, потому что записи в состояние в ней нет вовсе.
+Why not one 725-line `pairctl_cli.py` module as `server.py` was: packing was
+moving the monolith, not splitting on boundaries. Boundaries here follow state
+ownership, and show what lands in the journal: a `pairctl_read.py` command
+cannot break anything, because no state write lives in it at all.
 
-`server.py` остаётся точкой входа MCP-сервера, и `--state`/`--role` разбираются
-в нём же: менять имя или путь файла нельзя, от них зависят `serve.sh`,
-`install.sh` и конфигурация MCP у всех четырёх ролей.
+`server.py` stays the MCP server entry point, and `--state`/`--role` parse in
+it too: the file name and path must never move, `serve.sh`, `install.sh` and
+the MCP config of all four roles depend on them.
 """
 from __future__ import annotations
 
@@ -35,19 +34,19 @@ from server import (
     Store,
 )
 
-# Импорты соседних модулей ленивые, и это не оптимизация. Модули `pairctl_*`
-# импортируют `server`, поэтому на верхнем уровне возник бы цикл: `server`
-# зовёт `main`, а `main` зовёт сюда. Внутри функции цикл не образуется, потому
-# что к этому моменту `server` уже загружен.
+# Neighbour-module imports stay lazy, and that is not optimization. The `pairctl_*`
+# modules import `server`, so top level would close a cycle: `server` calls
+# `main`, and `main` calls here. Inside a function no cycle forms, because by
+# then `server` already loads.
 Command = Callable[[Store, argparse.Namespace], int]
 
 
 def _commands() -> dict[str, str]:
-    """Имя команды -> модуль, который её реализует.
+    """Command name -> implementing module.
 
-    Словарь имён, а не импорты: сам импорт делается в `run_ctl`. Так каждая
-    команда остаётся в своём файле, а этот не знает про их содержимое ничего,
-    кроме того, что модуль с таким именем существует.
+    A name dict, not imports: the import itself happens in `run_ctl`. So every
+    command stays in its file, and this one knows nothing of their contents
+    beyond the module name existing.
     """
     return {
         "status": "pairctl_authority",
@@ -77,12 +76,12 @@ def _commands() -> dict[str, str]:
     }
 
 def run_ctl(args: argparse.Namespace, state_dir: Path) -> int:
-    """Разобрать команду и позвать её реализацию.
+    """Parse the command and call its implementation.
 
-    Порядок здесь намеренный: `Store` создаётся ДО отказа по неизвестной
-    команде. Раньше неизвестная команда тоже создавала store, но это было
-    незаметно — состояние не писалось. Сейчас проверка идёт первой, чтобы
-    опечатка в имени команды не выглядела как «сервер что-то сделал».
+    The order is deliberate: `Store` builds BEFORE the unknown-command refusal.
+    An unknown command used to build a store too, but invisibly — no state was
+    written. The check now runs first, so a typo in the command name never reads
+    as "the server did something".
     """
     command = args.ctl_command
     module_name = _commands().get(command or "")
@@ -123,14 +122,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="human: bind a role to a pane by hand, or --clear to go back to what tmux says",
     )
     pane.add_argument("--role", required=False, default="",
-                      help="role whose binding to set (или позиционно: pane <role> [address])")
+                      help="role whose binding to set (or positional: pane <role> [address])")
     pane.add_argument("positional", nargs="*",
-                      help="позиционная форма из карточки: <role> [address]; "
-                           "address: номер панели или <session>:<window>.<pane>; "
-                           "без address — только показ, без записи")
+                      help="positional shape from the card: <role> [address]; "
+                           "address: pane number or <session>:<window>.<pane>; "
+                           "no address — show only, never record")
     pane.add_argument("--current", action="store_true",
-                      help="привязать роль к $TMUX_PANE текущей панели; без флага "
-                           "pane <role> ничего не меняет, только показывает")
+                      help="bind the role to the current pane $TMUX_PANE; without the flag "
+                           "pane <role> changes nothing, only shows")
     pane.add_argument("--clear", action="store_true",
                       help="drop the override; the pane goes back to what the process reports")
 
@@ -216,36 +215,36 @@ def build_parser() -> argparse.ArgumentParser:
     reset = sub.add_parser("reset", help="wipe shared state")
     reset.add_argument("--yes", action="store_true")
 
-    keys = sub.add_parser("keys", help="human: Ed25519-ключи ролей (gen)")
+    keys = sub.add_parser("keys", help="human: role Ed25519 keys (gen)")
     keys.add_argument("keys_command", nargs="?", help="'gen'")
-    keys.add_argument("role", nargs="?", default="", help="роль для gen")
+    keys.add_argument("role", nargs="?", default="", help="role for gen")
 
-    budget_p = sub.add_parser("budget", help="human: лимиты и метрики раунда (бюджет)")
-    budget_p.add_argument("--reset", action="store_true", help="сбросить счетчики бюджета текущего раунда")
-    budget_p.add_argument("--json", action="store_true", help="вывести метрики в json")
+    budget_p = sub.add_parser("budget", help="human: round limits and metrics (budget)")
+    budget_p.add_argument("--reset", action="store_true", help="reset the current round budget counters")
+    budget_p.add_argument("--json", action="store_true", help="print metrics as json")
 
-    wt_p = sub.add_parser("worktree", help="human: управление git worktrees для параллельных сессий")
+    wt_p = sub.add_parser("worktree", help="human: git worktree management for parallel sessions")
     wt_p.add_argument("worktree_action", nargs="?", choices=["list", "add", "remove", "prune"], default="list")
-    wt_p.add_argument("branch", nargs="?", help="имя ветки (для add)")
-    wt_p.add_argument("--target", help="путь или ветка для remove")
-    wt_p.add_argument("--force", action="store_true", help="принудительное удаление (для remove)")
-    wt_p.add_argument("--json", action="store_true", help="вывести в формате json")
+    wt_p.add_argument("branch", nargs="?", help="branch name (for add)")
+    wt_p.add_argument("--target", help="path or branch for remove")
+    wt_p.add_argument("--force", action="store_true", help="force removal (for remove)")
+    wt_p.add_argument("--json", action="store_true", help="print as json")
 
-    pr_p = sub.add_parser("pr", help="human/writer: машинный гейт слияния PR (merge)")
+    pr_p = sub.add_parser("pr", help="human/writer: PR merge machine gate (merge)")
     pr_p.add_argument("pr_action", nargs="?", choices=["merge"], default="merge")
     pr_p.add_argument("pr_id", nargs="?", help="PR number or branch name")
-    pr_p.add_argument("--force", action="store_true", help="обойти проверки (требует --reason)")
-    pr_p.add_argument("--reason", default="", help="причина принудительного слияния при --force")
+    pr_p.add_argument("--force", action="store_true", help="skip checks (needs --reason)")
+    pr_p.add_argument("--reason", default="", help="forced-merge reason with --force")
 
     return parser
 
 
 def ctl_main(argv: list[str], store: Store | None = None) -> int:
-    """Выполнить команду `pairctl` по готовому argv.
+    """Run a `pairctl` command on a ready argv.
 
-    `store` передаётся только в тестах, которые правят состояние напрямую. В
-    боевом запуске его нет, и `Store` строится здесь: одна точка создания
-    означает, что «каталог состояния выбран» происходит ровно в одном месте.
+    `store` passes only in tests that edit state directly. Live runs never have
+    it, and `Store` builds here: one creation point means "state dir chosen"
+    happens in exactly one place.
     """
     from pairctl_read import extract_state
 
