@@ -24,10 +24,15 @@ mkdir -p "$_root/.pair/mailbox"
 
 
 def _snippet() -> str:
-    """Template-copy lines from bin/pairup — the test rides the code."""
+    """Template-copy lines from bin/pairup — the test rides the code.
+
+    Anchored on structure, not prose: a bare `fi` substring also matches
+    inside `if`, and a comment wording breaks on every rephrase. The mkdir
+    line is what the test depends on anyway.
+    """
     text = PAIRUP.read_text(encoding="utf-8")
-    start = text.index("# Ground-truth template for the new project")
-    end = text.index("fi", start) + len("fi")
+    start = text.index('mkdir -p "$_root/.pair/mailbox"')
+    end = text.index("\n  fi\n", start) + len("\n  fi\n")
     return text[start:end]
 
 
