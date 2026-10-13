@@ -3502,7 +3502,7 @@ class TestPermissionContext(PairTestCase):
                  "Do you want to proceed? [y/n]"]
         result, keys = self.resolve(panel)
         self.assertEqual("refuse", result["verdict"],
-                         "слово из далёкой строки не должно разрешать команду")
+                         "a word from a distant line must never allow the command")
         self.assertEqual([], keys)
 
     def resolve(self, lines):
@@ -3555,16 +3555,16 @@ class TestRingAndUnblock(PairTestCase):
 
     def test_ring_disabled_by_env(self) -> None:
         os.environ["PAIR_DISABLE_RING"] = "1"
-        res = self.writer._ring("reviewer-agent", "тест", "детали")
+        res = self.writer._ring("reviewer-agent", "test", "details")
         self.assertFalse(res["rung"])
         self.assertIn("PAIR_DISABLE_RING", res["why"])
 
     def test_ring_survives_an_invisible_composer(self) -> None:
-        """`composer_line` возвращает None, когда композера не видно.
+        """`composer_line` returns None when no composer shows.
 
-        `is_composer_empty(None)` падает на NoneType.rstrip, и до этой правки любой
-        звонок в панель, где TUI перерисовался, ронял звонящего — то есть
-        pair_note мог упасть целиком из-за чужой панели."""
+        `is_composer_empty(None)` falls on NoneType.rstrip, and before this fix any
+        ring into a panel where the TUI redrew dropped the caller — meaning pair_note
+        could fall whole over a foreign pane."""
         import composer
         self.store.mutate(lambda s: s.setdefault("roles", {})
                           .setdefault("reviewer-agent", {}).update({"pane": "%45"}))
@@ -3574,37 +3574,37 @@ class TestRingAndUnblock(PairTestCase):
         orig_foreign = composer.pane_is_foreign
         orig_run = server_mod.subprocess.run
         composer.composer_line = lambda lines: None
-        # Панели %45 не существует, и проверка идентичности отвергла бы её раньше,
-        # чем дойдёт до композера. Тест про невидимый композер, поэтому
-        # принадлежность панели объявляется заранее, а не подменяется пустым
-        # результатом: иначе он проверял бы уже другую ветку.
+        # Pane %45 never exists, and the identity check would reject it before reaching
+        # the composer. The test is about an invisible composer, so pane belonging
+        # declares upfront, never stubbed with an empty result: or it would check another
+        # branch already.
         self.allow_panes()
-        # Подменяются ИСПОЛНЕНИЕ и путь, а не «настоящий tmux». Раньше здесь стояло
-        # `composer.shutil.which = lambda: "/usr/bin/tmux"`, но `composer.shutil` —
-        # это сам модуль shutil на весь процесс, и подмена била ещё и по
-        # server.py:2075, где ищется tmux для настоящего subprocess.run.
-        # Тест про ВИДИМОСТЬ композера, а не про то, где лежит tmux: на macOS
-        # Homebrew кладёт его в /opt/homebrew/bin, и тест падал FileNotFoundError,
-        # оставаясь зелёным только на машине, где tmux лежит в /usr/bin.
+        # EXECUTION and the path stub, not "real tmux". It used to stand
+        # `composer.shutil.which = lambda: "/usr/bin/tmux"`, but `composer.shutil` is the
+        # shutil module itself for the whole process, and the stub also hit
+        # server.py:2075, where tmux resolves for the real subprocess.run.
+        # The test is about composer VISIBILITY, not where tmux lives: on macOS Homebrew
+        # puts it in /opt/homebrew/bin, and the test fell with FileNotFoundError, staying
+        # green only on a machine with tmux in /usr/bin.
         #
-        # `which` отдаёт путь, который гарантированно есть (/usr/bin/false):
-        # иначе тест всё ещё требовал бы tmux в PATH, и на машине без него
-        # отвечал бы «tmux не найден в PATH», то есть проверял бы не композер.
+        # `which` serves a path that surely exists (/usr/bin/false): or the test would
+        # still demand tmux in PATH, answering "tmux missing from PATH" on a machine
+        # without it — checking not the composer.
         orig_which = server_mod.shutil.which
         server_mod.shutil.which = lambda name: "/usr/bin/false"
         def fake_run(cmd, *args, **kwargs):
-            # Панель %45 не существует: отвечаем «жива», чтобы _ring дошёл
-            # до композера — его видимость и есть предмет теста.
+            # Pane %45 never exists: answering "alive" lets _ring reach the composer — its
+            # visibility is the test subject.
             return subprocess.CompletedProcess(cmd, 0, stdout="0\n", stderr="")
         server_mod.subprocess.run = fake_run
         try:
-            result = self.writer._ring("reviewer-agent", "заметка", "детали")
+            result = self.writer._ring("reviewer-agent", "note", "details")
         finally:
             composer.composer_line = orig_line
             composer.pane_is_foreign = orig_foreign
             server_mod.subprocess.run = orig_run
             server_mod.shutil.which = orig_which
-        self.assertFalse(result["rung"], "в невидимый композер не лезем")
+        self.assertFalse(result["rung"], "never climb into an invisible composer")
         self.assertIn("invisible", result["why"])
 
     def test_ring_avoids_self_pane(self) -> None:
@@ -3613,7 +3613,7 @@ class TestRingAndUnblock(PairTestCase):
         self.store.mutate(lambda s: s.setdefault("roles", {})
                           .setdefault("reviewer-agent", {})
                           .update({"pane": "%99"}))
-        res = self.writer._ring("reviewer-agent", "тест", "детали")
+        res = self.writer._ring("reviewer-agent", "test", "details")
         self.assertFalse(res["rung"])
         self.assertIn("own pane", res["why"])
 
@@ -3639,10 +3639,10 @@ class TestRingAndUnblock(PairTestCase):
         import server as server_mod
         orig_run = server_mod.subprocess.run
         def boom(cmd, *args, **kwargs):
-            raise OSError("tmux исчез между which() и запуском")
+            raise OSError("tmux vanished between which() and launch")
         server_mod.subprocess.run = boom
         try:
-            result = self.writer._ring("reviewer-agent", "тест")
+            result = self.writer._ring("reviewer-agent", "test")
         finally:
             server_mod.subprocess.run = orig_run
         self.assertFalse(result["rung"])
@@ -3822,12 +3822,12 @@ class TestMailboxInvariants(PairTestCase):
         # Now start an agent in pane %99
         orig_pane = os.environ.get("TMUX_PANE")
         try:
-            # `%99` и `%100` — фантомы: tmux отвечает на них кодом 0 и пустым
-            # выводом. Раньше набор требовал, чтобы такие адреса попали в ростер
-            # как свои, и проходил ровно на несуществующих панелях. Теперь
-            # `_register` отказывается записывать панель, которую нельзя
-            # доказать, поэтому здесь проверяется отказ с записью в транскрипт, а
-            # устаревшая запись снимается по-прежнему.
+            # `%99` and `%100` are phantoms: tmux answers them with code 0 and an empty
+            # output. The suite used to demand such addresses land in the roster as ours,
+            # passing exactly on missing panes. Now `_register` refuses writing a pane
+            # that cannot prove itself, so a refusal with a transcript record checks here,
+            # while the stale record still drops as before.
+            # the stale record still drops as before.
             os.environ["TMUX_PANE"] = "%99"
             duo_writer = PairSession("opencode-writer", self.store)
             duo_critic = PairSession("opencode-critic", self.store)
@@ -3838,7 +3838,7 @@ class TestMailboxInvariants(PairTestCase):
             state = self.store.read()
             # Stale role's pane should have been cleared
             self.assertNotIn("pane", state["roles"]["old-agent"])
-            # Фантомная панель не доказана как своя, и в ростер не попадает
+            # A phantom pane never proves itself ours, never lands in the roster
             self.assertNotIn("pane", state["roles"]["opencode-writer"])
             kinds = [e["kind"] for e in self.store.read_transcript()]
             self.assertIn("pane_env_stale", kinds)
@@ -3855,12 +3855,12 @@ class TestMailboxInvariants(PairTestCase):
                 os.environ.pop("TMUX_PANE", None)
 
     def test_peer_status_reports_dead_process(self) -> None:
-        """Сквозная проверка через `pair_state`: мёртвый сосед виден в ответе.
+        """An end-to-end check through `pair_state`: a dead neighbour shows in the answer.
 
-        Логика самого ответа вынесена в `liveness` и проверяется в
-        `test_liveness.py` — по одному тест-файлу на исходник. Здесь важно
-        другое: что ответ `pair_state` действительно несёт это поле, а агент,
-        читающий состояние, узнаёт о молчании соседа.
+        The answer logic itself lives in `liveness` and checks in `test_liveness.py` —
+        one test file per source. What matters here is different: the `pair_state`
+        answer truly carries the field, and an agent reading state learns the
+        neighbour silence.
         """
         def seed(state):
             roles = state.setdefault("roles", {})
@@ -3878,13 +3878,13 @@ class TestMailboxInvariants(PairTestCase):
         self.assertIn("dead", ghost["hint"].lower())
 
     def test_unverified_delivery_still_reaches_the_mailbox(self) -> None:
-        """Неподтверждённый УКАЗАТЕЛЬ не должен оборачиваться тишиной.
+        """An unconfirmed POINTER must never turn into silence.
 
-        Раньше здесь была простыня текста в композере, и при сорванной сверке её
-        приходилось дублировать в ящик — отсюда двойной след у человека. Теперь в
-        композер уходит одна строка-указатель, а текст лежит в ящике всегда и до
-        печати. Поэтому проверять тут нечего: письмо в ящике и есть доставка, а
-        исход указателя на неё не влияет.
+        A text wall used to stand in the composer here, and on a broken match it had
+        to duplicate into the box — hence the double trace at the human. Now one
+        pointer line goes to the composer, the text always lies in the box before
+        printing. So nothing checks here: the letter in the box IS the delivery, and
+        the pointer outcome never affects it.
         """
         def seed(state):
             state.setdefault("roles", {})["reviewer-agent"] = {
@@ -3902,13 +3902,13 @@ class TestMailboxInvariants(PairTestCase):
 
         def mock_deliver(pane, text, wait_for_empty=0.0, submit=True):
             return {"delivered": False, "unverified": True, "chars": len(text),
-                    "why": "вставка не подтвердилась на экране"}
+                    "why": "the insert never confirmed on screen"}
 
         composer.deliver = mock_deliver
         try:
             res = self.writer.tool_pair_deliver(to="reviewer-agent", text="payload worth keeping")
-            self.assertTrue(res["delivered"], "ящик — основной путь, он не зависит от панели")
-            self.assertFalse(res["in_pane"], "указатель не подтвердился")
+            self.assertTrue(res["delivered"], "the box is the main path, never bound to a pane")
+            self.assertFalse(res["in_pane"], "the pointer never confirmed")
             self.assertIn("mailbox", res["why"])
             read = self.peer.tool_pair_read(wait_seconds=0)
             self.assertEqual(read["count"], 1)
@@ -3940,13 +3940,13 @@ class TestMailboxInvariants(PairTestCase):
         composer.deliver = mock_deliver
         try:
             res = self.writer.tool_pair_deliver(to="reviewer-agent", text="important payload")
-            # Доставка УСПЕШНА, хотя в композер ничего не ушло: по директиве
-            # человека ящик и есть носитель, а занятый композер — это «указатель
-            # не доставлен», а не «сообщение потеряно». Прежняя проверка требовала
-            # `delivered: False` и `fallback_sent`, то есть проверяла старый порядок,
-            # в котором ящик был запасным путём, а не основным.
+            # Delivery SUCCEEDS though nothing left for the composer: by the human directive
+            # the box IS the carrier, while a busy composer means "pointer undelivered",
+            # never "message lost". The prior check demanded `delivered: False` with
+            # `fallback_sent`, checking the old order where the box stood a backup path,
+            # not the main one.
             self.assertTrue(res["delivered"])
-            self.assertFalse(res["in_pane"], "занятый композер — печатать нельзя")
+            self.assertFalse(res["in_pane"], "a busy composer means no typing")
             self.assertIn("busy", res["why"])
 
             # Verify message landed in reviewer's mailbox
@@ -3958,12 +3958,12 @@ class TestMailboxInvariants(PairTestCase):
             composer.pane_is_foreign = orig_foreign
 
 class TestPaneIdentityIsNotLiveness(PairTestCase):
-    """Живость панели — не её идентичность.
+    """Pane liveness is not its identity.
 
-    Номер панели `%N` переживает смерть процесса, который её занимал. На этой
-    машине несколько проектов на pair-mailbox, поэтому проверка только на
-    `pane_dead` позволяла одному проекту вбивать сообщения в композер агента
-    другого. Два независимых факта: панель жива И принадлежит нам.
+    A pane `%N` number outlives the process that held it. Several projects share
+    pair-mailbox on this machine, so checking `pane_dead` alone let one project
+    drive messages into another agent composer. Two independent facts: the pane
+    lives AND belongs to us.
     """
 
     def test_a_pane_of_another_project_is_refused(self) -> None:
@@ -3976,7 +3976,7 @@ class TestPaneIdentityIsNotLiveness(PairTestCase):
                 "tmux", "%1", Path(__file__).resolve().parents[2])
         finally:
             composer.pane_identity = orig
-        self.assertTrue(foreign, "панель чужого проекта печатать нельзя")
+        self.assertTrue(foreign, "never type into a foreign-project pane")
         self.assertIn("another project", why)
 
     def test_our_own_pane_is_allowed(self) -> None:
@@ -3989,10 +3989,10 @@ class TestPaneIdentityIsNotLiveness(PairTestCase):
             foreign, _ = composer.pane_is_foreign("tmux", "%1", root)
         finally:
             composer.pane_identity = orig
-        self.assertFalse(foreign, "своя панель проходит")
+        self.assertFalse(foreign, "our own pane passes")
 
     def test_an_unprovable_pane_fails_closed(self) -> None:
-        """Пустой cwd не доказывает ничего, поэтому это отказ, а не разрешение."""
+        """An empty cwd proves nothing, so it refuses, never allows."""
         import composer
         root = Path(__file__).resolve().parents[2]
         orig = composer.pane_identity
@@ -4006,7 +4006,7 @@ class TestPaneIdentityIsNotLiveness(PairTestCase):
         self.assertIn("unproven", why)
 
     def test_a_dead_pane_is_refused(self) -> None:
-        """Мутация показала, что этот случай не покрыт: зелёное ничего не значило."""
+        """Mutation showed this case uncovered: a green nothing meant nothing."""
         import composer
         orig = composer.pane_identity
         composer.pane_identity = lambda tmux, pane: {
@@ -4016,14 +4016,14 @@ class TestPaneIdentityIsNotLiveness(PairTestCase):
                 "tmux", "%1", Path(__file__).resolve().parents[2])
         finally:
             composer.pane_identity = orig
-        self.assertTrue(foreign, "в мёртвую панель не печатаем")
+        self.assertTrue(foreign, "never type into a dead pane")
         self.assertIn("dead", why)
 
     def test_a_missing_pane_is_refused(self) -> None:
-        """tmux на несуществующую панель отвечает кодом 0 и ПУСТЫМ выводом.
+        """tmux answers a missing pane with code 0 and an EMPTY output.
 
-        Старый inline-probe в _ring считал такой ответ «живым» и слал send-keys
-        в фантомный номер. Здесь та же панель обязана быть отвергнута.
+        The old inline-probe in _ring took such an answer for "alive" and sent
+        send-keys into a phantom number. The same pane must refuse here.
         """
         import composer
         orig = composer.pane_identity
@@ -4034,41 +4034,39 @@ class TestPaneIdentityIsNotLiveness(PairTestCase):
                 "tmux", "%999999", Path(__file__).resolve().parents[2])
         finally:
             composer.pane_identity = orig
-        self.assertTrue(foreign, "фантомная панель не проходит")
+        self.assertTrue(foreign, "a phantom pane never passes")
         self.assertIn("missing", why)
 
     def test_a_nonexistent_pane_is_not_reported_as_existing(self) -> None:
-        """Живой tmux, а не мок: именно мок эту ошибку и не поймал бы.
+        """Live tmux, not a mock: exactly a mock would never catch this bug.
 
-        tmux на несуществующую панель отвечает кодом 0 и ПУСТЫМ выводом, поэтому
-        exists, выведенный только из кода возврата, врал: панель %49 значилась
-        существующей. Итог refusа был безопасным случайно — alive вычислялся
-        верно, — но поле само по себе было неправдой, и любой будущий вызывающий
-        ему поверил бы зря.
+        tmux answers a missing pane with code 0 and an EMPTY output, so exists
+        derived from the return code alone lied: pane %49 counted existing. The
+        refusal result was safe by accident — alive computed right — but the field
+        itself stood untrue, and any future caller would trust it in vain.
         """
         import composer
         tmux = shutil_which("tmux")
         if not tmux:
-            self.skipTest("tmux недоступен в этом окружении")
+            self.skipTest("tmux unavailable in this env")
         ident = composer.pane_identity(tmux, "%499999")
-        self.assertFalse(ident["exists"], "несуществующая панель не существует")
+        self.assertFalse(ident["exists"], "a missing pane never exists")
         self.assertFalse(ident["alive"])
         self.assertEqual(ident["path"], "")
 
     def test_a_state_dir_named_pair_resolves_to_the_project_root(self) -> None:
-        """Регрессия на баг, который стоил блокировки всей доставки.
+        """A regression on a bug that cost blocking all delivery.
 
-        `Store.root` — это каталог состояния `<проект>/.pair`, а не корень
-        проекта. Передав его в `pane_is_foreign`, мы получали отказ «панель
-        принадлежит другому проекту» для панели СВОЕГО соседа: `.pair` не
-        является родителем панели, он лежит внутри проекта. Защита от
-        межпроектной инъекции блокировала и законную доставку внутри проекта.
+        `Store.root` is the state dir `<project>/.pair`, not the project root.
+        Passing it into `pane_is_foreign` refused with "pane belongs to another
+        project" for our OWN neighbour pane: `.pair` never parents the pane, it
+        lies inside the project. The cross-project injection guard blocked lawful
+        in-project delivery too.
 
-        Юнит-тесты на `pane_is_foreign` этого не видели: они передавали корень
-        проекта, то есть не то значение, которое передаёт прод. Тесты точек
-        входа тоже не видели: они подменяли саму `pane_is_foreign`. Ошибка
-        прошла сразу через два рубежа и была замечена только потому, что agy
-        не смог до меня достучаться вживую.
+        Unit tests on `pane_is_foreign` never saw it: they passed the project root,
+        not the value prod passes. Entry-point tests never saw it either: they
+        stubbed `pane_is_foreign` itself. The bug walked two lines and surfaced only
+        because agy could never reach me live.
         """
         import composer
         state_dir = Path(tempfile.mkdtemp(prefix="pairtest-")) / ".pair"
@@ -4076,28 +4074,28 @@ class TestPaneIdentityIsNotLiveness(PairTestCase):
         store = Store(state_dir)
         self.assertEqual(store.root, state_dir)
         self.assertEqual(store.project_root, state_dir.parent,
-                         "корень проекта это родитель каталога состояния")
+                         "the project root is the state-dir parent")
         orig = composer.pane_identity
         composer.pane_identity = lambda tmux, pane: {
             "exists": True, "alive": True, "path": str(state_dir.parent)}
         try:
-            # прод-значение: то, что реально передаёт код
+            # the prod value: what the code truly passes
             foreign, why = composer.pane_is_foreign(
                 "tmux", "%1", store.project_root)
         finally:
             composer.pane_identity = orig
-        self.assertFalse(foreign, f"своя панель обязана проходить, получено: {why}")
+        self.assertFalse(foreign, f"our own pane must pass, got: {why}")
 
     def test_a_state_dir_that_is_not_pair_is_its_own_project_root(self) -> None:
-        """Не каталог `.pair` — значит это и есть корень, parent тут лишний."""
+        """.pair` is no dir — meaning this IS the root, parent stands extra."""
         state_dir = Path(tempfile.mkdtemp(prefix="pairtest-"))
         store = Store(state_dir)
         self.assertEqual(store.project_root, state_dir)
 
     def test_a_shared_parent_directory_is_refused(self) -> None:
-        """Панель из ~/work общая для нескольких проектов — значит не наша.
+        """A pane from ~/work shared across projects means not ours.
 
-        Если бы её принимали, межпроектная инъекция вернулась бы тем же путём.
+        Accepting it would return the cross-project injection by the same path.
         """
         import composer
         root = Path("/home/alexios/work/umputum")
@@ -4112,8 +4110,8 @@ class TestPaneIdentityIsNotLiveness(PairTestCase):
         self.assertIn("another project", why)
 
     def test_ring_falls_back_to_a_pointer_on_another_projects_pane(self) -> None:
-        """Недоказанная панель: typed-печать запрещена, фолбэк —
-        display-message без текста. Молчания нет, инъекции нет."""
+        """An unproven pane: typed printing banned, the fallback is a textless
+        display-message. No silence, no injection."""
         import composer
         import subprocess as _sp
         self.store.mutate(lambda s: s.setdefault("roles", {})
@@ -4123,24 +4121,24 @@ class TestPaneIdentityIsNotLiveness(PairTestCase):
         orig_foreign = composer.pane_is_foreign
         called = []
         composer.pane_is_foreign = lambda tmux, pane, root: (
-            True, "панель принадлежит другому проекту: /home/alexios/work/phronesis")
+            True, "pane belongs to another project: /home/alexios/work/phronesis")
         _sp.run = lambda *a, **k: called.append(a[0]) or type("R", (), {
             "stdout": "0", "returncode": 0})()
         try:
-            result = self.writer._ring("reviewer-agent", "заметка", "детали")
+            result = self.writer._ring("reviewer-agent", "note", "details")
         finally:
             _sp.run = orig_run
             composer.pane_is_foreign = orig_foreign
         self.assertTrue(result["rung"])
         self.assertEqual("display-message", result.get("fallback"))
         self.assertFalse(any("send-keys" in c for c in called),
-                         "typed-печать в чужую панель запрещена")
+                         "typed printing into a foreign pane is banned")
         kinds = [e.get("kind") for e in self.store.read_transcript(limit=0)]
         self.assertIn("doorbell_fallback", kinds)
 
     def test_deliver_falls_back_to_a_pointer_on_another_projects_pane(self) -> None:
-        """Недоказанная панель — не отказ: display-message без текста уходит,
-        полный текст — только в ящике. Typed-печать запрещена (инъекция)."""
+        """An unproven pane is no refusal: a textless display-message leaves, the full text
+        only in the box. Typed printing banned (injection)."""
         import composer
         import subprocess as _sp
         self.store.mutate(lambda s: (s.setdefault("roles", {}).setdefault(
@@ -4150,11 +4148,11 @@ class TestPaneIdentityIsNotLiveness(PairTestCase):
         orig_belongs = composer.pane_belongs_to_project
         orig_run = _sp.run
         called = []
-        # Sweep в _register сносит панель через pane_belongs_to_project:
-        # удерживаем %55 для него, а pane_is_foreign даёт фолбэк-ветку в deliver.
+        # The _register sweep drops the pane via pane_belongs_to_project: %55 holds for
+        # it, while pane_is_foreign gives the fallback branch in deliver.
         composer.pane_belongs_to_project = lambda tmux, pane, root: (True, "")
         composer.pane_is_foreign = lambda tmux, pane, root: (
-            True, "панель принадлежит другому проекту: /home/alexios/work/phronesis")
+            True, "pane belongs to another project: /home/alexios/work/phronesis")
         _sp.run = lambda *a, **k: called.append(a[0]) or type("R", (), {
             "stdout": "", "returncode": 0})()
         try:
@@ -4163,27 +4161,27 @@ class TestPaneIdentityIsNotLiveness(PairTestCase):
             composer.pane_is_foreign = orig_foreign
             composer.pane_belongs_to_project = orig_belongs
             _sp.run = orig_run
-        # Указатель ушёл display-message (фолбэк), полный текст — только в ящике.
+        # The pointer left by display-message (fallback), the full text only in the box.
         self.assertTrue(res["delivered"])
         self.assertTrue(res["in_pane"])
         self.assertEqual("display-message", res.get("fallback"))
         self.assertTrue(any("display-message" in c for c in called),
-                        "фолбэк идёт через display-message, а не send-keys")
+                        "fallback goes by display-message, not send-keys")
         self.assertFalse(any("send-keys" in c for c in called),
-                         "typed-печать в чужую панель запрещена")
+                         "typed printing into a foreign pane is banned")
         self.assertNotIn("payload worth keeping", str(called),
-                         "полный текст в чужую панель не уходит")
+                         "full text never leaves for a foreign pane")
         read = self.peer.tool_pair_read(wait_seconds=0)
         self.assertEqual(read["count"], 1)
         self.assertIn("payload worth keeping", read["messages"][0]["text"])
 
 class TestTuiIsNotABus(PairTestCase):
-    """Директива человека: терминал — дисплей, а не шина между агентами.
+    """The human directive: the terminal is a display, not a bus between agents.
 
-    «Никаких простыней текста через send-keys». Проверяется не отсутствие
-    определённых слов, а главное свойство: сколько символов уходит в композер
-    соседа. Указатель обязан быть коротким и не содержать текста письма, даже
-    если письмо длинное на два экрана.
+    "No text walls over send-keys". What checks is not missing certain words but
+    the main property: how many chars leave for the neighbour composer. The pointer
+    must stay short holding no letter text, even when the letter runs two screens
+    long.
     """
 
     def setUp(self) -> None:
@@ -4196,7 +4194,7 @@ class TestTuiIsNotABus(PairTestCase):
                                 "pid": os.getpid(), "pane": "%55"}}))
 
     def _capture_pointer(self, text: str) -> str:
-        """Прогнать доставку, подменив печать, и вернуть то, что ушло в композер."""
+        """Run the delivery with printing stubbed, returning what left for the composer."""
         orig_deliver = self.composer.deliver
         orig_foreign = self.composer.pane_is_foreign
         self.allow_panes()
@@ -4215,58 +4213,57 @@ class TestTuiIsNotABus(PairTestCase):
         return self.printed[0] if self.printed else ""
 
     def test_the_composer_gets_a_pointer_and_not_the_message(self) -> None:
-        """В TUI уходит строка, а не письмо.
+        """The TUI takes a line, not a letter.
 
-        Проверка на длину, а не на отсутствие отдельных слов: текст письма может
-        содержать любое слово, и запрет по списку слов обходится тривиально.
-        Настоящее требование — в композере не лежит текст сообщения.
+        Length checks, not missing single words: the letter text may hold any word,
+        and a word-list ban bypasses trivially. The true demand: no message text lies
+        in the composer.
         """
-        payload = "ОЧЕНЬ-ДЛИННЫЙ-ТЕКСТ-ПИСЬМА " + ("подробности " * 300)
+        payload = "VERY-LONG-LETTER-TEXT " + ("details " * 300)
         printed = self._capture_pointer(payload)
-        self.assertTrue(printed, "указатель должен быть напечатан, иначе сосед не проснётся")
-        self.assertNotIn("ОЧЕНЬ-ДЛИННЫЙ", printed, "текст письма не должен попадать в TUI")
-        self.assertIn("pair_read", printed, "указатель обязан говорить, куда идти за текстом")
+        self.assertTrue(printed, "the pointer must print, or the neighbour never wakes")
+        self.assertNotIn("VERY-LONG", printed, "letter text must never reach the TUI")
+        self.assertIn("pair_read", printed, "the pointer must say where to fetch the text")
 
     def test_the_pointer_is_short_whatever_the_message_length(self) -> None:
-        """Указатель не растёт вместе с письмом.
+        """The pointer never grows with the letter.
 
-        Иначе «указатель» незаметно снова станет простынёй — просто потому, что
-        письмо оказалось длинным.
+        Or "pointer" silently turns a wall again — merely because the letter ran long.
         """
-        short = self._capture_pointer("короткое")
+        short = self._capture_pointer("short")
         self.printed.clear()
-        long_pointer = self._capture_pointer("длинное " * 500)
+        long_pointer = self._capture_pointer("long " * 500)
         self.assertLessEqual(len(long_pointer), len(short) + 5,
-                             "указатель обязан быть одной и той же длины")
+                             "the pointer must read the same length")
 
     def test_the_message_is_in_the_mailbox_even_if_the_pointer_never_lands(self) -> None:
-        """Письмо в ящике не зависит от того, дошёл ли указатель.
+        """The letter in the box never depends on whether the pointer arrived.
 
-        Это и есть смысл нового порядка: контейнер не может потеряться из-за
-        чужого TUI. Прежняя схема теряла сообщение, если композер был занят.
+        Exactly the new-order meaning: no foreign TUI can lose the container. The old
+        scheme lost the message when the composer stayed busy.
         """
         orig_deliver = self.composer.deliver
         orig_foreign = self.composer.pane_is_foreign
         self.allow_panes()
         self.composer.deliver = lambda *a, **kw: (_ for _ in ()).throw(
-            self.composer.ComposerBusy("занято"))
+            self.composer.ComposerBusy("busy"))
         try:
-            res = self.writer.tool_pair_deliver(to="reviewer-agent", text="не потерять")
+            res = self.writer.tool_pair_deliver(to="reviewer-agent", text="never lose")
         finally:
             self.composer.deliver = orig_deliver
             self.composer.pane_is_foreign = orig_foreign
         read = self.peer.tool_pair_read(wait_seconds=0)
         self.assertEqual(read["count"], 1)
-        self.assertIn("не потерять", read["messages"][0]["text"])
+        self.assertIn("never lose", read["messages"][0]["text"])
         self.assertTrue(res["delivered"])
 
 class TestComposerOfAnOpencodePane(PairTestCase):
-    """У OpenCode нет ASCII-маркера промпта: поле ввода — рамка над статусом.
+    """OpenCode owns no ASCII prompt marker: the input field is a frame over status.
 
-    Композер искался только как «строка с маркером промпта», поэтому панель
-    OpenCode не опознавалась никогда, `composer_line` отдавал None, а вызывающий
-    обязан считать None занятой. Доставка и звонок в OpenCode были невозможны
-    в принципе, а не изредка — и это молча уходило в ящик.
+    The composer searched only as "a line with a prompt marker", so an OpenCode
+    pane never recognized, `composer_line` returned None, and the caller must count
+    None as busy. Delivery and ringing into OpenCode stood impossible in principle,
+    not at times — silently landing in the box.
     """
 
     BORDER = "  \u2579\u2580\u2580\u2580\u2580\u2580\u2580\u2580\u2580  "
@@ -4275,7 +4272,7 @@ class TestComposerOfAnOpencodePane(PairTestCase):
     def test_border_above_status_is_recognised_as_the_composer(self) -> None:
         from composer import composer_line
         found = composer_line(["", self.BORDER, self.STATUS])
-        self.assertIsNotNone(found, "рамка над статусом и есть композер OpenCode")
+        self.assertIsNotNone(found, "a frame over status is the OpenCode composer")
         self.assertEqual(found.strip(), self.BORDER.strip())
 
     def test_a_pristine_border_is_an_empty_composer(self) -> None:
@@ -4284,7 +4281,7 @@ class TestComposerOfAnOpencodePane(PairTestCase):
         self.assertTrue(is_composer_empty(found))
 
     def test_a_typed_border_is_a_busy_composer(self) -> None:
-        """Текст в рамке — значит композер занят, и перебивать нельзя."""
+        """Text in the frame means a busy composer, never to interrupt."""
         from composer import composer_line, is_composer_empty
         typed = "  \u2579\u2580\u2580 typing right now \u2580\u2580  "
         found = composer_line(["", typed, self.STATUS])
@@ -4292,31 +4289,31 @@ class TestComposerOfAnOpencodePane(PairTestCase):
         self.assertFalse(is_composer_empty(found))
 
     def test_a_bare_frame_still_yields_none(self) -> None:
-        """Панель из одной рамки печатать некуда — это «занято», а не «свободно»."""
+        """A frame-only pane types nowhere — "busy", not "free"."""
         from composer import composer_line
         self.assertIsNone(composer_line(["  \u2500\u2500\u2500\u2500\u2500\u2500  "]))
 
     def test_the_block_glyph_is_inside_the_frame_range(self) -> None:
-        """\u2580 был на единицу выше прежней границы, и рамка не проходила fullmatch."""
+        """\u2580 stood one above the old edge, and the frame missed fullmatch."""
         import re
         from composer import BOX_GLYPH
         self.assertTrue(re.fullmatch(rf"[{BOX_GLYPH}]+", "\u2580\u2580\u2580"))
 
 
 class TestOldPythonStillRuns(PairTestCase):
-    """Код обязан импортироваться на том Python, который стоит у человека.
+    """The code must import on the human Python.
 
-    Установка на macOS рушилась 210 тестами с одной причины: системный python3
-    там 3.9, а аннотации вида `str | None` вычисляются при импорте и требуют
-    3.10. Тест ловит это на любой машине: он спрашивает не «какая тут версия»,
-    а «импортируется ли каждый модуль на МИНИМАЛЬНОЙ заявленной версии».
+    Install on macOS fell with 210 tests from one cause: system python3 there is
+    3.9, while `str | None`-style annotations compute at import demanding 3.10.
+    The test catches it on any machine: it asks not "which version here" but
+    "does every module import on the MINIMUM declared version".
     """
 
     FLOOR = (3, 8)
     ROOT = Path(__file__).resolve().parents[2]
 
     def modules(self):
-        """Модули поставки: сервер, композер и всё, что он импортирует лениво."""
+        """Supply modules: the server, the composer, and all it lazily imports."""
         pkg = Path(__file__).resolve().parent
         skip = {"test_protocol", "pair_test_base"}
         return sorted(p for p in pkg.glob("*.py")
@@ -4324,19 +4321,19 @@ class TestOldPythonStillRuns(PairTestCase):
 
     def test_every_module_imports_on_the_declared_floor(self) -> None:
         if sys.version_info >= self.FLOOR:
-            self.skipTest(f"и так на {sys.version_info.major}.{sys.version_info.minor}, "
-                          f"проверять нечего")
+            self.skipTest(f"and so on {sys.version_info.major}.{sys.version_info.minor}, "
+                          f"nothing to check")
         for path in self.modules():
             with self.subTest(module=path.name):
                 proc = subprocess.run(
                     [sys.executable, "-c", f"import {path.stem}"],
                     cwd=str(path.parent), capture_output=True, text=True, timeout=30)
                 self.assertEqual(0, proc.returncode,
-                                 f"{path.name} не импортируется на минимуме:\n{proc.stderr}")
+                                 f"{path.name} never imports on the minimum:\n{proc.stderr}")
 
     def test_no_module_pep604_annotations_without_the_future_import(self) -> None:
-        """`X | None` в аннотациях — 3.10+. Без `from __future__ import
-        annotations` аннотация вычисляется при импорте и роняет модуль."""
+        """`X | None` in annotations is 3.10+. Without `from __future__ import
+        annotations` the annotation computes at import dropping the module."""
         for path in self.modules():
             tree = ast.parse(path.read_text(encoding="utf-8"))
             future = any(isinstance(n, ast.ImportFrom) and n.module == "__future__"
@@ -4357,12 +4354,12 @@ class TestOldPythonStillRuns(PairTestCase):
                 if any(isinstance(n, ast.BinOp) and isinstance(n.op, ast.BitOr)
                        and _is_type(n.left) and _is_type(n.right)
                        for n in ast.walk(ann)):
-                    self.fail(f"{path.name}:{node.lineno} — аннотация с `|` "
-                              f"без `from __future__ import annotations`")
+                    self.fail(f"{path.name}:{node.lineno} — an annotation with `|` "
+                              f"without `from __future__ import annotations`")
 
 
 def _is_type(node) -> bool:
-    """Сторона `X | Y` в аннотации: имя, подписка или None-константа."""
+    """An `X | Y` annotation side: a name, a subscription, or a None constant."""
     return isinstance(node, (ast.Name, ast.Attribute, ast.Subscript, ast.Constant))
 
 if __name__ == "__main__":
