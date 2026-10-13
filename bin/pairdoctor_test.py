@@ -54,7 +54,30 @@ class TestDeliverySection(unittest.TestCase):
 
     def test_sections_renumbered(self) -> None:
         text = (ROOT / "bin" / "pairdoctor").read_text(encoding="utf-8")
-        self.assertIn("[6] git", text)
+        self.assertIn("[7] git", text)
+
+
+class TestRound86Fixes(unittest.TestCase):
+    def test_server_key_from_profile(self) -> None:
+        text = (ROOT / "bin" / "pairdoctor").read_text(encoding="utf-8")
+        self.assertIn('spec.get("server_key", "pair")', text)
+
+    def test_none_is_warn_not_bad(self) -> None:
+        text = (ROOT / "bin" / "pairdoctor").read_text(encoding="utf-8")
+        self.assertIn("composer busy (not visible) — delivery deferred", text)
+        # рядом с None не должно быть bad()
+        idx = text.find("if _line is None:")
+        block = text[idx:idx + 300]
+        self.assertNotIn("bad(", block)
+
+    def test_targets_deduped(self) -> None:
+        text = (ROOT / "bin" / "pairdoctor").read_text(encoding="utf-8")
+        self.assertIn("if _proj not in targets:", text)
+
+    def test_freshness_section_present(self) -> None:
+        text = (ROOT / "bin" / "pairdoctor").read_text(encoding="utf-8")
+        self.assertIn("[6] freshness", text)
+        self.assertIn("list_stale_files", text)
 
 
 if __name__ == "__main__":

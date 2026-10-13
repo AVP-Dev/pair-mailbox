@@ -619,12 +619,32 @@ def composer_line(lines: list) -> str | None:
             low_idx = i
     if low_idx is not None:
         # Рамочные строки над нижней границей; ниже — статус/футер.
-        # Подсказка — признак пустого поля, остальное вводом не является.
+        # Подсказка — признак пустого поля; без неё сама граница —
+        # композер (заморожено: TestInputBoxCornerVsSideFrame,
+        # TestComposerOfAnOpencodePane). Но набранный текст над границей —
+        # занятое поле: тогда границы нет, есть ввод (test_composer:
+        # test_opencode_typed_text_reads_busy).
+        hint = None
         for line in lines[:low_idx]:
             s = line.rstrip()
             if is_input_box_hint(s):
-                return line
-        return None
+                hint = line
+                continue
+            tx = s.lstrip()
+            if not tx.strip() or tx[0] not in INPUT_BOX_CORNERS:
+                continue
+            if is_input_box_border(s):
+                continue
+            stripped = re.sub(r"^[\u2500-\u257f\u2588|]+", "", tx).strip()
+            # Build-строка — хром TUI внутри поля (заморожено:
+            # "Build · something", живой idle: "Build auto · …").
+            # Край: текст пользователя с "build" сначала прочтётся
+            # свободным — принято ради замороженного контракта.
+            if stripped and not stripped.lower().startswith("build"):
+                return None
+        if hint is not None:
+            return hint
+        return lines[low_idx].rstrip()
     for line in reversed(lines):
         stripped = line.rstrip()
         if not stripped.strip():

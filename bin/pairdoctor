@@ -106,7 +106,7 @@ for name, prof in PROFILES.items():
         if spec["format"] == "toml":
             argv = argv_from_toml(text)
         else:
-            entry = json.loads(text)[spec["root_key"]]["pair"]
+            entry = json.loads(text)[spec["root_key"]][spec.get("server_key", "pair")]
             argv = (entry["command"] if isinstance(entry.get("command"), list)
                     else [entry.get("command")] + entry.get("args", []))
     except Exception as exc:
@@ -159,7 +159,9 @@ for name, prof in PROFILES.items():
 print("\n[4] state")
 targets = [Path(os.environ["PAIR_STATE"]).resolve()] if "PAIR_STATE" in os.environ else []
 if "--project" in sys.argv:
-    targets.append(Path.cwd() / ".pair")
+    _proj = (Path.cwd() / ".pair").resolve()
+    if _proj not in targets:
+        targets.append(_proj)
 if not targets:
     targets = [ROOT / ".pair"]
 
@@ -226,7 +228,7 @@ try:
                 bad(_role + ": capture failed — " + str(_exc)[:100])
                 continue
             if _line is None:
-                bad(_role + ": pane " + str(_pane) + " alive but composer not recognized — delivery impossible (see composer.py)")
+                warn(_role + ": pane " + str(_pane) + " alive but composer busy (not visible) — delivery deferred")
             elif _composer.is_composer_empty(_line):
                 ok(_role + ": pane " + str(_pane) + " reachable, composer free")
             else:
@@ -234,7 +236,19 @@ try:
 except Exception as _exc:
     warn("delivery check skipped — " + str(_exc)[:100])
 
-print("\n[6] git")
+print("\n[6] freshness")
+try:
+    sys.path.insert(0, str(ROOT / "mcp" / "pair_mailbox"))
+    import server_freshness as _fresh
+    _stale = _fresh.list_stale_files()
+    if _stale:
+        warn("server code changed since process start: " + ", ".join(_stale) + " — restart MCP servers (serve.sh)")
+    else:
+        ok("server code fresh: no .py newer than process start")
+except Exception as _exc:
+    warn("freshness check skipped — " + str(_exc)[:100])
+
+print("\n[7] git")
 if (ROOT / ".git").exists():
     r2 = subprocess.run(["git", "log", "--oneline", "-1"], cwd=str(ROOT),
                         capture_output=True, text=True)
