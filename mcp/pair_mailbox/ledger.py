@@ -1,9 +1,9 @@
-"""Round ledger: структурированная запись решений раунда.
+"""Round ledger: the structured record of round decisions.
 
-Зачем: итоги раунда лежат в одном машиночитаемом месте — 5 срезов
-(decisions, touchpoints, obligations, evidence, debts). Пустые поля —
-пустые, не выдуманные (тот же договор, что у receipt.py). Формат —
-JSONL: одна запись на строку, хвост читается без разбора всего файла.
+Why: round results sit in one machine-readable place — 5 slices (decisions,
+touchpoints, obligations, evidence, debts). Empty fields stay empty, never
+invented (the same contract as receipt.py). JSONL format: one record per line,
+the tail reads without parsing the whole file.
 """
 from __future__ import annotations
 
@@ -22,7 +22,7 @@ def _ledger_path(state_dir: Path | str) -> Path:
 
 def append(state_dir: Path | str, round_number: int, role: str,
            entry: dict[str, Any]) -> dict[str, Any]:
-    """Добавить запись: только известные срезы, остальное отбрасывается."""
+    """Append a record: known slices only, the rest drops."""
     record = {
         "ts": datetime.now(timezone.utc).isoformat(),
         "round": int(round_number),
@@ -39,7 +39,7 @@ def append(state_dir: Path | str, round_number: int, role: str,
 
 def read_round(state_dir: Path | str, round_number: int,
                tail: int = 50) -> list[dict[str, Any]]:
-    """Прочитать хвост леджера, отфильтровать по раунду."""
+    """Read the ledger tail, filtered by round."""
     target = _ledger_path(state_dir)
     try:
         lines = target.read_text(encoding="utf-8").splitlines()

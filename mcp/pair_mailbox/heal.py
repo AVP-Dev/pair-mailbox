@@ -1,13 +1,13 @@
-"""pair-heal (S4): авто-реопен done -> implement при evidence ok=false.
+"""pair-heal (S4): auto-reopen done -> implement on evidence ok=false.
 
-Зачем: если проверка, cron или агент фиксирует evidence(ok=false) в закрытом
-раунде (phase == "done"), система не должна оставлять сбой незамеченным.
-`pair-heal` автоматически:
-1. Переводит фазу `done → implement` и поднимает номер раунда (`round += 1`).
-2. Добавляет новую задачу `auto-heal: <kind> (<value>)`.
-3. Записывает событие `heal_reopen` в `transcript.jsonl`.
-4. Защищает от бесконечного цикла самоисцеления через лимит попыток `MAX_HEAL_ATTEMPTS = 3`.
-   При превышении попыток авто-реопен блокируется с требованием вмешательства человека.
+Why: when a check, cron or agent records evidence(ok=false) in a closed round
+(phase == "done"), the system must not leave the failure unnoticed. `pair-heal`
+automatically:
+1. Moves the phase `done → implement` and bumps the round number (`round += 1`).
+2. Adds a new task `auto-heal: <kind> (<value>)`.
+3. Records a `heal_reopen` event in `transcript.jsonl`.
+4. Guards against an endless self-heal loop via the attempt cap `MAX_HEAL_ATTEMPTS = 3`.
+   Past the cap the auto-reopen blocks and demands a human.
 """
 from __future__ import annotations
 
@@ -46,17 +46,17 @@ def trigger_heal(
     role: str,
     record: dict[str, Any],
 ) -> dict[str, Any]:
-    """Выполнить авто-реопен при сбое в done."""
+    """Perform the auto-reopen on a failure in done."""
     state = store.read()
     current_phase = state.get("phase", "")
     if current_phase != "done":
-        return {"healed": False, "why": "не в фазе done"}
+        return {"healed": False, "why": "not in done phase"}
 
     heal_info = load_heal_state(store.root)
     attempts = int(heal_info.get("attempts", 0))
 
     if attempts >= MAX_HEAL_ATTEMPTS:
-        msg = f"лимит авто-исцелений ({MAX_HEAL_ATTEMPTS}) исчерпан; требуется вмешательство человека"
+        msg = f"self-heal cap ({MAX_HEAL_ATTEMPTS}) spent; a human must step in"
         store.append_transcript("heal_exhausted", role, attempts=attempts, error=record.get("value"))
         return {"healed": False, "why": msg, "exhausted": True}
 
@@ -72,7 +72,7 @@ def trigger_heal(
         st["reopened_by"] = f"heal:{role}"
         st.pop("closed_at", None)
 
-        # Задача auto-heal фиксирует причину реопена в реестре задач раунда
+        # The auto-heal task pins the reopen cause in the round task registry
         tasks = st.setdefault("tasks", [])
         next_id = max([int(t.get("id", 0)) for t in tasks] or [0]) + 1
         new_task = {
@@ -82,7 +82,7 @@ def trigger_heal(
             "added_at": now_iso,
             "added_by": f"heal:{role}",
             "round": new_round,
-            "reason": "авто-создано pair-heal по отрицательному evidence",
+            "reason": "auto-created by pair-heal on negative evidence",
             "closed_at": None,
             "closed_by": None,
         }

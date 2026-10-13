@@ -1,24 +1,23 @@
-"""Самозалечивание ростера: перепроверка панелей и истечение мёртвых записей (#19.1, #19.3).
+"""Roster self-heal: pane recheck and dead-entry expiry (#19.1, #19.3).
 
-`_register` в server.py вызывается перед каждым инструментом, но перепроверял
-только панель ВЫЗЫВАЮЩЕГО: env-панель до записи (pane_env_rejected) и чужие
-панели лишь когда своей нет (pane_foreign_dropped). Пока свой агент жив,
-записи соседей не трогались — протухшая панель висела до ручного
-`pairctl roster --prune`. Этот модуль — та самая перепроверка, вынесенная
-из сервера: server владеет mutate/lock, panes владеет tmux-вердиктами,
-а здесь решение «снять pane / удалить запись» по готовым фактам.
+`_register` in server.py runs before every tool but rechecked only the CALLER’s
+pane: the env pane before the write (pane_env_rejected) and foreign panes only when
+ours was missing (pane_foreign_dropped). While our own agent lived, neighbour
+entries went untouched — a stale pane hung till a manual `pairctl roster --prune`.
+This module is that recheck, moved out of the server: server owns mutate/lock,
+panes owns the tmux verdicts, and here the "drop pane / delete entry" decision
+runs on ready facts.
 
-Два независимых факта — принцип всего модуля, как в 19.2 и в prune:
-`os.kill(pid, 0)` доказывает существование процесса, а не владение слотом
-(pid переиспользуется), а `%N` перенумеровывается. Один факт = ложный отказ
-или фантом. Поэтому снятие идёт только при мёртвом pid И подтверждённой
-проверке панели, а удаление записи — только при отсутствии pane И мёртвом
-pid И простое дольше TTL.
+Two independent facts is the whole module principle, as in 19.2 and prune:
+`os.kill(pid, 0)` proves a process exists, not slot ownership (pids recycle),
+and `%N` renumbers. One fact means a false refusal or a phantom. So dropping
+runs only on a dead pid AND a confirmed pane check, and entry deletion only on
+no pane AND a dead pid AND quiet past TTL.
 
-Fail-closed везде: tmux недоступен или проверка не удалась — запись остаётся.
-Временный провал tmux никогда не стирает данные (урок #10: pane_pin стирали
-навсегда после временного провала). Закрепление человека (pane_pin) не
-трогается никогда: переопределение выигрывает у любой автоматики.
+Fail-closed everywhere: tmux unreachable or a failed check keeps the entry. A
+transient tmux failure never wipes data (lesson #10: pane_pin was wiped forever
+after a transient failure). The human pin (pane_pin) is never touched: an
+override beats any automation.
 """
 from __future__ import annotations
 
@@ -27,15 +26,15 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
-# Сколько молчит мёртвая запись без панели, прежде чем истечь. 7 суток:
-# короче — убьёт контекст после отпуска, дольше — хлам копится. Ручной
-# `pairctl roster --prune` остаётся мгновенной чисткой, TTL — страховкой
-# от вечного хлама. Env для тестов, чтобы не ждать неделю.
+# How long a paneless dead entry stays quiet before expiring. 7 days: shorter
+# kills context after a vacation, longer hoards junk. Manual `pairctl roster
+# --prune` stays the instant cleanup, TTL the insurance against eternal junk.
+# Env for tests, so no week-long waits.
 ROLE_TTL_SECONDS = float(os.environ.get("PAIR_ROLE_TTL_SECONDS", "604800") or 604800)
 
 
 def _age_seconds(last_seen: Any) -> float | None:
-    """Сколько секунд прошло с last_seen. Неизмеримо — None, а не 0."""
+    """Seconds since last_seen. Unmeasurable — None, not 0."""
     if not last_seen or not isinstance(last_seen, str):
         return None
     try:
@@ -55,11 +54,11 @@ def recheck_peers(
     belongs_to_project: Callable[..., tuple],
     same_pane: Callable[[Any, Any], bool],
 ) -> list[dict[str, Any]]:
-    """Перепроверить записанные панели соседей (#19.1). Возвращает события.
+    """Recheck neighbour recorded panes (#19.1). Returns events.
 
-    Мутирует записи на месте (снять `pane`), вызывающий пишет события
-    в транскрипт и сохраняет состояние. Событие: {"kind", "role",
-    "other_role", ...поля для транскрипта}.
+    Mutates entries in place (drop `pane`); the caller writes the events into
+    the transcript and saves state. Event: {"kind", "role", "other_role",
+    ...transcript fields}.
     """
     events: list[dict[str, Any]] = []
     living_panes = [
@@ -72,27 +71,27 @@ def recheck_peers(
             continue
         pane = info.get("pane")
         if not pane or info.get("pane_pin"):
-            # Нечего проверять или закреплено человеком — пропуск.
+            # Nothing to check or pinned by human — skip.
             continue
         pid = info.get("pid")
         if isinstance(pid, int) and pid > 0 and pid_alive(pid):
-            # Живой процесс перерегистрируется сам. Лечить чужую живую
-            # запись — значит отбирать панель у работающего агента.
+            # A live process re-registers itself. Healing another live entry means
+            # taking the pane from a working agent.
             continue
-        # Ghost-запись: pane уже снят, а UID/session_id остались. Они вечно
-        # триггерят pane_uid_collision при каждом регистре живой роли на
-        # доказанной панели — вечно горящее предупреждение = отсутствие
-        # предупреждения. Теперь чистятся вместе с pane во всех трёх ветках.
+        # Ghost entry: pane already dropped, but UID/session_id stayed. They forever
+        # trigger pane_uid_collision on every live-role registration onto a proven
+        # pane — an eternally lit warning equals no warning. Now cleaned with pane in
+        # all three branches.
         try:
             if not pane_exists(pane):
                 for field in ("pane", "pane_pin_why", "pane_uid", "pane_session_id"):
                     info.pop(field, None)
                 events.append({"kind": "pane_stale_dropped", "role": self_role,
                                "other_role": name, "pane": pane,
-                               "why": "панель отсутствует в tmux, процесс мёртв"})
+                               "why": "pane missing in tmux, process dead"})
                 continue
         except Exception:
-            # Проверить нечем — не значит «адрес мёртв» (урок pin UNKNOWN).
+            # Nothing to check with never means "dead address" (the pin UNKNOWN lesson).
             continue
         try:
             ours, why_not = belongs_to_project(pane, project_root)
@@ -109,7 +108,7 @@ def recheck_peers(
                 info.pop(field, None)
             events.append({"kind": "pane_stale_dropped", "role": self_role,
                            "other_role": name, "pane": pane,
-                           "why": "панель занята другой живой ролью"})
+                           "why": "pane held by another live role"})
     return events
 
 
@@ -120,11 +119,11 @@ def expire_dead_roles(
     pid_alive: Callable[[Any], bool],
     ttl_seconds: float = ROLE_TTL_SECONDS,
 ) -> list[dict[str, Any]]:
-    """Удалить мёртвые записи без панели после TTL молчания (#19.3).
+    """Delete paneless dead entries past the quiet TTL (#19.3).
 
-    Условия удаления, все сразу: нет pane; pid мёртв или отсутствует;
-    last_seen старше TTL; не держатель права записи. Возвращает события
-    {"kind": "role_expired", ...} для транскрипта.
+    Deletion conditions, all at once: no pane; pid dead or missing; last_seen
+    older than TTL; not the write-right holder. Returns {"kind":
+    "role_expired", ...} events for the transcript.
     """
     events: list[dict[str, Any]] = []
     for name, info in list(roles.items()):
@@ -134,14 +133,14 @@ def expire_dead_roles(
         if isinstance(pid, int) and pid > 0 and pid_alive(pid):
             continue
         if name == writer:
-            # Право записи не испаряется по таймеру (как в prune).
+            # Write authority never evaporates on a timer (as in prune).
             continue
         age = _age_seconds(info.get("last_seen"))
         if age is None or age < ttl_seconds:
-            # Возраст неизмерим (старые записи без last_seen) — fail-closed.
+            # Unmeasurable age (old entries with no last_seen) — fail-closed.
             continue
         roles.pop(name, None)
         events.append({"kind": "role_expired", "role": name,
                        "pid": pid, "age_seconds": int(age),
-                       "why": "мёртвая запись без панели истекла по TTL"})
+                       "why": "paneless dead entry expired on TTL"})
     return events

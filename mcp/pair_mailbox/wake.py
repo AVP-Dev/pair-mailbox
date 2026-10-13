@@ -1,17 +1,17 @@
-"""Событийное пробуждение без композера: файл вместо печати.
+"""Event wake-up without the composer: a file instead of printing.
 
-Карточка wake-without-composer: `tmux send-keys` — оптимизация, а не условие
-работы. Данные уже надёжны (mailbox/notes/task/transcript), хрупок только
-триггер. Этот модуль — триггер-файл: сервер пишет `.pair/wake/<role>.json`
-на каждое событие (новое письмо, заметка), а `bin/pairpilot` опрашивает его
-в `poll_wakes` и печатает только после `wake_grace`, если роль не проснулась
-сама. Неудача печати деградирует в файл, а не в тишину.
+The wake-without-composer card: `tmux send-keys` is an optimization, not a
+working condition. The data is already solid (mailbox/notes/task/transcript),
+only the trigger is fragile. This module is the trigger file: the server writes
+`.pair/wake/<role>.json` on every event (new letter, note), and `bin/pairpilot`
+polls it in `poll_wakes`, printing only past `wake_grace` when the role never
+woke on its own. A print failure degrades into a file, not into silence.
 
-Формат файла — тот же, что пишет `Pilot.mark_wake`, чтобы опросник пилота
-понимал его без изменений: `role/reason/reasons/asked_at/seen_at_ask/
-unread_at_ask/text` (+ сохранённый `escalated`). Слияние с висящим файлом
-не перезаписывает `asked_at`/`seen_at_ask`, иначе терпение начиналось бы
-заново и один факт эскалировался бы дважды (исправлено в раунде 15).
+The file format matches what `Pilot.mark_wake` writes, so the pilot poller
+parses it unchanged: `role/reason/reasons/asked_at/seen_at_ask/unread_at_ask/text`
+(+ the kept `escalated`). Merging with a hanging file never rewrites
+`asked_at`/`seen_at_ask`, or patience would restart and one fact would escalate
+twice (fixed in round 15).
 """
 from __future__ import annotations
 
@@ -44,11 +44,11 @@ def count_unread(state: dict[str, Any], state_dir: Path, role: str) -> int:
 
 def record_wake(state_dir: Path, state: dict[str, Any], role: str,
                 reason: str, text: str) -> Path:
-    """Записать факт «роль надо разбудить» — в файл, а не в композер.
+    """Record the "wake the role" fact — into a file, not the composer.
 
-    Никогда не бросает мимо: не записали — вызывающий пишет причину
-    в транскрипт сам, а событие (письмо/заметка) уже лежит в контейнере.
-    Возвращает путь к файлу для тестов.
+    Never throws past: unwritten means the caller writes the cause into the
+    transcript itself, while the event (letter/note) already sits in the container.
+    Returns the file path for tests.
     """
     path = wake_path(state_dir, role)
     path.parent.mkdir(parents=True, exist_ok=True)
