@@ -741,6 +741,42 @@ class TestOutboxStaleness(PilotCase):
         self.assertNotIn("pilot_pane_foreign", kinds,
                          "a dead pane must not be logged as a foreign project")
 
+    def test_failed_check_keeps_file_without_foreign_mark(self) -> None:
+        """Verdict-87 follow-up: a throwing check is unproven, even on a live pane.
+
+        pane_alive True + belongs raising must keep the file and must not
+        write pilot_pane_foreign: 'could not check' is not 'proven foreign'.
+        """
+        p = self.pilot()
+        path = self._queue(p, "agy", "queued nudge")
+        state = self.write_state(roles={"agy": {"pane": "%1", "pid": os.getpid()}})
+
+        def boom(tmux, pane, root):
+            raise RuntimeError("tmux transient failure")
+
+        calls = []
+        orig_deliver = pairpilot.deliver
+        orig_belongs = pairpilot.pane_belongs_to_project
+        orig_alive = pairpilot.pane_alive
+        pairpilot.deliver = lambda pane, text, wait_for_empty=0.0: calls.append((pane, text)) or {"delivered": True}
+        pairpilot.pane_belongs_to_project = boom
+        pairpilot.pane_alive = lambda tmux, pane: True
+        try:
+            p.tmux = "tmux"
+            p.flush_outbox(state)
+            p.flush_outbox(state)
+        finally:
+            pairpilot.deliver = orig_deliver
+            pairpilot.pane_belongs_to_project = orig_belongs
+            pairpilot.pane_alive = orig_alive
+        self.assertEqual(calls, [], "nothing printed while the check fails")
+        self.assertTrue(path.exists(), "the file survives a transient check failure")
+        kinds = self.transcript_kinds()
+        self.assertNotIn("pilot_pane_foreign", kinds,
+                         "an unavailable check must not log proven foreignness")
+        self.assertEqual(1, kinds.count("pilot_pane_unproven"),
+                         "one queued pointer records unproven once, not per tick")
+
     def test_own_pane_delivery_unaffected_by_belongs_gate(self) -> None:
         """An owned pane delivers as before — the gate spares the normal path."""
         p = self.pilot()

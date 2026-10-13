@@ -793,14 +793,15 @@ class Pilot:
                 alive = pane_alive(self.tmux, pane)
             except Exception:
                 alive = False
+            check_failed = False
             try:
                 ours, why = pane_belongs_to_project(
                     self.tmux, pane, self.store.project_root)
             except Exception:
-                ours, why = False, "ownership check unavailable"
-            if not ours and alive:
-                # Proven foreign: the pane is alive and proven to belong to
-                # another project. Never print into it; drop with a record.
+                ours, why, check_failed = False, "ownership check unavailable", True
+            if not ours and alive and not check_failed:
+                # Proven foreign: the pane is alive AND the check itself ran
+                # and refused. Never print into it; drop with a record.
                 path.unlink(missing_ok=True)
                 self.store.append_transcript(
                     "pilot_pane_foreign", "pairpilot", to=role,
@@ -808,12 +809,13 @@ class Pilot:
                 log(f"not delivering for {role} into foreign pane {pane}: {why}")
                 continue
             if not ours:
-                # Unproven: dead pane or unavailable check is NOT proven
-                # foreign (panes.py forbids mixing the two facts). Keep the
-                # file for the next tick; record once per outbox content.
-                self.store.append_transcript(
-                    "pilot_pane_unproven", "pairpilot", to=role,
-                    pane=pane, reason=why, text=text[:120])
+                # Unproven: dead pane or a failed check is NOT proven foreign
+                # (panes.py forbids mixing the two facts). Keep the file for
+                # the next tick; record once per outbox content.
+                if self.remember(f"unproven-{role}-{stable_tag(text)}", ttl=self.outbox_ttl):
+                    self.store.append_transcript(
+                        "pilot_pane_unproven", "pairpilot", to=role,
+                        pane=pane, reason=why, text=text[:120])
                 log(f"ownership of pane {pane} unproven ({why}) — keeping for next tick")
                 continue
             try:
