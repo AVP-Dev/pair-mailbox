@@ -79,6 +79,40 @@ class TestRound86Fixes(unittest.TestCase):
         self.assertIn("[6] freshness", text)
         self.assertIn("list_stale_files", text)
 
+    def test_freshness_compares_against_servers(self) -> None:
+        """Секция обязана мерять от старта серверов, а не врача.
+
+        Измерено 2026-10-13: list_stale_files() без process_start_ts
+        сравнивает с /proc/self — врач только что запущен, список пуст
+        всегда, секция зелёная на устаревшем сервере."""
+        text = (ROOT / "bin" / "pairdoctor").read_text(encoding="utf-8")
+        self.assertIn("process_start_ts=", text)
+        # рядом с вызовом нет голого list_stale_files() без аргумента
+        import re
+        bare = [m for m in re.finditer(r"list_stale_files\(\)", text)]
+        self.assertEqual([], bare, "голый вызов меряет старт врача, а не серверов")
+
+    def test_freshness_warns_on_stale_server(self) -> None:
+        """Поведенческий: .py новее старта сервера — список не пуст.
+
+        Старту сервера 60с назад при свежем .py обязан найтись stale;
+        старту через 60с в будущее — ничего. Краснеет, если сравнение
+        подменят на /proc/self врача.
+        """
+        import sys
+        sys.path.insert(0, str(ROOT / "mcp" / "pair_mailbox"))
+        import server_freshness as fresh
+        import tempfile, time
+        with tempfile.TemporaryDirectory() as tmp:
+            probe = Path(tmp) / "probe.py"
+            probe.write_text("x = 1\n", encoding="utf-8")
+            stale = fresh.list_stale_files(code_dir=Path(tmp),
+                                           process_start_ts=time.time() - 60)
+            self.assertEqual(["probe.py"], stale)
+            fresh_now = fresh.list_stale_files(code_dir=Path(tmp),
+                                               process_start_ts=time.time() + 60)
+            self.assertEqual([], fresh_now)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -240,11 +240,32 @@ print("\n[6] freshness")
 try:
     sys.path.insert(0, str(ROOT / "mcp" / "pair_mailbox"))
     import server_freshness as _fresh
-    _stale = _fresh.list_stale_files()
-    if _stale:
-        warn("server code changed since process start: " + ", ".join(_stale) + " — restart MCP servers (serve.sh)")
+    # Свежесть меряется от старта MCP-серверов (pid из state.json),
+    # а не от старта самого врача: врач только что запущен, его /proc/self
+    # новее любого .py, и сравнение с собой зелено по построению.
+    _pids = []
+    for _sd in targets:
+        try:
+            _sst = json.loads((_sd / "state.json").read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        for _rinfo in (_sst.get("roles") or {}).values():
+            if isinstance(_rinfo, dict) and _rinfo.get("pid"):
+                try:
+                    _p = Path(f"/proc/{int(_rinfo['pid'])}")
+                    if _p.is_dir():
+                        _pids.append(_p.stat().st_mtime)
+                except (OSError, ValueError):
+                    continue
+    _start = min(_pids) if _pids else None
+    if _start is None:
+        warn("freshness check skipped — no live server pid in state")
     else:
-        ok("server code fresh: no .py newer than process start")
+        _stale = _fresh.list_stale_files(process_start_ts=_start)
+        if _stale:
+            warn("server code newer than server start: " + ", ".join(_stale) + " — restart MCP servers (serve.sh)")
+        else:
+            ok("server code fresh: no .py newer than server start")
 except Exception as _exc:
     warn("freshness check skipped — " + str(_exc)[:100])
 
