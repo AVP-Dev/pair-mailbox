@@ -1,4 +1,4 @@
-"""Unit-тесты для модуля review_gate.py (машинный гейт слияния PR — раунд 60)."""
+"""Unit tests for review_gate.py (the PR-merge machine gate — round 60)."""
 from __future__ import annotations
 
 import argparse
@@ -14,7 +14,7 @@ import review_gate
 
 class TestReviewGate(PairTestCase):
     def test_check_pr_merge_not_git_repo(self) -> None:
-        """Fail-closed: вне git репозитория слияние PR категорически запрещено."""
+        """Fail-closed: outside a git repo the PR merge stays firmly banned."""
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             store = MagicMock()
@@ -24,10 +24,10 @@ class TestReviewGate(PairTestCase):
             self.assertIn("cannot verify: not a git repo", reason)
 
     def test_check_pr_merge_wrong_phase(self) -> None:
-        """Слияние разрешено строго на фазе verify."""
+        """Merging allowed strictly in the verify phase."""
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
-            # Создаем валидный git репозиторий
+            # Create a valid git repo
             subprocess.run(["git", "init"], cwd=str(tmp_path), check=True, capture_output=True)
             subprocess.run(["git", "config", "user.email", "pair@test.local"], cwd=str(tmp_path), check=True, capture_output=True)
             subprocess.run(["git", "config", "user.name", "Pair Test"], cwd=str(tmp_path), check=True, capture_output=True)
@@ -43,7 +43,7 @@ class TestReviewGate(PairTestCase):
                 self.assertIn(f"phase is {bad_phase!r}", reason)
 
     def test_check_pr_merge_no_test_evidence(self) -> None:
-        """Отказ, если в текущем раунде нет успешного test evidence."""
+        """Refuse when the current round holds no successful test evidence."""
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             subprocess.run(["git", "init"], cwd=str(tmp_path), check=True, capture_output=True)
@@ -65,7 +65,7 @@ class TestReviewGate(PairTestCase):
             self.assertIn("no passing test evidence", reason)
 
     def test_check_pr_merge_self_approval_forbidden(self) -> None:
-        """УСЛОВИЕ 2: Запрет self-approval писателем."""
+        """CONDITION 2: writer self-approval ban."""
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             subprocess.run(["git", "init"], cwd=str(tmp_path), check=True, capture_output=True)
@@ -84,7 +84,7 @@ class TestReviewGate(PairTestCase):
                 "writer": "agy",
                 "evidence": [{"round": 60, "kind": "test", "ok": True}],
                 "verdicts": [{
-                    "role": "agy",  # Автор вердикта = писатель!
+                    "role": "agy",  # The verdict author IS the writer!
                     "kind": "verdict",
                     "rev": {"head": head, "dirty": "", "files": ["file.txt"]},
                 }],
@@ -94,7 +94,7 @@ class TestReviewGate(PairTestCase):
             self.assertIn("self-approval forbidden", reason)
 
     def test_check_pr_merge_stale_verdict_refused(self) -> None:
-        """УСЛОВИЕ 1: Отказ при stale вердикте через review.is_stale."""
+        """CONDITION 1: refuse on a stale verdict via review.is_stale."""
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             subprocess.run(["git", "init"], cwd=str(tmp_path), check=True, capture_output=True)
@@ -106,7 +106,7 @@ class TestReviewGate(PairTestCase):
 
             old_head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=str(tmp_path), capture_output=True, text=True).stdout.strip()
 
-            # Добавляем новый коммит в тот же файл -> вердикт становится stale
+            # Add a new commit to the same file -> the verdict turns stale
             (tmp_path / "file.txt").write_text("hello world", encoding="utf-8")
             subprocess.run(["git", "commit", "-am", "second commit"], cwd=str(tmp_path), check=True, capture_output=True)
 
@@ -130,7 +130,7 @@ class TestReviewGate(PairTestCase):
             self.assertIn("verdict is stale", reason)
 
     def test_check_pr_merge_success(self) -> None:
-        """Успешный пропуск гейта при чистом актуальном approve от критика."""
+        """A clean pass on a fresh critic approve."""
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             subprocess.run(["git", "init"], cwd=str(tmp_path), check=True, capture_output=True)
@@ -162,7 +162,7 @@ class TestReviewGate(PairTestCase):
             self.assertEqual(reason, "")
 
     def test_check_pr_merge_uncommitted_untracked_refused(self) -> None:
-        """У3: Отказ слияния при наличии uncommitted/untracked файлов в рабочем дереве."""
+        """U3: merge refused with uncommitted/untracked files in the work tree."""
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             subprocess.run(["git", "init"], cwd=str(tmp_path), check=True, capture_output=True)
@@ -190,7 +190,7 @@ class TestReviewGate(PairTestCase):
             store.notes_root.mkdir()
             (store.notes_root / "verdict.md").write_text(f"## 2026-10-12T01:00:00 - omp\n\nverdict-approve {head[:12]}", encoding="utf-8")
 
-            # Создаем untracked файл кода/скретча
+            # Create an untracked code/scratch file
             (tmp_path / "untracked.py").write_text("print(1)", encoding="utf-8")
 
             ok, reason = review_gate.check_pr_merge(store, tmp_path)
@@ -199,7 +199,7 @@ class TestReviewGate(PairTestCase):
             self.assertIn("untracked.py", reason)
 
     def test_check_pr_merge_reject_verdict_refused(self) -> None:
-        """Отказ, если в тексте вердикта зафиксирован отказ/reject."""
+        """Refuse when the verdict text pins a refusal/reject."""
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             subprocess.run(["git", "init"], cwd=str(tmp_path), check=True, capture_output=True)
@@ -230,7 +230,7 @@ class TestReviewGate(PairTestCase):
             self.assertIn("rejected the changes", reason)
 
     def test_check_pr_merge_verdict_without_head_refused(self) -> None:
-        """Отказ, если у вердикта нет привязки к ревизии (head пуст)."""
+        """Refuse when the verdict binds to no revision (empty head)."""
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             subprocess.run(["git", "init"], cwd=str(tmp_path), check=True, capture_output=True)
@@ -257,7 +257,7 @@ class TestReviewGate(PairTestCase):
             self.assertIn("no revision binding", reason)
 
     def test_check_pr_merge_prose_trap_words_refused(self) -> None:
-        """БЛОКЕР 1 (omp): отказной по смыслу вердикт со словами-ловушками (hook, book, lock) отклоняется."""
+        """BLOCKER 1 (omp): a refusal-flavoured verdict with trap words (hook, book, lock) is rejected."""
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             subprocess.run(["git", "init"], cwd=str(tmp_path), check=True, capture_output=True)
@@ -282,7 +282,7 @@ class TestReviewGate(PairTestCase):
             }
             store.notes_root = tmp_path / "notes"
             store.notes_root.mkdir()
-            # Текст критика без маркера одобрения, содержащий слово 'hook' (содержит 'ok')
+            # Critic text with no approve marker, holding 'hook' (contains 'ok')
             (store.notes_root / "verdict.md").write_text(
                 "## 2026-10-12T01:00:00 - omp\n\nТребуется доработка: в hook пайплайна есть гонка.",
                 encoding="utf-8",
@@ -292,7 +292,7 @@ class TestReviewGate(PairTestCase):
             self.assertIn("last verdict is not approved", reason)
 
     def test_check_pr_merge_missing_verdict_file_refused(self) -> None:
-        """БЛОКЕР 2 (omp): fail-closed при отсутствующем notes/verdict.md."""
+        """BLOCKER 2 (omp): fail-closed on a missing notes/verdict.md."""
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             subprocess.run(["git", "init"], cwd=str(tmp_path), check=True, capture_output=True)
@@ -317,13 +317,13 @@ class TestReviewGate(PairTestCase):
             }
             store.notes_root = tmp_path / "notes"
             store.notes_root.mkdir()
-            # verdict.md отсутствует
+            # verdict.md missing
             ok, reason = review_gate.check_pr_merge(store, tmp_path)
             self.assertFalse(ok)
             self.assertIn("notes/verdict.md does not exist", reason)
 
     def test_check_pr_merge_prose_ne_odobreno_refused(self) -> None:
-        """Д1 (omp): естественная формулировка отказа 'не одобрено' отклоняется."""
+        """D1 (omp): the natural refusal wording is rejected."""
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             subprocess.run(["git", "init"], cwd=str(tmp_path), check=True, capture_output=True)
@@ -357,7 +357,7 @@ class TestReviewGate(PairTestCase):
             self.assertTrue("rejected the changes" in reason or "not approved" in reason)
 
     def test_check_pr_merge_marker_head_mismatch_refused(self) -> None:
-        """Д2 (omp): маркер с несовпадающим HEAD (напр. deadbeef1234) отклоняется."""
+        """D2 (omp): a marker with a mismatched HEAD (e.g. deadbeef1234) is rejected."""
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             subprocess.run(["git", "init"], cwd=str(tmp_path), check=True, capture_output=True)
@@ -391,7 +391,7 @@ class TestReviewGate(PairTestCase):
             self.assertIn("marker head 'deadbeef1234' does not match current HEAD", reason)
 
     def test_cmd_pr_force_without_reason_fails(self) -> None:
-        """УСЛОВИЕ 3: --force без --reason отклоняется."""
+        """CONDITION 3: --force without --reason is rejected."""
         store = MagicMock()
         args = argparse.Namespace(
             pr_action="merge",
@@ -405,7 +405,7 @@ class TestReviewGate(PairTestCase):
         store.append_transcript.assert_not_called()
 
     def test_cmd_pr_force_without_human_ok_fails(self) -> None:
-        """УСЛОВИЕ 3: --force без human_ok (одобрения человеком в раунде) отклоняется."""
+        """CONDITION 3: --force without human_ok (human approval in the round) is rejected."""
         store = MagicMock()
         store.read.return_value = {"round": 60, "phase": "verify", "human_ok": []}
         args = argparse.Namespace(
@@ -421,7 +421,7 @@ class TestReviewGate(PairTestCase):
 
     @patch("review_gate.run_gh_merge")
     def test_cmd_pr_force_with_reason_and_human_ok_records_audit(self, mock_gh: MagicMock) -> None:
-        """УСЛОВИЕ 3: --force с --reason и human_ok логируется в аудит/транскрипт."""
+        """CONDITION 3: --force with --reason and human_ok logs into audit/transcript."""
         mock_gh.return_value = (0, "merged")
         store = MagicMock()
         store.read.return_value = {
