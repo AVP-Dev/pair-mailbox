@@ -307,10 +307,10 @@ class Pilot:
         return out
 
     def note_restart(self, role: str) -> None:
-        """Записать попытку и сразу отбросить всё, что вышло за окно.
+        """Record the attempt and drop everything past the window at once.
 
-        Обрезание здесь, а не при чтении, нужно затем, что иначе файл с историей
-        рос бы бесконечно по мере жизни проекта.
+        Trimming happens here, at write time, not at read time: otherwise the history
+        file would grow without bound over the project lifetime.
         """
         now = time.time()
         keep = [stamp for stamp in self.restart_history(role) if now - stamp < self.restart_window]
@@ -319,13 +319,13 @@ class Pilot:
             self.restarts_file(role).write_text(
                 " ".join(f"{stamp:.0f}" for stamp in keep), encoding="utf-8")
         except OSError as error:
-            log(f"{role}: не записал историю перезапусков ({error}) — ограничение может не сработать")
+            log(f"{role}: did not record the restart history ({error}) — the ceiling may not hold")
 
     def restart_allowed(self, role: str) -> bool:
-        """Не превышен ли лимит перезапусков этой роли в окне.
+        """Whether this role is over its restart ceiling inside the window.
 
-        Считает попытки независимо от pid: скользящее окно останавливает и
-        процесс, падающий сразу после старта, у которого pid каждый раз новый.
+        Attempts count regardless of pid: the sliding window also stops a
+        process that dies right after start, whose pid is new every time.
         """
         now = time.time()
         recent = [stamp for stamp in self.restart_history(role)
@@ -338,12 +338,12 @@ class Pilot:
         return self.store._load()
 
     def remember(self, key: str, ttl: float | None = None) -> bool:
-        """True, если этого мы ещё не делали. Не даёт повторять запись.
+        """True if we have not done this yet. Stops repeat writes.
 
-        Без ttl штамп живёт вечно: второе событие того же вида уже не будит
-        (unread-штамп утекал так весь раунд 43). С ttl штамп старше ttl
-        обновляется и снова возвращает True — напоминание повторяется не чаще,
-        чем раз в ttl, пока причина висит.
+        Without ttl a stamp lives forever: a second event of the same kind
+        never wakes again (the unread stamp leaked exactly like that through
+        round 43). With ttl a stamp older than ttl refreshes and returns True
+        again — a nudge repeats at most once per ttl while the cause hangs.
         """
         stamp = self.state_dir / "pilot" / f".{stamp_name(key)}"
         if stamp.exists():
@@ -358,21 +358,21 @@ class Pilot:
         return True
 
     def unremember(self, key: str) -> None:
-        """Сбросить штамп: событие закрылось, следующее начнётся с чистого листа."""
+        """Drop the stamp: the event closed, the next one starts clean."""
         stamp = self.state_dir / "pilot" / f".{stamp_name(key)}"
         stamp.unlink(missing_ok=True)
 
     def panes(self, state: dict) -> dict[str, list[str]]:
-        """Кто на какой панели, без мёртвых.
+        """Who sits on which pane, minus the dead.
 
-        Мёртвая роль не делает панель общей. Проверено вживую: claude и codex
-        держались в ростере с одной панелью %20, записи пережили их процессы, и
-        `skip` содержал всех троих — включая живого agy. Сверхвизор переставал
-        обслуживать проект из-за двух умерших соседей.
+        A dead role does not make a pane shared. Seen live: claude and codex
+        lingered in the roster on one pane %20, the records outlived their
+        processes, and `skip` held all three — including the live agy. The
+        supervisor stopped serving the project over two dead neighbours.
 
-        Роль считается живой по process'у; панель без живого процесса — просто
-        запись, а не окно, где кто-то сидит. Два независимых факта, как в
-        `pane_exists`: имя панели не доказывает, что в ней кто-то есть.
+        A role counts as live by its process; a pane with no live process is
+        just a record, not a window someone sits in. Two independent facts, as
+        in `pane_exists`: a pane name does not prove anyone is inside.
         """
         table: dict[str, list[str]] = {}
         for role, info in (state.get("roles") or {}).items():
@@ -386,18 +386,18 @@ class Pilot:
         return table
 
     def pane_key(self, pane: str) -> str:
-        """Ключ группировки панелей, одинаковый для обоих форматов ссылки.
+        """Pane-grouping key, identical for both reference formats.
 
-        Группировка по самой строке перестала работать, как только в состоянии
-        появились адреса сессий: `%1` и `mail:0.1` — одна панель, а таблица видела
-        две. Дальше это ломало `ambiguous()`, а тот, не увидев двух ролей на одной
-        панели, считал её свободной и бил в неё — то есть в чужой композер.
+        Grouping by the raw string broke as soon as session addresses appeared
+        in state: `%1` and `mail:0.1` are one pane, but the table saw two.
+        Past that it broke `ambiguous()`, which — missing two roles on one
+        pane — called it free and struck it: into another agent’s composer.
         """
         return pane_key(self.tmux, pane)
 
     def stale_roles(self, state: dict) -> dict[str, str]:
-        """Роли с мёртвым процессом, но всё ещё числящиеся. Не удаляются молча:
-        ростер — общая память, и решение очистить его принимает человек."""
+        """Roles with a dead process that still linger. Never deleted quietly:
+        the roster is shared memory, and the human decides when to clear it."""
         out = {}
         for role, info in (state.get("roles") or {}).items():
             pid = info.get("pid")
@@ -409,17 +409,18 @@ class Pilot:
         return {pane: names for pane, names in self.panes(state).items() if len(names) > 1}
 
     def pane_occupied_by_other(self, state: dict, role: str, pane: str) -> str | None:
-        """Живая роль на этой панели, кроме самой `role`. None — панель свободна.
+        """Live role on this pane, besides `role` itself. None — the pane is free.
 
-        Запись о мёртвом агенте не делает панель занятой: если в ней кто-то жив,
-        перезапуск ушедшего роли ударит по живому соседу. Считаем только по
-        процессам, потому что имя панели — это адрес, а не свидетельство."""
+        A dead-agent record does not make a pane busy: if someone live is in
+        it, restarting the departed role would hit the live neighbour. Count
+        by processes only, because a pane name is an address, not evidence.
+        """
         key = self.pane_key(pane)
         for other, info in (state.get("roles") or {}).items():
-            # Сравнение по ключу, а не по строке: сосед может быть записан адресом
-            # сессии, а `pane` пришёл из `%N`, и это та же панель. При сравнении
-            # строк сверхвизор решил бы, что панель свободна, и перезапустил в
-            # ней чужого агента.
+            # Compare by key, not by string: the neighbour may be recorded as a session
+            # address while `pane` arrived as `%N`, and it is the same pane. On string
+            # comparison the supervisor would call the pane free and restart into it
+            # another agent’s agent.
             if other == role or self.pane_key(info.get("pane")) != key:
                 continue
             pid = info.get("pid")
@@ -428,18 +429,18 @@ class Pilot:
         return None
 
     def pane_occupant(self, role: str, pane: str) -> int:
-        """pid, который реально сидит в панели этой роли, или 0.
+        """The pid actually sitting in this role’s pane, or 0.
 
-        Роль жива, если жив pid ИЛИ панель с процессом, но эти два факта могут
-        расходиться, и важно в каком направлении. Мёртвый pid при живой панели —
-        это не падение: pid в ростере протух, а агент на месте. Обратное, живой
-        pid при отсутствующей панели, — уже настоящая беда, и она ловится в
-        `dead_pane`.
+        A role is alive if its pid is alive OR its pane runs a process, but the two
+        facts can diverge, and the direction matters. A dead pid on a live pane
+        is not a crash: the roster pid went stale while the agent is in place.
+        The reverse — a live pid with no pane — is real trouble, and it is
+        caught in `dead_pane`.
 
-        Панель, занятую чужой живой ролью, сюда не доходит: `restart_agent`
-        проверяет `pane_occupied_by_other` ДО этого вызова, иначе мы записали бы
-        pid соседа в запись этой роли. Проверять здесь ещё раз было бы вторым
-        мнением об одном факте, а не страховкой.
+        A pane held by another live role never reaches here: `restart_agent`
+        checks `pane_occupied_by_other` BEFORE this call, otherwise we would
+        record the neighbour’s pid into this role’s entry. Checking again here
+        would be a second opinion on one fact, not insurance.
         """
         if self.tmux is None or not pane:
             return 0
@@ -449,25 +450,25 @@ class Pilot:
         return occupant if is_pid_alive(occupant) else 0
 
     def gone_roles(self, state: dict) -> None:
-        """Роли, чей процесс умер, но запись в ростере осталась.
+        """Roles whose process died but whose roster entry stayed.
 
-        Молчание здесь вреднее шума: из-за таких записей общая панель выглядела
-        занятой, и сверхвизор переставал будить живого соседа. Говорим один раз
-        за роль и оставляем решать человеку — молча чистить ростер нельзя.
+        Silence is costlier than noise here: such entries made a shared pane
+        look busy, and the supervisor stopped waking the live neighbour. Say it
+        once per role and leave the call to the human — never clear the roster quietly.
         """
         for role, why in self.stale_roles(state).items():
             if not self.remember(f"gone-{role}"):
                 continue
-            log(f"{role}: {why}, но запись в ростере осталась и панель считалась общей. "
-                f"Чистить ростер — `pairctl release` или новая сессия.")
+            log(f"{role}: {why}, but the roster entry stayed and the pane counted as shared. "
+                f"Clear the roster — `pairctl release` or a new session.")
             self.store.append_transcript("pilot_stale_role", "pairpilot", target=role, why=why)
 
     def ambiguous(self, state: dict) -> bool:
-        """Две роли на одной панели — значит ростер врёт, и бить в неё нельзя.
+        """Two roles on one pane means the roster lies, and striking it is forbidden.
 
-        Так бывает: диагностика или чужой скрипт регистрирует роль, отметку не
-        стирая, и в неё попадает текущая панель. Тогда «будим claude» ушло бы в
-        окно agy. Лучше не будить вовсе, чем будить не того.
+        It happens: diagnostics or another script registers a role without wiping
+        the mark, and the current pane lands in it. Then "wake claude" would go
+        to agy’s window. Better to wake nobody than to wake the wrong one.
         """
         shared = self.shared_panes(state)
         if not shared:
@@ -475,39 +476,39 @@ class Pilot:
         key = "shared-" + "-".join(f"{pane}:{','.join(sorted(names))}" for pane, names in sorted(shared.items()))
         if self.remember(key):
             for pane, names in sorted(shared.items()):
-                log(f"панель {pane} указана сразу за {', '.join(sorted(names))} — не трогаю её")
+                log(f"pane {pane} is listed right after {', '.join(sorted(names))} — leaving it alone")
                 self.store.append_transcript("pilot_pane_shared", "pairpilot", pane=pane, roles=sorted(names))
         return True
 
-    # -------------------------------------------------------------- пробуждение
+    # ------------------------------------------------------- wake-up
 
     def mark_wake(self, state: dict, role: str, reason: str, text: str) -> None:
-        """Записать, что роль надо разбудить — в файл, а не в композер.
+        """Record that a role must be woken — in a file, not in the composer.
 
-        Печать в композер была единственным способом сказать соседу «у тебя
-        письмо», и это плохой способ: он ломается о занятый TUI, требует угадать
-        момент и оставляет след в чужом окне. Пробуждение по файлу не печатает
-        ничего — роль увидит его сама, когда посмотрит состояние, — и даёт
-        супервизору факт, по которому можно потом судить: будили или уже проснулся.
+        Printing into the composer was the only way to tell a neighbour "you
+        have mail", and it is a bad way: it breaks on a busy TUI, needs the
+        moment guessed, and leaves a mark in another window. A file wake-up prints
+        nothing — the role sees it itself when it looks at state — and gives the
+        supervisor a fact to judge by later: did we wake it, or was it awake.
 
-        Текущий снимок `last_seen` кладётся рядом с фактом намерения. Сравнение
-        идёт с ним, а не с текущим временем: иначе роль, которая была awake в
-        момент постановки вопроса, была бы признана «проснувшейся» следующим же
-        тиком без единого своего действия.
+        The current `last_seen` snapshot goes next to the intent fact. Comparison
+        runs against it, not against now: otherwise a role that was awake when
+        the question was raised would count as "woken" on the very next tick
+        without a single action of its own.
         """
         path = self.wake_root / f"{role}.json"
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
             info = (state.get("roles") or {}).get(role) or {}
-            # Висящее пробуждение дополняется, а не перезаписывается.
+            # A hanging wake-up is amended, not overwritten.
             #
-            # Поводов о пробуждении два (`unread_peers` и `stale_writer`), а файл
-            # на роль один. Перезапись теряла `asked_at` — терпение начиналось
-            # заново, — и признак `escalated`, то есть один и тот же факт
-            # эскалировался дважды: сначала по первому поводу, потом, уже после
-            # перезаписи, по второму. Снимок `seen_at_ask` берётся только при
-            # первой постановке: он отвечает на вопрос «проснулся ли роль после
-            # вопроса», и обновлять его — значит задавать вопрос заново.
+            # Two wake-up reasons (`unread_peers` and `stale_writer`), but one file
+            # per role. Overwriting lost `asked_at` — patience restarted from zero
+            # — and the `escalated` flag, so the same fact escalated
+            # twice: first for one reason, then, after the overwrite, for the second.
+            # The `seen_at_ask` snapshot is taken only at the first raise: it answers
+            # "did the role wake after the question", and refreshing it means asking
+            # the question anew.
             previous: dict = {}
             try:
                 previous = json.loads(path.read_text(encoding="utf-8"))
@@ -534,29 +535,29 @@ class Pilot:
             payload.setdefault("asked_at", utcnow())
             path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         except OSError as error:
-            # Не записали — значит, будить нечем, и это надо сказать, а не
-            # сделать вид, что роль получила напоминание.
+            # Not recorded means nothing to wake with, and that must be said, not
+            # faked as if the role got its nudge.
             self.store.append_transcript("pilot_wake_failed", "pairpilot",
                                          target=role, error=str(error)[:120])
-            log(f"{role}: не смог записать пробуждение — {error}")
+            log(f"{role}: could not record the wake-up — {error}")
             return
         self.store.append_transcript("pilot_wake_pending", "pairpilot",
                                      target=role, reason=reason)
-        log(f"{role}: {reason}, жду пробуждения молча (в печать не бью)")
+        log(f"{role}: {reason}, waiting for the wake-up silently (no printing)")
         self.ring(state, role, reason)
 
-    # Роль -> wake-модуль (был `if role == "opencode"`; новый = строка + wake_<cli>.py).
+    # Role -> wake module (was `if role == "opencode"`; new = string + wake_<cli>.py).
     WAKE_ADAPTERS = {"opencode": "wake_opencode"}
 
     def ring(self, state: dict, role: str, reason: str) -> None:
-        """Позвонить в панель роли: display-message, не печать в композер.
+        """Ring the role’s pane: display-message, not composer printing.
 
-        Печать в занятый TUI — мусор в строке ввода; звонок — всплывашка,
-        которую агент видит краем глаза и сам решает, когда отвлечься.
-        Троттл — по полю rung_at в wake-файле: не чаще раза в 5 мин,
-        иначе это тот же спам, только без текста.
+        Printing into a busy TUI is garbage in the input line; a ring is a popup
+        the agent sees from the corner of its eye and decides itself when to look.
+        Throttle by the rung_at field in the wake file: at most once per 5 min,
+        otherwise it is the same spam, just without text.
 
-        После звонка — wake-адаптер из WAKE_ADAPTERS (fail-closed, throttle общий).
+        After the ring — the wake adapter from WAKE_ADAPTERS (fail-closed, shared throttle).
         """
         if self.tmux is None or role in self.skip:
             return
@@ -566,7 +567,7 @@ class Pilot:
         pane = ((state.get("roles") or {}).get(role) or {}).get("pane")
         if not pane or not pane_alive(self.tmux, pane):
             return
-        pointer = f"[pair] {reason} — забери из mailbox через pair_read"
+        pointer = f"[pair] {reason} — pick it up from mailbox via pair_read"
         try:
             subprocess.run([self.tmux, "display-message", "-t", pane,
                             "-d", "4000", pointer],
@@ -580,7 +581,7 @@ class Pilot:
                 self.store.append_transcript("pilot_wake_api", "pairpilot",
                                              target=role, woken=result.get("woken"),
                                              why=(result.get("why") or "")[:120])
-            except Exception as error:  # noqa: BLE001 - адаптер не должен ронять звонок
+            except Exception as error:  # noqa: BLE001 - the adapter must not drop the ring
                 self.store.append_transcript("pilot_wake_api_failed", "pairpilot",
                                              target=role, error=str(error)[:120])
         else:
