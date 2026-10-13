@@ -128,7 +128,7 @@ class TestBudgetServerIntegration(PairTestCase):
         # Попытка шага вперед implement -> verify должна отказать по бюджету
         with self.assertRaises(ProtocolError) as ctx:
             self.writer.tool_pair_advance("verify")
-        self.assertIn("превышен бюджет раунда", str(ctx.exception))
+        self.assertIn("round budget breached", str(ctx.exception))
         self.assertIn("messages:", str(ctx.exception))
 
     def test_backward_step_allowed_even_on_budget_breach(self) -> None:

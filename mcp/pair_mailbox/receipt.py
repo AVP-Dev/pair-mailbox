@@ -1,16 +1,15 @@
-"""Task Receipt: машинный чек-отчет раунда (.pair/RECEIPT-<round>.md).
+"""Task Receipt: the round machine check-report (.pair/RECEIPT-<round>.md).
 
-Зачем: по завершении раунда (§10, done) должен оставаться неизменяемый артефакт,
-фиксирующий:
-- Номер раунда, задачу раунда;
-- Кто был писателем и критиком;
-- Закрытые задачи раунда (tasks);
-- Собранные доказательства (evidences);
-- Фактические метрики бюджета (сообщения, переходы, часы, рестарты);
-- Хэш HEAD и дату закрытия.
-- [R82] Секцию Ground Truth: dirty_hash фактов, вердикт anti-mock
-  (PASS/BLOCKED + число), ссылку на запись ledger. Квитанция fail-closed:
-  при боевых моках квитанция не пишется, а бросается GroundTruthBlocked.
+Why: when the round ends (§10, done) an immutable artefact must stay, pinning:
+- The round number, the round task;
+- Who wrote and who criticised;
+- The round closed tasks (tasks);
+- The gathered evidence (evidences);
+- The actual budget metrics (messages, moves, hours, restarts);
+- The HEAD hash and the close date.
+- [R82] The Ground Truth section: the facts dirty_hash, the anti-mock verdict
+  (PASS/BLOCKED + count), the ledger record link. The receipt is fail-closed:
+  on combat mocks no receipt writes, GroundTruthBlocked raises instead.
 """
 from __future__ import annotations
 
@@ -21,13 +20,13 @@ from typing import Any
 
 
 class GroundTruthBlocked(Exception):
-    """Факты запрещают квитанцию: боевые моки или расхождение с diff."""
+    """Facts forbid the receipt: combat mocks or diff drift."""
 
 
 
 
 def generate_receipt(state_dir: Path, state: dict[str, Any], head_commit: str = "") -> Path:
-    """Сгенерировать и записать .pair/RECEIPT-<round>.md."""
+    """Generate and write .pair/RECEIPT-<round>.md."""
     state_dir = Path(state_dir)
     round_number = int(state.get("round", 0))
     target = state_dir / f"RECEIPT-{round_number}.md"
@@ -36,30 +35,30 @@ def generate_receipt(state_dir: Path, state: dict[str, Any], head_commit: str = 
     roles = state.get("roles", {})
     peers = [r for r in roles if r != writer]
 
-    # Сбор задач раунда
+    # Round task gathering
     tasks = state.get("tasks", [])
     round_tasks = [t for t in tasks if t.get("round") == round_number]
 
-    # Сбор доказательств раунда
+    # Round evidence gathering
     evidences = state.get("evidence", [])
     round_evidences = [e for e in evidences if e.get("round") == round_number]
 
-    # Метрики бюджета
+    # Budget metrics
     metrics_str = "—"
     try:
         from budget import collect_metrics
         m = collect_metrics(state_dir, state)
         metrics_str = (
-            f"- Сообщения: {m['messages']}\n"
-            f"- Переходы (advances): {m['advances']}\n"
-            f"- Время раунда: {m['hours']} ч.\n"
-            f"- Рестарты пилота: {m['restarts']}"
+            f"- Messages: {m['messages']}\n"
+            f"- Moves (advances): {m['advances']}\n"
+            f"- Round time: {m['hours']} h.\n"
+            f"- Pilot restarts: {m['restarts']}"
         )
     except Exception:
         pass
 
-    # [R82] Ground Truth: факты живьём из корня репозитория, вердикт гейта,
-    # ссылка на ledger. Fail-closed: боевые моки — исключение до записи.
+    # [R82] Ground Truth: live facts from the repo root, the gate verdict,
+    # the ledger link. Fail-closed: combat mocks raise before the write.
     ground_lines = _ground_truth_lines(state_dir, round_number)
     now_iso = datetime.now(timezone.utc).isoformat()
 
@@ -82,7 +81,7 @@ def generate_receipt(state_dir: Path, state: dict[str, Any], head_commit: str = 
             status_mark = "x" if t.get("status") == "done" else " "
             lines.append(f"- [{status_mark}] #{t.get('id')}: {t.get('text')} ({t.get('status')})")
     else:
-        lines.append("*(нет задач, привязанных к раунду)*")
+        lines.append("*(no tasks bound to the round)*")
 
     lines.extend([
         "",
@@ -94,7 +93,7 @@ def generate_receipt(state_dir: Path, state: dict[str, Any], head_commit: str = 
             ok_mark = "OK" if e.get("ok") else "FAIL"
             lines.append(f"- [{ok_mark}] {e.get('kind')}: {e.get('value')} ({e.get('role')})")
     else:
-        lines.append("*(доказательства отсутствуют)*")
+        lines.append("*(no evidence)*")
 
     lines.extend([
         "",
@@ -112,7 +111,7 @@ def generate_receipt(state_dir: Path, state: dict[str, Any], head_commit: str = 
 
 
 def _ground_truth_lines(state_dir: Path, round_number: int) -> list[str]:
-    """Секция Ground Truth: факты, вердикт, ledger. Блок — исключением."""
+    """Ground Truth section: facts, verdict, ledger. A block raises."""
     import anti_mock_gate
     import session_facts
     from ledger import read_round
@@ -120,8 +119,8 @@ def _ground_truth_lines(state_dir: Path, round_number: int) -> list[str]:
     while not (repo / ".git").is_dir() and repo.parent != repo:
         repo = repo.parent
     if not (repo / ".git").is_dir():
-        # Вне репозитория фактов нет — UNKNOWN, не блок (договор: PRESERVE).
-        return ["- facts: UNKNOWN (state вне git-дерева)"]
+        # Outside a repo there are no facts — UNKNOWN, not a block (contract: PRESERVE).
+        return ["- facts: UNKNOWN (state outside the git tree)"]
     facts = session_facts.collect_facts(repo)
     verdict = anti_mock_gate.judge(facts)
     if not verdict["ok"]:
@@ -133,7 +132,7 @@ def _ground_truth_lines(state_dir: Path, round_number: int) -> list[str]:
     try:
         records = read_round(state_dir, round_number)
         if records:
-            ledger_ref = f"ledger.jsonl: {len(records)} запис(ь/ей) раунда {round_number}"
+            ledger_ref = f"ledger.jsonl: {len(records)} round record(s) {round_number}"
     except Exception:
         pass
     return [

@@ -29,7 +29,7 @@ class TestTaskBanner(PairTestCase):
         настоящего pair_task и печатается в обе панели pairup."""
         added = self.writer.tool_pair_task("add", text="починить панели")
         banner = self.banner()
-        self.assertIn("ЗАДАЧА РАУНДА", banner)
+        self.assertIn("ROUND TASK", banner)
         self.assertIn(f"#{added['task']['id']}", banner)
         self.assertIn("починить панели", banner)
         self.assertIn("pair_digest", banner)
