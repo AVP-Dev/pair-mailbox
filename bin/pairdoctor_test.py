@@ -45,5 +45,17 @@ class TestUnittestTail(unittest.TestCase):
                       unittest_tail("", "Ran 3 tests in 0.011s\nFAILED (failures=1)\n"))
 
 
+class TestDeliverySection(unittest.TestCase):
+    def test_section_present(self) -> None:
+        text = (ROOT / "bin" / "pairdoctor").read_text(encoding="utf-8")
+        self.assertIn("[5] delivery", text)
+        self.assertIn("composer_line", text)
+        self.assertIn("is_composer_empty", text)
+
+    def test_sections_renumbered(self) -> None:
+        text = (ROOT / "bin" / "pairdoctor").read_text(encoding="utf-8")
+        self.assertIn("[6] git", text)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

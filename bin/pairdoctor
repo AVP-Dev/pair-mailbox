@@ -196,7 +196,45 @@ for sd in targets:
            ", messages: " + str(kinds.get("send", 0)) +
            ", refusals: " + str(kinds.get("refusal", 0)))
 
-print("\n[5] git")
+print("\n[5] delivery")
+try:
+    sys.path.insert(0, str(ROOT / "mcp" / "pair_mailbox"))
+    import composer as _composer
+    _tmux = __import__("shutil").which("tmux")
+    for _sd in targets:
+        try:
+            _st = json.loads((_sd / "state.json").read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        for _role, _info in (_st.get("roles") or {}).items():
+            if not isinstance(_info, dict):
+                continue
+            _pane = _info.get("pane")
+            if not _pane or not _tmux:
+                continue
+            try:
+                _alive = _composer.pane_alive(_tmux, _pane)
+            except Exception:
+                _alive = False
+            if not _alive:
+                warn(_role + ": pane " + str(_pane) + " dead — pilot cannot reach it")
+                continue
+            try:
+                _lines = _composer.capture(_tmux, _pane)
+                _line = _composer.composer_line(_lines)
+            except Exception as _exc:
+                bad(_role + ": capture failed — " + str(_exc)[:100])
+                continue
+            if _line is None:
+                bad(_role + ": pane " + str(_pane) + " alive but composer not recognized — delivery impossible (see composer.py)")
+            elif _composer.is_composer_empty(_line):
+                ok(_role + ": pane " + str(_pane) + " reachable, composer free")
+            else:
+                ok(_role + ": pane " + str(_pane) + " reachable, composer busy (" + _line.strip()[-40:] + ")")
+except Exception as _exc:
+    warn("delivery check skipped — " + str(_exc)[:100])
+
+print("\n[6] git")
 if (ROOT / ".git").exists():
     r2 = subprocess.run(["git", "log", "--oneline", "-1"], cwd=str(ROOT),
                         capture_output=True, text=True)

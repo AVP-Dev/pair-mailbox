@@ -542,6 +542,11 @@ def is_input_box_row(line: str) -> bool:
     return text[0] in INPUT_BOX_CORNERS
 
 
+def is_input_box_hint(line: str) -> bool:
+    """Подсказка пустого поля ввода (Ask anything…): текст не набран."""
+    return "ask anything" in line.strip().lower()
+
+
 def is_input_box_border(line: str) -> bool:
     """Нижняя граница поля ввода TUI: рамка, которая расширяется при наборе.
 
@@ -604,13 +609,27 @@ def composer_line(lines: list) -> str | None:
     # ввода (pi, живой capture 2026-10-10: набранный текст между двумя
     # ─-рядами). Без этого признака pi считался занятым всегда.
     seen_sep_below = False
-    for line in reversed(lines):
+    low_idx = None
+    for i, line in enumerate(lines):
         stripped = line.rstrip()
         if not stripped.strip():
             continue
         text = stripped.lstrip()
         if text and text[0] in INPUT_BOX_CORNERS_LOWER:
-            return line
+            low_idx = i
+    if low_idx is not None:
+        # Рамочные строки над нижней границей; ниже — статус/футер.
+        # Подсказка — признак пустого поля, остальное вводом не является.
+        for line in lines[:low_idx]:
+            s = line.rstrip()
+            if is_input_box_hint(s):
+                return line
+        return None
+    for line in reversed(lines):
+        stripped = line.rstrip()
+        if not stripped.strip():
+            continue
+        text = stripped.lstrip()
         if looks_like_status_line(stripped):
             is_sep = bool(re.fullmatch(r"[\u2500\u2550\u2501\s]+", text))
             if is_sep and seen_sep_below:
@@ -666,6 +685,8 @@ def is_composer_empty(line: str) -> bool:
     # который уже стоил нам неработающей доставки.
     if is_input_box_border(s):
         return True
+    if is_input_box_hint(s):
+        return True  # подсказка пустого поля — не ввод
     for marker in PROMPT_MARKERS:
         idx = s.rfind(marker)
         if idx != -1:

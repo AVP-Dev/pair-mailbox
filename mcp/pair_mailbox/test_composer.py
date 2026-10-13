@@ -148,7 +148,27 @@ class TestTuiHintsAreNotContent(unittest.TestCase):
     def test_opencode_geometry_unchanged(self) -> None:
         panel = ["…", "  ┃  Ask anything…", "  ╹" + "▀" * 30,
                  "  ~/work/umputum:master"]
-        self.assertEqual("  ╹" + "▀" * 30, composer.composer_line(panel))
+        line = composer.composer_line(panel)
+        self.assertIsNotNone(line)
+        self.assertTrue(composer.is_composer_empty(line),
+                        "пустое поле ввода opencode — композер свободен")
+
+    def test_opencode_idle_frame_reads_empty(self) -> None:
+        """Живой кадр opencode idle 2026-10-13: поле с Ask-подсказкой над
+        нижней границей, ниже — путь и строка MCP-статуса. Детектор обязан
+        вернуть строку подсказки как пустую, а не статусную строку."""
+        panel = (["  ┃", '  ┃  Ask anything… "Fix a TODO in the codebase"',
+                  "  ┃", "  ┃  Build auto · xhigh",
+                  "  ╹" + "▀" * 30, "  ~/work/umputum:master"]
+                 + [""] * 6 + ["  ⊙ 2 MCP /mcps  2.0.28", ""])
+        line = composer.composer_line(panel)
+        self.assertIsNotNone(line)
+        self.assertTrue(composer.is_composer_empty(line))
+
+    def test_opencode_typed_text_reads_busy(self) -> None:
+        panel = ["  ┃", "  ┃  real typed text here", "  ┃",
+                 "  ╹" + "▀" * 30, "  ~/work/umputum:master"]
+        self.assertIsNone(composer.composer_line(panel))
 
     def test_shell_footer_with_text_below_one_rule_is_not_composer(self) -> None:
         """Одиночная черта вывода не делает следующую строку композером:
