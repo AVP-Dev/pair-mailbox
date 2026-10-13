@@ -1,7 +1,7 @@
-"""Машинный гейт план → implement: файл, виза, исключения, само-виза.
+"""Machine gate plan → implement: file, visa, exemptions, self-visa.
 
-Один тест-файл на один исходник: `plan_gate.py` -> `test_plan_gate.py`
-(база PairTestCase даёт живую пару двух ролей на состоянии).
+One test file per source: `plan_gate.py` -> `test_plan_gate.py`
+(the PairTestCase base gives a live two-role pair on state).
 """
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ import plan_gate
 def write_plan(state_dir: Path, round_number: int, sections: tuple = ("Goal", "Invariants", "Acceptance")) -> None:
     body = [f"round: {round_number}", ""]
     for section in sections:
-        body += [f"## {section}", "текст", ""]
+        body += [f"## {section}", "text", ""]
     (state_dir / plan_gate.PLAN_FILE).write_text("\n".join(body), encoding="utf-8")
 
 
@@ -31,13 +31,13 @@ def write_ack(note_dir: Path, role: str, round_number: int, at: float | None = N
                   + " — " + role + "\n")
     (note_dir / "verdict.md").write_text(
         header + f"\nplan-ack round {round_number}\n", encoding="utf-8")
-    # mtime — источник правды для «не раньше плана»: двигаем заметку вперёд
+    # mtime is the truth source for "no earlier than plan": move the note forward
     import os
     os.utime(note_dir / "verdict.md", (stamp, stamp))
 
 
 class TestGateCases(PairTestCase):
-    """Провод гейта через настоящий tool_pair_advance."""
+    """The gate wire through the real tool_pair_advance."""
 
     def setUp(self) -> None:
         super().setUp()
@@ -71,7 +71,7 @@ class TestGateCases(PairTestCase):
         self.assertEqual("implement", result["phase"])
 
     def test_self_ack_does_not_count(self) -> None:
-        """Виза от самого писателя — обход гейта: роль автора проверяется."""
+        """A self-visa from the writer bypasses the gate: the author role is checked."""
         self.advance_to_plan()
         write_plan(self.store.root, 1)
         write_ack(self.store.root / "notes", "writer-agent", 1, at=time.time() + 1)
@@ -88,20 +88,20 @@ class TestGateCases(PairTestCase):
         self.assertEqual("implement", self.writer.tool_pair_advance("implement")["phase"])
 
     def test_timeout_blocked_while_request_open(self) -> None:
-        """Открытый запрос писателя не даёт замечанию истечь незамеченным."""
+        """An open writer request never lets the remark lapse unnoticed."""
         self.advance_to_plan()
         write_plan(self.store.root, 1)
         import os
         stale = time.time() - 25 * 3600
         os.utime(self.store.root / plan_gate.PLAN_FILE, (stale, stale))
-        self.peer.tool_pair_send("writer-agent", "возражение по плану", expects_reply=False)
-        self.writer.tool_pair_send("reviewer-agent", "согласуй план", expects_reply=True)
+        self.peer.tool_pair_send("writer-agent", "plan objection", expects_reply=False)
+        self.writer.tool_pair_send("reviewer-agent", "approve the plan", expects_reply=True)
         error = self.assertRefused(self.writer.tool_pair_advance, "implement")
         self.assertIn("request", str(error))
 
     def test_reopen_is_exempt(self) -> None:
-        """done → implement (переоткрытие по находке) вставало бы без плана:
-        self-lock — именно тот риск, из-за которого exempt существует."""
+        """done → implement (finding reopen) would stall with no plan: self-lock is
+        exactly the risk the exempt exists for."""
         self.ready_and_close()
         self.writer.tool_pair_advance("implement")
         self.assertEqual("implement", self.store.read()["phase"])

@@ -1,6 +1,6 @@
-"""Тесты для intent_gate (S3) и Task Receipt (RECEIPT-<round>.md).
+"""Tests for intent_gate (S3) and Task Receipt (RECEIPT-<round>.md).
 
-Один тест-файл на исходник: `intent_gate.py` -> `test_intent_gate.py`
+One test file per source: `intent_gate.py` -> `test_intent_gate.py`
 """
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ from server import ProtocolError
 def write_test_intent(state_dir: Path, round_number: int, sections: tuple = ("Problem", "Scope", "Outcome")) -> None:
     body = [f"round: {round_number}", ""]
     for s in sections:
-        body += [f"## {s}", "описание", ""]
+        body += [f"## {s}", "description", ""]
     (state_dir / intent_gate.INTENT_FILE).write_text("\n".join(body), encoding="utf-8")
 
 
@@ -55,24 +55,24 @@ class TestTaskReceipt(PairTestCase):
         self.writer.tool_pair_claim(reason="writer")
 
     def test_receipt_generated_on_done(self) -> None:
-        # Пройдем фазы до verify
+        # Walk the phases to verify
         self.advance_phases(("plan", "implement", "verify"))
 
-        # Добавим задачу раунда и закроем ее
-        self.writer.tool_pair_task(action="add", text="тестовая задача")
+        # Add the round task and close it
+        self.writer.tool_pair_task(action="add", text="test task")
         self.writer.tool_pair_task(action="done", id=1)
 
-        # Запишем доказательство
+        # Record the evidence
         self.record_test_evidence("tests ok")
         res = self.writer.tool_pair_advance("done")
         self.assertEqual(res["phase"], "done")
 
-        # Проверяем наличие .pair/RECEIPT-1.md
+        # Check the .pair/RECEIPT-1.md presence
         receipt_path = self.store.root / "RECEIPT-1.md"
         self.assertTrue(receipt_path.is_file())
         text = receipt_path.read_text(encoding="utf-8")
         self.assertIn("# Task Receipt — Round 1", text)
-        self.assertIn("тестовая задача", text)
+        self.assertIn("test task", text)
         self.assertIn("tests ok", text)
         self.assertIn("Budget Metrics", text)
 
