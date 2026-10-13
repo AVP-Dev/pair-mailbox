@@ -208,7 +208,7 @@ class AssembleTest(unittest.TestCase):
             load_asset(hostile, in_script=True)
         message = str(caught.exception)
         self.assertIn("hostile.js", message)
-        self.assertIn("строка 1", message)
+        self.assertIn("line 1", message)
 
     def test_a_working_slash_sequence_is_not_a_breaker(self):
         # Регулярка `/<\\/script/` содержит ту же букву, но страницу не ломает.

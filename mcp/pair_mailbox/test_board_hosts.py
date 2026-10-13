@@ -89,7 +89,7 @@ class PaneStatusTest(unittest.TestCase):
     def test_absent_pane_is_unknown_with_a_reason(self):
         alive, why = pane_status("")
         self.assertIsNone(alive)
-        self.assertIn("панель", why)
+        self.assertIn("pane", why)
 
     def test_pane_of_the_wrong_shape_is_not_declared_dead(self):
         # Строка, которая не похожа на панель, не проверяется вовсе: `pane_alive`
