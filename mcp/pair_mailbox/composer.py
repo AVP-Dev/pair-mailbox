@@ -307,11 +307,11 @@ def pane_identity(tmux: str, pane: str) -> dict:
 
 
 def _ancestor_chain(pid: int) -> set:
-    """Цепочка предков pid по /proc — общий корень обоих поисков панели.
+    """The pid-ancestor chain over /proc — the shared root of both pane searches.
 
-    Пустое множество вместо [""] : различие «не знаю» и «знаю, что нет»
-    здесь не нужно, оба означают «панель не найдена». pid<=1 отпадает сам:
-    у init нет предков в панелях, и цикл не стартует.
+    An empty set instead of [""]: the "unknown" vs "known absent" distinction is
+    needless here, both read "pane not found". pid<=1 drops on its own: init has
+    no pane ancestors, and the loop never starts.
     """
     chain: set = set()
     try:
@@ -329,11 +329,11 @@ def _ancestor_chain(pid: int) -> set:
 
 
 def find_pane_of_pid(tmux: str, pid: int) -> str:
-    """Панель, в чьём дереве живёт pid — или "".
+    """The pane in whose tree the pid lives — or "".
 
-    Обратный путь: цепочка предков pid до pane_pid одной из живых панелей.
-    Нужен дважды: роль ищет себя без TMUX_PANE (find_own_pane), пилот ищет
-    чужую роль по pid из ростера. Вне Linux или без панели — честный "".
+    The reverse path: the pid ancestor chain up to some live pane pane_pid.
+    Needed twice: the role finds itself with no TMUX_PANE (find_own_pane), the
+    pilot finds another role by roster pid. Off Linux or with no pane — an honest "".
     """
     chain = _ancestor_chain(pid)
     if not chain:
@@ -351,25 +351,24 @@ def find_pane_of_pid(tmux: str, pid: int) -> str:
 
 
 def find_own_pane(tmux: str) -> str:
-    """Панель, из чьего дерева процессов зовут — или "".
+    """The pane whose process tree calls — or "".
 
-    TMUX_PANE в окружении MCP-сервера может не быть (наследует от CLI), а
-    ростер без панели делает deliver/unblock слепыми: роль жива, а будить
-    некуда. Тонкий вызов find_pane_of_pid на своём pid.
+    TMUX_PANE may miss in the MCP server environment (inherited from the CLI),
+    while a paneless roster blinds deliver/unblock: the role lives but nowhere to
+    wake. A thin find_pane_of_pid call on our own pid.
     """
     return find_pane_of_pid(tmux, os.getpid())
 
 
 def pane_is_foreign(tmux: str, pane: str, project_root) -> tuple:
-    """Панель доказуемо не наша? Fail-closed: не доказали своё — не печатаем.
+    """Is the pane provably not ours? Fail-closed: unproven ours means no printing.
 
-    Логика уехала в `panes`: там же гонка при рождении панели и разделение
-    «чужой проект» против «панель мертва». Здесь остаётся вызов, потому что
-    `pair_deliver` и `pairctl` зовут это имя, а переименовывать его в четырёх
-    местах ради одного переезда незачем.
+    The logic moved to `panes`: same birth race and the "foreign project" vs "dead
+    pane" split live there. The call stays here because `pair_deliver` and `pairctl`
+    call this name, and renaming it in four places for one move is needless.
 
-    Импорт ленивый по той же причине, что и остальные здесь: `panes` берёт из
-    `composer` `pane_identity`, и импорт на верхнем уровне был бы циклом.
+    The import stays lazy for the same reason as the rest here: `panes` takes
+    `pane_identity` from `composer`, and a top-level import would cycle.
     """
     from panes import pane_is_foreign as impl
 
@@ -377,29 +376,27 @@ def pane_is_foreign(tmux: str, pane: str, project_root) -> tuple:
 
 
 def pane_belongs_to_project(tmux: str, pane: str, project_root) -> tuple:
-    """Принадлежит ли панель этому проекту. Логика — в `panes`."""
+    """Whether the pane belongs to this project. The logic lives in `panes`."""
     from panes import pane_belongs_to_project as impl
 
     return impl(tmux, pane, project_root)
 
 
 def pane_pid(tmux: str, pane: str) -> int:
-    """pid ПРОЦЕССА ПАНЕЛИ — обычно это шелл, а не агент. Не «pid роли».
+    """The PANE PROCESS pid — usually a shell, not the agent. Not "the role pid".
 
-    Возвращать его и называть «pid процесса, который занимает панель» было бы
-    верно только формально. Измерено на живых панелях: `#{pane_pid}` в панели с
-    работающим агентом отдаёт bash, потому что агент живёт ребёнком шелла.
-    Отсюда две беды, и обе приходят от того, что поле называли не тем, чем оно
-    являлось:
+    Returning it under "the pid of the process holding the pane" would hold only
+    formally. Measured on live panes: `#{pane_pid}` in an agent pane returns bash,
+    because the agent lives as a shell child. Two troubles follow calling the field
+    what it never was:
 
-    - в ростер, где лежит pid сервера роли, попадал pid шелла, и значения
-      начинали флипать каждый тик, потому что `_register` перезаписывал своё;
-    - хуже: упавший агент оставляет после себя ЖИВОЙ шелл, поэтому «в панели
-      кто-то есть» всегда истинно, и роль, которая упала, никогда не
-      перезапускалась бы.
+    - the roster, holding the role-server pid, took the shell pid, and values
+      started flipping every tick as `_register` overwrote its own;
+    - worse: a fallen agent leaves a LIVE shell behind, so "someone sits in the
+      pane" always holds, and a fallen role would never restart.
 
-    Для вопроса «жива ли роль» есть `pane_role_pid`. Эта функция остаётся как
-    нижний слой: её честное имя — процесс панели, и больше она ничего не значит.
+    For "is the role alive" there is `pane_role_pid`. This function stays as the
+    bottom layer: its honest name is the pane process, and nothing more.
     """
     ident = pane_identity(tmux, pane)
     if not (ident["exists"] and ident["alive"]):
@@ -423,11 +420,11 @@ def _cmdline(pid: int) -> list:
 
 
 def _is_role_server(pid: int, role: str) -> bool:
-    """Процесс это `server.py --role <role>`, или нет.
+    """Whether the process is `server.py --role <role>`, or not.
 
-    Сверяются и имя файла, и соседние аргументы. Искать просто подстроку роли
-    нельзя: ошибка здесь стоила бы чужого pid в чужой записи, а это ровно тот тип
-    поломки, который проверка пути уже ловила между проектами.
+    Both the file name and the neighbour args check. Searching a bare role
+    substring is banned: an error here would cost another pid in another record —
+    exactly the breakage class the path check already caught across projects.
     """
     args = _cmdline(pid)
     if not any(part.endswith("server.py") for part in args):
@@ -439,10 +436,10 @@ def _is_role_server(pid: int, role: str) -> bool:
 
 
 def _descendants(root: int) -> list:
-    """Все потомки процесса по `/proc`, в ширину.
+    """All child processes of `/proc`, breadth-first.
 
-    Порядок важен: ближайший предок идёт первым, и при нескольких кандидатах
-    выигрывает тот, кто ближе к панели, а не тот, у кого pid больше.
+    Order matters: the nearest ancestor goes first, and with several candidates
+    the one closer to the pane wins, not the bigger pid.
     """
     children: dict = {}
     try:
@@ -468,12 +465,12 @@ def _descendants(root: int) -> list:
 
 
 def find_role_pid(root: int, role: str) -> int:
-    """Сервер роли среди потомков `root`, или 0.
+    """The role server among `root` descendants, or 0.
 
-    Отделено от `pane_role_pid` намеренно: tmux здесь нужен только чтобы узнать
-    pid панели, а весь вопрос «кто в панели» решается по `/proc`. Разделение
-    сделано ради проверяемости — сращивать их было бы ровно тем, из-за чего баг
-    прожил: функция проверялась подменой, которая не влияла на код под ней.
+    Split from `pane_role_pid` on purpose: tmux here only learns the pane pid,
+    while the whole "who sits in the pane" question resolves over `/proc`. The
+    split serves checkability — merging them was exactly what let the bug live:
+    the function checked by a stub that never touched the code below.
     """
     if not root or not role:
         return 0
@@ -484,24 +481,23 @@ def find_role_pid(root: int, role: str) -> int:
 
 
 def pane_role_pid(tmux: str, pane: str, role: str) -> int:
-    """pid сервера РОЛИ, если её процесс живёт в этой панели, иначе 0.
+    """The ROLE server pid, when its process lives in this pane, else 0.
 
-    Это тот вопрос, который на самом деле нужен сверхвизору, и он не равен
-    `pane_pid`: в панели всегда есть шелл, даже когда агент упал, поэтому «в
-    панели кто-то есть» не доказывает «роль жива».
+    The actual question the supervisor needs, and it never equals `pane_pid`:
+    a shell always sits in the pane, even after the agent fell, so "someone in
+    the pane" never proves "the role lives".
 
-    Искать надо сервер роли, потому что именно его pid пишет `_register`
-    (`os.getpid()` сервера) и именно его ждёт `is_pid_alive` в ростере. Отсюда
-    смысл: обновление записи возвращает в неё значение того же рода, иначе pid
-    двух разных процессов дрались бы за одно поле.
+    Search the role server, because its pid is what `_register` writes
+    (`os.getpid()` of the server) and what `is_pid_alive` awaits in the roster.
+    Hence the meaning: the record update returns a same-kind value, or pids of
+    two different processes would fight over one field.
 
-    Один запрос к tmux на всё: сведения о панели берутся из `pane_identity`, а не
-    из второго `display-message`. Панель могла умереть между двумя вызовами, и
-    тогда вердикт собрался бы из снимков разных панелей.
+    One tmux query for everything: pane facts come from `pane_identity`, not a
+    second `display-message`. The pane may die between two calls, and the verdict
+    would assemble from snapshots of different panes.
 
-    Ноль означает «не нашёл», и это не ошибка: вызывающий обязан трактовать это
-    как «не знаю», а не как «панели нет». Вне Linux дерева процессов нет, и
-    честный ответ здесь 0.
+    Zero means "not found", never an error: the caller must read it as "unknown",
+    not "no pane". Off Linux no process tree exists, and the honest answer is 0.
     """
     return find_role_pid(pane_pid(tmux, pane), role)
 
@@ -515,22 +511,22 @@ def capture(tmux: str, pane: str) -> list:
     return lines[-CAPTURE_LINES:]
 
 
-# Рамки TUI: box-drawing и блочные глифы. Одна константа намеренно: вопрос
-# «это часть рамки?» задавался в двух местах двумя разными диапазонами —
-# 2500-259f в одном и 2500-257f в другом, — и разница в один символ была
-# ровно тем, что делало занятый композер пустым. Тот же урок, что и с
-# расхождением pane_alive / server.pane_exists: одна мысль, одно место.
+# TUI frames: box-drawing and block glyphs. One constant on purpose: the
+# "is it frame part?" question rang in two places in two different ranges —
+# 2500-259f in one and 2500-257f in another — and the one-char difference was
+# exactly what read a busy composer as empty. The same lesson as the
+# pane_alive / server.pane_exists drift: one thought, one place.
 BOX_GLYPH = r"\u2500-\u259f"
 
 
 def is_input_box_row(line: str) -> bool:
-    """Строка поля ввода TUI — и пустая, и с набранным текстом.
+    """The TUI input-field line — empty and with typed text alike.
 
-    Различать их здесь не нужно: нужно знать, что строка принадлежит полю ввода,
-    а занятость определяет is_composer_empty. Раньше распознавание требовало, чтобы
-    строка целиком состояла из рамочных глифов, и как только в поле ввода
-    появлялся хоть один символ, composer_line отдавал None, то есть «печатать
-    некуда»: начал человек печатать — доставка снова невозможна.
+    Telling them apart here is needless: what matters is that the line belongs to
+    the input field, while busyness is is_composer_empty’s call. Recognition used
+    to demand the line consist wholly of frame glyphs, and as soon as one char
+    landed in the input field, composer_line returned None — "nowhere to print":
+    the human starts typing, delivery breaks again.
     """
     text = line.lstrip()
     if not text:
@@ -539,19 +535,19 @@ def is_input_box_row(line: str) -> bool:
 
 
 def is_input_box_hint(line: str) -> bool:
-    """Подсказка пустого поля ввода (Ask anything…): текст не набран."""
+    """The empty-input-field hint (Ask anything…): no text typed."""
     return "ask anything" in line.strip().lower()
 
 
 def is_input_box_border(line: str) -> bool:
-    """Нижняя граница поля ввода TUI: рамка, которая расширяется при наборе.
+    """The TUI input-field bottom edge: a frame widening as you type.
 
-    Признак структурный, без названий брендов: строка состоит только из
-    рамочных и блочных глифов. Нужна потому, что у OpenCode нет ASCII-маркера
-    промпта: поле ввода — рамка, а под ней строка статуса. Композер искался
-    только как «строка, начинающаяся с маркера», поэтому панель OpenCode не
-    опознавалась никогда и молча считалась занятой — доставка и звонок в неё
-    были невозможны в принципе, а не изредка.
+    A structural mark, with no brand names: the line holds only frame and block
+    glyphs. Needed because OpenCode owns no ASCII prompt marker: the input field
+    is a frame, with a status line below. The composer was sought only as "a line
+    starting with a marker", so an OpenCode pane never recognized and silently
+    counted as busy — delivery and ringing into it were impossible in principle,
+    not occasionally.
     """
     text = line.rstrip()
     if not text.strip():
@@ -562,48 +558,48 @@ def is_input_box_border(line: str) -> bool:
 
 
 def is_footer_or_status_line(line: str) -> bool:
-    """Проверка, является ли строка служебным футером или рамкой TUI."""
+    """Whether the line is a service footer or a TUI frame."""
     s = line.strip()
     if not s:
         return True
-    # Чистые горизонтальные разделители и рамки (─, ━, ═, ▀, ▄, ╹, etc.)
+    # Clean horizontal separators and frames.
     if re.fullmatch(rf"[{BOX_GLYPH}\s═─━╹▀_-]+", s):
         return True
     return False
 
 
 def composer_line(lines: list) -> str | None:
-    """Последняя строка, куда человек может печатать, или None если композера нет.
+    """The last line a human may type into, or None when no composer shows.
 
-    Три формы панели, и ошибка в любой из них молча отключает доставку целиком.
+    Three pane shapes, and an error in any one silently disables all delivery.
 
-    **Голый шелл.** Последняя непустая строка и есть промпт.
+    **Bare shell.** The last nonempty line is the prompt.
 
-    **TUI со строкой статуса ПОД композером.** Композер — последняя строка,
-    начинающаяся с маркера промпта, всё ниже неё — обстановка.
+    **TUI with the status line UNDER the composer.** The composer is the last
+    line starting with a prompt marker; everything below is scenery.
 
-    **TUI с полем ввода-рамкой** (opencode). Маркера промпта нет вообще: поле
-    ввода это рамка, под ней строка статуса. Раньше композер искался только как
-    «строка с маркером», поэтому такая панель не опознавалась никогда, функция
-    отдавала None, а None по контракту вызывающего это «занято» — доставка и
-    звонок в opencode были невозможны в принципе, а не изредка.
+    **TUI with a frame input field** (opencode). No prompt marker at all: the
+    input field is a frame, with a status line below. The composer used to be
+    sought only as "a marker line", so such a pane never recognized, the function
+    returned None, and None by the caller contract means "busy" — delivery and
+    ringing into opencode were impossible in principle, not occasionally.
 
-    Приоритет именно такой: рамка поля ввода сильнее строки-маркера. TUI рисует
-    свёрнутый вызов инструмента как `› pair.pair_send (...)`, а `›` состоит в
-    PROMPT_MARKERS, поэтому такая строка выглядит как промпт. Но композером она
-    не является, и из-за неё панель opencode считалась занятой всегда, даже когда
-    в неё только что положили текст.
+    Priority runs exactly so: the input-field frame beats the marker line. The TUI
+    draws a collapsed tool call as `› pair.pair_send (...)`, and `›` sits in
+    PROMPT_MARKERS, so such a line reads as a prompt. But no composer it is, and
+    over it the opencode pane counted as busy forever, even right after text landed
+    in it.
 
-    None означает «композер не виден», и это не то же самое, что «свободен»:
-    панель из одной рамки печатать некуда, и сообщить о ней как о свободной
-    значит отправить keystrokes в никуда. Вызывающий обязан считать None занятой.
+    None means "no composer visible", never "free": a one-frame pane takes typing
+    nowhere, and reporting it free sends keystrokes into nowhere. The caller must
+    count None as busy.
     """
-    # Геометрия opencode снизу вверх: строка пути/статуса, над ней нижняя
-    # граница поля ввода (угол `╹`/`▌`). pi-подобная рамка: контент МЕЖДУ
-    # двумя полными разделителями `───`, под ними — статус (cwd, токены).
-    # Первая содержательная строка ПОСЛЕ пропущенного разделителя — поле
-    # ввода (pi, живой capture 2026-10-10: набранный текст между двумя
-    # ─-рядами). Без этого признака pi считался занятым всегда.
+    # opencode geometry bottom-up: the path/status line, above it the input-field
+    # bottom edge (the `╹`/`▌` corner). A pi-like frame: content BETWEEN two full
+    # `───` separators, with status (cwd, tokens) below.
+    # The first content line PAST the skipped separator is the input field (pi, live
+    # capture 2026-10-10: typed text between two ─-rows). Without this mark pi read
+    # busy forever.
     seen_sep_below = False
     low_idx = None
     for i, line in enumerate(lines):
@@ -614,11 +610,11 @@ def composer_line(lines: list) -> str | None:
         if text and text[0] in INPUT_BOX_CORNERS_LOWER:
             low_idx = i
     if low_idx is not None:
-        # Рамочные строки над нижней границей; ниже — статус/футер.
-        # Подсказка — признак пустого поля; без неё сама граница —
-        # композер (заморожено: TestInputBoxCornerVsSideFrame,
-        # TestComposerOfAnOpencodePane). Но набранный текст над границей —
-        # занятое поле: тогда границы нет, есть ввод (test_composer:
+        # Frame lines above the bottom edge; status/footer below.
+        # A hint marks an empty field; without it the edge alone means a composer
+        # (frozen: TestInputBoxCornerVsSideFrame, TestComposerOfAnOpencodePane). But typed
+        # text above the edge means a busy field: then no edge, but input (test_composer:
+        # frozen contract).
         # test_opencode_typed_text_reads_busy).
         hint = None
         for line in lines[:low_idx]:
@@ -632,10 +628,10 @@ def composer_line(lines: list) -> str | None:
             if is_input_box_border(s):
                 continue
             stripped = re.sub(r"^[\u2500-\u257f\u2588|]+", "", tx).strip()
-            # Build-строка — хром TUI внутри поля (заморожено:
-            # "Build · something", живой idle: "Build auto · …").
-            # Край: текст пользователя с "build" сначала прочтётся
-            # свободным — принято ради замороженного контракта.
+            # Build-line chrome — TUI chrome inside the field (frozen: "Build · something",
+            # live idle: "Build auto · …").
+            # Edge case: user text starting with "build" first reads free — taken for the
+            # frozen contract.
             if stripped and not stripped.lower().startswith("build"):
                 return None
         if hint is not None:
@@ -649,10 +645,10 @@ def composer_line(lines: list) -> str | None:
         if looks_like_status_line(stripped):
             is_sep = bool(re.fullmatch(r"[\u2500\u2550\u2501\s]+", text))
             if is_sep and seen_sep_below:
-                # Два ГОРИЗОНТАЛЬНЫХ ряда подряд (─ ═ ━, без боковых
-                # '┃'): между ними лежит ПУСТОЕ поле ввода (pi idle).
-                # Боковые рамки opencode (' ┃') не разделители — на них
-                # признак не срабатывает (test_protocol 1354, regression).
+                # Two HORIZONTAL rows in a row (─ ═ ━, no side frames): an EMPTY input field
+                # lies between (pi idle).
+                # opencode side frames (' ┃') are no separators — the mark never fires on them
+                # (test_protocol 1354, regression).
                 return line
             if is_sep:
                 seen_sep_below = True
@@ -662,7 +658,7 @@ def composer_line(lines: list) -> str | None:
         if text.startswith("~/") or text.startswith("/"):
             continue
         if seen_sep_below:
-            # Содержательная строка между разделителями — pi-стиль.
+            # A content line between separators — the pi style.
             return line
         break
 
@@ -680,24 +676,24 @@ def composer_line(lines: list) -> str | None:
             if stripped.lstrip().startswith(marker):
                 return stripped
 
-    # Маркера нет вовсе. Тогда это либо чистая рамка TUI, где печатать некуда
-    # (None, то есть занят), либо незнакомый вид панели — голый шелл, — где
-    # последняя строка и есть промпт, как было до всех этих правок.
+    # No marker at all. Then either a clean TUI frame with nowhere to type (None —
+    # busy), or an unknown pane kind — a bare shell — where the last line is the
+    # prompt, as before all these fixes.
     return None if is_footer_or_status_line(fallback or "") else (
         None if looks_like_status_line(fallback or "") else fallback)
 
 
 def is_composer_empty(line: str) -> bool:
-    """Грубая, но честная проверка: после маркера почти ничего нет."""
+    """A rough but honest check: almost nothing past the marker."""
     s = line.rstrip()
     if not s.strip():
         return True
-    # Пустая рамка TUI: '  ┃  ', '  │  ' или нижняя граница поля ввода OpenCode.
-    # Диапазон здесь намеренно BOX_GLYPH, а не прежние 2500-257f: ▀ — это 2580, он
-    # на единицу выше той границы, поэтому рамка поля ввода не проходила и
-    # пустой композер OpenCode читался как занятый. Проверка живёт в
-    # is_input_box_border, отдельного дубликата здесь нет намеренно: две
-    # одинаковые проверки в двух местах — это ровно тот класс расхождения,
+    # An empty TUI frame: '  ┃  ', '  │  ' or the OpenCode input-field bottom edge.
+    # The range here is deliberately BOX_GLYPH, not the old 2500-257f: ▀ is 2580, one
+    # past that edge, so the input-field frame never passed and the empty OpenCode
+    # composer read as busy. The check lives in is_input_box_border, with no duplicate
+    # here on purpose: two identical checks in two places is exactly the drift class
+    # class.
     # который уже стоил нам неработающей доставки.
     if is_input_box_border(s):
         return True
