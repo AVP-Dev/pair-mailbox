@@ -69,5 +69,7 @@ mcp/pair_mailbox/anti_mock_gate.py	anti-mock
 mcp/pair_mailbox/test_anti_mock_gate.py	anti-mock
 mcp/pair_mailbox/ledger.py	ledger
 mcp/pair_mailbox/test_ledger.py	ledger
+mcp/pair_mailbox/round_summary.py	round-summary
+mcp/pair_mailbox/test_round_summary.py	round-summary
 mcp/pair_mailbox/test_ground_truth.py	ground-truth
 scripts/verify-ground-truth.py	ground-truth
