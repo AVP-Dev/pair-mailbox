@@ -55,6 +55,10 @@ panes	positive	1	python3 mcp/pair_mailbox/test_panes.py	serial
 composer	positive	1	python3 mcp/pair_mailbox/test_composer.py	serial
 composer-bypass	positive	1	python3 mcp/pair_mailbox/test_allowlist_bypass.py	serial
 roster-heal	positive	1	python3 mcp/pair_mailbox/test_roster_heal.py
+session-facts	positive	1	python3 mcp/pair_mailbox/test_session_facts.py
+anti-mock	positive	1	python3 mcp/pair_mailbox/test_anti_mock_gate.py
+ledger	positive	1	python3 mcp/pair_mailbox/test_ledger.py
+ground-truth	positive	1	python3 mcp/pair_mailbox/test_ground_truth.py
 file-size-gate-tests	positive	1	bash scripts/file-size-gate_test.sh
 eye-deadlock	positive	1	bash scripts/eye-of-sauron_test.sh
 

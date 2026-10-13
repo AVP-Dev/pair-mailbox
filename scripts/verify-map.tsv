@@ -61,3 +61,11 @@ scripts/	scripts-check
 docs/	docs-check
 mcp/pair_mailbox/wake_opencode.py	wake-api
 mcp/pair_mailbox/test_wake_opencode.py	wake-api
+mcp/pair_mailbox/session_facts.py	session-facts
+mcp/pair_mailbox/test_session_facts.py	session-facts
+mcp/pair_mailbox/anti_mock_gate.py	anti-mock
+mcp/pair_mailbox/test_anti_mock_gate.py	anti-mock
+mcp/pair_mailbox/ledger.py	ledger
+mcp/pair_mailbox/test_ledger.py	ledger
+mcp/pair_mailbox/test_ground_truth.py	ground-truth
+scripts/verify-ground-truth.py	ground-truth
