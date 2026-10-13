@@ -1499,17 +1499,17 @@ class Pilot:
                 log(f"patch {path} hangs unapplied, {name} is notified")
 
     def allowlist(self) -> list[str]:
-        """Белый список разрешений: явный аргумент, потом файл человека.
+        """Permission allowlist: explicit argument first, then the human file.
 
-        Файла нет — список по умолчанию, и это граница, которую задал человек:
-        внутри проекта можно всё, что нужно для работы, запрещено то, что вредит
-        системе, чужому проекту или необратимо стирает. Запреты проверяются первыми
-        и не отменяются настройкой.
+        No file means the default list, and that is a boundary the human set:
+        inside the project everything the work needs is allowed; what harms the
+        system, another project or wipes irreversibly is banned. Bans check first
+        and no setting overrides them.
 
-        Раньше здесь был пустой список, а пустой значил «не подтверждать ничего».
-        Файла `.pair/permissions.json` при этом не существовало, так что сверхвизор
-        не подтверждал ни одного промпта — и снаружи это выглядело как молчание
-        соседа, а не как отказ по настройке.
+        This used to be an empty list, and empty meant "confirm nothing".
+        But no `.pair/permissions.json` existed then, so the supervisor confirmed
+        not a single prompt — and from outside that looked like neighbour
+        silence, not a settings refusal.
         """
         if self.allow is not None:
             return self.allow
@@ -1522,10 +1522,10 @@ class Pilot:
         return patterns
 
     def note_default_allowlist(self) -> None:
-        """Сказать в журнал, что работа идёт на списке по умолчанию.
+        """Say into the journal that the work runs on the default list.
 
-    Один раз за процесс. Молча работать на дефолтном списке нельзя: человек,
-    читая журнал, должен видеть, каким правилом подтверждались его команды.
+    Once per process. Running silently on the default list is forbidden: the human
+    reading the journal must see which rule confirmed its commands.
     """
         if self._default_list_named:
             return
@@ -1535,19 +1535,18 @@ class Pilot:
             "pilot_default_allowlist", "pairpilot",
             patterns=len(DEFAULT_ALLOW_PATTERNS),
             file=str(permissions_path(self.state_dir)),
-            note="permissions.json не найден, работаю на списке по умолчанию; "
-                 "запреты §12 действуют независимо от него")
-        log("permissions.json не найден — работаю на списке по умолчанию "
-            f"({len(DEFAULT_ALLOW_PATTERNS)} шаблонов). Запреты §12 действуют всегда.")
+            note="permissions.json not found, running on the default list; "
+                 "\u00a712 bans hold regardless of it")
+        log("permissions.json not found — running on the default list "
+            f"({len(DEFAULT_ALLOW_PATTERNS)} patterns). \u00a712 bans always hold.")
 
     def unblock(self, state: dict) -> None:
-        """Агент стоит на [y/N]. До утра это выглядит как зависание, хотя всего
-        один Enter всё решил бы.
+        """The agent stands at [y/N]. Till morning that looks like a hang, though
+        a single Enter would settle it.
 
-        Но «один Enter» — это ещё и «y» на вопросе «rm -rf?». Поэтому
-        подтверждается только то, что попало в белый список, а по умолчанию он
-        состоит из чтения. Отказ — не ошибка, а результат: панель остаётся
-        заблокированной, и об этом должен узнать человек."""
+        But "a single Enter" is also "y" to "rm -rf?". So only allowlisted
+        things confirm, and by default it is reads. A refusal is not an error
+        but a result: the pane stays blocked, and the human must learn it."""
         if self.tmux is None or autonomy(state) == "observe":
             return
         allow = self.allow
@@ -1557,29 +1556,29 @@ class Pilot:
                 continue
             try:
                 result = resolve_permission_prompt(self.tmux, pane, allow=allow)
-            except Exception:  # noqa: BLE001 - сверхвизор не должен падать из-за панели
+            except Exception:  # noqa: BLE001 - the supervisor must not fall over a pane
                 continue
             prompt = result.get("prompt") or ""
             if result.get("approved"):
                 if self.remember(f"unblock-{role}-{stable_tag(prompt)}"):
                     self.store.append_transcript("pilot_unblock", "pairpilot", target=role,
                                                  prompt=prompt[:120], matched=result.get("matched"))
-                    log(f"{role}: подтвердил запрос разрешения — {prompt[:60]}")
+                    log(f"{role}: confirmed the permission request — {prompt[:60]}")
             elif result.get("verdict") == "refuse":
                 if self.remember(f"unblock-refused-{role}-{stable_tag(prompt)}"):
                     self.store.append_transcript("pilot_unblock_refused", "pairpilot", target=role,
                                                  prompt=prompt[:120], why=result.get("why"))
-                    log(f"{role}: НЕ подтвердил «{prompt[:50]}» — {result.get('why')}. Нужен человек.")
+                    log(f"{role}: did NOT confirm “{prompt[:50]}» — {result.get('why')}. A human is needed.")
 
     # ---------------------------------------------------------------- report
 
     def checkpoint(self, state: dict) -> None:
-        """Человеку нужен дайджест, а не вопрос из пустоты.
+        """The human needs a digest, not a question from the void.
 
-        В autonomy=semi закрыть раунд нельзя без `bin/pairctl ok`. Значит,
-        если этого слова нет, а раунд дошёл до проверки, человек должен получить
-        всё, что нужно для решения, и команду, которой это решается. Иначе
-        «полуавтомат» — это способность остановиться и ждать, ничего не говоря.
+        In autonomy=semi a round cannot close without `bin/pairctl ok`. So if
+        that word is missing while the round reached checks, the human must get
+        everything the decision needs, plus the command that decides it. Otherwise
+        "semi-auto" is the ability to stop and wait, saying nothing.
         """
         if autonomy(state) != "semi" or state.get("phase") != "verify":
             return
@@ -1591,25 +1590,25 @@ class Pilot:
             return
         path = self.outbox / f"checkpoint-{round_number}.md"
         lines = [
-            f"# Чекпоинт раунда {round_number}",
+            f"# Round checkpoint {round_number}",
             "",
-            f"- задача: {state.get('task') or 'НЕ ЗАДАЧЕНА'}",
-            f"- писатель: {state.get('writer') or 'НЕ НАЗНАЧЕН'}",
-            f"- режим раунда: {state.get('mode')}   автономность: semi",
+            f"- task: {state.get('task') or 'NOT SET'}",
+            f"- writer: {state.get('writer') or 'UNASSIGNED'}",
+            f"- round mode: {state.get('mode')}   autonomy: semi",
             "",
-            "## Что мешает закрыть раунд",
+            "## What blocks the round close",
             "",
         ]
         lines += [f"- {item}" for item in blockers]
         lines += [
             "",
-            "## Что сделать",
+            "## What to do",
             "",
-            "Прочитай это и одно слово в ответ:",
+            "Read this and answer with one word:",
             "",
             f"    bin/pairctl ok",
             "",
-            "Либо, если работа должна идти дальше без тебя до утра:",
+            "Or, if the work must run on without you till morning:",
             "",
             "    bin/pairctl autonomy auto",
             "",
@@ -1617,42 +1616,42 @@ class Pilot:
         path.write_text("\n".join(lines), encoding="utf-8")
         self.store.append_transcript("pilot_checkpoint", "pairpilot", round=round_number,
                                      path=str(path), blockers=len(blockers))
-        log(f"раунд {round_number} ждёт одного слова человека: {path}")
+        log(f"round {round_number} waits for one human word: {path}")
 
     def report_once(self, state: dict) -> None:
-        """Человек должен получить результат, а не молчание. Пишем отчёт в файл,
-        когда раунд закрыт; в консоль выводим путь."""
+        """The human must get the result, not silence. Write the report to a file
+        when the round closes; print the path to the console."""
         if state.get("phase") != "done" or not state.get("closed_at"):
             return
         key = f"report-{state.get('round')}"
         if not self.remember(key):
             return
         path = write_report(self.state_dir, state)
-        # Журнал сессии пишется рядом с отчётом: раунд закрыт — значит человек
-        # вернётся и захочет одним взглядом увидеть, что было заказано, что
-        # сделано и что осталось за открытыми задачами.
+        # The session journal is written next to the report: the round is closed, so the human
+        # will return and want to see at a glance what was ordered, what was done,
+        # and what stays behind the open tasks.
         journal = write_tasks_md(self.state_dir, state)
         self.store.append_transcript("pilot_report", "pairpilot", path=str(path),
                                      journal=str(journal))
-        log(f"раунд {state.get('round')} закрыт, отчёт: {path}, журнал: {journal}")
+        log(f"round {state.get('round')} closed, report: {path}, journal: {journal}")
 
     # ------------------------------------------------------------------ tick
 
     def tick(self) -> dict:
         state = self.state()
-        # Роли, сидящие на общей панели, неразличимы: в них не тыкаем.
+        # Roles sitting on a shared pane are indistinguishable: never poke them.
         self.skip = {role for names in self.shared_panes(state).values() for role in names}
-        # Свою панель не трогаем никогда: там ввод человека.
+        # Never touch our own pane: human input lives there.
         if self.own_pane:
             own_key = self.pane_key(self.own_pane)
             for role, info in (state.get("roles") or {}).items():
-                # Своя панель приходит из окружения как `%N`, а роль записана
-                # адресом сессии. Сравнение строк перестаёт срабатывать, и
-                # сверхвизор начинает вбивать сообщения в панель человека.
+                # Our own pane arrives from the environment as `%N`, but the role is recorded
+                # as a session address. String comparison stops working, and the supervisor
+                # starts typing messages into the human pane.
                 if self.pane_key(info.get("pane")) == own_key:
                     self.skip.add(role)
                     if self.remember(f"ownpane-{role}-{self.own_pane}"):
-                        log(f"{role} сидит в моей же панели {self.own_pane} — не трогаю её")
+                        log(f"{role} sits in my own pane {self.own_pane} — leaving it alone")
                         self.store.append_transcript("pilot_own_pane", "pairpilot",
                                                      target=role, pane=self.own_pane)
         self.ambiguous(state)
@@ -1661,10 +1660,10 @@ class Pilot:
         self.restart_agent(state)
         self.dead_pane(state)
         self.unread_peers(state)
-        # Опрос идёт ДО постановки новых пробуждений и до печати: у кого роль уже
-        # проснулась, пробуждение снимается молча, и в очередь печати не попадает
-        # ничего. Если бы опрос шёл после flush_outbox, то тик, в котором роль
-        # только что проснулась, всё равно напечатал бы в её композер.
+        # Polling runs BEFORE raising new wake-ups and before printing: whoever already
+        # woke has its wake-up dropped silently, and nothing lands in the print queue.
+        # If polling ran after flush_outbox, the tick where the role just woke would
+        # still print into its composer.
         self.poll_wakes(state)
         self.pending_answers(state)
         self.stalled_patches(state)
@@ -1681,18 +1680,18 @@ class Pilot:
 
 
 def _done_blockers(state: dict) -> list[str]:
-    """Что мешает закрыть раунд — тем же кодом, что и сервер.
+    """What blocks the round close — with the same code as the server.
 
-    Правило принадлежит серверу, и вторая его копия рано или поздно разошлась бы
-    с первой: человек получил бы отчёт «всё хорошо» от одной стороны и отказ от
-    другой. Поэтому сверхвизор не переписывает правило, а спрашивает его у того,
-    кто его применяет.
+    The rule belongs to the server, and a second copy would sooner or later drift
+    from the first: the human would get an "all good" report from one side and
+    a refusal from the other. So the supervisor never rewrites the rule but asks
+    whoever applies it.
     """
     return done_blockers(state)
 
 
 def write_report(state_dir: Path, state: dict) -> Path:
-    """Один экран для человека: что сделано, чем это доказано и что НЕ покрыто."""
+    """One screen for the human: what is done, what proves it, and what is NOT covered."""
     transcript = state_dir / "transcript.jsonl"
     events: list[dict] = []
     if transcript.exists():
@@ -1725,18 +1724,18 @@ def write_report(state_dir: Path, state: dict) -> Path:
             notes.append(f"- {path.stem}: {head}")
 
     lines = [
-        f"# Отчёт по раунду {state.get('round')}",
+        f"# Round report {state.get('round')}",
         "",
-        f"- задача: {state.get('task') or 'НЕ ЗАДАЧЕНА'}",
-        f"- фаза: {state.get('phase')}   режим: {state.get('mode')}   автономность: {autonomy(state)}",
-        f"- писатель: {state.get('writer') or 'НЕ НАЗНАЧЕН'}",
+        f"- task: {state.get('task') or 'NOT SET'}",
+        f"- phase: {state.get('phase')}   mode: {state.get('mode')}   autonomy: {autonomy(state)}",
+        f"- writer: {state.get('writer') or 'UNASSIGNED'}",
         "",
-        "## Задачи: готово / не готово",
+        "## Tasks: done / not done",
         "",
     ]
     task_items = tasks_of(state)
     if task_items:
-        marks = {"open": "НЕ СДЕЛАНО", "done": "сделано", "dropped": "брошено"}
+        marks = {"open": "NOT DONE", "done": "done", "dropped": "dropped"}
         for item in task_items:
             line = f"- #{item.get('id')} {marks.get(item.get('status'), '?')}: " \
                    f"{str(item.get('text'))[:90]}"
@@ -1745,12 +1744,12 @@ def write_report(state_dir: Path, state: dict) -> Path:
             lines.append(line)
         unclosed = [i["id"] for i in task_items if i.get("status") == "open"]
         if unclosed:
-            lines += ["", f"РАУНД НЕ ЗАКРЫТ: открытые задачи {', '.join(f'#{i}' for i in unclosed)}"]
+            lines += ["", f"ROUND OPEN: open tasks {', '.join(f'#{i}' for i in unclosed)}"]
     else:
-        lines.append("- задач не заведено")
+        lines.append("- no tasks filed")
     lines += [
         "",
-        "## Доказательства этого раунда",
+        "## This round’s evidence",
         "",
     ]
     if evidence:
@@ -1758,52 +1757,52 @@ def write_report(state_dir: Path, state: dict) -> Path:
             mark = "OK " if item.get("ok") else "FAIL"
             lines.append(f"- {mark} {item.get('kind')} [{item.get('role')}] {item.get('value')}")
     else:
-        lines.append("- НИ ОДНОГО. Раунд закрыт без единого машинного факта.")
+        lines.append("- NONE. The round closed without a single machine fact.")
     lines += [
         "",
-        "## Что в транскрипте",
+        "## In the transcript",
         "",
     ]
     for kind, count in sorted(kinds.items(), key=lambda kv: -kv[1]):
         lines.append(f"- {kind}: {count}")
     lines += [
         "",
-        f"Отказов и потерянных доставок: {refused}.",
-        f"Разрешений НЕ подтверждено автоматически: {denied}.",
-        f"Перезапущено упавших агентов: {restarted}.",
+        f"Refusals and lost deliveries: {refused}.",
+        f"Permissions NOT self-confirmed: {denied}.",
+        f"Restarted fallen agents: {restarted}.",
         "",
-        "## Чего этот отчёт НЕ доказывает",
+        "## What this report does NOT prove",
         "",
-        "- что код правильный: доказывают тесты, а не заметки;",
-        "- что всё в задаче сделано: сверхвизор видит события, а не смысл работы.",
+        "- that the code is right: tests prove it, not notes;",
+        "- that all the task is done: the supervisor sees events, not work meaning.",
         "",
-        "## НЕ ПОКРЫТО",
+        "## NOT COVERED",
         "",
     ]
     if stalled:
-        lines.append("Sealed-патчи без применения и без отклонения:")
+        lines.append("Sealed patches with no apply and no reject:")
         lines += [f"- {path}" for path in stalled]
     else:
-        lines.append("- sealed-патчей без применения нет.")
+        lines.append("- no unapplied sealed patches.")
     if dropped:
-        lines.append(f"Отклонённые патчи (сознательно снятые): {len(dropped)}")
+        lines.append(f"Rejected patches (deliberately dropped): {len(dropped)}")
     if restarts_blocked:
-        lines.append("Перезапуск не состоялся, нужен человек:")
+        lines.append("Restart never happened, a human is needed:")
         lines += [f"- {event.get('target')}: {event.get('why')}" for event in restarts_blocked]
     if denied:
-        lines.append("Запросы разрешения, оставленные человеку:")
+        lines.append("Permission requests left to the human:")
         lines += [f"- {event.get('target')}: {event.get('why')}"
                   for event in events if event.get("kind") in ("pilot_unblock_refused", "unblock_refused")]
     if state.get("phase") != "done":
         blockers = _done_blockers(state)
-        lines.append("Что мешает закрыть раунд:")
-        lines += [f"- {item}" for item in blockers] or ["- ничего"]
+        lines.append("What blocks the round close:")
+        lines += [f"- {item}" for item in blockers] or ["- nothing"]
     lines += [
         "",
-        "## Последние заметки",
+        "## Latest notes",
         "",
     ]
-    lines += notes or ["- нет"]
+    lines += notes or ["- none"]
     lines += [""]
     out = state_dir / "REPORT.md"
     out.write_text("\n".join(lines), encoding="utf-8")
@@ -1811,12 +1810,12 @@ def write_report(state_dir: Path, state: dict) -> Path:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Сверхвизор парной работы")
+    parser = argparse.ArgumentParser(description="Pair-work supervisor")
     parser.add_argument("--state", default=os.environ.get("PAIR_STATE", ".pair"))
     parser.add_argument("--interval", type=float, default=DEFAULT_INTERVAL)
     parser.add_argument("--silence", type=float, default=DEFAULT_SILENCE)
     parser.add_argument("--outbox-ttl", type=float, default=DEFAULT_OUTBOX_TTL,
-                        help="сколько секунд отложенное напоминание может ждать композер")
+                        help="how many seconds a queued nudge may wait for the composer")
     parser.add_argument("--reply-grace", type=float, default=DEFAULT_REPLY_GRACE,
                         help="seconds before the recipient of a request is poked")
     parser.add_argument("--reply-hard", type=float, default=DEFAULT_REPLY_HARD,
@@ -1838,7 +1837,7 @@ def main() -> int:
                              "list. Empty means confirm nothing.")
     parser.add_argument("--stall-timeout", type=float, default=DEFAULT_STALL_TIMEOUT,
                         help="seconds an agent may stay busy with identical screen before auto-compact")
-    parser.add_argument("--once", action="store_true", help="один проход и выход")
+    parser.add_argument("--once", action="store_true", help="single pass and exit")
     args = parser.parse_args()
 
     launch: dict[str, str] = {}
@@ -1847,7 +1846,7 @@ def main() -> int:
         if role.strip() and command.strip():
             launch[role.strip()] = command.strip()
         else:
-            print(f"pairpilot: --launch ждёт ROLE=CMD, получено {item!r}", file=sys.stderr)
+            print(f"pairpilot: --launch expects ROLE=CMD, got {item!r}", file=sys.stderr)
             return 2
     allow = load_allow_patterns(args.allow)[0] if args.allow else None
 
@@ -1861,16 +1860,16 @@ def main() -> int:
 
     if args.once:
         state = pilot.tick()
-        log(f"проход сделан: фаза={state.get('phase')} писатель={state.get('writer')}")
+        log(f"pass done: phase={state.get('phase')} writer={state.get('writer')}")
         return 0
 
-    log(f"сверхвизор на {state_dir}, порог молчания {int(args.silence)} с, Ctrl-C выход")
+    log(f"supervisor on {state_dir}, silence threshold {int(args.silence)} s, Ctrl-C exits")
     try:
         while True:
             pilot.tick()
             time.sleep(args.interval)
     except KeyboardInterrupt:
-        log("выход")
+        log("exit")
     return 0
 
 

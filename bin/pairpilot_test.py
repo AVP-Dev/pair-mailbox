@@ -879,7 +879,7 @@ class TestReport(PilotCase):
         text = report.read_text(encoding="utf-8")
         self.assertIn("тест", text)
         self.assertIn("deliver_busy", text)
-        self.assertIn("НЕ доказывает", text)
+        self.assertIn("does NOT prove", text)
         self.assertIn("pilot_report", self.transcript_kinds())
 
     def test_open_round_writes_nothing(self) -> None:
@@ -1797,7 +1797,7 @@ class TestCheckpoint(PilotCase):
         pilot.tick()
         text = (self.state_dir / "pilot" / "checkpoint-4.md").read_text(encoding="utf-8")
         self.assertIn("pair_evidence", text)
-        self.assertNotIn("pairctl ok", text.split("## Что сделать")[0],
+        self.assertNotIn("pairctl ok", text.split("## What to do")[0],
                          "слово человека уже есть, повторно просить его не нужно")
 
     def test_ok_given_on_plan_is_asked_for_again(self) -> None:
@@ -1862,14 +1862,14 @@ class TestReportNotCovered(PilotCase):
         text = (self.state_dir / "REPORT.md").read_text(encoding="utf-8")
         self.assertIn("FAIL test", text)
         self.assertIn("pair-codex-7.patch", text)
-        self.assertIn("НЕ ПОКРЫТО", text)
+        self.assertIn("NOT COVERED", text)
 
     def test_report_says_so_when_there_is_no_evidence(self) -> None:
         self.write_state(phase="done", closed_at=ago(60), round=3, writer="agy",
                          roles={"agy": {"last_seen": ago(60), "pane": "%1"}})
         self.pilot().tick()
         text = (self.state_dir / "REPORT.md").read_text(encoding="utf-8")
-        self.assertIn("НИ ОДНОГО", text)
+        self.assertIn("NONE. The round closed", text)
 
 
 class TestOperatorSafety(PilotCase):
