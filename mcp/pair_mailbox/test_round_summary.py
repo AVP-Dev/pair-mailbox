@@ -57,6 +57,41 @@ class TestBuild(unittest.TestCase):
         self.assertIn("anti-mock: PASS", text)
 
 
+class TestGateCompat(unittest.TestCase):
+    """Совместимость с verify-ground-truth.py (finding agy S5 R83)."""
+
+    def _gate(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "vgt", Path(__file__).resolve().parent.parent.parent
+            / "scripts" / "verify-ground-truth.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    def test_build_emits_files_and_tests(self) -> None:
+        summary = round_summary.build(make_facts(), [], {
+            "ok": True, "blockers": [], "warnings": []})
+        self.assertEqual(summary["files"], ["x.py"])
+        self.assertEqual(summary["tests"], [{"command": "t", "exit": 0}])
+
+    def test_gate_catches_ghost_from_our_summary(self) -> None:
+        vgt = self._gate()
+        facts = make_facts(touched=["real.py"], test_runs=[])
+        summary = round_summary.build(facts, [], {
+            "ok": True, "blockers": [], "warnings": []})
+        summary["files"].append("ghost.py")
+        problems = vgt.verify(summary, facts)
+        self.assertTrue(any("ghost.py" in pr for pr in problems))
+
+    def test_gate_fallback_without_files_key(self) -> None:
+        vgt = self._gate()
+        facts = make_facts(touched=["real.py"], test_runs=[])
+        legacy = {"touched": ["real.py", "ghost2.py"], "test_runs": []}
+        problems = vgt.verify(legacy, facts)
+        self.assertTrue(any("ghost2.py" in pr for pr in problems))
+
+
 class TestCli(unittest.TestCase):
     def test_cli_reads_ledger_round(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

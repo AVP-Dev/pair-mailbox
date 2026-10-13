@@ -27,11 +27,16 @@ def verify(summary: dict, facts: dict) -> list[str]:
     if summary.get("dirty_hash") and summary.get("dirty_hash") != facts.get("dirty_hash"):
         problems.append("dirty-hash саммари не совпал с facts.json — дерево изменилось")
     known = set(facts.get("touched", [])) | set(facts.get("untracked", []))
-    for path in summary.get("files", []):
+    files = (summary.get("files") if "files" in summary
+             else list(summary.get("touched", []))
+             + list(summary.get("untracked", [])))
+    for path in files:
         if path not in known:
             problems.append(f"файл {path} заявлен, но git его не показывает")
     runs = {(r.get("command"), r.get("exit")) for r in facts.get("test_runs", [])}
-    for test in summary.get("tests", []):
+    tests = (summary.get("tests") if "tests" in summary
+             else summary.get("test_runs", []))
+    for test in tests:
         if (test.get("command"), test.get("exit")) not in runs:
             problems.append(
                 f"тест {test.get('command')} exit {test.get('exit')} "

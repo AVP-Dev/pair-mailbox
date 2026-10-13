@@ -33,6 +33,13 @@ def build(facts: dict[str, Any], records: list[dict[str, Any]],
                 slices[name].extend(items)
     blockers = verdict.get("blockers", [])
     warnings = verdict.get("warnings", [])
+    test_runs = facts.get("test_runs", [])
+    # Совместимость с verify-ground-truth.py: он читает files/tests.
+    # Без них гейт молча пропускает проверку (finding agy S5 R83).
+    compat_files = sorted(set(facts.get("touched", []))
+                          | set(facts.get("untracked", [])))
+    compat_tests = [{"command": r.get("command"), "exit": r.get("exit", 0)}
+                    for r in test_runs if isinstance(r, dict)]
     return {
         "version": SUMMARY_VERSION,
         "head": facts.get("head", ""),
@@ -40,7 +47,9 @@ def build(facts: dict[str, Any], records: list[dict[str, Any]],
         "touched": list(facts.get("touched", [])),
         "untracked": list(facts.get("untracked", [])),
         "mock_flags": list(facts.get("mock_flags", [])),
-        "test_runs": list(facts.get("test_runs", [])),
+        "test_runs": list(test_runs),
+        "files": compat_files,
+        "tests": compat_tests,
         "ledger": slices,
         "anti_mock": {
             "ok": verdict.get("ok", False),
