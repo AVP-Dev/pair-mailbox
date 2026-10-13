@@ -1,23 +1,22 @@
-"""Чтение и обзор для человека: дайджест, ящик, журнал, заметки, список проектов.
+"""Reading and overview for the human: digest, mailbox, journal, notes, project list.
 
-Вынесено из `server.py` отдельной ответственностью: всё здесь только ЧИТАЕТ и
-печатает. Ни одна команда этого модуля не меняет состояние пары — запись в
-`state.json` есть только у `pairctl` в `pairctl_authority.py`.
+Moved out of `server.py` as its own responsibility: everything here only READS
+and prints. No command of this module changes pair state — the only `state.json`
+write belongs to `pairctl` in `pairctl_authority.py`.
 
-Разделение не стилистическое. `server.py` держал 725 строк `pairctl` вперемешку с
-протоколом, и команды, которые читают, оказывались в одном файле с командами,
-которые пишут. Когда файл читают, чтобы понять, кто сейчас пишет, туда попадал
-код, который ничего не пишет.
+The split is not stylistic. `server.py` held 725 lines of `pairctl` tangled with
+protocol, and commands that read landed in one file with commands that write.
+When the file is read to learn who writes now, it pulled in code that writes nothing.
 
-Что здесь живёт и почему вместе:
+What lives here and why together:
 
-- `discover_projects` и `project_row` — это «где вообще идут пары», и на них же
-  опирается `bin/pairchat`, который не имеет отношения к `pairctl`. Разносить их
-  по двум модулям ради буквы правила значило бы заставить `pairchat` зависеть от
-  CLI, который ему не нужен;
-- `silence_seconds` и `human_age` — единственное место, где «молчит» превращается
-  в текст для человека. Вторая реализация этой арифметики разошлась бы с первой
-  так же, как разошёлся бы сам отчёт.
+- `discover_projects` and `project_row` — "where pairs run at all", which
+  `bin/pairchat` also leans on, unrelated to `pairctl`. Splitting them across
+  two modules for the letter of the rule would force `pairchat` to depend on
+  a CLI it never needs;
+- `silence_seconds` and `human_age` — the only place where "silent" turns into
+  human text. A second implementation of this arithmetic would drift from the
+  first exactly as the report itself would.
 """
 from __future__ import annotations
 
@@ -33,22 +32,22 @@ from server import DIGEST_TOKEN_BUDGET, LOG_DEFAULT_LIMIT, Store, build_digest, 
 
 
 def cmd_digest(store: Store, args: argparse.Namespace) -> int:
-    # Тот же текст, что отдаёт `pair_digest`, из одного места: две реализации
-    # дайджеста разъедутся, и человек увидит не то, что видит агент.
+    # The same text `pair_digest` renders, from one place: two digest
+    # implementations drift apart, and the human sees what the agent never saw.
     text = build_digest(store, args.role, args.budget)
     sys.stdout.write(text)
     used = estimate_tokens(text)
     if used > args.budget:
-        # Потолок нарушен — это поломка дайджеста, а не повод сделать вид, что
-        # всё в порядке. Пишем в stderr и возвращаем ненулевой код.
-        print(f"digest: {used} токенов при потолке {args.budget}", file=sys.stderr)
+        # A breached ceiling is a digest breakage, not a reason to pretend all is
+        # well. Write to stderr and return a nonzero code.
+        print(f"digest: {used} tokens at ceiling {args.budget}", file=sys.stderr)
         return 1
     return 0
 
 
 def cmd_why(store: Store, args: argparse.Namespace) -> int:
-    # Почему сейчас пишет тот, кто пишет. Короткий вопрос, на который агент
-    # обязан уметь ответить фактом, а не «ща посмотрю».
+    # Why whoever writes, writes now. A short question the agent must be able
+    # to answer with a fact, not "let me look".
     rows = [project_row(root) for root in discover_projects(args.paths)]
     if args.json:
         print(json.dumps([{"project": row["project"], "writer": row["writer"],
@@ -56,10 +55,10 @@ def cmd_why(store: Store, args: argparse.Namespace) -> int:
                          ensure_ascii=False, indent=2))
         return 0
     if not rows:
-        print("ни одного проекта с состоянием пары не найдено")
+        print("no project with pair state found")
         return 1
     for row in rows:
-        print(f"{row['project']}: {row['writer'] or '—'} — {row.get('reason') or 'причина не сказана'}")
+        print(f"{row['project']}: {row['writer'] or '—'} — {row.get('reason') or 'reason unnamed'}")
     return 0
 
 
@@ -79,10 +78,10 @@ def cmd_inbox(store: Store, args: argparse.Namespace) -> int:
 
 
 def cmd_log(store: Store, args: argparse.Namespace) -> int:
-    # Дефолтный лимит вместо «всего». Замер: без него команда вываливала в
-    # терминал весь активный журнал, а это пол-мегабайта и ~50k токенов на
-    # раунд, в том числе у человека, который просто посмотрел, что происходило.
-    # Те, кому нужен весь файл, просят об этом явно.
+    # A default limit instead of "all". Measured: without it the command dumped the
+    # whole active journal into the terminal — half a megabyte and ~50k tokens per
+    # round, even for a human who just looked at what happened. Those who need
+    # the whole file ask for it explicitly.
     limit = 0 if args.all else args.limit
     shown = store.read_transcript(limit)
     for entry in shown:
@@ -91,9 +90,9 @@ def cmd_log(store: Store, args: argparse.Namespace) -> int:
         return 0
     total = store.transcript_entry_count()
     if total > len(shown):
-        # Молча выдать 50 строк вместо 900 — это выглядеть как полный журнал.
-        print(f"# показаны последние {len(shown)} из {total}; остальное: "
-              f"--all или --limit N", file=sys.stderr)
+        # Quietly serving 50 lines instead of 900 reads as the full journal.
+        print(f"# showing the last {len(shown)} of {total}; rest: "
+              f"--all or --limit N", file=sys.stderr)
     return 0
 
 
@@ -105,20 +104,20 @@ def cmd_all(store: Store, args: argparse.Namespace) -> int:
         print(json.dumps(rows, ensure_ascii=False, indent=2))
         return 0
     if not rows:
-        print("ни одного проекта с состоянием пары не найдено")
-        print("укажите путь:  pairctl all ~/work/foo")
-        print("или скажите где искать:  PAIR_SCAN='~/work/*/.pair'")
+        print("no project with pair state found")
+        print("point the path:  pairctl all ~/work/foo")
+        print("or say where to look:  PAIR_SCAN='~/work/*/.pair'")
         return 1
     print(render_table(rows))
     stuck = [row for row in rows if row["stuck"]]
     live = [row for row in rows if not row["closed"]]
     untouched = [row for row in rows if row["silence_seconds"] is None]
     print()
-    print(f"{len(rows)} проект(ов), в работе {len(live)}, не начато {len(untouched)}")
+    print(f"{len(rows)} project(s), live {len(live)}, untouched {len(untouched)}")
     if stuck:
         names = ", ".join(row["project"] for row in stuck)
-        print(f"молчат дольше {args.stuck_min} мин: {names}")
-        print("  посмотреть:  PAIR_STATE=<путь> bin/pairchat --once")
+        print(f"silent past {args.stuck_min} min: {names}")
+        print("  view:  PAIR_STATE=<path> bin/pairchat --once")
         return 3
     return 0
 
@@ -138,11 +137,11 @@ def extract_state(argv: list[str]) -> tuple[Path, list[str]]:
     here instead. Both `server.py --state X ctl status` and
     `server.py ctl status --state X` work.
     """
-    # Один резолвер для всех: явный --state выигрывает, затем PAIR_STATE,
-    # затем walk-up до .pair/state.json (иначе сервер из вложенного каталога
-    # молча создаёт второе независимое состояние — state-dir-not-pinned).
-    # PAIR_STATE берётся строкой целиком, как у плагина: split резал бы путь
-    # с пробелом, и резолверы расходились бы на экзотике.
+    # One resolver for all: explicit --state wins, then PAIR_STATE, then walk-up
+    # to .pair/state.json (otherwise a server from a nested directory quietly
+    # creates a second independent state — state-dir-not-pinned).
+    # PAIR_STATE reads as one whole string, like the plugin: split would cut a
+    # path with a space, and resolvers would diverge on exotica.
     raw = (os.environ.get("PAIR_STATE") or "").strip()
     rest: list[str] = []
     index = 0
@@ -186,11 +185,11 @@ def extract_pane(argv: list[str]) -> tuple[str, list[str]]:
 
 
 def walk_up_to_state(start: Path | None = None) -> Path:
-    """Ближайший .pair вверх от cwd — тот же walk-up, что у плагина.
+    """Nearest .pair up from cwd — the same walk-up as the plugin.
 
-    Без него запуск из подкаталога проекта создаёт второе независимое
-    состояние, а плагин при этом показывает корневое: два мнения о писателе
-    при одном guard, который существует именно против этого."""
+    Without it a launch from a project subdir creates a second independent
+    state while the plugin shows the root one: two opinions about the writer
+    under one guard that exists exactly against that."""
     here = (start or Path.cwd()).resolve()
     for _ in range(12):
         candidate = here / ".pair"
@@ -287,12 +286,12 @@ def human_age(seconds: float | None) -> str:
     if seconds is None:
         return "—"
     if seconds < 90:
-        return f"{int(seconds)} с"
+        return f"{int(seconds)} with "
     if seconds < 5400:
-        return f"{int(seconds // 60)} мин"
+        return f"{int(seconds // 60)} min"
     if seconds < 172800:
-        return f"{int(seconds // 3600)} ч"
-    return f"{int(seconds // 86400)} д"
+        return f"{int(seconds // 3600)} h"
+    return f"{int(seconds // 86400)} d"
 
 
 def project_row(root: Path, stuck_min: int = 30) -> dict:
@@ -325,7 +324,7 @@ def project_row(root: Path, stuck_min: int = 30) -> dict:
 
 def render_table(rows: list[dict]) -> str:
     """Aligned plain text. Column widths come from the data, never from a guess."""
-    header = ("проект", "фаза", "режим", "писатель", "критик", "тишина", "почему он", "задача")
+    header = ("project", "phase", "mode", "writer", "critic", "silence", "why", "task")
     table = [
         (
             row["project"],
@@ -333,8 +332,8 @@ def render_table(rows: list[dict]) -> str:
             "AUDIT" if row.get("mode") == "audit" else "fix",
             row["writer"] or "—",
             ", ".join(row["peers"]) or "—",
-            "не начат" if row["silence_seconds"] is None
-            else row["silence"] + ("  ЗАВИС" if row["stuck"] else ""),
+            "not started" if row["silence_seconds"] is None
+            else row["silence"] + ("  STUCK" if row["stuck"] else ""),
             (row["reason"] or "—")[:40],
             (row["task"] or "—")[:36],
         )

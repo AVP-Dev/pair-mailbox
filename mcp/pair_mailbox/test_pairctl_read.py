@@ -220,7 +220,7 @@ class TestMultiProject(PairTestCase):
         except subprocess.TimeoutExpired:
             self.fail("--once не завершился сам: скрипт висит, как и до флага")
         self.assertEqual(done.returncode, 0, done.stderr)
-        self.assertIn("ПИСАТЕЛЬ: writer-agent", done.stdout)
+        self.assertIn("WRITER: writer-agent", done.stdout)
         self.assertIn("план на две строки", done.stdout)
 
     def test_naming_a_project_replaces_the_built_in_search(self) -> None:
@@ -240,12 +240,30 @@ class TestMultiProject(PairTestCase):
         plain = re.sub(r"\x1b\[[0-9;]*m", "", done.stdout)
         self.assertIn("proj-one", plain)
         self.assertIn("proj-two", plain)
-        self.assertIn("фаза", plain.splitlines()[0])
+        self.assertIn("phase", plain.splitlines()[0])
         for line in plain.splitlines():
             if "CLAIM" in line or "ADVANCE" in line:
                 head = line.split("CLAIM")[0].split("ADVANCE")[0].strip()
                 self.assertRegex(head, r"^(proj-one|proj-two)\s+\[\d\d:\d\d:\d\d\]$",
                                  "у блока нет метки проекта: " + line)
+
+    def test_table_words_follow_the_canon(self) -> None:
+        """R3 seq 1167: the table vocabulary is pinned, not advisory.
+
+        pairchat and pairctl_read print two tables from one module; a
+        near-miss spelling (not_started, Stuck) would pass every other
+        test while the human reads two dictionaries.
+        """
+        rows = [{"project": "p", "phase": "implement", "mode": "fix",
+                 "writer": "agy", "peers": ["opencode"], "silence_seconds": None,
+                 "silence": "", "stuck": False, "reason": "", "task": "t"},
+                {"project": "q", "phase": "implement", "mode": "fix",
+                 "writer": "agy", "peers": [], "silence_seconds": 3600,
+                 "silence": "60 min", "stuck": True, "reason": "", "task": "t"}]
+        text = render_table(rows)
+        for word in ("project", "phase", "mode", "writer", "critic",
+                     "silence", "why", "task", "not started", "STUCK"):
+            self.assertIn(word, text, f"canon word missing: {word}")
 
     def test_pairchat_shows_only_the_project_you_are_in(self) -> None:
         # Пользователь попросил именно этого: в папке проекта — диалог этого
@@ -348,7 +366,7 @@ class TestMultiProject(PairTestCase):
             env=dict(os.environ, PAIR_STATE=str(empty / ".pair")),
         )
         self.assertEqual(done.returncode, 1)
-        self.assertIn("нет", done.stdout + done.stderr)
+        self.assertIn("not in a project folder", done.stdout + done.stderr)
 
     def test_state_resolution_prefers_flag_over_env_over_cwd(self) -> None:
         """Три компонента разрешали путь по-разному — второе состояние в одном

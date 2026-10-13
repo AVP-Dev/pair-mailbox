@@ -2,6 +2,8 @@
 # Использует scripts/verify-changed.sh: после правки гоняет static + только
 # затронутые сюиты вместо всего слоя (5.5 мин → секунды).
 # Формат имён сюит — из scripts/verification-profile.tsv.
+# Суффикс -check (scripts-check, docs-check, pairchat-check): отдельной сюиты
+# нет, покрыто static (verify-changed.sh: static гоняется всегда).
 mcp/pair_mailbox/composer.py	composer
 mcp/pair_mailbox/test_composer.py	composer
 mcp/pair_mailbox/test_allowlist_bypass.py	composer-bypass
