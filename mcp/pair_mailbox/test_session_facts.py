@@ -107,6 +107,36 @@ class TestCollectFacts(unittest.TestCase):
                 session_facts.collect_facts(tmp)
 
 
+class TestLoadPatterns(unittest.TestCase):
+    def test_missing_config_falls_back_to_default(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(session_facts.load_patterns(tmp),
+                             session_facts.MOCK_PATTERNS)
+
+    def test_broken_config_falls_back_to_default(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            Path(tmp, "anti-mock.json").write_text("{broken",
+                                                   encoding="utf-8")
+            self.assertEqual(session_facts.load_patterns(tmp),
+                             session_facts.MOCK_PATTERNS)
+
+    def test_config_overrides_default(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            Path(tmp, "anti-mock.json").write_text(json.dumps({"patterns": [
+                {"name": "x-stub", "regex": "TODO-STUB",
+                 "reason": "custom"}]}), encoding="utf-8")
+            loaded = session_facts.load_patterns(tmp)
+            self.assertEqual([n for n, _, _ in loaded], ["x-stub"])
+            flags = session_facts.scan_text("app/x.py", 1,
+                                            ["x = TODO-STUB"], loaded)
+            self.assertEqual(flags[0]["pattern"], "x-stub")
+
+    def test_config_itself_is_gate_exempt(self) -> None:
+        self.assertTrue(session_facts.is_gate_exempt("anti-mock.json"))
+        self.assertEqual(session_facts.scan_text("anti-mock.json", 1,
+                                                 ["x = 'mock-abc'"]), [])
+
+
 class TestRoundTrip(unittest.TestCase):
     def setUp(self) -> None:
         self.repo = TempRepo()

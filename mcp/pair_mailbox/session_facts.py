@@ -49,7 +49,7 @@ def _unquote(path: str) -> str:
 # упоминание слова в комментарии: иначе детектор флагает собственные исходники
 # и имена сюит вроде anti-mock (живой пруф R81). (?<![-\w]) вместо \b: дефис
 # не граница слова, и без lookbehind anti-mock давал mock ( + совпадение.
-MOCK_PATTERNS: tuple[tuple[str, re.Pattern[str], str], ...] = (
+MOCK_PATTERNS: tuple[tuple[str, "re.Pattern[str]", str], ...] = (
     ("mock-usage",
      re.compile(r"(?<![-\w])(mock\s*\.\s*\w+|Mock\s*\(|mock\s*\(|stub\s*\(|"
                 r"Stub\s*\(|fake\s*\(|Fake\s*\(|(from|import)\s+mock\b)"),
@@ -67,6 +67,42 @@ MOCK_PATTERNS: tuple[tuple[str, re.Pattern[str], str], ...] = (
      re.compile(r"\buseState\s*\("),
      "локальный useState без видимого транспорта — решает критик"),
 )
+CONFIG_NAME = "anti-mock.json"
+
+
+def _find_config(start: Path | str) -> Path | None:
+    """Искать anti-mock.json вверх от start до корня репозитория."""
+    current = Path(start).resolve()
+    for _ in range(32):
+        candidate = current / CONFIG_NAME
+        if candidate.is_file():
+            return candidate
+        if (current / ".git").exists() or current.parent == current:
+            return None
+        current = current.parent
+    return None
+
+
+def load_patterns(
+    repo_root: Path | str | None = None,
+) -> tuple[tuple[str, "re.Pattern[str]", str], ...]:
+    """Паттерны из версионируемого anti-mock.json; без/битый — дефолт."""
+    found = _find_config(repo_root) if repo_root is not None else None
+    if found is None:
+        return MOCK_PATTERNS
+    try:
+        data = json.loads(found.read_text(encoding="utf-8"))
+        items = data.get("patterns", [])
+        loaded = tuple(
+            (str(item["name"]), re.compile(str(item["regex"])),
+             str(item.get("reason", "")))
+            for item in items
+            if isinstance(item, dict) and item.get("name")
+            and item.get("regex"))
+    except (OSError, ValueError, re.error):
+        return MOCK_PATTERNS
+    return loaded or MOCK_PATTERNS
+
 
 TEST_HINTS = ("test_", "_test", "tests/", "__tests__",
               ".test.", ".spec.", "spec/", "conftest")
@@ -76,6 +112,7 @@ TEST_HINTS = ("test_", "_test", "tests/", "__tests__",
 GATE_EXEMPT_SUFFIXES = (
     "mcp/pair_mailbox/session_facts.py",
     "mcp/pair_mailbox/anti_mock_gate.py",
+    "anti-mock.json",
 )
 GATE_EXEMPT_EXTENSIONS = (".tsv",)
 
@@ -135,13 +172,14 @@ def _parse_added(diff_text: str) -> list[tuple[str, int, str]]:
     return found
 
 
-def scan_text(path: str, start: int, lines: list[str]) -> list[dict[str, Any]]:
-    """Прогнать строки по MOCK_PATTERNS, вернуть флаги с координатами."""
+def scan_text(path, start, lines, patterns=None):
+    """Scan lines; default patterns are MOCK_PATTERNS."""
     if is_gate_exempt(path):
         return []
+    active = patterns if patterns is not None else MOCK_PATTERNS
     flags: list[dict[str, Any]] = []
     for offset, text in enumerate(lines):
-        for name, pattern, reason in MOCK_PATTERNS:
+        for name, pattern, reason in active:
             match = pattern.search(text)
             if match:
                 flags.append({
@@ -155,10 +193,11 @@ def scan_text(path: str, start: int, lines: list[str]) -> list[dict[str, Any]]:
     return flags
 
 
-def collect_facts(repo_root: Path | str,
-                  test_runs: list[dict[str, Any]] | None = None) -> dict[str, Any]:
-    """Собрать facts.json: head, touched, diff-stat, mock-флаги, прогоны."""
+def collect_facts(repo_root, test_runs=None, patterns=None):
+    """Collect facts.json. Patterns resolve from anti-mock.json
+    unless passed explicitly."""
     repo = Path(repo_root)
+    active = patterns if patterns is not None else load_patterns(repo)
     head = _git(repo, "rev-parse", "HEAD").strip()
     # -uall: неотслеживаемые каталоги раскрывать пофайлово, иначе untracked
     # "tests/" читается как директория и молча пропускается (урок R81).
@@ -170,13 +209,13 @@ def collect_facts(repo_root: Path | str,
     if touched:
         added = _parse_added(_git(repo, "diff", "HEAD", "-U0", "--", "."))
         for path, line, text in added:
-            flags.extend(scan_text(path, line, [text]))
+            flags.extend(scan_text(path, line, [text], active))
     for path in untracked:
         try:
             content = (repo / path).read_text(encoding="utf-8", errors="strict")
         except (OSError, UnicodeDecodeError):
             continue
-        flags.extend(scan_text(path, 1, content.splitlines()))
+        flags.extend(scan_text(path, 1, content.splitlines(), active))
     return {
         "version": FACTS_VERSION,
         "repo": str(repo),
