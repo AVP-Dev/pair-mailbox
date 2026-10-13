@@ -1,16 +1,16 @@
-"""Машинный гейт план → implement: без артефакта плана перехода нет.
+"""Machine gate plan → implement: no plan artefact means no move.
 
-Зачем: раньше «план согласован» (§9a) было соглашением промпта — замер
-2026-10-11 показал 2 раунда из 8, где писатель не отправил соседу ни одного
-сообщения до смены фазы. Гейт переводит соглашение в проверку: `advance`
-отказывает, пока в `.pair/plan.md` нет плана ЭТОГО раунда, а критика —
-подтверждения. В `audit` требуется только артефакт: там работа — находки,
-и код-план не обязателен.
+Why: "plan agreed" (§9a) used to be a prompt convention — the 2026-10-11
+measure showed 2 rounds in 8 where the writer sent the neighbour not a single
+message before the phase moved. The gate turns convention into a check: `advance`
+refuses while `.pair/plan.md` holds no plan of THIS round, and the critic holds
+no ack. In `audit` only the artefact is required: there the work is findings,
+and no code plan is due.
 
-Один путь обхода закрыт явно: `plan-ack` от самого писателя не считается.
+One bypass closes explicitly: a `plan-ack` from the writer itself never counts.
 
-Модуль вынесен из server.py по правилу размера: монолит заморожен
-(scripts/file-size-baseline.tsv), и рост запрещён без вынесения.
+The module moved out of server.py by the size rule: the monolith is frozen
+(scripts/file-size-baseline.tsv), and growth is banned without extraction.
 """
 
 from __future__ import annotations
@@ -25,9 +25,9 @@ PLAN_FILE = "plan.md"
 GATE_FILE = "plan-gate.json"
 DEFAULT_ACK_TIMEOUT_HOURS = 24
 
-# Первая строка плана — маркер раунда. Строгое совпадение с текущим раундом
-# защищает от плана прошлого раунда: тот же принцип, что у stale-вердикта
-# (review.is_stale): молчаливое применение чужой ревизии хуже отсутствия.
+# The plan first line is the round marker. Strict match on the current round
+# guards against the previous round plan: the stale-verdict principle
+# (review.is_stale): silently applying another revision beats missing one.
 ROUND_MARKER = re.compile(r"^\s*round\s*[:=]\s*(\d+)\s*$", re.IGNORECASE)
 
 SECTION_PATTERNS = (
@@ -37,7 +37,7 @@ SECTION_PATTERNS = (
                               re.IGNORECASE)),
 )
 
-# Заметка-вердикт: заголовок несёт время и роль, тело — строку plan-ack.
+# A verdict note: the header carries time and role, the body the plan-ack line.
 NOTE_ENTRY = re.compile(r"^##\s*(\S+)\s+—\s+(\S+)\s*$")
 ACK_LINE = re.compile(r"\bplan-ack\s+round\s+(\d+)\b", re.IGNORECASE)
 
@@ -47,15 +47,15 @@ def _plan_path(state_dir: Path) -> Path:
 
 
 def parse_plan(path: Path) -> dict[str, Any]:
-    """Разобрать план: раунд из маркера и найденные секции.
+    """Parse the plan: the round from the marker and the sections found.
 
-    Нечитаемый/отсутствующий файл — не исключение, а отказ с причиной:
-    гейт отвечает человеку словами, почему переход запрещён.
+    An unreadable/missing file is not an exception but a refusal with a cause:
+    the gate tells the human in words why the move is banned.
     """
     try:
         text = path.read_text(encoding="utf-8")
     except OSError as exc:
-        return {"ok": False, "why": f".pair/{PLAN_FILE} не читается: {exc}",
+        return {"ok": False, "why": f".pair/{PLAN_FILE} unreadable: {exc}",
                 "round": None, "missing": list(name for name, _ in SECTION_PATTERNS)}
     lines = text.splitlines()
     round_number: int | None = None
@@ -69,11 +69,11 @@ def parse_plan(path: Path) -> dict[str, Any]:
     missing = [name for name, _ in SECTION_PATTERNS if name not in found]
     why = ""
     if round_number is None:
-        why = (f"в .pair/{PLAN_FILE} нет маркера раунда: первая строка должна быть "
-               f"`round: N` (N — номер текущего раунда)")
+        why = (f"in .pair/{PLAN_FILE} has no round marker: the first line must be "
+               f"`round: N` (N — the current round number)")
     elif missing:
-        why = (f"в .pair/{PLAN_FILE} нет секций: {', '.join(missing)} "
-               f"(нужны заголовки Goal/Инварианты/Acceptance)")
+        why = (f"in .pair/{PLAN_FILE} has no sections: {', '.join(missing)} "
+               f"(need Goal/Инварианты/Acceptance headers)")
     return {"ok": round_number is not None and not missing,
             "why": why, "round": round_number, "missing": missing}
 
@@ -87,14 +87,14 @@ def _parse_entry_ts(stamp: str) -> datetime | None:
 
 def critic_ack(state_dir: Path, round_number: int, writer: str,
                not_before: datetime | None) -> dict[str, Any]:
-    """Искать заметку критика с `plan-ack round N` не раньше `not_before`.
+    """Look for the critic note with `plan-ack round N` no earlier than `not_before`.
 
-    Self-ack запрещён: заметка того же писателя не считается — иначе гейт
-    снимался бы одной строкой от того, кого он ограничивает.
+    Self-ack is banned: the same-writer note never counts — otherwise the gate
+    would lift on one line from whoever it constrains.
     """
     notes_dir = Path(state_dir) / "notes"
     if not notes_dir.is_dir():
-        return {"ack": False, "why": "каталог заметок не читается"}
+        return {"ack": False, "why": "note directory unreadable"}
     for path in sorted(notes_dir.glob("verdict*.md")):
         try:
             text = path.read_text(encoding="utf-8")
@@ -116,7 +116,7 @@ def critic_ack(state_dir: Path, round_number: int, writer: str,
             if entry_ts is not None and not_before is not None and entry_ts < not_before:
                 continue
             return {"ack": True, "role": role, "at": stamp, "path": str(path)}
-    return {"ack": False, "why": "заметки критика с plan-ack этого раунда нет"}
+    return {"ack": False, "why": "no critic note with this round plan-ack"}
 
 
 def _ack_timeout_hours(state_dir: Path) -> float:
@@ -131,15 +131,15 @@ def _ack_timeout_hours(state_dir: Path) -> float:
 
 def timeout_ack(state_dir: Path, obligations_root: Path, writer: str,
                 plan_mtime: datetime) -> dict[str, Any]:
-    """Окно ожидания истекло и писатель ничего не ждёт от соседа.
+    """The wait window lapsed and the writer awaits nothing from the neighbour.
 
-    Условие «нет открытых обязательств writer→критик» обязательно: иначе
-    отправленный запрос, на который крик не ответил, «истекал» бы сам и
-    замечание тонуло бы в тишине.
+    The "no open writer→critic obligations" condition is mandatory: otherwise a
+    sent request the critic never answered would "lapse" on its own and the
+    remark would drown in silence.
     """
     try:
         from review import open_count
-    except ImportError:  # pragma: no cover - review рядом в пакете
+    except ImportError:  # pragma: no cover - review sits next in the package
         open_count = None  # type: ignore[assignment]
     waiting = 0
     if open_count is not None:
@@ -148,21 +148,21 @@ def timeout_ack(state_dir: Path, obligations_root: Path, writer: str,
     age = (datetime.now(timezone.utc) - plan_mtime).total_seconds() / 3600.0
     if waiting:
         return {"ack": False, "waiting": waiting,
-                "why": (f"писатель ждёт ответа на {waiting} запрос(ов) — "
-                        f"таймаут не тикает, пока замечание без ответа")}
+                "why": (f"the writer awaits an answer on {waiting} request(s) — "
+                        f"the timeout never ticks while the remark stands unanswered")}
     if age < hours:
         return {"ack": False,
-                "why": (f"план написан {age:.1f} ч назад, окно ожидания визы "
-                        f"{hours:g} ч ещё открыто (переопределить: "
+                "why": (f"the plan is written {age:.1f} h ago, the visa window "
+                        f"{hours:g} h still open (override: "
                         f".pair/{GATE_FILE})")}
-    return {"ack": True, "why": f"окно {hours:g} ч истекло без открытых запросов"}
+    return {"ack": True, "why": f"window {hours:g} h lapsed with no open requests"}
 
 
 def gate(state_dir: Path, state: dict[str, Any]) -> dict[str, Any]:
-    """Полный вердикт гейта для перехода plan → implement.
+    """The full gate verdict for the plan → implement move.
 
-    Возвращает {ok, why, ack_via}. Exempt-случаи (шаг назад, реопен, audit)
-    решает вызывающий код: здесь только «можно ли переходить вперёд».
+    Returns {ok, why, ack_via}. Exempt cases (step back, reopen, audit) are the
+    caller code’s call: here only "may we move forward".
     """
     path = _plan_path(state_dir)
     plan = parse_plan(path)
@@ -171,12 +171,12 @@ def gate(state_dir: Path, state: dict[str, Any]) -> dict[str, Any]:
     round_number = int(state.get("round", 0))
     if plan["round"] != round_number:
         return {"ok": False,
-                "why": (f"план помечен round: {plan['round']}, а раунд сейчас "
-                        f"{round_number}: молчаливое применение чужого плана "
-                        f"хуже его отсутствия"),
+                "why": (f"the plan marks round: {plan['round']}, but the round is now "
+                        f"{round_number}: silently applying another plan "
+                        f"beats missing one"),
                 "ack_via": None}
     if state.get("mode", "fix") == "audit":
-        return {"ok": True, "why": "audit: план — артефакт, виза не нужна",
+        return {"ok": True, "why": "audit: the plan is an artefact, no visa needed",
                 "ack_via": "audit"}
     writer = str(state.get("writer") or "")
     try:
@@ -185,12 +185,12 @@ def gate(state_dir: Path, state: dict[str, Any]) -> dict[str, Any]:
         plan_mtime = datetime.now(timezone.utc)
     ack = critic_ack(state_dir, round_number, writer, plan_mtime)
     if ack.get("ack"):
-        return {"ok": True, "why": f"виза критика {ack.get('role')} ({ack.get('at')})",
+        return {"ok": True, "why": f"the critic visa {ack.get('role')} ({ack.get('at')})",
                 "ack_via": "ack"}
     late = timeout_ack(state_dir, Path(state_dir) / "obligations", writer, plan_mtime)
     if late.get("ack"):
         return {"ok": True, "why": late["why"], "ack_via": "timeout"}
     return {"ok": False,
-            "why": f"{late['why']}; {ack['why']}. Напиши план в .pair/{PLAN_FILE} "
-                   f"и отправь соседу на визу (pair_send expects_reply).",
+            "why": f"{late['why']}; {ack['why']}. Write the plan into .pair/{PLAN_FILE} "
+                   f"and send the neighbour for visa (pair_send expects_reply).",
             "ack_via": None}

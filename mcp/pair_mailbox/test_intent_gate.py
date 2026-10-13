@@ -29,7 +29,7 @@ class TestIntentGate(PairTestCase):
         (self.store.root / intent_gate.INTENT_FILE).unlink(missing_ok=True)
         with self.assertRaises(ProtocolError) as ctx:
             self.writer.tool_pair_advance("plan")
-        self.assertIn("intent.md не читается", str(ctx.exception))
+        self.assertIn("unreadable", str(ctx.exception))
 
     def test_wrong_round_refuses(self) -> None:
         write_test_intent(self.store.root, round_number=42)
@@ -41,7 +41,7 @@ class TestIntentGate(PairTestCase):
         write_test_intent(self.store.root, round_number=1, sections=("Problem",))
         with self.assertRaises(ProtocolError) as ctx:
             self.writer.tool_pair_advance("plan")
-        self.assertIn("отсутствуют секции", str(ctx.exception))
+        self.assertIn("misses sections", str(ctx.exception))
 
     def test_valid_intent_allows_scoping_to_plan(self) -> None:
         write_test_intent(self.store.root, round_number=1)

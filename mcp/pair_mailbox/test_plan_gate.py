@@ -49,7 +49,7 @@ class TestGateCases(PairTestCase):
     def test_no_plan_refuses(self) -> None:
         self.advance_to_plan()
         error = self.assertRefused(self.writer.tool_pair_advance, "implement")
-        self.assertIn("plan.md не читается", str(error))
+        self.assertIn("unreadable", str(error))
 
     def test_wrong_round_marker_refuses(self) -> None:
         self.advance_to_plan()
@@ -76,7 +76,7 @@ class TestGateCases(PairTestCase):
         write_plan(self.store.root, 1)
         write_ack(self.store.root / "notes", "writer-agent", 1, at=time.time() + 1)
         error = self.assertRefused(self.writer.tool_pair_advance, "implement")
-        self.assertIn("окно", str(error))
+        self.assertIn("window", str(error))
 
     def test_timeout_passes_without_open_requests(self) -> None:
         self.advance_to_plan()
@@ -97,7 +97,7 @@ class TestGateCases(PairTestCase):
         self.peer.tool_pair_send("writer-agent", "возражение по плану", expects_reply=False)
         self.writer.tool_pair_send("reviewer-agent", "согласуй план", expects_reply=True)
         error = self.assertRefused(self.writer.tool_pair_advance, "implement")
-        self.assertIn("запрос", str(error))
+        self.assertIn("request", str(error))
 
     def test_reopen_is_exempt(self) -> None:
         """done → implement (переоткрытие по находке) вставало бы без плана:
