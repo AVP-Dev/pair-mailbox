@@ -526,8 +526,8 @@ class TestTaskList(PairTestCase):
         self.record_test_evidence(value="190 passed, exit 0", task=first)
         self.writer.tool_pair_task("drop", second, reason="покрыта пунктом 3")
         text = render_tasks_md(self.store.read())
-        self.assertIn("#1 — НЕ СДЕЛАНО", text)
-        self.assertIn("#2 — брошено", text)
+        self.assertIn("#1 — NOT DONE", text)
+        self.assertIn("#2 — dropped", text)
         self.assertIn("покрыта пунктом 3", text)
         self.assertIn("190 passed, exit 0", text)   # доказательство приписано к #1
 

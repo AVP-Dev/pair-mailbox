@@ -49,27 +49,27 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-# composer.py лежит рядом и импортируется лениво, внутри pair_deliver.
-# Путь добавляем здесь, после того как Path уже есть.
+# composer.py sits nearby and imports lazily, inside pair_deliver.
+# The path joins here, once Path exists.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-import digest  # noqa: E402 - требует sys.path выше
-import liveness  # noqa: E402 - требует sys.path выше
-import obligations  # noqa: E402 - требует sys.path выше
-import server_freshness  # noqa: E402 - требует sys.path выше
-import statecache  # noqa: E402 - требует sys.path выше
+import digest  # noqa: E402 - needs sys.path above
+import liveness  # noqa: E402 - needs sys.path above
+import obligations  # noqa: E402 - needs sys.path above
+import server_freshness  # noqa: E402 - needs sys.path above
+import statecache  # noqa: E402 - needs sys.path above
 
-# Имена дайджеста переотдаются из `digest`: их читает `pairctl_read`, и держать
-# второй источник правды значит вернуть расхождение, ради которого дайджест и
-# выносился.
+# Digest names re-export from `digest`: `pairctl_read` reads them, and keeping a
+# second source of truth means returning the drift the digest was extracted for.
+# extracted for.
 DIGEST_TOKEN_BUDGET = digest.DIGEST_TOKEN_BUDGET
 DIGEST_MARKER = digest.DIGEST_MARKER
 TRANSCRIPT_SCAN_LIMIT = digest.TRANSCRIPT_SCAN_LIMIT
 build_digest = digest.build_digest
 estimate_tokens = digest.estimate_tokens
 
-# Баннер задачи для панелей — отдельный модуль: server.py заморожен
-# (file-size-baseline.tsv), и рост монолита запрещён без вынесения.
+# The task banner for panes is its own module: server.py is frozen
+# (file-size-baseline.tsv), and monolith growth is banned without extraction.
 from task_banner import write_task_banner
 _digest_marker_reserve = digest._digest_marker_reserve
 _render_digest = digest._render_digest
@@ -85,37 +85,37 @@ DEFAULT_PROTOCOL_VERSION = "2024-11-05"
 SERVER_NAME = "pair-mailbox"
 SERVER_VERSION = "1.0.0"
 
-# Потолок ожидания в pair_read. Живое ожидание — часть протокола (§7): без него
-# агент, который не знает о письме, не узнает и не ответит, и канал умирает.
+# The wait ceiling in pair_read. Live waiting is part of the protocol (§7): without
+# it the agent unaware of the letter never learns and never answers, and the channel dies.
 #
-# Но сервер не должен обещать больше, чем клиент способен дождаться: opencode
-# рвёт MCP-вызов на 20 секундах, и 40 секунд разрешённого диапазона были
-# недостижимы. Клиент рвался раньше, чем сервер просыпался, — и по возвращённым
-# waited_seconds не было видно, что вызов прервал клиент, а не сервер.
+# But the server must never promise more than the client can wait out: opencode
+# tears the MCP call at 20 seconds, and 40 seconds of allowed range stayed
+# unreachable. The client tore earlier than the server woke — and from the returned
+# waited_seconds nobody saw the client interrupt, not the server.
 #
-# Отсюда два правила. Потолок здесь — последнее слово сервера, а фактический
-# предел — min(этот потолок, CLIENT_TIMEOUT с запасом), и он читается из
-# окружения, потому что клиент у каждого CLI свой. И проверка согласованности
-# при старте: профиль с таймаутом меньше потолка — это дефект конфигурации, и
-# молча пропускать его нельзя.
+# Hence two rules. The ceiling here is the server last word, while the actual limit
+# is min(this ceiling, CLIENT_TIMEOUT with margin), read from the environment because
+# every CLI owns its client. And the consistency check at start: a profile with a
+# timeout below the ceiling is a config defect, never to pass silently.
+# silently.
 MAX_READ_WAIT_SECONDS = 60
 DEFAULT_READ_WAIT_SECONDS = 0.0
 
-# Таймаут MCP-клиента по умолчанию, если он не задан в окружении. 20 секунд —
-# значение из коробки у opencode, и оно же было причиной находки.
+# The default MCP-client timeout when unset in the environment. 20 seconds is the
+# opencode out-of-box value, and the cause of the finding.
 CLIENT_TIMEOUT_SECONDS = int(os.environ.get("PAIR_CLIENT_TIMEOUT", "20000"))
 
-# Запас между ожиданием сервера и терпением клиента. Без него сервер успевает
-# начать ответ ровно в момент, когда клиент уже отключился.
+# The margin between the server wait and the client patience. Without it the server
+# starts answering exactly as the client disconnects.
 READ_WAIT_MARGIN_SECONDS = 5.0
 
 
 def effective_read_wait(wait: float) -> tuple[float, bool]:
-    """Сколько реально ждать, и что пришлось урезать.
+    """How long to actually wait, and what had to give.
 
-    Возвращает (ожидание, урезано ли). Урезанное ожидание возвращается наружу
-    явно, потому что иначе агент видит «я попросил 60 и получил тишину» и не
-    может отличить «не ответили» от «меня отключили по таймауту».
+    Returns (wait, whether trimmed). A trimmed wait returns outward explicitly,
+    because otherwise the agent sees "I asked 60 and got silence" and never tells
+    "no answer" from "timed out on me".
     """
     capped = min(float(wait), float(MAX_READ_WAIT_SECONDS))
     client_budget = max(0.0, (CLIENT_TIMEOUT_SECONDS / 1000.0) - READ_WAIT_MARGIN_SECONDS)
@@ -178,33 +178,33 @@ EVIDENCE_KINDS = ("test", "lint", "typecheck", "build", "diff", "commit", "pr", 
 
 EVIDENCE_KEEP = 50
 
-# Заметки пишутся только в append, и без потолка они растут, пока прочтение
-# целиком перестаёт быть разумным. Замерено вживую: verdict.md дорос до 630
-# строк, то есть примерно до 19 тысяч токенов на ОДНО чтение. Критик читает
-# заметки файловым инструментом, потому что у `pair_note` не было второй
-# стороны — чтения, и bounded-варианта не существовало вовсе.
-# Ротация уносит старое в archive и оставляет в файле указатель, то есть
-# ничего не теряется, а файл перестаёт расти без предела.
+# Notes write append-only, and with no ceiling they grow until reading them whole
+# stops making sense. Measured live: verdict.md grew to 630 lines, about 19 thousand
+# tokens per ONE read. The critic reads notes with a file tool, because `pair_note`
+# never owned a second side — reading — and no bounded form existed at all.
+# existed at all.
+# Rotation carries the old into archive, leaving a pointer in the file: nothing is
+# lost, and the file stops growing without bound.
 NOTE_LINE_CAP = 600
 NOTE_READ_DEFAULT = 120
-# Скользящее окно транскрипта. Журнал остаётся на диске целиком, но активный
-# файл ограничен: без этого `read_transcript` разбирал весь файл ради двадцати
-# строк ответа, и `pairctl log` без `--limit` вываливал в терминал всё, что
-# накопилось за раунд. Значение выбрано с запасом выше типичного раунда, чтобы
-# ротация не срабатывала на каждом втором вызове.
+# The transcript sliding window. The journal stays on disk whole, but the active
+# file is capped: without it `read_transcript` parsed the whole file for twenty reply
+# lines, and limitless `pairctl log` dumped into the terminal everything the round
+# gathered. The value runs with margin above a typical round, so rotation never fires
+# on every second call.
 TRANSCRIPT_MAX_BYTES = 256 * 1024
-# Сколько кусков сколько прошлое хранить, прежде чем отпустить самый старый.
+# How many chunks how much past to keep before releasing the oldest.
 TRANSCRIPT_ARCHIVES = 4
-# Порция чтения с конца. Меньше блока — больше системных вызовов, больше — больше
-# памяти; 64 КБ читает быстрее страницы журнала и не тянет его целиком.
+# A read portion from the end. Below a block means more syscalls, above means more
+# memory; 64 KB reads faster than a journal page without dragging it whole.
 TRANSCRIPT_READ_BLOCK = 64 * 1024
-# `pairctl log` без явного лимита отдаёт столько, а не весь файл: тот же расход,
-# что и `pair_transcript`, только без ограничителя.
+# Limitless `pairctl log` serves this much, not the whole file: the same spend as
+# `pair_transcript`, only with no limiter.
 LOG_DEFAULT_LIMIT = 50
 NOTE_READ_MAX = 400
 
-# Фазы, на которых слово человека «ок» что-то значит. Раньше проверялся только
-# номер раунда, и одобрение плана закрывало раунд на verify.
+# Phases where the human "ok" word means anything. Only the round number checked
+# before, and a plan approval closed the round on verify.
 OK_PHASES = ("verify", "done")
 
 # Auto-release is off unless the human turns it on. A writer that has finished
@@ -232,16 +232,16 @@ def permissions_path(root: Path) -> Path:
 
 
 def load_allowlist(root: Path) -> list[str]:
-    """Разрешённые шаблоны и признак, что мы на списке по умолчанию.
+    """Allowed patterns and the flag that we run on the default list.
 
-    Раньше отсутствующий файл означал пустой список, то есть «не подтверждать
-    ничего», и сверхвизор не подтверждал вообще ничего — при этом снаружи это
-    выглядело как молчание соседа, а не как отказ по настройке. Граница задана
-    человеком: внутри проекта можно всё, что нужно для работы, запрещено то, что
-    вредит системе или чужому проекту. Поэтому файла нет = список по умолчанию.
+    A missing file used to mean an empty list — "confirm nothing" — and the
+    supervisor confirmed nothing at all — while outside it read as neighbour
+    silence, not a settings refusal. The edge is human-set: inside the project
+    everything the work needs is allowed; what harms the system or another
+    project is banned. So no file means the default list.
 
-    Сломанный файл — другое дело: оператор что-то настраивал, и молча подставлять
-    дефолт вместо его настройки хуже, чем остановиться.
+    A broken file differs: the operator configured something, and silently
+    swapping the default for its setting beats stopping.
     """
     from composer import load_allow_patterns
 
@@ -255,7 +255,7 @@ def load_allowlist(root: Path) -> list[str]:
         return list(DEFAULT_ALLOW_PATTERNS), True
     try:
         return load_allow_patterns(str(path))
-    except Exception:  # noqa: BLE001 - сломанная настройка не должна ронять сервер
+    except Exception:  # noqa: BLE001 - a broken setting must never drop the server
         return [], False
 
 
@@ -362,32 +362,32 @@ def next_task_id(state: dict[str, Any]) -> int:
 
 
 def human_ok_for_round(state: dict[str, Any]) -> bool:
-    """Слово человека на чекпоинте — и только на том, где оно значимо.
+    """The human word at the checkpoint — and only where it matters.
 
-    Раньше проверялся только номер раунда, поэтому «ок: план одобряю» на фазе
-    plan закрывало раунд на verify. План и «правки проверены» — разные
-    утверждения, а гейт их не различал.
+    Only the round number checked before, so "ok: approving the plan" on phase
+    plan closed the round on verify. Plan and "edits checked" are different
+    claims, and the gate never told them apart.
 
-    Теперь засчитывается только ok, сказанное на verify или done, и только пока
-    раунд на этой фазе. Откат фазы назад отменяет слово само собой: approve был
-    привязан к тому, что человек видел.
+    Now only ok counts, said on verify or done, and only while the round
+    stands on that phase. A phase rollback cancels the word on its own: the
+    approve bound to what the human saw.
     """
     current = int(state.get("round", 0))
     if state.get("phase") not in OK_PHASES:
-        # Раунд откатили назад — сказанное на verify относилось к тому, что
-        # человек тогда видел, и после отката он этого уже не видел.
+        # A round rolled back — what was said on verify belonged to what the human saw
+        # then, and after the rollback it never saw it again.
         return False
     entries = [entry for entry in (state.get("human_ok") or [])
                if int(entry.get("round", -1)) == current]
     if not entries:
         return False
-    # Последнее слово решает: отзыв отменяет более раннее одобрение, а повторное
-    # «ок» после отзыва — новое слово.
+    # The last word decides: a revoke cancels the earlier approval, and a repeated
+    # "ok" after a revoke is a new word.
     last = entries[-1]
     if last.get("revoke"):
         return False
-    # И сказано оно должно быть на чекпоинте, где что-то значит: «план одобрен»
-    # и «правки проверены» — разные утверждения.
+    # And it must be said at a checkpoint that means something: "plan approved" and
+    # "edits checked" are different claims.
     return last.get("phase") in OK_PHASES
 
 
@@ -448,17 +448,17 @@ def done_blockers(state: dict[str, Any]) -> list[str]:
             item.get("kind") == "test" and item.get("ok")
             and item.get("role") == state.get("writer")
             for item in latest.values()):
-        # Раньше гейт спрашивал «есть ли хоть одна успешная запись», и на этот
-        # вопрос отвечал `kind="manual", value="looks good"`. Запись, неотличимая
-        # от прогона, — это ровно то, чем гейт не должен закрываться: раунд с
-        # красными тестами объявлялся закрытым, потому что автор описал словами,
-        # что всё хорошо. В mode=audit требования нет — там результат работы это
-        # находки в заметках, и прогона тестов может не быть по существу.
+        # The gate used to ask "any successful record at all", and `kind="manual",
+        # value="looks good"` answered that question. A record indistinguishable from a
+        # run is exactly what the gate must never close on: a round with red tests was
+        # declared closed because the author described in words that all is well. In
+        # mode=audit no requirement holds — the work result there is findings in notes,
+        # and no test run may exist in substance.
         #
-        # И прогон должен быть писательский. Иначе гейт, который защищает от
-        # «закрыть на словах», закрывается на словах же — просто от другой роли:
-        # критик может записать ok=True и удовлетворить гейт человека, который
-        # право писать не имеет.
+        # And the run must be the writer one. Otherwise the gate guarding against
+        # "closing on words" closes on words too — just from another role: the critic may
+        # record ok=True and satisfy the human gate, who never owns write authority.
+        # owns write authority.
         writer = state.get("writer")
         blockers.append(
             f"round {round_number} has no passing test run from the writer "
@@ -469,7 +469,7 @@ def done_blockers(state: dict[str, Any]) -> list[str]:
             f"is a verdict that things look right."
         )
 
-    # [R82] Без PASS живого прогона гейтов от писателя — не закрыться (R81).
+    # [R82] With no PASS of a live writer gate run — never close (R81).
     if state.get("mode", "fix") != "audit" and not any(
             item.get("kind") == "ground-truth" and item.get("ok")
             and item.get("role") == state.get("writer")
@@ -508,41 +508,40 @@ def done_blockers(state: dict[str, Any]) -> list[str]:
 
 
 def render_tasks_md(state: dict[str, Any]) -> str:
-    """Журнал сессии: что задано, что сделано, чем доказано, что НЕ сделано.
+    """The session journal: what is set, what is done, what proves it, what is NOT done.
 
-    Генерируется из состояния, а не пишется руками, поэтому не устаревает и не
-    может разойтись с фактами. Живёт в .pair, а не в docs: это рабочий журнал
-    пары, а не документация проекта, и коммитить его в публичный репозиторий
-    незачем.
+    Generated from state, never hand-written, so it never stales and can never drift
+    from facts. Lives in .pair, not docs: the pair work journal, not project
+    docs — no point committing it to the public repo.
 
-    Секция «не сделано» не может быть молча пустой: у открытой задачи она
-    заполнена автоматически, а закрытая обязана нести причину, если она брошена.
-    Именно это и нужно человеку, который вернулся через неделю.
+    The "not done" section never sits silently empty: an open task fills it
+    automatically, while a closed one must carry a cause when dropped. Exactly
+    what the human returning in a week needs.
     """
     items = tasks_of(state)
-    mark = {OPEN_TASK: "НЕ СДЕЛАНО", "done": "сделано", "dropped": "брошено"}
+    mark = {OPEN_TASK: "NOT DONE", "done": "done", "dropped": "dropped"}
     lines = [
-        "# Журнал сессии",
+        "# Session journal",
         "",
-        f"- раунд: {state.get('round')}   фаза: {state.get('phase')}   "
-        f"режим: {state.get('mode')}   автономность: {autonomy_of(state)}",
-        f"- писатель: {state.get('writer') or 'не назначен'}",
-        f"- сгенерировано: {utcnow()}",
+        f"- round: {state.get('round')}   phase: {state.get('phase')}   "
+        f"mode: {state.get('mode')}   autonomy: {autonomy_of(state)}",
+        f"- writer: {state.get('writer') or 'unassigned'}",
+        f"- generated: {utcnow()}",
         "",
     ]
     if not items:
-        lines += ["Задач нет. `pairctl task \"...\"` или pair_task(action=\"add\").", ""]
+        lines += ["No tasks. `pairctl task \"...\"` or pair_task(action=\"add\").", ""]
         return "\n".join(lines)
 
     still_open = [i for i in items if i.get("status") == OPEN_TASK]
     lines += [
-        "## Сводка",
+        "## Summary",
         "",
-        f"- всего задач: {len(items)}",
-        f"- не сделано: {len(still_open)}"
+        f"- total tasks: {len(items)}",
+        f"- not done: {len(still_open)}"
         + (f" — #{', #'.join(str(i['id']) for i in still_open)}" if still_open else ""),
         "",
-        "## Задачи",
+        "## Tasks",
         "",
     ]
     for item in items:
@@ -551,37 +550,37 @@ def render_tasks_md(state: dict[str, Any]) -> str:
         lines.append("")
         lines.append(str(item.get("text", "")).strip())
         lines.append("")
-        lines.append(f"- добавил: {item.get('added_by')}   раунд: {item.get('round')}   "
-                     f"в {item.get('added_at')}")
+        lines.append(f"- added: {item.get('added_by')}   round: {item.get('round')}   "
+                     f"in {item.get('added_at')}")
         if item.get("status") != OPEN_TASK:
-            lines.append(f"- закрыл: {item.get('closed_by')}   в {item.get('closed_at')}")
+            lines.append(f"- closed: {item.get('closed_by')}   in {item.get('closed_at')}")
         if item.get("status") == "dropped":
             reason = str(item.get("reason") or "").strip()
-            lines.append(f"- почему брошено: {reason or 'ПРИЧИНА НЕ УКАЗАНА — это дефект'}")
+            lines.append(f"- why dropped: {reason or 'CAUSE MISSING — a defect'}")
         proved = [e for e in (state.get("evidence") or []) if e.get("task") == ident]
         if proved:
-            lines.append("- чем доказано:")
+            lines.append("- proven by:")
             for entry in proved:
                 flag = "OK " if entry.get("ok") else "FAIL"
                 lines.append(f"    - {flag} {entry.get('kind')} [{entry.get('role')}] "
                              f"{entry.get('value')}")
         elif item.get("status") != OPEN_TASK:
-            lines.append("- чем доказано: НИЧЕМ. Закрыто без единого машинного факта.")
+            lines.append("- proven by: NOTHING. Closed with zero machine facts.")
         else:
-            lines.append("- чем доказано: ещё нет, работа не закончена.")
+            lines.append("- proven by: not yet, the work never finished.")
         notes = [e for e in (state.get("evidence") or [])
                  if e.get("task") == ident and not e.get("ok")]
         if notes:
-            lines.append("- что падало:")
+            lines.append("- what failed:")
             for entry in notes:
                 lines.append(f"    - {entry.get('value')}")
         lines.append("")
 
     if still_open:
         lines += [
-            "## Что осталось за открытыми задачами",
+            "## What stays behind the open tasks",
             "",
-            "Раунд не закроется, пока это не сделано или не брошено с причиной.",
+            "The round never closes until this is done or dropped with a cause.",
             "",
         ]
         for item in still_open:
@@ -591,16 +590,16 @@ def render_tasks_md(state: dict[str, Any]) -> str:
     loose = [e for e in (state.get("evidence") or []) if not e.get("task")]
     if loose:
         lines += [
-            "## Доказательства без привязки к задаче",
+            "## Evidence with no task binding",
             "",
-            "Записаны, когда открытых задач было больше одной, поэтому не отнесены "
-            "ни к какой. К задаче привязывается явно: pair_evidence(..., task=N).",
+            "Recorded while more than one task stayed open, so never bound to any. "
+            "To bind to a task explicitly: pair_evidence(..., task=N).",
             "",
         ]
         for entry in loose:
             flag = "OK " if entry.get("ok") else "FAIL"
             lines.append(f"- {flag} {entry.get('kind')} [{entry.get('role')}] {entry.get('value')} "
-                         f"— открыты были: {', '.join(f'#{i}' for i in entry.get('tasks_open') or []) or '—'}")
+                         f"— open were: {', '.join(f'#{i}' for i in entry.get('tasks_open') or []) or '—'}")
         lines.append("")
     return "\n".join(lines)
 
@@ -644,25 +643,25 @@ class ProtocolError(Exception):
 
 
 def _transcript_hash(entry: dict) -> str:
-    """Хэш строки цепи: всё кроме prev_hash, канонический json."""
+    """The chain-link string hash: all but prev_hash, canonical json."""
     body = {k: v for k, v in entry.items() if k != "prev_hash"}
     return hashlib.sha256(json.dumps(body, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
 
 
 def verify_transcript_chain(entries: list[dict], anchored: bool = False) -> dict:
-    """Проверить цепь: каждая строка ссылается на хэш предыдущей.
-    Ротация — горизонт верификации (условие критика seq 415): активный файл
-    начинается с маркера transcript_rotated, хвост до него унесён в архив,
-    поэтому первая строка сверяется с маркера, а архив — отдельно по last_hash.
-    Маркер — обычное звено дальше (несёт prev_hash как все) плюс чекпоинт
-    last_hash унесённого файла. Дамадж-строки — видимый разрыв.
-    Срез (anchored=True, раунд 42): tool_pair_transcript отдаёт хвост limit,
-    первая строка среза — якорь из середины журнала, её prev_hash сверить
-    не с чем; проверяется цепь внутри среза. Подмена первой строки среза
-    всё равно видна: её хэш не сойдётся со второй строкой.
-    Legacy (раунд 42): строки старше цепи без prev_hash — не разрыв, а
-    доцепная эпоха; пропускаются со счётчиком pre_chain, цепь строится
-    с первой подписанной строки."""
+    """Verify the chain: every line points at the previous hash.
+    Rotation is the verification horizon (critic condition seq 415): the active file
+    starts with a transcript_rotated marker, the tail before it archived away —
+    so the first line verifies from the marker, the archive apart by last_hash.
+    The marker is an ordinary link past that (carries prev_hash like all) plus a
+    last_hash checkpoint of the carried file. Damage lines are a visible break.
+    A slice (anchored=True, round 42): tool_pair_transcript serves the tail limit,
+    the slice first line is a mid-journal anchor with nothing to reconcile its
+    prev_hash against; the chain inside the slice verifies. Swapping the slice
+    first line still shows: its hash never meets the second line.
+    Legacy (round 42): pre-chain lines with no prev_hash are no break but a
+    pre-chain era; skipped with a pre_chain counter, the chain builds from the
+    first signed line."""
     expected = None
     checked = 0
     pre_chain = 0
@@ -675,16 +674,16 @@ def verify_transcript_chain(entries: list[dict], anchored: bool = False) -> dict
             checked += 1
             continue
         if "prev_hash" not in entry:
-            # Доцепная эпоха: подписи не было, проверить нечего — но цепь
-            # дальше строится от неё, иначе первая подписанная строка после
-            # legacy-головы всегда рвала бы цепь (fail-open, раунд 42).
+            # Pre-chain era: no signatures, nothing to check — but the chain builds on from
+            # it, or the first signed line past a legacy head would always tear the chain
+            # (fail-open, round 42).
             pre_chain += 1
             expected = _transcript_hash(entry)
             continue
         if anchored and index == 0 and expected is None:
-            # Якорь среза: первая строка из середины журнала, её prev_hash
-            # сверить не с чем — принимаем, цепь строится дальше от неё.
-            # Подмена якоря всё равно видна: его хэш не сойдётся со второй строкой.
+            # The slice anchor: the first line from the journal middle, its prev_hash has
+            # nothing to reconcile with — taken, the chain builds on from it.
+            # An anchor swap still shows: its hash never meets the second line.
             expected = _transcript_hash(entry)
             checked += 1
             continue
@@ -697,13 +696,12 @@ def verify_transcript_chain(entries: list[dict], anchored: bool = False) -> dict
     return {"ok": True, "checked": checked, "pre_chain": pre_chain}
 
 def _transcript_entry(raw: str) -> dict | None:
-    """Одна строка журнала в словарь, либо None если это не запись.
+    """One journal line into a dict, or None when no record.
 
-    Битая строка не должна ронять чтение: журнал пишется по одной строке на
-    запись, и обрыв на середине — обычное дело при убитом процессе. Молча
-    пропустить такую строку правильно, но сказать о ней тоже правильно, иначе
-    выглядит так, будто события не было. Поэтому `pairctl log` печатает её
-    помеченной, а не выкидывает.
+    A broken line must never drop the read: the journal writes one line per record,
+    and a mid-line cut is routine with a killed process. Skipping such a line quietly
+    is right, but telling about it is right too — or it reads as if no event ever
+    was. So `pairctl log` prints it marked, never dropped.
     """
     text = raw.strip()
     if not text:
