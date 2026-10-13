@@ -43,16 +43,16 @@ from server import (  # noqa: E402
     resolve_autonomy,
 )
 
-# Потолок дайджеста продублирован намеренно: тест должен падать, если сервер
-# поднимет свою константу выше проверяемой, а не молча переписать её под себя.
+# The digest ceiling duplicates on purpose: the test must fall when the server
+# raises its own constant above the checked one, not quietly rewrite it to match.
 DIGEST_TOKEN_BUDGET_FOR_TEST = 500
 
 def fresh_seen() -> str:
-    """Свежая метка времени: сид заведомо моложе любого TTL истечения.
+    """A fresh timestamp: the seed knowingly younger than any expiry TTL.
 
-    Нужна сидам протухших панелей/мёртвых процессов: их намерение — «панель
-    снять, но запись оставить», а last_seen из прошлого года теперь честно
-    истекает по TTL (19.3). Возраст там случаен, свежесть фиксирует предмет.
+    Needed by the seeds of stale panes/dead processes: their intent is "drop the
+    pane but keep the record", while year-old last_seen now honestly expires on
+    TTL (19.3). Age runs random there; freshness pins the subject.
     """
     from datetime import datetime, timezone
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -106,58 +106,58 @@ class TestWriteAuthority(PairTestCase):
         self.assertEqual(result["writer"], "reviewer-agent")
 
     def test_a_claim_says_why(self) -> None:
-        """Пользователь спросил, не лучше ли выбирать роль осмысленно.
+        """The user asked whether picking the role deliberately beats the race.
 
-        Ответ: гонка остаётся (иначе нужен человек и автономия кончается), но
-        захват теперь объясняется. Сосед видит аргумент и может с ним не согласиться.
+        Answer: the race stays (or a human is needed and autonomy ends), but the
+        claim now explains itself. The neighbour sees the argument and may disagree.
         """
         self.writer.tool_pair_state()
         self.peer.tool_pair_state()
-        self.writer.tool_pair_claim(reason="я уже нашёл, где чинить: retry в клиенте")
+        self.writer.tool_pair_claim(reason="I already found where to fix it: retry in the client")
 
-        self.assertEqual(self.store.read()["writer_reason"], "я уже нашёл, где чинить: retry в клиенте")
-        # сосед видит причину, а не только факт
+        self.assertEqual(self.store.read()["writer_reason"], "I already found where to fix it: retry in the client")
+        # the neighbour sees the cause, not only the fact
         self.assertEqual(
             self.peer.tool_pair_state()["writer_reason"],
-            "я уже нашёл, где чинить: retry в клиенте",
+            "I already found where to fix it: retry in the client",
         )
 
     def test_the_loser_sees_the_winners_reason_in_the_refusal(self) -> None:
         self.writer.tool_pair_state()
         self.peer.tool_pair_state()
-        self.writer.tool_pair_claim(reason="я уже нашёл, где чинить: retry в клиенте")
+        self.writer.tool_pair_claim(reason="I already found where to fix it: retry in the client")
 
-        error = self.assertRefused(self.peer.tool_pair_claim, contains="retry в клиенте")
-        # отказ должен подсказывать, что делать дальше, а не только констатировать факт
+        error = self.assertRefused(self.peer.tool_pair_claim, contains="retry in the client")
+        # a refusal must hint what to do next, not only state the fact
         self.assertIn("pair_release", str(error.hint))
 
     def test_a_claim_without_a_reason_is_allowed_but_records_nothing(self) -> None:
-        # инструмент не должен ломаться от пустой строки, но «почему» остаётся пустым
+        # the tool must never break on an empty line, but "why" stays empty
         self.writer.tool_pair_state()
         self.writer.tool_pair_claim()
         self.assertEqual(self.store.read().get("writer_reason", ""), "")
 
     def test_release_can_say_why_and_the_peer_then_claims(self) -> None:
-        # честная передача: держатель сам решил, что второй лучше подходит
+        # an honest handover: the holder itself decided the second fits better
         self.writer.tool_pair_state()
         self.peer.tool_pair_state()
-        self.writer.tool_pair_claim(reason="попробую сначала")
-        self.writer.tool_pair_release(why="у меня нет доступа к тестовой базе, у agy есть")
+        self.writer.tool_pair_claim(reason="trying first")
+        self.writer.tool_pair_release(why="I lack the test-db access, agy has it")
 
         self.assertEqual(self.store.read()["writer_reason"], "")
-        self.assertEqual(self.peer.tool_pair_claim(reason="у меня есть доступ")["writer"],
+        self.assertEqual(self.peer.tool_pair_claim(reason="I have the access")["writer"],
                          "reviewer-agent")
 
     def test_release_with_a_reason_leaves_it_in_the_audit_trail(self) -> None:
         self.writer.tool_pair_state()
-        self.writer.tool_pair_claim(reason="первый")
-        self.writer.tool_pair_release(why="передать соседу")
+        self.writer.tool_pair_claim(reason="first")
+        self.writer.tool_pair_release(why="hand over to the neighbour")
 
         events = [e for e in self.store.read_transcript(0) if e["kind"] == "release"]
-        self.assertEqual(events[-1].get("reason"), "передать соседу")
+        self.assertEqual(events[-1].get("reason"), "hand over to the neighbour")
 
     def test_human_assignment_is_marked_as_the_humans_choice(self) -> None:
-        # иначе в переписке не отличить гонку от решения человека
+        # or the exchange never tells a race from a human decision
         self.writer.tool_pair_state()
         self.peer.tool_pair_state()
         main(["--state", str(self.root), "assign", "reviewer-agent"])
@@ -166,8 +166,8 @@ class TestWriteAuthority(PairTestCase):
 
     def test_why_command_reports_the_reason(self) -> None:
         self.writer.tool_pair_state()
-        self.writer.tool_pair_claim(reason="я разобрался в потоке ретраев")
-        # PAIR_SCAN ждёт пути к .pair, а setUp создаёт state прямо в self.root
+        self.writer.tool_pair_claim(reason="I figured out the retry stream")
+        # PAIR_SCAN awaits .pair paths, while setUp creates state right in self.root
         os.environ["PAIR_SCAN"] = str(self.root)
         cwd = os.getcwd()
         os.chdir(self.root)
@@ -179,19 +179,19 @@ class TestWriteAuthority(PairTestCase):
             del os.environ["PAIR_SCAN"]
             os.chdir(cwd)
         self.assertEqual(code, 0)
-        self.assertIn("разобрался в потоке ретраев", out.getvalue())
+        self.assertIn("figured out the retry stream", out.getvalue())
 
 class TestPersistentRoles(PairTestCase):
-    """Постоянная расстановка: человек один раз говорит, кто всегда пишет, и
-    гонка за право записи исчезает. Без неё каждый раунд тратит ход на спор,
-    а спор — это повод остановиться посреди работы."""
+    """Standing policy: the human once names who always writes, and the race for
+    write authority vanishes. Without it every round spends a move disputing, and
+    a dispute is a reason to stall mid-work."""
 
     def pin(self, writer: str, critic: str) -> None:
         self.store.mutate(lambda st: st.__setitem__("policy", {"writer": writer, "critic": critic}))
 
     def test_designated_writer_takes_authority_without_a_race(self) -> None:
         self.pin("writer-agent", "reviewer-agent")
-        result = self.writer.tool_pair_claim(reason="я писатель по расстановке")
+        result = self.writer.tool_pair_claim(reason="I write by policy")
         self.assertEqual(result["writer"], "writer-agent")
         self.assertTrue(result.get("by_policy"))
         self.assertEqual(self.store.read()["writer"], "writer-agent")
@@ -204,44 +204,44 @@ class TestPersistentRoles(PairTestCase):
 
     def test_policy_does_not_steal_authority_from_a_live_writer(self) -> None:
         self.writer.tool_pair_state()
-        self.writer.tool_pair_claim(reason="уже пишу")
+        self.writer.tool_pair_claim(reason="already writing")
         self.pin("reviewer-agent", "writer-agent")
-        # Писатель по расстановке — не тот, кто уже держит право: гонка за это
-        # не нужна, но и отбирать право у живого писателя молча тоже нельзя.
+        # The policy writer is not whoever already holds the right: no race runs for it,
+        # but silently taking the right from a live writer is banned too.
         state = self.store.read()
         self.assertEqual(state["writer"], "writer-agent")
 
     def test_designated_writer_takes_over_a_dead_holder(self) -> None:
-        self.peer.tool_pair_claim(reason="держу")
+        self.peer.tool_pair_claim(reason="holding")
         self.pin("writer-agent", "reviewer-agent")
         self.store.mutate(lambda st: (
             st["roles"]["reviewer-agent"].__setitem__("pid", 999999999),
             st["roles"]["reviewer-agent"].__setitem__("last_seen", "2000-01-01T00:00:00+00:00"),
         ))
-        result = self.writer.tool_pair_claim(reason="продолжаю в новом CLI")
+        result = self.writer.tool_pair_claim(reason="continuing in a new CLI")
         self.assertEqual(result["writer"], "writer-agent")
         self.assertTrue(result.get("by_policy"))
 
     def test_anyone_may_not_take_over_a_live_holder(self) -> None:
         self.pin("writer-agent", "reviewer-agent")
-        self.writer.tool_pair_claim(reason="держу")
+        self.writer.tool_pair_claim(reason="holding")
         self.assertRefused(self.peer.tool_pair_claim, contains="role-policy")
         self.assertEqual(self.store.read()["writer"], "writer-agent")
 
     def test_any_live_role_takes_over_a_dead_holder_without_policy(self) -> None:
-        self.writer.tool_pair_claim(reason="держу")
+        self.writer.tool_pair_claim(reason="holding")
         self.store.mutate(lambda st: (
             st["roles"]["writer-agent"].__setitem__("pid", 999999999),
             st["roles"]["writer-agent"].__setitem__("last_seen", "2000-01-01T00:00:00+00:00"),
         ))
-        result = self.peer.tool_pair_claim(reason="продолжаю в новом CLI")
+        result = self.peer.tool_pair_claim(reason="continuing in a new CLI")
         self.assertEqual(result["writer"], "reviewer-agent")
         self.assertTrue(result.get("took_over"))
 
     def test_critic_never_bypasses_designated_writer_on_dead_holder(self) -> None:
-        # seq 466: holder_dead снимал отказ критику, и тот забирал право в обход
-        # policy. Отказ критику — всегда, перехват мёртвого — только назначенному.
-        self.peer.tool_pair_claim(reason="держу")
+        # seq 466: holder_dead lifted the critic refusal, and it took the right around the
+        # policy. The critic refusal stands always; a dead-holder grab belongs to the named only.
+        self.peer.tool_pair_claim(reason="holding")
         self.pin("writer-agent", "reviewer-agent")
         self.store.mutate(lambda st: (
             st["roles"]["reviewer-agent"].__setitem__("pid", 999999999),
@@ -252,21 +252,21 @@ class TestPersistentRoles(PairTestCase):
 
     def test_no_policy_keeps_the_race(self) -> None:
         self.writer.tool_pair_state()
-        result = self.writer.tool_pair_claim(reason="первый прочитал задачу")
+        result = self.writer.tool_pair_claim(reason="read the task first")
         self.assertFalse(result.get("by_policy", False))
         self.assertEqual(result["writer"], "writer-agent")
 
     def test_state_says_what_you_are(self) -> None:
         self.pin("writer-agent", "reviewer-agent")
         self.assertIn("writer by standing policy", self.writer.tool_pair_state()["my_standing"])
-        # Writer-pin: критик безымянный — «критик (пишет …)», без «по постоянной».
+        # Writer-pin: the critic stays nameless — "critic (writes …)", with no "standing".
         standing = self.peer.tool_pair_state()["my_standing"]
         self.assertIn("critic", standing)
         self.assertIn("writer-agent", standing)
 
     def test_state_separates_designated_from_holder(self) -> None:
         self.pin("writer-agent", "reviewer-agent")
-        self.writer.tool_pair_claim(reason="держу")
+        self.writer.tool_pair_claim(reason="holding")
         standing = self.peer.tool_pair_state()["my_standing"]
         self.assertIn("critic", standing)
         self.assertIn("writer-agent", standing)
@@ -295,7 +295,7 @@ class TestPersistentRoles(PairTestCase):
         self.assertEqual(result["writer"], "writer-agent")
 
     def test_cli_roles_rejects_missing_writer(self) -> None:
-        # Writer-pin: policy без writer не пишется; --critic один не создаёт pin.
+        # Writer-pin: policy with no writer never writes; lone --critic creates no pin.
         proc = subprocess.run(
             [sys.executable, str(SERVER), "--state", str(self.root), "roles",
              "--critic", "only-critic"],
@@ -304,8 +304,8 @@ class TestPersistentRoles(PairTestCase):
         self.assertNotIn("policy", self.store.read())
 
     def test_cli_swap_needs_a_second_live_role(self) -> None:
-        # Swap меняет писателя на второго живого из ростера; без второго —
-        # отказ, а не молчаливый pin (writer-pin не хранит критика).
+        # Swap moves the writer to the second live roster entry; with no second — a refusal,
+        # not a silent pin (writer-pin stores no critic).
         self.writer.tool_pair_state()
         self.peer.tool_pair_state()
         self.pin("writer-agent", "reviewer-agent")
@@ -406,8 +406,8 @@ class TestPatchFlow(PairTestCase):
         self.assertRefused(self.writer.tool_pair_patch_verify, path, contains="never sealed")
 
     def test_propose_refuses_empty_globs_and_writer(self) -> None:
-        """Одна команда — те же границы, что у шести шагов: пусто, глобы,
-        выход из проекта и писатель со своим прямым доступом в дерево."""
+        """One command — the same edges as six steps: empty, globs, project escape, and the
+        writer with its direct tree access."""
         self.assertRefused(self.peer.tool_pair_propose, [], contains="non-empty")
         self.assertRefused(self.peer.tool_pair_propose, ["*.py"], contains="globs")
         self.assertRefused(self.peer.tool_pair_propose, ["/abs/x.py"], contains="inside")
@@ -415,12 +415,12 @@ class TestPatchFlow(PairTestCase):
         self.assertRefused(self.writer.tool_pair_propose, ["x.py"], contains="must not")
 
     def test_propose_builds_seals_and_delivers(self) -> None:
-        """Полный цикл одной командой: diff из worktree, seal, письмо писателю.
+        """The full cycle in one command: worktree diff, seal, the writer letter.
 
-        Живой git-корень во временном каталоге: состояние пары поднимается
-        прямо в нём (`repo/.pair`), критик правит файл, propose строит diff
-        сам. Проверяется всё, что обещает инструмент: файл патча с diff,
-        seal с hash, письмо писателю с path+hash и открытое obligation.
+        A live git root in a temp dir: pair state rises right in it (`repo/.pair`),
+        the critic edits a file, propose builds the diff itself. Everything the tool
+        promises is checked: the patch file with a diff, seal with a hash, the writer
+        letter with path+hash, and an open obligation.
         """
         import subprocess
 
@@ -442,7 +442,7 @@ class TestPatchFlow(PairTestCase):
         critic.tool_pair_state()
         writer.tool_pair_state()
         writer.tool_pair_claim(reason="writer")
-        result = critic.tool_pair_propose(["note.txt"], subject="глянь")
+        result = critic.tool_pair_propose(["note.txt"], subject="look")
         body = Path(result["path"]).read_text(encoding="utf-8")
         self.assertIn("-one", body)
         self.assertIn("+two", body)
@@ -454,12 +454,12 @@ class TestPatchFlow(PairTestCase):
         self.assertEqual(len(obligations), 1)
 
 class TestTaskList(PairTestCase):
-    """Список задач вместо одной строки. Потеря середины — не вопрос памяти
-    модели, а отсутствие места, где задача живёт: state хранил один `task`, и
-    новая задача перезаписывала старую. Воспроизведено: раунд закрывался как
-    «задача Б» с доказательствами, собранными по задаче А."""
+    """A task list instead of one line. Losing the middle is no model-memory question
+    but a missing place for the task to live: state held one `task`, and a new task
+    overwrote the old. Reproduced: the round closed as "task B" with evidence
+    gathered for task A."""
 
-    def add_task(self, text: str = "починить панели", who: str = "human") -> int:
+    def add_task(self, text: str = "fix the panes", who: str = "human") -> int:
         self.store.mutate(lambda st: st.setdefault("tasks", []).append({
             "id": len(st.get("tasks") or []) + 1, "text": text, "status": "open",
             "added_at": "now", "added_by": who, "round": int(st.get("round", 0)),
@@ -475,59 +475,58 @@ class TestTaskList(PairTestCase):
         self.human_ok()
 
     def test_a_new_task_does_not_erase_the_old_one(self) -> None:
-        self.add_task("задача А")
-        self.add_task("задача Б")
+        self.add_task("task A")
+        self.add_task("task B")
         texts = [item["text"] for item in self.store.read()["tasks"]]
-        self.assertEqual(["задача А", "задача Б"], texts)
+        self.assertEqual(["task A", "task B"], texts)
 
     def test_an_open_task_blocks_closing(self) -> None:
-        ident = self.add_task("починить панели")
+        ident = self.add_task("fix the panes")
         self.ready()
         error = self.assertRefused(self.writer.tool_pair_advance, "done")
         self.assertIn(f"task #{ident} is still open", str(error))
         self.assertIn("pair_task", str(error))
 
     def test_a_dropped_task_needs_a_reason(self) -> None:
-        """Иначе задача исчезает молча, и это ровно тот провал, ради которого
-        список и сделан."""
-        ident = self.add_task("оказалось не нужно")
+        """Or the task vanishes silently, and exactly the failure the list exists for."""
+        ident = self.add_task("turned out unneeded")
         self.assertRefused(self.writer.tool_pair_task, "drop", ident, contains="without a reason")
         self.assertEqual("open", self.store.read()["tasks"][0]["status"])
 
     def test_a_dropped_task_keeps_the_reason_on_the_record(self) -> None:
-        ident = self.add_task("оказалось не нужно")
-        self.writer.tool_pair_task("drop", ident, reason="исправлено в 8335dd2")
+        ident = self.add_task("turned out unneeded")
+        self.writer.tool_pair_task("drop", ident, reason="fixed in 8335dd2")
         item = self.store.read()["tasks"][0]
         self.assertEqual("dropped", item["status"])
         self.assertIn("8335dd2", item["reason"])
         self.assertEqual("writer-agent", item["closed_by"])
 
     def test_done_clears_the_stopper(self) -> None:
-        ident = self.add_task("починить панели")
+        ident = self.add_task("fix the panes")
         self.ready()
         self.writer.tool_pair_task("done", ident)
         self.record_test_evidence()
         self.assertEqual("done", self.writer.tool_pair_advance("done")["phase"])
 
     def test_the_critic_may_add_a_task_but_not_close_one(self) -> None:
-        """Права несимметричные: критик заводит то, что нашёл, реализует и закрывает
-        писатель. Иначе либо критик не сможет добавить, либо сможет закрыть чужое."""
-        added = self.peer.tool_pair_task("add", text="ещё дыра: pane_alive")
+        """Rights run asymmetric: the critic opens what it found, the writer implements
+        and closes. Or the critic never adds, or it closes another one."""
+        added = self.peer.tool_pair_task("add", text="another hole: pane_alive")
         self.assertEqual("open", added["task"]["status"])
         self.assertEqual("reviewer-agent", added["task"]["added_by"])
         self.assertRefused(self.peer.tool_pair_task, "done", added["task"]["id"],
                            contains="only the writer closes")
 
     def test_evidence_lands_on_the_only_open_task(self) -> None:
-        ident = self.add_task("починить панели")
+        ident = self.add_task("fix the panes")
         self.record_test_evidence()
         self.assertEqual(ident, self.store.read()["evidence"][-1]["task"])
 
     def test_evidence_with_several_open_tasks_is_not_guessed(self) -> None:
-        """Врать нельзя: не приписываем факт задаче, к которой он может не
-        относиться, но и не теряем — снимок открытых задач едет с записью."""
-        self.add_task("задача А")
-        self.add_task("задача Б")
+        """Never lie: never attribute a fact to a task it may miss, but never lose it either
+        — the open-task snapshot rides the record."""
+        self.add_task("task A")
+        self.add_task("task B")
         self.record_test_evidence()
         entry = self.store.read()["evidence"][-1]
         self.assertIsNone(entry["task"])
@@ -535,19 +534,19 @@ class TestTaskList(PairTestCase):
 
     def test_the_journal_shows_done_and_not_done(self) -> None:
         from server import render_tasks_md
-        first = self.add_task("задача А")
-        second = self.add_task("задача Б")
+        first = self.add_task("task A")
+        second = self.add_task("task B")
         self.writer.tool_pair_claim(reason="writer")
         self.record_test_evidence(value="190 passed, exit 0", task=first)
-        self.writer.tool_pair_task("drop", second, reason="покрыта пунктом 3")
+        self.writer.tool_pair_task("drop", second, reason="covered by item 3")
         text = render_tasks_md(self.store.read())
         self.assertIn("#1 — NOT DONE", text)
         self.assertIn("#2 — dropped", text)
-        self.assertIn("покрыта пунктом 3", text)
-        self.assertIn("190 passed, exit 0", text)   # доказательство приписано к #1
+        self.assertIn("covered by item 3", text)
+        self.assertIn("190 passed, exit 0", text)   # the evidence pins to #1
 
 class TestHumanCheckpoint(PairTestCase):
-    """`pairctl ok` значил «одобрен план» и закрывал раунд на verify."""
+    """`pairctl ok` meant "plan approved" and closed the round on verify."""
 
     def test_ok_given_on_plan_does_not_close_on_verify(self) -> None:
         self.set_autonomy("semi")
@@ -579,9 +578,9 @@ class TestHumanCheckpoint(PairTestCase):
         self.assertRefused(self.writer.tool_pair_advance, "done", contains="pairctl ok")
 
 class TestEvidenceGate(PairTestCase):
-    """Гейт закрытия раунда. Уверенность моделей в собственных оценках почти
-    всегда равна 100%, поэтому «все довольны» нельзя принять за доказательство,
-    и раунд, который никто не проверил, обязан остаться открытым."""
+    """The round-close gate. Model confidence in own estimates sits near 100% almost
+    always, so "all happy" never passes for proof, and a round nobody checked must
+    stay open."""
 
     def setUp(self) -> None:
         super().setUp()
@@ -592,23 +591,22 @@ class TestEvidenceGate(PairTestCase):
 
 
     def require_rolekeys(self):
-        """`rolekeys` или пропуск теста, если нет PyNaCl.
+        """`rolekeys` or the test skip with no PyNaCl.
 
-        Подпись — ОПЦИОНАЛЬНАЯ функция, и сервер это уже провозглашает: он
-        импортирует rolekeys в try/except и fail-open-ит без ключа
-        (server.py:1850, 2367, 2492, 2722). Значит отсутствие PyNaCl — не поломка,
-        а законная конфигурация.
+        Signing is an OPTIONAL function, and the server already proclaims it: importing
+        rolekeys in try/except and fail-opening with no key
+        (server.py:1850, 2367, 2492, 2722). No PyNaCl means no breakage but a lawful
+        configuration.
 
-        Раньше тесты импортировали rolekeys напрямую, и на macOS, где из
-        CommandLineTools нет ни одного pip-пакета, установка падала двумя
-        ошибками ModuleNotFoundError поверх десятков других. Подпись при этом
-        не проверялась нигде — она просто блокировала установку.
+        Tests used to import rolekeys directly, and on macOS with zero pip packages
+        from CommandLineTools the install fell with two ModuleNotFoundErrors on top of
+        dozens of others. No signature ever checked there — it just blocked the install.
         """
         try:
             import rolekeys
         except ImportError as exc:
-            self.skipTest(f"PyNaCl нет ({exc.name}): подпись отключена, "
-                          f"сервер работает fail-open")
+            self.skipTest(f"PyNaCl missing ({exc.name}): signing off, "
+                          f"the server runs fail-open")
         return rolekeys
 
     def test_done_is_refused_without_evidence(self) -> None:
@@ -624,9 +622,9 @@ class TestEvidenceGate(PairTestCase):
         self.assertEqual(self.writer.tool_pair_advance("done")["phase"], "done")
 
     def test_a_verdict_is_not_a_test_run(self) -> None:
-        """Гейт спрашивал «есть ли хоть одна успешная запись», и на этот вопрос
-        отвечал `kind="manual", value="looks good"`. Запись, неотличимая от
-        прогона, и закрывала раунд вместо того, чтобы его держать."""
+        """The gate used to ask "any successful record at all", and `kind="manual",
+        value="looks good"` answered that question. A record indistinguishable from
+        a run closed the round instead of holding it."""
         self.writer.tool_pair_evidence(kind="manual", value="looks good to me", ok=True)
         self.human_ok()
         error = self.assertRefused(self.writer.tool_pair_advance, "done")
@@ -639,7 +637,7 @@ class TestEvidenceGate(PairTestCase):
         self.assertEqual(self.writer.tool_pair_advance("done")["phase"], "done")
 
     def test_done_refused_without_writer_ground_truth(self) -> None:
-        """[R82] Тесты без прогона гейтов и чужой прогон — отказ (R81)."""
+        """[R82] Tests with no gate runs and another run mean refusal (R81)."""
         self.writer.tool_pair_evidence(kind="test", value="117 passed, exit 0", ok=True)
         self.human_ok()
         self.assertRefused(self.writer.tool_pair_advance, "done", contains="ground-truth")
@@ -647,37 +645,36 @@ class TestEvidenceGate(PairTestCase):
         self.assertRefused(self.writer.tool_pair_advance, "done", contains="ground-truth")
 
     def test_an_audit_round_does_not_demand_a_test_run(self) -> None:
-        """В mode=audit результат работы — находки в заметках, и прогона тестов
-        может не быть по существу. Гейт не должен требовать то, чего в этом
-        режиме не делают."""
+        """In mode=audit the work result is findings in notes, and no test run may exist
+        in substance. The gate must never demand what this mode never does."""
         self.store.mutate(lambda state: state.__setitem__("mode", "audit"))
         self.writer.tool_pair_evidence(kind="manual", value="28 findings, all confirmed", ok=True)
         self.human_ok()
         self.assertEqual(self.writer.tool_pair_advance("done")["phase"], "done")
 
     def test_a_failing_test_run_is_not_replaced_by_a_passing_lint_run(self) -> None:
-        """Правило «последний прогон решает» действует по виду, а не по раунду
-        целиком: зелёный lint не отменяет красный тест."""
+        """The "last run decides" rule counts by kind, not by the whole round: green lint
+        never cancels a red test."""
         self.record_test_evidence("3 failed, exit 1", ok=False)
         self.writer.tool_pair_evidence(kind="lint", value="clean, exit 0", ok=True)
         self.human_ok()
         self.assertRefused(self.writer.tool_pair_advance, "done", contains="failing evidence")
 
     def test_a_flood_of_later_entries_cannot_evict_this_rounds_failure(self) -> None:
-        """Журнал был обрезан по EVIDENCE_KEEP=50 без учёта раунда, а гейт читает
-        state, а не транскрипт. Пятьдесят записей после падения — и раунд с
-        красными тестами закрывался, потому что журнал переполнился."""
+        """The journal cut on EVIDENCE_KEEP=50 with no round regard, while the gate reads
+        state, not the transcript. Fifty records past a failure — and a round with
+        red tests closed, because the journal overflowed."""
         self.record_test_evidence("3 failed, exit 1", ok=False)
         for index in range(60):
             self.writer.tool_pair_evidence(kind="commit", value=f"noise {index}", ok=True)
         entries = self.store.read()["evidence"]
         failing = [e for e in entries if not e.get("ok") and e.get("kind") == "test"]
-        self.assertTrue(failing, "запись о падении текущего раунда обязана выжить")
+        self.assertTrue(failing, "the current-round failure record must survive")
         self.human_ok()
         self.assertRefused(self.writer.tool_pair_advance, "done", contains="failing evidence")
 
     def test_evidence_of_old_rounds_is_still_trimmed(self) -> None:
-        """Полоса для прошлых раундов остаётся, иначе state растёт бесконечно."""
+        """The band for past rounds stays, or state grows without bound."""
         self.store.mutate(lambda state: state.__setitem__("evidence", [
             {"round": 0, "kind": "commit", "value": f"old {i}", "ok": True, "at": "then"}
             for i in range(120)
@@ -685,11 +682,11 @@ class TestEvidenceGate(PairTestCase):
         self.record_test_evidence()
         entries = self.store.read()["evidence"]
         self.assertLessEqual(sum(1 for e in entries if e["round"] == 0), 50)
-        self.assertTrue(any(e["round"] != 0 for e in entries), "запись текущего раунда на месте")
+        self.assertTrue(any(e["round"] != 0 for e in entries), "the current-round record in place")
 
     def test_failing_evidence_blocks_closing(self) -> None:
-        """Красный тест, записанный честно, обязан мешать закрыть раунд. Иначе
-        проще записать, что всё хорошо, чем чинить."""
+        """A red test, honestly recorded, must block the round close. Or writing that all
+        is well runs easier than fixing."""
         self.record_test_evidence("3 failed, exit 1", ok=False)
         self.human_ok()
         self.assertRefused(self.writer.tool_pair_advance, "done", contains="failing evidence")
