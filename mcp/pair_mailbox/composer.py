@@ -294,8 +294,8 @@ def pane_identity(tmux: str, pane: str) -> dict:
     address = parts[2].strip() if len(parts) > 2 else ""
     # The same deception as in session_address, only now it strikes the "is it ours"
     # line: a stale session address returns the NEIGHBOUR pane cwd and alive.
-    # и проверка пути прошла бы, печать пошла бы в чужой композер. Сверяем адрес
-    # с тем, о чём спрашивали, и при расхождении панели просто нет.
+    # and the path check passed, printing would go to another composer. Reconcile the
+    # address with what was asked: on mismatch there is simply no pane.
     if address and pane_ref_format(pane) == PANE_ADDRESS_FORMAT and address != str(pane):
         return {"exists": False, "alive": False, "path": "", "address": ""}
     if not address:
@@ -693,8 +693,7 @@ def is_composer_empty(line: str) -> bool:
     # past that edge, so the input-field frame never passed and the empty OpenCode
     # composer read as busy. The check lives in is_input_box_border, with no duplicate
     # here on purpose: two identical checks in two places is exactly the drift class
-    # class.
-    # который уже стоил нам неработающей доставки.
+    # that already cost us broken delivery.
     if is_input_box_border(s):
         return True
     if is_input_box_hint(s):

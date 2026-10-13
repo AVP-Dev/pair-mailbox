@@ -32,6 +32,13 @@ while IFS= read -r f; do
   exact=$(awk -F'\t' -v f="$f" '$1 == f {print $2}' "$MAP" | head -1)
   [ -n "$exact" ] && suite="$exact"
   case ";$suites;" in *";$suite;"*) ;; *) suites="$suites;$suite" ;; esac
+  # Cross-suite pins: test_protocol asserts output of modules mapped elsewhere
+  # (STOP seq 1187: 7 failures hid in green slices). follow:<file> rows in the
+  # map add the integration suite on top of the file's own.
+  follow=$(awk -F'\t' -v f="follow:$f" '$1 == f {print $2}' "$MAP" | head -1)
+  if [ -n "$follow" ]; then
+    case ";$suites;" in *";$follow;"*) ;; *) suites="$suites;$follow" ;; esac
+  fi
 done <<< "$files"
 suites="${suites#;}"
 echo "verify-changed: файлы: $(echo "$files" | tr '\n' ' ')"
