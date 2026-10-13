@@ -135,6 +135,19 @@ def case_happy_path(root):
     assert not leftovers, f"temp files left: {leftovers}"
 
 
+def case_mode_preserved(root):
+    # mkstemp makes 0600 and os.replace carries it over the original: without
+    # an explicit chmod the translated executable stops executing, silently.
+    path = _write(root, SOURCE)
+    os.chmod(path, 0o755)
+    dump = _dump(path)
+    reps = _rep_file(dump, ["# EN", '"EN"'])
+    proc = _run(sys.executable, APPLY, path, reps)
+    assert proc.returncode == 0, f"happy path failed: {proc.stderr}"
+    mode = os.stat(path).st_mode & 0o7777
+    assert mode == 0o755, f"executable bit lost: {oct(mode)}"
+
+
 CASES = [value for name, value in sorted(globals().items())
          if name.startswith("case_")]
 
