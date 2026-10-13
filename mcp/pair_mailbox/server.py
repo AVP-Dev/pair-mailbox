@@ -2112,69 +2112,69 @@ class PairSession:
         state = self.store.read()
         pane = (state.get("roles", {}).get(target) or {}).get("pane")
         if not pane:
-            return {"rung": False, "why": "нет панели, сосед вне tmux"}
-        # Сравнение строк здесь не годится: своя панель из окружения приходит как
-        # `%1`, а в состоянии лежит `mail:0.1`. Такое равенство просто перестаёт
-        # быть верным, и звонок уходит в собственную панель.
+            return {"rung": False, "why": "no pane, the neighbour is outside tmux"}
+        # String comparison never serves here: our own pane arrives from the environment
+        # as `%1` while state holds `mail:0.1`. Such equality just stops holding, and the
+        # ring leaves for our own pane.
         if same_pane(pane, os.environ.get("TMUX_PANE")):
-            return {"rung": False, "why": "не звоним в собственную панель"}
+            return {"rung": False, "why": "never ring our own pane"}
         tmux = shutil.which("tmux")
         if not tmux:
-            return {"rung": False, "why": "tmux не найден в PATH"}
+            return {"rung": False, "why": "tmux not found in PATH"}
         try:
             probe = subprocess.run(
                 [tmux, "display-message", "-p", "-t", pane, "#{pane_dead}"],
                 capture_output=True, text=True, timeout=5,
             )
         except OSError as exc:
-            # tmux умер между which() и запуском, панель исчезла — звонок
-            # не гарантированно доставим, но не и починка для этого раунда
-            # (урок §10: починка мастера не важнее доставки письма).
-            return {"rung": False, "why": f"панель соседа не проверяется: {exc}"}
+            # tmux died between which() and launch, the pane is gone — the ring is not
+            # guaranteed to deliver, but no fix for this round either (the §10 lesson: fixing
+            # the master never outranks delivering the letter).
+            return {"rung": False, "why": f"the neighbour pane never verifies: {exc}"}
         if probe.returncode != 0 or probe.stdout.strip() == "1":
-            return {"rung": False, "why": "панель соседа мертва"}
-        # Живость — не идентичность. Номер панели переживает смерть процесса,
-        # который её занимал, и на этой машине несколько проектов на
-        # pair-mailbox: звонок по записанному номеру будил чужого агента.
+            return {"rung": False, "why": "the neighbour pane is dead"}
+        # Liveness is not identity. The pane number outlives the death of the process that
+        # held it, and several pair-mailbox projects run on this machine: ringing the
+        # recorded number woke another agent.
         from composer import pane_is_foreign
         foreign, why_foreign = pane_is_foreign(tmux, pane, self.store.project_root)
         if foreign:
-            # Недоказанная панель: typed-печать (send-keys) запрещена —
-            # это инъекция в чужой композер. Фолбэк — только display-message
-            # (всплывашка без печати) + mailbox. Молчания нет, инъекции нет.
+            # An unproven pane bans typed printing (send-keys) — that is injection into
+            # another composer. Fallback is display-message (a popup with no printing) plus
+            # mailbox. No silence, no injection.
             try:
                 subprocess.run([tmux, "display-message", "-t", pane,
                                 "-d", "4000",
-                                f"[pair] {kind} от {self.role} — забери из mailbox"],
+                                f"[pair] {kind} from {self.role} — take it from the mailbox"],
                                capture_output=True, text=True, timeout=5)
-            except Exception as exc:  # noqa: BLE001 - панель исчезла между проверками
-                return {"rung": False, "why": f"панель не прочиталась: {exc}"}
+            except Exception as exc:  # noqa: BLE001 - the pane vanished between checks
+                return {"rung": False, "why": f"pane unreadable: {exc}"}
             self.store.append_transcript("doorbell_fallback", self.role, to=target,
                                          bell_kind=kind, pane=pane, reason=why_foreign)
             return {"rung": True, "pane": pane, "fallback": "display-message"}
         from composer import capture, composer_line, is_composer_empty
-        # Single-shot без ожидания: звонок — оптимизация, а не условие.
-        # Файл wake/*.json (пишется вызывающим по событию) — гарантия,
-        # которую опросит pairpilot; ждать освобождения композера здесь —
-        # значит вешать инструмент на 1.5с и перехватывать ввод соседа.
-        # Занято/не видно — сразу возвращаемся в файловый канал.
+        # Single-shot with no waiting: the ring is an optimization, not a condition.
+        # The wake/*.json file (written by the caller on the event) is the guarantee the
+        # pairpilot polls; waiting for the composer to free here means hanging the tool
+        # for 1.5s and grabbing the neighbour input.
+        # Busy/invisible means straight back to the file channel.
         try:
             line = composer_line(capture(tmux, pane))
-        except Exception as exc:  # noqa: BLE001 - панель исчезла между проверками
-            return {"rung": False, "why": f"панель не прочиталась: {exc}"}
-        # None — композер не виден, и это не то же самое, что «свободен».
-        # `is_composer_empty(None)` падает на NoneType.rstrip, то есть любой
-        # звонок в панель, где TUI перерисовался, ронял звонящего. Отсутствие
-        # строки ввода — это «не трогать», ровно как в deliver().
+        except Exception as exc:  # noqa: BLE001 - the pane vanished between checks
+            return {"rung": False, "why": f"pane unreadable: {exc}"}
+        # None means no composer visible, never the same as "free".
+        # `is_composer_empty(None)` falls on NoneType.rstrip: any ring into a pane where
+        # the TUI redraws dropped the ringer. No input line means "hands off", exactly as
+        # in deliver().
         if line is None or not is_composer_empty(line):
-            reason = "композер соседа не виден, не перебиваем" if line is None \
-                else "композер соседа занят, не перебиваем"
+            reason = "the neighbour composer invisible, never interrupting" if line is None \
+                else "the neighbour composer busy, never interrupting"
             return {"rung": False, "why": reason}
-        prompt = f"pair: {kind} от {self.role}. Прочитай pair_read."
+        prompt = f"pair: {kind} from {self.role}. Read pair_read."
         if detail:
-            # Повод без текста письма. Обрезанный текст здесь был бы «шиной по
-            # частям»: длиннее строки он всё равно не влезает, а читается как
-            # обрывок, из которого нельзя понять, что произошло.
+            # A cause with no letter text. Trimmed text here would be a "bus in parts": past
+            # one line it never fits anyway, reading as a stub no cause follows from.
+            # a stub no cause follows from.
             prompt += f" ({detail})"
         subprocess.run([tmux, "send-keys", "-t", pane, "-l", prompt],
                        capture_output=True, text=True, timeout=5)
@@ -2204,40 +2204,40 @@ class PairSession:
             if len(candidates) == 1:
                 target = candidates[0]
             elif not candidates:
-                return {"unblocked": False, "why": "нет зарегистрированных соседей", "prompt": ""}
+                return {"unblocked": False, "why": "no registered neighbours", "prompt": ""}
             else:
                 raise ProtocolError("`peer` is required when multiple peers are registered.")
         if target == self.role:
             raise ProtocolError("cannot unblock own role.")
         pane = (roles.get(target) or {}).get("pane")
         if not pane:
-            return {"unblocked": False, "why": f"у {target} нет панели tmux", "prompt": ""}
+            return {"unblocked": False, "why": f"with {target} has no tmux pane", "prompt": ""}
         try:
             tmux = _tmux()
         except Exception as exc:
             return {"unblocked": False, "why": str(exc), "prompt": ""}
         allow, on_default = load_allowlist(self.store.root)
-        # `allow or None` здесь раньше превращал дефолтный список в DEFAULT, а
-        # пустой — в «подтверждать ничего». Теперь список всегда осмысленный: пустой
-        # значит явный запрет от человека, а не отсутствие файла.
+        # `allow or None` used to turn the default list into DEFAULT, while empty meant
+        # "confirm nothing". Now the list always reads sane: empty means an explicit human
+        # ban, not a missing file.
         try:
             result = resolve_permission_prompt(tmux, pane, allow=allow)
             if on_default and result.get("approved"):
                 self.store.append_transcript(
                     "unblock_default_allowlist", self.role, target=target, pane=pane,
                     prompt=result.get("prompt"), matched=result.get("matched"),
-                    note="permissions.json отсутствует, подтверждено по списку по умолчанию")
-        except Exception as exc:  # noqa: BLE001 - чужая панель не должна ронять сервер
-            return {"unblocked": False, "why": f"панель не прочиталась: {exc}", "prompt": ""}
-        # P2 (раунд 75): в журнал пишем не голое имя regex-паттерна, а
-        # разобранную команду — exact_command целиком и argv по сегментам.
-        # Вердикт уже вынесен и клавиши уже нажаты в resolve; лог фиксирует
-        # то, на что было дано согласие: подмена после логирования видна
-        # при сверке журнала с фактом, а не тонет в молчании.
+                    note="permissions.json missing, confirmed on the default list")
+        except Exception as exc:  # noqa: BLE001 - another pane must never drop the server
+            return {"unblocked": False, "why": f"pane unreadable: {exc}", "prompt": ""}
+        # P2 (round 75): the journal records not the bare regex-pattern name but the
+        # parsed command — the whole exact_command and argv by segments. The verdict already
+        # passed with keys pressed in resolve; the log pins what was agreed to: a swap past
+        # logging shows at the journal-vs-fact reconcile, never drowns in silence.
+        # logging shows at the journal-vs-fact reconcile, never drowns in silence.
         try:
             from composer import split_command_segments as _split_segments
             _segments = _split_segments(result.get("prompt") or "")
-        except Exception:  # noqa: BLE001 - лог не должен блокировать разблокировку
+        except Exception:  # noqa: BLE001 - the log must never block the unblock
             _segments = []
         exact_command = "; ".join(_segments) if _segments else (result.get("prompt") or "")
         matched = result.get("prompt") or ""
@@ -2257,36 +2257,35 @@ class PairSession:
             "verdict": result.get("verdict"),
             "why": result.get("why"),
             "status": (
-                f"Подтверждение [y] отправлено: {matched}"
+                f"Confirmation [y] sent: {matched}"
                 if result.get("approved")
-                else f"Запрос разрешения НЕ подтверждён ({result.get('why')}): {matched}"
+                else f"Permission request NOT confirmed ({result.get('why')}): {matched}"
                 if result.get("verdict") == "refuse"
-                else "Запрос разрешения не обнаружен в панели"
+                else "No permission request found in the pane"
             ),
         }
 
     def tool_pair_deliver(self, to: str, text: str, wait_for_empty: float = 0.0, submit: bool = True) -> dict[str, Any]:
-        """Отдать сообщение соседу: данные в ящик, в TUI только указатель.
+        """Hand the message to the neighbour: data in the mailbox, a pointer in TUI only.
 
-        Директива человека: терминал — дисплей для человека, а не шина между
-        агентами. Прежняя версия печатала в композер соседа ПОЛНЫЙ текст и сама
-        себя называла «active path». Это было неправильно и стоило не только
-        эстетики: при сорянной сверке Enter не нажимался, текст оставался в чужом
-        окне, а сообщение дублировалось в ящик — человек видел одно и то же дважды.
-        Наблюдалось вживую дважды.
+        The human directive: the terminal is a display for the human, not a bus
+        between agents. The old version printed the FULL neighbour-composer text and
+        called itself "active path". Wrong beyond aesthetics: on a torn reconcile
+        Enter never pressed, the text stayed in another window, the message duplicated
+        into the mailbox — the human saw the same thing twice. Observed live twice.
 
-        Порядок единственно честный такой:
-        1. текст ложится в `.pair/mailbox` — контейнер, не зависящий ни от tmux,
-           ни от чьего-то внимания;
-        2. в композер печатается короткий УКАЗАТЕЛЬ, откуда сосед сам возьмёт
-           сообщение или дайджест.
+        The only honest order:
+        1. the text lands in `.pair/mailbox` — a container depending neither on tmux
+           nor anyone attention;
+        2. the composer prints a short POINTER the neighbour itself takes the
+           message or digest from.
 
-        Указатель идёт вторым, потому что указатель без сообщения — враньё: сосед
-        послушается, сходит в ящик и не найдёт ничего.
+        The pointer rides second, because a pointer with no message is a lie: the
+        neighbour obeys, visits the mailbox and finds nothing.
 
-        Цена решения, которую надо назвать: сосед может не пойти в ящик по
-        короткому указателю, тогда как простыня в его композере читалась бы сама.
-        Это осознанный размен доставки текста на доставку по требованию.
+        The decision price to name: the neighbour may skip the mailbox on a short
+        pointer, while a sheet in its composer would read itself. A deliberate trade
+        of text delivery for on-demand delivery.
         """
         from composer import ComposerBusy, deliver
 
@@ -2298,7 +2297,7 @@ class PairSession:
         if not isinstance(text, str) or not text.strip():
             raise ProtocolError("`text` is required.")
 
-        # 1. Данные — в контейнер. Всегда, независимо от tmux и от панели.
+        # 1. Data goes in the container. Always, regardless of tmux and pane.
         sent = self.tool_pair_send(to=to, text=text, subject="")
         seq = sent.get("seq")
 
@@ -2307,25 +2306,25 @@ class PairSession:
         result: dict[str, Any] = {"delivered": True, "seq": seq,
                                   "in_pane": False, "chars": len(text)}
         if not pane:
-            result["why"] = f"у {to} нет панели tmux — сообщение в ящике"
+            result["why"] = f"with {to} has no tmux pane — message in the mailbox"
             return result
 
         from composer import _tmux, pane_is_foreign
         try:
             foreign, why_foreign = pane_is_foreign(_tmux(), pane, self.store.project_root)
         except ComposerBusy as exc:
-            foreign, why_foreign = True, f"tmux недоступен: {exc}"
+            foreign, why_foreign = True, f"tmux unreachable: {exc}"
         if foreign:
-            # Недоказанная панель: typed-печать запрещена (инъекция в чужой
-            # композер). Фолбэк — только display-message + mailbox.
+            # An unproven pane bans typed printing (injection into another composer).
+            # Fallback is display-message + mailbox only.
             import subprocess as _sp
             try:
                 _sp.run([_tmux(), "display-message", "-t", pane,
                          "-d", "4000",
-                         f"[pair] {self.role}: новое сообщение в ящике, прочитай pair_read"],
+                         f"[pair] {self.role}: new message in the mailbox, read pair_read"],
                         capture_output=True, text=True, timeout=5)
-            except Exception as exc:  # noqa: BLE001 - панель исчезла между проверками
-                result["why"] = f"панель не прочиталась: {exc}"
+            except Exception as exc:  # noqa: BLE001 - the pane vanished between checks
+                result["why"] = f"pane unreadable: {exc}"
                 return result
             self.store.append_transcript(
                 "deliver_pointer_fallback_foreign_pane", self.role, to=to,
@@ -2336,27 +2335,27 @@ class PairSession:
             result["delivered_to_pane"] = pane
             return result
 
-        # 2. Указатель. Короткий намеренно: это строка в чужом TUI, а не текст.
-        pointer = f"[pair] {self.role}: новое сообщение в ящике, прочитай pair_read"
+        # 2. The pointer. Short on purpose: a line in another TUI, not text.
+        pointer = f"[pair] {self.role}: new message in the mailbox, read pair_read"
         try:
             pointed = deliver(pane, pointer, wait_for_empty=wait_for_empty, submit=submit)
         except ComposerBusy as exc:
             self.store.append_transcript("deliver_pointer_busy", self.role, to=to,
                                          reason=str(exc), seq=seq)
-            result["why"] = f"композер занят ({exc}); сообщение в ящике"
+            result["why"] = f"composer busy ({exc}); message in the mailbox"
             return result
         self.store.append_transcript("deliver", self.role, to=to, seq=seq, **pointed)
         result["in_pane"] = bool(pointed.get("delivered"))
         result["delivered_to_pane"] = pane
         if pointed.get("unverified"):
-            # Указатель может остаться в композере — это ОДНА строка, а не абзац,
-            # и вычистить её сосед может сам. Дублировать в ящик нечего: он и так
-            # единственный носитель текста.
-            result["why"] = "указатель не подтверждён; сообщение в ящике"
+            # The pointer may stay in the composer — ONE line, not a paragraph, and the
+            # neighbour scrubs it itself. Nothing to duplicate into the mailbox: it already
+            # carries the text alone.
+            result["why"] = "pointer unconfirmed; message in the mailbox"
         return result
 
     def _obligations_where(self, side: str, role: str | None) -> list[dict[str, Any]]:
-        # Тонкий вызов: логика в obligations.py (server-py-still-a-monolith).
+        # A thin call: the logic lives in obligations.py (server-py-still-a-monolith).
         return obligations.list_obligations(self.store, side, role)
 
     def _open_obligation(self, frm: str, to: str, seq: int, subject: str = "") -> dict[str, Any]:
@@ -2381,21 +2380,21 @@ class PairSession:
         if to == self.role:
             raise ProtocolError("cannot send a message to your own role.")
         if expects_reply:
-            # Лимит очереди ревью: не более 2 неподтверждённых (карточка).
-            # Пять открытых ревью означали ответы всё позже и всё реже
-            # попадавшие в свою ревизию. На третьем — остановиться и читать.
+            # The review-queue cap: at most 2 unacked (the card). Five open reviews meant
+            # answers ever later and ever rarer, missing their revision. On the third — stop
+            # and read.
             try:
                 from review import MAX_OPEN_REVIEWS, queue_full
                 if queue_full(self.store.obligations_root, self.role):
                     raise ProtocolError(
-                        f"очередь ревью полна ({MAX_OPEN_REVIEWS} открытых). "
-                        f"Не добавляй запросов молча: войди в "
-                        f"pair_read(wait_seconds=30) и дождись вердиктов, "
-                        f"иначе ответы придут уже не на твою ревизию."
+                        f"review queue full ({MAX_OPEN_REVIEWS} open). "
+                        f"Never add requests silently: enter "
+                        f"pair_read(wait_seconds=30) and await the verdicts, "
+                        f"or answers land past your revision."
                     )
             except ProtocolError:
                 raise
-            except Exception:  # noqa: BLE001 - подсчёт не роняет отправку
+            except Exception:  # noqa: BLE001 - counting never drops the send
                 pass
 
         def apply(state: dict[str, Any]) -> dict[str, Any]:
@@ -2403,20 +2402,20 @@ class PairSession:
             roles = state.setdefault("roles", {})
             roles[self.role]["sends"] = int(roles[self.role].get("sends", 0)) + 1
             if to not in roles:
-                # Роль вне ростера — не «ещё не стартовала», а опечатка или
-                # фантом (уроки 47 раунда: opencode-agent получил мёртвый
-                # ящик, а пилот 20 раз долбил в некому отвечающего). Молча
-                # создать ящик = молчаливая потеря сообщения. Отказ с
-                # перечнем живых ролей — единственное честное поведение.
+                # A role off-roster is no "never started yet" but a typo or a phantom (round-47
+                # lessons: opencode-agent got a dead mailbox, while the pilot knocked 20 times on
+                # a nobody-answering one). Silently creating a mailbox means silently losing the
+                # create a mailbox means silently losing the message. A refusal with
+                # message. A refusal with the live-role list is the only honest behaviour.
                 raise ProtocolError(
-                    f"роль {to!r} не зарегистрирована в ростере. "
-                    f"Живые роли: "
-                    f"{', '.join(sorted(n for n, i in roles.items() if i.get('pid'))) or 'никто'}. "
-                    f"Проверь имя роли. Если роль должна существовать — пусть "
-                    f"агент сначала вызовет любой pair_* инструмент, это его зарегистрирует."
+                    f"role {to!r} never registered in the roster. "
+                    f"Live roles: "
+                    f"{', '.join(sorted(n for n, i in roles.items() if i.get('pid'))) or 'nobody'}. "
+                    f"Check the role name. When the role must exist — let the "
+                    f"agent first call any pair_* tool, it registers it."
                 )
             inbox = self.store.mailbox_root / to
-            # Каталог мог не создаться, если письмо первое для роли.
+            # The dir may never create when the letter is the role first.
             inbox.mkdir(parents=True, exist_ok=True)
             existing_seqs = [0]
             if self.store.mailbox_root.is_dir():
@@ -2440,7 +2439,7 @@ class PairSession:
                 "label": f"Chat from {self.role}: ",
                 "text": text.strip(),
             }
-            try:  # без ключа письмо уходит без подписи, подпись не роняет отправку
+            try:  # with no key the letter leaves unsigned, the signature never drops the send
                 import rolekeys as _keys
                 sk = _keys.load_signing_key(self.store.root, self.role)
                 if sk is not None:
@@ -2460,25 +2459,25 @@ class PairSession:
         if expects_reply:
             obligation = self._open_obligation(self.role, to, seq=result["seq"],
                                                subject=subject or text.strip()[:60])
-        # Событийное пробуждение — файл, а не печать (wake-without-composer).
-        # Письмо уже в mailbox, файл — гарантия для опроса pairpilot;
-        # _ring ниже — только оптимизация быстрого отклика.
+        # Event wake-up is a file, not printing (wake-without-composer). The letter already
+        # sits in mailbox, the file guarantees the pairpilot poll; the _ring below is only
+        # the fast-response optimization.
         try:
             from wake import record_wake
-            record_wake(self.store.root, self.store.read(), to, "сообщение",
-                        f"[pair] {self.role}: новое сообщение в ящике, прочитай pair_read")
+            record_wake(self.store.root, self.store.read(), to, "message",
+                        f"[pair] {self.role}: new message in the mailbox, read pair_read")
             self.store.append_transcript("wake_pending", self.role, to=to,
-                                         reason="сообщение", seq=result["seq"])
-        except Exception:  # noqa: BLE001 - wake-файл не должен ронять отправку
+                                         reason="message", seq=result["seq"])
+        except Exception:  # noqa: BLE001 - the wake file must never drop the send
             pass
         try:
-            # Файловый hint подпискам получателя: живой MCP-сервер той роли
-            # подберёт его нитью-наблюдателем и уведомит клиента. Если подписок
-            # нет, файлы никому не мешают и разгребаются нулём.
+            # A file hint for the recipient subscriptions: the live MCP server of that role
+            # picks it up on a watcher thread and notifies the client. With no subscriptions
+            # the files bother nobody and zero out.
             self.store.publish_resource_update(to, f"mailbox://{to}")
-        except Exception:  # noqa: BLE001 - push не должен ронять отправку
+        except Exception:  # noqa: BLE001 - push must never drop the send
             pass
-        ring = self._ring(to, "сообщение")
+        ring = self._ring(to, "message")
         return {
             "delivered": True,
             "woke_peer": ring["rung"],
@@ -2533,9 +2532,9 @@ class PairSession:
             ),
         }
         if was_capped:
-            # Раньше эта информация терялась, и вызов выглядел как обычная тишина.
-            # На деле клиент не дождался бы и большего: обрыв по таймауту выглядел
-            # бы как «никто не ответил», и агент делал вывод о соседе, а не о себе.
+            # This information used to vanish, and the call read as ordinary silence. In fact
+            # the client would never wait out even more: a timeout cut read as "nobody answered",
+            # and the agent concluded about the neighbour, not itself.
             answer["wait_capped_by_client_timeout"] = True
             answer["client_timeout_seconds"] = CLIENT_TIMEOUT_SECONDS
             answer["max_read_wait_seconds"] = MAX_READ_WAIT_SECONDS
@@ -2565,7 +2564,7 @@ class PairSession:
                                                  path=str(path), error=str(exc))
                     break
                 consumed += 1
-                try:  # проверка не роняет чтение; без ключа письмо отдаётся как раньше
+                try:  # the check never drops the read; with no key the letter serves as before
                     import rolekeys as _keys3
                     env = msg.get("envelope")
                     vk = _keys3.load_verify_key(self.store.root, msg.get("from", "")) if isinstance(env, dict) else None
@@ -2635,28 +2634,28 @@ class PairSession:
                 from intent_gate import gate as intent_check
                 i_verdict = intent_check(self.store.root, state)
                 if not i_verdict.get("ok"):
-                    raise ProtocolError(f"переход scoping → plan запрещён: {i_verdict['why']}",
-                                        "Создай .pair/intent.md: `round: N`, Problem, Scope, Outcome.")
+                    raise ProtocolError(f"the scoping → plan move is banned: {i_verdict['why']}",
+                                        "Create .pair/intent.md: `round: N`, Problem, Scope, Outcome.")
             if gated:
-                # Машинный гейт плана: соглашение §9a становится проверкой.
-                # Не замена evidence-gate (§5a) и не касание шагов назад:
-                # раунд, переоткрытый находкой после done, не обязан иметь
-                # план — иначе гейт запирал бы переоткрытие само себя.
+                # The plan machine gate: the §9a agreement turns into a check. Not an evidence-gate
+                # (§5a) replacement and no touching steps back: a round reopened by a finding past
+                # a round reopened by a finding past done never owes a plan — or the gate
+                # done never owes a plan — or the gate would lock the reopening on itself.
                 from plan_gate import gate as plan_gate_check
                 verdict = plan_gate_check(self.store.root, state)
                 if not verdict.get("ok"):
                     raise ProtocolError(
-                        f"переход plan → implement запрещён: {verdict['why']}",
-                        "Файл .pair/plan.md: первая строка `round: N`, секции Goal, "
-                        "Invariants, Acceptance. Виза соседа — заметка kind=verdict "
-                        "со строкой `plan-ack round N` (своя заметка не считается), "
-                        "либо окно ожидания из .pair/plan-gate.json истекает без "
+                        f"the plan → implement move is banned: {verdict['why']}",
+                        "The .pair/plan.md file: first line `round: N`, Goal sections, "
+                        "Invariants, Acceptance. The neighbour visa is a kind=verdict note "
+                        "with a `plan-ack round N` line (own note never counts), "
+                        "or the wait window from .pair/plan-gate.json lapsing with no "
                     )
             if phase != "done" and phase != backward:
                 from budget import check_budget
                 b_ok, b_why, _ = check_budget(self.store.root, state, phase)
                 if not b_ok:
-                    raise ProtocolError(b_why, "Сброс: `bin/pairctl budget --reset` или закрытие в done.")
+                    raise ProtocolError(b_why, "Reset: `bin/pairctl budget --reset` or closing in done.")
             if phase == "done":
                 unread = self._unread_count(state)
                 if unread > 0:
@@ -2683,7 +2682,7 @@ class PairSession:
                     generate_receipt(self.store.root, state)
                 except GroundTruthBlocked as exc:
                     raise ProtocolError(f"round cannot be closed: {exc}",
-                                        "Уберите боевые моки, закоммитьте и повторите.")
+                                        "Remove combat mocks, commit and retry.")
                 except Exception:
                     import traceback
                     traceback.print_exc()
@@ -2701,16 +2700,15 @@ class PairSession:
 
     def tool_pair_task(self, action: str, id: int | None = None, text: str = "",
                         reason: str = "") -> dict[str, Any]:
-        """Общий список задач: одна правда на двоих, а не копия у каждого.
+        """The shared task list: one truth for two, not a copy each.
 
-        Список не заменяет заметки, а закрывает конкретную дыру: задача, добавленная
-        в середине раунда, молча исчезала, потому что state хранил одну строку task
-        и новая перезаписывала старую. Проверено: раунд закрывался как «задача Б» с
-        доказательствами, собранными по задаче А.
+        The list never replaces notes but closes one hole: a task added mid-round
+        silently vanished, because state held one task line and the new overwrote
+        the old. Proven: the round closed as "task B" with evidence gathered for task A.
 
-        Права несимметричные, и это решение, а не недоработка: критик задачу
-        заводит — иначе он не сможет сказать «я нашёл ещё вот это», не печатая
-        в чужую заметку, — но закрывает её писатель, потому что реализует её он.
+        Rights run asymmetric, and that is a decision, not a gap: the critic opens a
+        task — or it could never say "I found this too" without writing into another
+        note — but the writer closes it, because it implements it.
         """
         action = str(action or "").strip()
         if action not in ("add", "done", "drop", "list"):
@@ -2750,7 +2748,7 @@ class PairSession:
                     "why_it_matters": "An open task keeps the round from closing until it is "
                                       "done or dropped with a reason."}
 
-        # done / drop — только у писателя.
+        # done / drop — writer only.
         if state.get("writer") != self.role:
             raise ProtocolError(
                 f"only the writer closes tasks; {self.role!r} may add and list them.",

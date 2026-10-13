@@ -1867,7 +1867,7 @@ class TestPermissionAllowlist(PairTestCase):
 
         def refuse(tmux, pane, allow=None):
             return {"approved": False, "verdict": "refuse",
-                    "prompt": "Allow execution of bash? rm -rf /", "why": "запрещённая категория",
+                    "prompt": "Allow execution of bash? rm -rf /", "why": "banned category",
                     "matched": None}
 
         original = composer.resolve_permission_prompt
@@ -1881,7 +1881,7 @@ class TestPermissionAllowlist(PairTestCase):
             composer._tmux = original_tmux
         self.assertFalse(result["unblocked"])
         self.assertEqual(result["verdict"], "refuse")
-        self.assertIn("НЕ подтверждён", result["status"])
+        self.assertIn("NOT confirmed", result["status"])
         kinds = [entry["kind"] for entry in self.store.read_transcript()]
         self.assertIn("unblock_refused", kinds)
 
@@ -1950,10 +1950,10 @@ class TestMessaging(PairTestCase):
         # предотвращать. Ростер переживает письма — теперь отказ раньше.
         self.assertRefused(
             self.writer.tool_pair_send, to="ghost-role", text="привет",
-            contains="не зарегистрирована")
+            contains="never registered")
         self.assertRefused(
             self.writer.tool_pair_deliver, to="ghost-role", text="привет",
-            contains="не зарегистрирована")
+            contains="never registered")
         mailboxes_after = sorted(p.name for p in self.store.mailbox_root.glob("*"))
         self.assertNotIn("ghost-role", mailboxes_after,
                          "мёртвый ящик не должен создаваться")
@@ -3632,7 +3632,7 @@ class TestRingAndUnblock(PairTestCase):
             server_mod.subprocess.run = orig_run
             server_mod.shutil.which = orig_which
         self.assertFalse(result["rung"], "в невидимый композер не лезем")
-        self.assertIn("не виден", result["why"])
+        self.assertIn("invisible", result["why"])
 
     def test_ring_avoids_self_pane(self) -> None:
         os.environ.pop("PAIR_DISABLE_RING", None)
@@ -3642,7 +3642,7 @@ class TestRingAndUnblock(PairTestCase):
                           .update({"pane": "%99"}))
         res = self.writer._ring("reviewer-agent", "тест", "детали")
         self.assertFalse(res["rung"])
-        self.assertIn("собственную панель", res["why"])
+        self.assertIn("own pane", res["why"])
 
     def test_pair_unblock_validation(self) -> None:
         self.writer.tool_pair_state()
@@ -3654,7 +3654,7 @@ class TestRingAndUnblock(PairTestCase):
         # Peer without tmux pane returns graceful status
         res = self.writer.tool_pair_unblock(peer="reviewer-agent")
         self.assertFalse(res["unblocked"])
-        self.assertIn("нет панели tmux", res["why"])
+        self.assertIn("has no tmux pane", res["why"])
         self.assertEqual(res["prompt"], "")
 
     def test_ring_probe_oserror_is_reported_not_raised(self) -> None:
@@ -3673,8 +3673,8 @@ class TestRingAndUnblock(PairTestCase):
         finally:
             server_mod.subprocess.run = orig_run
         self.assertFalse(result["rung"])
-        self.assertIn("не проверяется", result["why"])
-        self.assertIn("tmux исчез", result["why"])
+        self.assertIn("never verifies", result["why"])
+        self.assertIn("tmux", result["why"])
 
 class TestMailboxInvariants(PairTestCase):
     def test_claim_clears_closed_at_and_phase(self) -> None:
@@ -3936,7 +3936,7 @@ class TestMailboxInvariants(PairTestCase):
             res = self.writer.tool_pair_deliver(to="reviewer-agent", text="payload worth keeping")
             self.assertTrue(res["delivered"], "ящик — основной путь, он не зависит от панели")
             self.assertFalse(res["in_pane"], "указатель не подтвердился")
-            self.assertIn("ящике", res["why"])
+            self.assertIn("mailbox", res["why"])
             read = self.peer.tool_pair_read(wait_seconds=0)
             self.assertEqual(read["count"], 1)
             self.assertIn("payload worth keeping", read["messages"][0]["text"])
@@ -3974,7 +3974,7 @@ class TestMailboxInvariants(PairTestCase):
             # в котором ящик был запасным путём, а не основным.
             self.assertTrue(res["delivered"])
             self.assertFalse(res["in_pane"], "занятый композер — печатать нельзя")
-            self.assertIn("занят", res["why"])
+            self.assertIn("busy", res["why"])
 
             # Verify message landed in reviewer's mailbox
             read = self.peer.tool_pair_read(wait_seconds=0)

@@ -37,7 +37,7 @@ class TestEventWake(PairTestCase):
         self.assertTrue(path.exists(), "send обязан записать wake-файл по событию")
         payload = json.loads(path.read_text(encoding="utf-8"))
         self.assertEqual("reviewer-agent", payload.get("role"))
-        self.assertIn("сообщение", payload.get("reasons", []))
+        self.assertIn("message", payload.get("reasons", []))
 
     def test_note_writes_wake_for_peer(self) -> None:
         os.environ["PAIR_DISABLE_RING"] = "1"
@@ -119,7 +119,7 @@ class TestEventWake(PairTestCase):
 
         server_mod.subprocess.run = fake_sub_run  # type: ignore[method-assign]
         try:
-            result = self.writer._ring("reviewer-agent", "сообщение")
+            result = self.writer._ring("reviewer-agent", "message")
         finally:
             composer.composer_line = orig_line
             composer.shutil.which = orig_which
