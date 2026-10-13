@@ -697,16 +697,49 @@ class TestOutboxStaleness(PilotCase):
         orig_belongs = pairpilot.pane_belongs_to_project
         pairpilot.deliver = lambda pane, text, wait_for_empty=0.0: calls.append((pane, text)) or {"delivered": True}
         pairpilot.pane_belongs_to_project = lambda tmux, pane, root: (False, "foreign")
+        orig_alive = pairpilot.pane_alive
+        pairpilot.pane_alive = lambda tmux, pane: True
         try:
             p.tmux = "tmux"
             p.flush_outbox(state)
         finally:
             pairpilot.deliver = orig_deliver
             pairpilot.pane_belongs_to_project = orig_belongs
+            pairpilot.pane_alive = orig_alive
         self.assertEqual(calls, [], "never print into a foreign pane")
         self.assertFalse(path.exists(), "a refusal leaves the queue instead of hanging")
         self.assertIn("pilot_pane_foreign", self.transcript_kinds(),
                       "the refusal is visible in the transcript, with reason")
+
+    def test_dead_pane_refusal_keeps_the_file(self) -> None:
+        """Verdict-87.3: (False, 'no such pane') is unproven, not foreign.
+
+        A dead pane must not read pilot_pane_foreign and must not lose the
+        file: it waits for the next tick like a busy composer does.
+        """
+        p = self.pilot()
+        path = self._queue(p, "agy", "queued nudge")
+        state = self.write_state(roles={"agy": {"pane": "%9", "pid": os.getpid()}})
+        calls = []
+        orig_deliver = pairpilot.deliver
+        orig_belongs = pairpilot.pane_belongs_to_project
+        orig_alive = pairpilot.pane_alive
+        pairpilot.deliver = lambda pane, text, wait_for_empty=0.0: calls.append((pane, text)) or {"delivered": True}
+        pairpilot.pane_belongs_to_project = lambda tmux, pane, root: (False, "no such pane")
+        pairpilot.pane_alive = lambda tmux, pane: False
+        try:
+            p.tmux = "tmux"
+            p.flush_outbox(state)
+        finally:
+            pairpilot.deliver = orig_deliver
+            pairpilot.pane_belongs_to_project = orig_belongs
+            pairpilot.pane_alive = orig_alive
+        self.assertEqual(calls, [], "nothing is printed while ownership is unproven")
+        self.assertTrue(path.exists(), "the file survives for the next tick")
+        kinds = self.transcript_kinds()
+        self.assertIn("pilot_pane_unproven", kinds)
+        self.assertNotIn("pilot_pane_foreign", kinds,
+                         "a dead pane must not be logged as a foreign project")
 
     def test_own_pane_delivery_unaffected_by_belongs_gate(self) -> None:
         """An owned pane delivers as before — the gate spares the normal path."""
@@ -718,12 +751,15 @@ class TestOutboxStaleness(PilotCase):
         orig_belongs = pairpilot.pane_belongs_to_project
         pairpilot.deliver = lambda pane, text, wait_for_empty=0.0: calls.append((pane, text)) or {"delivered": True}
         pairpilot.pane_belongs_to_project = lambda tmux, pane, root: (True, "")
+        orig_alive2 = pairpilot.pane_alive
+        pairpilot.pane_alive = lambda tmux, pane: True
         try:
             p.tmux = "tmux"
             p.flush_outbox(state)
         finally:
             pairpilot.deliver = orig_deliver
             pairpilot.pane_belongs_to_project = orig_belongs
+            pairpilot.pane_alive = orig_alive2
         self.assertEqual(1, len(calls), "an owned pane is delivered")
         self.assertFalse(path.exists(), "delivered mail leaves the queue")
 
