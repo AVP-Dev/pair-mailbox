@@ -171,15 +171,27 @@ class PairTestCase(unittest.TestCase):
         До гейта план→implement проход был свободным, и фикстуры просто шли по
         фазам. Теперь переход требует артефакта — помощник пишет его от имени
         пары, чтобы тесты проверяли свой предмет, а не гейт.
+
+        Гейт свежести сервера здесь приглушён намеренно: он сравнивает mtime
+        исходников со стартом процесса, и любая правка файлов во время прогона
+        (или свежий checkout) роняет фазовое движение с ProtocolError — флак
+        seq 1207, ~1 из 3 прогонов. Сам гейт живо покрыт в test_server_freshness
+        (refusal paths), здесь проверяется предмет тестов, а не свежесть.
         """
-        for phase in phases:
-            round_number = int(self.store.read().get("round", 0))
-            if phase == "plan":
-                self.write_intent(round_number)
-            elif phase == "implement":
-                self.write_plan(round_number)
-                self.ack_plan(round_number)
-            self.writer.tool_pair_advance(phase)
+        import server_freshness
+        orig = server_freshness.assert_server_fresh
+        server_freshness.assert_server_fresh = lambda **kwargs: None
+        try:
+            for phase in phases:
+                round_number = int(self.store.read().get("round", 0))
+                if phase == "plan":
+                    self.write_intent(round_number)
+                elif phase == "implement":
+                    self.write_plan(round_number)
+                    self.ack_plan(round_number)
+                self.writer.tool_pair_advance(phase)
+        finally:
+            server_freshness.assert_server_fresh = orig
 
     def set_autonomy(self, level: str) -> None:
         """Объявить уровень явно.
