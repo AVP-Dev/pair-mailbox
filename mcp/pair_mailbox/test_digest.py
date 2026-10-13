@@ -109,7 +109,7 @@ class TestDigest(PairTestCase):
         self.with_state(task="задача " * 400, writer="agy")
         self.many_tasks(20)
         text = self.digest(budget=120)
-        self.assertIn("обрезано", text)
+        self.assertIn("truncated", text)
 
     # ------------------------------------------------------------------ состав
 
@@ -152,11 +152,11 @@ class TestDigest(PairTestCase):
         «задача есть, но пустая», и это разные вещи.
         """
         text = self.digest()
-        self.assertIn("РАУНД", text)
-        self.assertIn("задача", text)
-        self.assertIn("режим", text)
-        self.assertIn("фаза", text)
-        self.assertIn("пишет", text)
+        self.assertIn("ROUND", text)
+        self.assertIn("task:", text)
+        self.assertIn("mode:", text)
+        self.assertIn("phase:", text)
+        self.assertIn("writes:", text)
 
     def test_closed_tasks_do_not_take_space(self) -> None:
         """Закрытые задачи не несут смысла для следующего шага.
@@ -166,14 +166,14 @@ class TestDigest(PairTestCase):
         """
         self.many_tasks(6, status="done")
         text = self.digest()
-        self.assertIn("ОТКРЫТЫЕ ЗАДАЧИ: 0", text)
+        self.assertIn("OPEN TASKS: 0", text)
         self.assertNotIn("задача номер", text)
 
     def test_missing_obligations_are_stated(self) -> None:
         """Отсутствие обязательств — факт, а не пустое место в тексте."""
         text = self.digest()
-        self.assertIn("ОБЯЗАТЕЛЬСТВА: 0", text)
-        self.assertIn("никто никого не ждёт", text)
+        self.assertIn("OBLIGATIONS: 0", text)
+        self.assertIn("nobody waits on anyone", text)
 
     def test_an_open_obligation_is_named(self) -> None:
         """Кто кого ждёт — это то, ради чего агент и смотрит дайджест."""
@@ -184,7 +184,7 @@ class TestDigest(PairTestCase):
             {"from": "opencode", "to": "agy", "subject": "пункт 5"}, ensure_ascii=False),
             encoding="utf-8")
         text = self.digest()
-        self.assertIn("opencode ждёт agy", text)
+        self.assertIn("opencode waits agy", text)
 
     def test_the_last_commit_is_read_from_git_not_from_the_log(self) -> None:
         """Фактическое состояние дерева, а не пересказ журнала.
@@ -193,7 +193,7 @@ class TestDigest(PairTestCase):
         правду о дереве, иначе он планирует работу по устаревшему представлению.
         """
         text = self.digest()
-        self.assertIn("ПОСЛЕДНИЙ КОММИТ", text)
+        self.assertIn("LAST COMMIT", text)
 
     def test_no_git_is_said_out_loud(self) -> None:
         """Отсутствие git объявляется, а не выглядит как «коммитов нет».
@@ -203,7 +203,7 @@ class TestDigest(PairTestCase):
         """
         with mock.patch("subprocess.run", side_effect=OSError("нет git")):
             text = self.digest()
-        self.assertIn("git недоступен", text)
+        self.assertIn("git unreachable", text)
 
     # ----------------------------------------------------------------- вердикт
 
@@ -252,8 +252,8 @@ class TestDigest(PairTestCase):
         Иначе пустой раздел выглядит как «вердикт есть, но не влез».
         """
         text = self.digest()
-        self.assertIn("ПОСЛЕДНИЙ ВЕРДИКТ", text)
-        self.assertIn("вердиктов не было", text)
+        self.assertIn("LAST VERDICT", text)
+        self.assertIn("no verdicts yet", text)
 
     # --------------------------------------------------------------- поверхности
 
@@ -284,7 +284,7 @@ class TestDigest(PairTestCase):
             with contextlib.redirect_stderr(err):
                 code = self.ctl("digest", "--budget", "100")
         self.assertEqual(1, code)
-        self.assertIn("потолке", err.getvalue())
+        self.assertIn("ceiling", err.getvalue())
 
     def test_the_digest_names_the_role_that_writes(self) -> None:
         """При переданной роли дайджест говорит «ты пишешь».
@@ -293,8 +293,8 @@ class TestDigest(PairTestCase):
         что весь смысл дайджеста — убрать лишний заход в состояние.
         """
         self.with_state(writer="opencode")
-        self.assertIn("(ты)", self.digest(role="opencode"))
-        self.assertNotIn("(ты)", self.digest(role="agy"))
+        self.assertIn("(you)", self.digest(role="opencode"))
+        self.assertNotIn("(you)", self.digest(role="agy"))
 
 
 if __name__ == "__main__":

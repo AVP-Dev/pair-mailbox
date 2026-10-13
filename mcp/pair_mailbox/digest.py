@@ -1,14 +1,14 @@
-"""Дайджест: срез состояния пары в жёстком потолке токенов.
+"""Digest: the pair-state slice under a hard token ceiling.
 
-Модуль вынесен из `server.py` по владению, а не ради размера: дайджест это
-отдельная обязанность — уложить состояние пары в заданный бюджет, — и она
-проверяется своими тестами, не поднимая сервер.
+The module moved out of `server.py` by ownership, not for size: the digest is
+its own duty — fitting pair state into a set budget — and it is checked by its
+own tests, never raising the server.
 
-Направление зависимости то же, что у `statecache`, `liveness`, `wake` и
-`review`: `server.py` зависит от этого файла, не наоборот. `estimate_tokens`
-переехал сюда же, потому что он нужен дайджесту, а не протоколу: потолок
-считается на том тексте, который мы сами собираем, и оценка обязана быть той
-же самой функцией на том же самом тексте.
+The dependency direction matches `statecache`, `liveness`, `wake` and `review`:
+`server.py` depends on this file, not the reverse. `estimate_tokens` moved here
+too, because the digest needs it, not the protocol: the ceiling counts on the
+text we assemble ourselves, and the estimate must be the same function on the
+same text.
 """
 from __future__ import annotations
 
@@ -20,70 +20,68 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-# Чтение хвоста журнала осталось в `server`: им пользуется и `pairctl log`, и
-# дайджест. Импорт ленивый по той же причине, что и в самом `server`: `server`
-# импортирует этот модуль на верхнем уровне, и прямой импорт был бы циклом.
+# The journal-tail read stays in `server`: both `pairctl log` and the digest
+# use it. The import stays lazy for the same reason as in `server` itself:
+# `server` imports this module at top level, and a direct import would cycle.
 def _transcript_tail(path, limit):
     from server import _transcript_tail as impl
 
     return impl(path, limit)
 
-# Потолок дайджеста. Замер заменяемой связки: `pair_state` 939 + `pair_task list`
-# 1051 + `pair_transcript` 1734 = 3724 токена на ориентацию. Дайджест обязан стоить
-# заметно меньше, иначе он не нужен: дешевле прочитать три вызова, чем разбираться
-# с двенадцатым вызовом в том же раунде.
+# The digest ceiling. The replaced bundle measured: `pair_state` 939 +
+# `pair_task list` 1051 + `pair_transcript` 1734 = 3724 tokens per orientation.
+# The digest must cost visibly less, or it is useless: three calls read cheaper
+# than figuring out the twelfth call in the same round.
 DIGEST_TOKEN_BUDGET = 500
-# Сколько записей журнала перебирается в поиске последнего вердикта. Журнал уже
-# ограничен окном ротации, но даже он не должен разбираться целиком на каждый
-# вызов дайджеста.
+# How many journal records the last-verdict search walks. The journal already
+# rotates in a window, but even it must never parse whole on every digest call.
+# digest call.
 TRANSCRIPT_SCAN_LIMIT = 400
-DIGEST_MARKER = "[обрезано: не влезло, полное состояние — pair_state]"
+DIGEST_MARKER = "[truncated: did not fit, full state — pair_state]"
 
 
 def _digest_marker_reserve() -> int:
-    """Сколько токенов надо оставить под пометку об обрезании.
+    """How many tokens to keep for the truncation mark.
 
-    Считается ИЗ САМОЙ ПОМЕТКИ, а не задаётся круглым числом. Так было сначала
-    неверно: резерв стоял 20, пометка выходила 22, и на ровно подогнанном тексте
-    дайджест давал 501 токен при потолке 500 — то есть либо нарушал потолок, либо
-    вычищал строку, ради которой он и собирался. Резерв из константы рассинхронизи-
-    руется с пометкой при первом же её изменении.
+    Counted FROM THE MARK ITSELF, never set as a round number. First it was wrong:
+    the reserve stood at 20, the mark ran 22, and on exactly fitted text the digest
+    gave 501 tokens at a 500 ceiling — either breaking the ceiling or scrubbing the
+    line it assembled for. A reserve from a constant desyncs from the mark on its
+    very first change.
     """
     return estimate_tokens(DIGEST_MARKER) + 4
-# Минимум, ниже которого строка не ставится вовсе. Обрезок в один токен не несёт
-# смысла и при этом занимает место, которого не хватит следующей строке.
+# A minimum below which the line never lands. A one-token stub carries no
+# meaning while taking room the next line needs.
 DIGEST_MIN_LINE = 8
 
 
 def _render_digest(lines: list[str]) -> str:
-    """Собранный дайджест ровно в том виде, в каком он уходит к читателю.
+    """The assembled digest exactly as it reaches the reader.
 
-    Отдельная функция, потому что потолок проверяется на ЭТОМ тексте. Считать
-    размер по строкам и отдавать склеенный текст — это два разных числа, и между
-    ними помещались переводы строк, из-за чего дайджест выдавал 502 токена при
-    потолке 500.
+    A separate function, because the ceiling checks THIS text. Counting size by
+    lines and serving glued text are two different numbers, and newlines fitted
+    between them — the digest once gave 502 tokens at a 500 ceiling over them.
     """
     return "\n".join(lines) + "\n"
 
 def estimate_tokens(text: str) -> int:
-    """Грубая оценка размера текста в токенах.
+    """A rough text size estimate in tokens.
 
-    Считается символы, делённые на четыре: это оценка, а не измерение, и она
-    годится ровно для одной вещи — чтобы положить потолок на текст, который мы
-    сами же собираем. Точный счётчик стоит дороже, чем весь дайджест.
+    Chars divided by four: an estimate, not a measure, fit for exactly one thing —
+    capping text we assemble ourselves. An exact counter costs more than the whole
+    digest.
 
-    Оценка обязана быть ПЕЕРЕСТРАХОВЫВАЮЩЕЙ, а не заниженной: если токенов выйдет
-    больше потолка, агент упрётся в лимит контекста там, где рассчитывал на
-    дайджест.
+    The estimate must OVER-INSURE, never shave: with more tokens out than the
+    ceiling, the agent hits the context limit where it counted on the digest.
     """
     return (len(text.encode("utf-8")) + 3) // 4
 
 
 def _digest_line(text: str, budget: int) -> str:
-    """Строка, обрезанная по бюджету, с честной пометкой обрезания.
+    """A budget-cut line with an honest truncation mark.
 
-    Обрезанная строка без пометки — это тихо неверные данные. Пометка сама по себе
-    может не влезть, и тогда оставляется один многоточичный маркер.
+    A cut line with no mark is quietly wrong data. The mark itself may not fit,
+    and then a single ellipsis marker stays.
     """
     if estimate_tokens(text) <= budget:
         return text
@@ -94,11 +92,11 @@ def _digest_line(text: str, budget: int) -> str:
 
 
 def _note_tail(store: "Any", slug: str, lines: int = 4) -> list[str]:
-    """Хвост заметки: актуально последнее, а не всё накопленное за историю.
+    """A note tail: the latest matters, not all history ever stored.
 
-    Заметки пишутся append-only, и у вердикта это значит ровно то, что нужно:
-    решение в конце. Начало — это постановка прошлого раунда, и в дайджесте она
-    только отнимает место у того, что решено.
+    Notes write append-only, and for a verdict that means exactly what is needed:
+    the decision sits at the end. The start states the previous round, and
+    in the digest it only steals room from what is decided.
     """
     path = store.notes_root / f"{slug}.md"
     try:
@@ -109,30 +107,29 @@ def _note_tail(store: "Any", slug: str, lines: int = 4) -> list[str]:
 
 
 class _TranscriptReader:
-    """Чтение хвоста журнала без разбора всего файла.
+    """Read the journal tail without parsing the whole file.
 
-    Отдельный класс, а не функция с числом строк, потому что нужна не одна
-    величина, а направленный поиск: «последняя заметка-вердикт». Разбор всего
-    журнала на каждом вызове дайджеста вернул бы ровно ту стоимость, которую
-    дайджест обещает не платить.
+    A separate class, not a function with a line count, because the need is a
+    directed search: "the last verdict note". Parsing the whole journal on every
+    digest call would return exactly the cost the digest promises never to pay.
     """
 
     def __init__(self, path: Path) -> None:
         self.path = path
 
     def last_note_of_kind(self, prefix: str) -> dict | None:
-        """Последняя заметка, чей slug начинается с `prefix`, или None.
+        """The last note whose slug starts with `prefix`, or None.
 
-        Источник порядка — сам журнал, а не время изменения файла. Заметок в
-        `notes/` девяносто две, и имена у них не упорядочены по времени: сортировка
-        по mtime была бы догадкой, потому что файл могли открыть, не изменив его.
-        В журнале порядок фактический: запись о `pair_note` несёт slug, время и
-        автора, и он пишется в момент создания заметки.
+        The order source is the journal itself, not file mtime. `notes/` holds
+        ninety-two notes with time-unordered names: mtime sorting would guess,
+        because a file may open without changing. The journal order is factual:
+        the `pair_note` record carries slug, time and author, written when the
+        note is created.
         """
         if not self.path.exists():
-            # Журнала ещё нет — вердиктов не было, и это не поломка. Раньше чтение
-            # отсутствующего файла роняло дайджест целиком, то есть вопрос «что
-            # там решили» стоил ошибки вместо ответа.
+            # No journal yet — no verdicts, and that is no breakage. Reading the missing
+            # file used to drop the whole digest, so the "what was decided" question cost
+            # an error instead of an answer.
             return None
         for entry in reversed(_transcript_tail(self.path, TRANSCRIPT_SCAN_LIMIT)):
             if entry.get("_damaged") or entry.get("kind") != "note":
@@ -144,11 +141,11 @@ class _TranscriptReader:
 
 
 def _last_commit(store: "Any") -> str:
-    """Последний коммит одной строкой.
+    """The last commit in one line.
 
-    Из git, а не из журнала: журнал не знает, что было закоммичено, и агент,
-    который читает дайджест, должен увидеть фактическое состояние дерева. Если git
-    недоступен, об этом сказано, а не промолчано.
+    From git, not the journal: the journal never knows what committed, and the
+    agent reading the digest must see the actual tree state. When git is
+    unreachable, that is said, not silenced.
     """
     root = store.project_root
     try:
@@ -156,14 +153,14 @@ def _last_commit(store: "Any") -> str:
             ["git", "log", "-1", "--format=%h %s"],
             cwd=str(root), capture_output=True, text=True, timeout=5)
     except (OSError, subprocess.SubprocessError):
-        return "ПОСЛЕДНИЙ КОММИТ: (git недоступен)"
+        return "LAST COMMIT: (git unreachable)"
     if out.returncode != 0 or not out.stdout.strip():
-        return "ПОСЛЕДНИЙ КОММИТ: (нет коммитов)"
-    return f"ПОСЛЕДНИЙ КОММИТ: {out.stdout.strip()}"
+        return "LAST COMMIT: (no commits)"
+    return f"LAST COMMIT: {out.stdout.strip()}"
 
 
 def _open_obligations(store: "Any") -> list[dict[str, Any]]:
-    """Открытые обязательства, без блокировки на каталог."""
+    """Open obligations, with no lock on the directory."""
     root = store.obligations_root
     if not root.is_dir():
         return []
@@ -177,124 +174,122 @@ def _open_obligations(store: "Any") -> list[dict[str, Any]]:
 
 
 def build_digest(store: "Any", role: str = "", budget: int = DIGEST_TOKEN_BUDGET) -> str:
-    """Срез состояния пары, который укладывается в жёсткий бюджет токенов.
+    """The pair-state slice that fits a hard token budget.
 
-    Зачем он есть, измерено: ориентация в паре стоит 3724 токена
-    (`pair_state` 939 + `pair_task list` 1051 + `pair_transcript` 1734). Дайджест
-    обязан быть заметно дешевле, иначе он не нужен — дешевле прочитать три вызова,
-    чем разбираться с двенадцатым вызовом в том же раунде.
+    Why it exists, measured: pair orientation costs 3724 tokens (`pair_state` 939
+    + `pair_task list` 1051 + `pair_transcript` 1734). The digest must run visibly
+    cheaper, or it is useless — three calls read cheaper than figuring out the
+    twelfth call in the same round.
 
-    Текст, а не JSON: агент читает ответ глазами и за JSON платит дважды — за ключи
-    и за значения. Короткий текст читается один раз.
+    Text, not JSON: the agent reads the answer with eyes and pays twice for JSON —
+    for keys and for values. Short text reads once.
 
-    ПОРЯДОК РАЗДЕЛОВ РЕШАЕТ ВСЁ. Он выбран по цене вопроса: то, без чего работа
-    пойдёт неверно, стоит первым и не обрезается; то, что можно дочитать точечно,
-    стоит последним и обрезается первым. Если разделы переставить местами, дайджест
-    станет дороже при том же составе — поэтому порядок и есть содержательная часть
-    решения, а не оформление.
+    SECTION ORDER DECIDES EVERYTHING. It follows the question price: what the work
+    goes wrong without stands first and never cuts; what can be read point-wise
+    stands last and cuts first. Shuffled sections would cost the digest more at the
+    same contents — so the order is the decision substance, not decoration.
 
-    Ничего не выдумывается: каждый раздел либо прочитан из состояния, либо назван
-    отсутствующим. Вердикт цитируется, а не пересказывается, потому что пересказ
-    чужого решения своими словами — это способ соврать о том, чего не читали.
+    Nothing is invented: every section either reads from state or names itself
+    missing. The verdict quotes, never retells: retelling it in own words is how
+    the unread gets lied about.
     """
     state = store.read()
     lines: list[str] = []
-    cut = False  # что-то не влезло и было обрезано
+    cut = False  # something missed the fit and was cut
 
     def budget_left() -> int:
-        """Сколько токенов ещё можно потратить на весь текст, собранный к этому месту."""
+        """How many tokens the text gathered so far may still spend."""
         return budget - estimate_tokens("\n".join(lines))
 
     def take(text: str, floor: int = 0) -> bool:
-        """Добавить строку, если в бюджет влезает, иначе — обрезанную.
+        """Add the line when the budget fits, else the cut one.
 
-        Резерв под пометку об обрезании вычитается ЗДЕСЬ, а не вычищается в конце.
-        Так вышло сначала неверно: строка обрезалась ровно под остаток места, а
-        финальная чистка потом видела «место кончилось» и выбрасывала её целиком —
-        вместе с началом задачи, ради которого дайджест и читается. Резерв,
-        вычтенный заранее, делает чистку ненужной.
+        The truncation-mark reserve subtracts HERE, never scrubbed at the end.
+        First it went wrong: the line cut exactly to the room left, but the final
+        cleanup saw "room gone" and dropped it whole — with the task start the
+        digest is read for. An upfront reserve makes the cleanup needless.
         """
-        """Добавить строку, если в бюджет влезает, иначе — обрезанную.
+        """Add the line when the budget fits, else the cut one.
 
-        Возвращает, пришлось ли строку обрезать или она не влезла вовсе: оба случая
-        требуют пометки в конце, и отличать их не нужно — нужно не потерять оба.
+        Returns whether the line was cut or never fitted at all: both cases want
+        the end mark, and telling them apart is needless — losing either is what
+        matters.
 
-        Резерв под пометку об обрезании вычитается ЗДЕСЬ, а не вычищается в конце.
-        Так вышло сначала неверно: строка обрезалась ровно под остаток места, а
-        финальная чистка потом видела «место кончилось» и выбрасывала её целиком —
-        вместе с началом задачи, ради которого дайджест и читается. Резерв,
-        вычтенный заранее, делает чистку ненужной.
+        The truncation-mark reserve subtracts HERE, never scrubbed at the end.
+        First it went wrong: the line cut exactly to the room left, but the final
+        cleanup saw "room gone" and dropped it whole — with the task start the
+        digest is read for. An upfront reserve makes the cleanup needless.
         """
         room = budget_left() - _digest_marker_reserve() - floor
         if room < DIGEST_MIN_LINE:
-            # Строка не влезла — ни целиком, ни хотя бы читаемым куском. Хвост в
-            # один токен бесполезен и, что хуже, съедал место: строка «режим: fix ·
-            # фаза…» стоила одного токена и вытесняла начало задачи, ради которого
-            # дайджест и читается. Лучше её не ставить и сказать, что не влезло.
+            # The line never fitted — neither whole nor as a readable stub. A one-token
+            # tail is useless and, worse, ate room: the "mode: fix · phase…" line cost one
+            # token and squeezed out the task start the digest is read for.
+            # Better to skip it and say what missed the fit.
             return True
         cut = _digest_line(text, room)
         lines.append(cut)
         return cut != text
 
-    # 1. То, без чего работа неверна. Ничего не обрезается.
-    task = str(state.get("task") or "").strip() or "(задача не задана)"
-    cut |= take("РАУНД", floor=DIGEST_MIN_LINE)
-    cut |= take(f"задача: {task}")
-    cut |= take(f"режим: {state.get('mode', '?')} · фаза: {state.get('phase', '?')} · "
-         f"раунд {state.get('round', 0)}")
-    cut |= take(f"пишет: {state.get('writer') or '—'}"
-         + (f" (ты)" if role and state.get("writer") == role else ""))
+    # 1. What the work is wrong without. Nothing is cut.
+    task = str(state.get("task") or "").strip() or "(task not set)"
+    cut |= take("ROUND", floor=DIGEST_MIN_LINE)
+    cut |= take(f"task: {task}")
+    cut |= take(f"mode: {state.get('mode', '?')} · phase: {state.get('phase', '?')} · "
+         f"round {state.get('round', 0)}")
+    cut |= take(f"writes: {state.get('writer') or '—'}"
+         + (f" (you)" if role and state.get("writer") == role else ""))
 
-    # 2. Открытые задачи. Закрытые не несут смысла для следующего шага: восемь
-    #    закрытых задач стоили около 800 токенов и не сказали ничего нового.
+    # 2. Open tasks. Closed ones carry no meaning for the next step: eight closed
+    #    tasks cost ~800 tokens and said nothing new.
     open_tasks = [t for t in (state.get("tasks") or []) if t.get("status") == "open"]
     cut |= take("")
-    cut |= take(f"ОТКРЫТЫЕ ЗАДАЧИ: {len(open_tasks)}")
+    cut |= take(f"OPEN TASKS: {len(open_tasks)}")
     if not open_tasks:
-        cut |= take("(нет открытых задач — проверь, не пора ли добавить)")
+        cut |= take("(no open tasks — check whether to add one)")
     for item in open_tasks[:4]:
         cut |= take(f"#{item.get('id')} {_digest_line(str(item.get('text', '')), 60)}")
     if len(open_tasks) > 4:
-        cut |= take(f"…и ещё {len(open_tasks) - 4}: `pair_task list`")
+        cut |= take(f"…and {len(open_tasks) - 4}: `pair_task list`")
 
-    # 3. Обязательства. Их отсутствие — тоже факт, а не пустота.
+    # 3. Obligations. Their absence is a fact too, not emptiness.
     obligations = _open_obligations(store)
     cut |= take("")
-    cut |= take(f"ОБЯЗАТЕЛЬСТВА: {len(obligations)}")
+    cut |= take(f"OBLIGATIONS: {len(obligations)}")
     if not obligations:
-        cut |= take("(никто никого не ждёт)")
+        cut |= take("(nobody waits on anyone)")
     for ob in obligations[:3]:
-        cut |= take(f"{ob.get('from', '?')} ждёт {ob.get('to', '?')}")
+        cut |= take(f"{ob.get('from', '?')} waits {ob.get('to', '?')}")
 
-    # 4. Последний коммит: из git, а не из журнала.
+    # 4. Last commit: from git, not the journal.
     cut |= take("")
     cut |= take(_last_commit(store), floor=60)
 
-    # 5. Последний вердикт: цитата хвоста, порядок берётся из журнала.
+    # 5. Last verdict: a tail quote, order from the journal.
     verdict = _TranscriptReader(store.transcript_path).last_note_of_kind("verdict")
     cut |= take("")
-    cut |= take("ПОСЛЕДНИЙ ВЕРДИКТ", floor=DIGEST_MIN_LINE)
+    cut |= take("LAST VERDICT", floor=DIGEST_MIN_LINE)
     if not verdict:
-        cut |= take("(вердиктов не было)")
+        cut |= take("(no verdicts yet)")
     else:
         cut |= take(f"{verdict.get('role', '?')} · {verdict.get('slug', '?')} · "
              f"`note_read`", floor=70)
         for line in _note_tail(store, verdict["slug"]):
             cut |= take(f"  {_digest_line(line, 120)}")
 
-    # Что не влезло — сказать прямо. Молча сокращённый дайджест хуже длинного:
-    # агент решит, что вердикта не было.
+    # What missed the fit — say it straight. A quietly shortened digest beats a
+    # long one downwards: the agent decides no verdict ever was.
     #
-    # Потолок здесь не «на глаз», а проверен на собранном тексте: пока помещается,
-    # резерва в `take` хватает, но переводы строк и сам маркер в оценку не входили,
-    # и дайджест выдавал 502 токена при потолке 500. Обещание, которое не проверено
-    # на том, что отдаётся, — не обещание.
+    # The ceiling here is no eyeball: it checks on the assembled text — while it
+    # fits, the `take` reserve holds, but newlines and the mark itself never entered
+    # the estimate, and the digest gave 502 tokens at a 500 ceiling. A promise never
+    # checked on what is served is no promise.
     dropped = False
     if dropped or cut:
         marker = DIGEST_MARKER if estimate_tokens(DIGEST_MARKER) < budget else "…"
-        # Место под пометку резервируем заранее и проверяем рендер вместе
-        # с ней. Иначе второй проход вычищает её обратно — и дайджест
-        # заканчивается без единого слова о потерянной половине содержимого.
+        # Room for the mark reserves upfront, and the render checks together with it.
+        # Otherwise the second pass scrubs it back — and the digest ends without a
+        # single word about the lost half of its content.
         while len(lines) > 1 and estimate_tokens(_render_digest(lines + [marker])) > budget:
             lines.pop()
         lines.append(marker)
