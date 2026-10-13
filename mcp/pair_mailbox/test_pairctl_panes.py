@@ -230,7 +230,7 @@ class TestPaneOverride(PairTestCase):
         stderr = io.StringIO()
         with contextlib.redirect_stderr(stderr):
             self.assertEqual(1, self.ctl("pane", "--role", "opencode", "%987654"))
-        self.assertIn("больше нет", stderr.getvalue())
+        self.assertIn("no pane left", stderr.getvalue())
         self.assertNotIn("pane_pin", self.pinned())
 
         # Теперь подложим протухшее закрепление напрямую — так оно выглядит после
@@ -397,8 +397,8 @@ class TestPanes(PairTestCase):
         with w, r:
             code, out = self.ctl_panes()
         self.assertEqual(0, code)
-        self.assertIn("НАШ", out)
-        self.assertIn("чужой", out)
+        self.assertIn("OURS", out)
+        self.assertIn("foreign", out)
         self.assertIn("writer-agent", out)
 
     def test_without_tmux_reports_instead_of_lying(self) -> None:
