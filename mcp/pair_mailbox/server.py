@@ -1392,9 +1392,9 @@ class PairSession:
         # direction — never clearing would leave a phantom %1 pointing at whatever
         # window now owns that id.
         # Stale-record cleanup walks the address, not the "own pane" fact:
-        # если свою панель отвергли как чужую, уборка всё равно нужна, иначе
-        # роль с мёртвым pid и несуществующей панелью осталась бы в ростере
-        # навсегда. Проверка «есть ли своя панель» молча выключала бы её.
+        # when our own pane is refused as foreign, cleanup is still due — or a
+        # role with a dead pid and a missing pane would sit in the roster forever.
+        # The "is there our own pane" check would silently switch it off.
         for other_name, other_info in list(roles.items()):
             if other_name != self.role and same_pane(pane or rejected,
                                                      other_info.get("pane")):
@@ -3885,8 +3885,8 @@ class MCPServer:
         self._watch_thread: threading.Thread | None = None
 
     def send(self, payload: dict[str, Any]) -> None:
-        # stdout — общий ресурс главного цикла и нити-наблюдателя: без framing-lock
-        # два json.dumps вперемешку ломают поток, и клиент читает мусор.
+        # stdout is the shared resource of the main loop and the watcher thread: with no
+        # framing-lock two interleaved json.dumps break the stream, and the client reads garbage.
         with self._notify_lock:
             sys.stdout.write(json.dumps(payload, ensure_ascii=False) + "\n")
             sys.stdout.flush()
@@ -4004,11 +4004,11 @@ class MCPServer:
         text = json.dumps(result, ensure_ascii=False, indent=2)
         self.reply(request_id, {"content": [{"type": "text", "text": text}], "isError": False})
 
-    # Push — ускоритель, гарантия — mailbox (§7). Подписки — в памяти процесса,
-    # без durable: умер процесс — умерла и подписка, клиент переподписывается.
-    # Транспорт между процессами — только файлы: send пишет notify-файл,
-    # нить-наблюдатель своего процесса его подбирает и шлёт notification
-    # под framing-lock stdout. Нет listen у хоста — работает long-poll pair_read.
+    # Push is the accelerator, the mailbox is the guarantee (§7). Subscriptions live in
+    # process memory, never durable: the process died means the subscription died, the
+    # client resubscribes. Cross-process transport is files only: send writes a notify
+    # file, our own process watcher thread picks it up and sends the notification under
+    # the stdout framing-lock. With no host listen, long-poll pair_read serves.
     def notify(self, uri: str) -> None:
         with self._notify_lock:
             for sub_id, sub_uri in list(self._subscriptions.items()):
@@ -4017,17 +4017,17 @@ class MCPServer:
                                "params": {"uri": uri, "subscriptionId": sub_id}})
 
     def start_watcher(self) -> None:
-        """Нить-наблюдатель файлового транспорта: раз в 0.3с разбирает свою
-        очередь resource-update (notify-файлы от send любого процесса) и шлёт
-        notification живым подпискам. Демон-thread, без durable: умер сервер —
-        очередь в файлах остаётся, подписки нет, клиент переподписывается."""
+        """The file-transport watcher thread: every 0.3s drains our resource-update queue
+        (notify files from any process send) and notifies live subscriptions. A
+        daemon thread, never durable: the server died means the queue stays in files,
+        subscriptions gone, the client resubscribes."""
         def loop() -> None:
             while not self._watch_stop.is_set():
                 try:
                     uris = self.session.store.drain_resource_updates(self.session.role)
                     for uri in uris:
                         self.notify(uri)
-                except Exception as exc:  # noqa: BLE001 - наблюдатель не должен убить сервер
+                except Exception as exc:  # noqa: BLE001 - the watcher must never kill the server
                     log(f"notify watcher error: {exc!r}")
                 self._watch_stop.wait(0.3)
         self._watch_thread = threading.Thread(target=loop, daemon=True)
@@ -4039,15 +4039,15 @@ class MCPServer:
     def on_resources_list(self, request_id: Any, params: dict[str, Any]) -> None:
         role = self.session.role
         self.reply(request_id, {"resources": [
-            {"uri": f"mailbox://{role}", "name": f"Входящие роли {role}",
+            {"uri": f"mailbox://{role}", "name": f"Incoming roles {role}",
              "mimeType": "application/json"},
-            {"uri": "obligations://", "name": "Открытые ожидания ответов",
+            {"uri": "obligations://", "name": "Open answer waits",
              "mimeType": "application/json"},
         ]})
 
     def on_resources_templates_list(self, request_id: Any, params: dict[str, Any]) -> None:
         self.reply(request_id, {"resourceTemplates": [
-            {"uriTemplate": "mailbox://{role}", "name": "Входящие роли",
+            {"uriTemplate": "mailbox://{role}", "name": "Incoming roles",
              "mimeType": "application/json"},
         ]})
 
@@ -4055,7 +4055,7 @@ class MCPServer:
         uri = params.get("uri", "")
         role = self.session.role
         if uri not in (f"mailbox://{role}", "obligations://"):
-            raise ProtocolError(f"неизвестный ресурс {uri!r}: подписка только на mailbox://{role} и obligations://")
+            raise ProtocolError(f"unknown resource {uri!r}: subscribe only to mailbox://{role} and obligations://")
         sub_id = f"sub-{uuid.uuid4().hex[:8]}"
         self._subscriptions[sub_id] = uri
         self.reply(request_id, {"subscriptionId": sub_id})
@@ -4074,15 +4074,15 @@ class MCPServer:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Единственная точка входа: MCP-сервер или команда `pairctl`.
+    """The single entry point: the MCP server or a `pairctl` command.
 
-    Имя и путь этого файла менять нельзя: от них зависят `serve.sh`,
-    `install.sh` и конфигурация MCP у всех четырёх ролей. Поэтому сам `pairctl`
-    вынесен в `pairctl_cli.py` и зовётся отсюда, а не наоборот.
+    This file name and path must never move: `serve.sh`, `install.sh` and the MCP
+    config of all four roles depend on them. So `pairctl` itself lives in
+    `pairctl_cli.py`, called from here, not the reverse.
 
-    `run_ctl` импортируется лениво: модули `pairctl_*` импортируют `server`, и
-    на верхнем уровне получился бы цикл импорта. Внутри функции цикла нет,
-    потому что к этому моменту `server` уже загружен.
+    `run_ctl` imports lazily: the `pairctl_*` modules import `server`, and top level
+    would close an import cycle. Inside the function no cycle forms, because by then
+    `server` already loads.
     """
     from pairctl_cli import build_parser, run_ctl
     from pairctl_read import extract_pane, extract_state
