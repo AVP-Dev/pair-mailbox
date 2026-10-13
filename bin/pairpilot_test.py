@@ -231,6 +231,31 @@ class TestWakeFileIntegrity(PilotCase):
         self.assertIn("непрочитанных", " ".join(second["reasons"]),
                       "второй повод обязан быть виден в том же файле")
 
+    def test_a_damaged_wake_file_is_removed_not_reread(self) -> None:
+        """Битый wake-файл удаляется, а не читается каждый тик.
+
+        Без удаления каждый тик падает на разборе, пишет
+        `pilot_wake_damaged` и оставляет файл — бесконечная запись
+        в транскрипт о том же битом файле. Опрос зовём напрямую:
+        полный `tick()` до опроса ставит свежие пробуждения
+        (`unread_peers`) и перетёр бы битую фикстуру валидным файлом.
+        """
+        state = self.write_state(writer="agy", roles={"agy": {"last_seen": now_iso(), "pid": 1, "pane": "%1"}})
+        pilot = self.pilot()
+        damaged = pilot.wake_root / "agy.json"
+        damaged.parent.mkdir(parents=True, exist_ok=True)
+        damaged.write_text("{not json", encoding="utf-8")
+        pilot.poll_wakes(state)
+        self.assertFalse(damaged.exists(),
+                         "битый файл обязан исчезнуть после опроса")
+        self.assertIn("pilot_wake_damaged", self.transcript_kinds(),
+                      "факт битого файла обязан попасть в транскрипт")
+        before = len(self.transcript_entries())
+        pilot.poll_wakes(state)
+        self.assertEqual(before, len(self.transcript_entries()),
+                         "повторный опрос не пишет о том же файле: его уже нет")
+
+
 
 class TestLiveness(PilotCase):
     def test_silent_writer_is_woken_silently(self) -> None:
