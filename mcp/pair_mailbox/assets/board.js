@@ -1,6 +1,6 @@
-/* Клиент дашборда. Рисует снимок, вложенный в страницу, и НИЧЕГО не запрашивает.
- * Весь текст из снимка вставляется через textContent.
- * Инвариант: Zero HTML Injection.
+/* Dashboard client. Draws the inlined snapshot and requests NOTHING.
+ * All snapshot text inlines via textContent.
+ * Invariant: Zero HTML Injection.
  */
 (function () {
   "use strict";
@@ -73,7 +73,7 @@
     var button = document.getElementById("theme-toggle");
     var dark = theme === "dark";
     if (button) {
-      button.textContent = dark ? "светлая" : "тёмная";
+      button.textContent = dark ? "light" : "dark";
       button.setAttribute("aria-pressed", String(dark));
     }
     remember(THEME_KEY, theme);
@@ -86,10 +86,10 @@
 
   function renderRound(snap) {
     var info = snap.round || {};
-    var box = panel("раунд " + (info.number === undefined ? "?" : info.number));
+    var box = panel("round " + (info.number === undefined ? "?" : info.number));
     if (info.task) {
       var goal = el("div", "hero-goal");
-      goal.appendChild(el("span", "hero-badge", "ЦЕЛЬ"));
+      goal.appendChild(el("span", "hero-badge", "GOAL"));
       goal.appendChild(el("span", "hero-text", info.task));
       box.appendChild(goal);
     }
@@ -102,23 +102,23 @@
     });
     box.appendChild(track);
     box.appendChild(kv([
-      ["фаза", info.phase || "?", info.closed ? "ok" : "warn"],
-      ["режим", info.mode === "audit" ? "AUDIT (правок нет)" : (info.mode || "fix")],
-      ["автономность", info.autonomy || "?"],
-      ["пишет", (info.writer || "—") + (info.writer_reason ? " — " + info.writer_reason : "")],
-      ["состояние записано", info.state_age || "—", info.state_age_seconds > 900 ? "warn" : ""],
-      ["событий", (snap.counts ? snap.counts.events_shown + " из " + snap.counts.events_total : "?") +
-        (snap.watch ? " · обновляется" : " · не обновляется")]
+      ["phase", info.phase || "?", info.closed ? "ok" : "warn"],
+      ["mode", info.mode === "audit" ? "AUDIT (no edits)" : (info.mode || "fix")],
+      ["autonomy", info.autonomy || "?"],
+      ["writes", (info.writer || "\u2014") + (info.writer_reason ? " — " + info.writer_reason : "")],
+      ["state recorded", info.state_age || "\u2014", info.state_age_seconds > 900 ? "warn" : ""],
+      ["events", (snap.counts ? snap.counts.events_shown + " of " + snap.counts.events_total : "?") +
+        (snap.watch ? " \u00b7 live" : " \u00b7 static")]
     ]));
     if (info.task) box.appendChild(el("p", "muted", info.task));
     return box;
   }
 
   function renderRoles(snap) {
-    var box = panel("агенты");
+    var box = panel("agents");
     var roles = snap.roles || [];
     if (!roles.length) {
-      box.appendChild(el("p", "muted", "роли не зарегистрированы"));
+      box.appendChild(el("p", "muted", "no roles registered"));
       return box;
     }
     var closed = !!(snap.round && snap.round.closed);
@@ -131,14 +131,14 @@
       } else {
         line.appendChild(el("span", "tag critic", "critic"));
       }
-      var paneText = "панель " + (role.pane || "—");
+      var paneText = "pane " + (role.pane || "\u2014");
       if (role.pane_human && role.pane_human !== role.pane) {
         paneText += " [" + role.pane_human + "]";
       }
       line.appendChild(el("span", "muted", paneText +
         " · pid " + (role.pid == null ? "—" : role.pid) +
-        (role.pid == null ? "" : (role.pid_alive ? " жив" : " мёртв")) +
-        " · молчит " + (role.silence || "—")));
+        (role.pid == null ? "" : (role.pid_alive ? " alive" : " dead")) +
+        " \u00b7 silent " + (role.silence || "\u2014")));
       if (role.pane_note) line.appendChild(el("span", "warn", role.pane_note));
       if (role.restored_by) line.appendChild(el("span", "muted", role.restored_by));
       box.appendChild(line);
@@ -148,16 +148,16 @@
 
   function renderPilot(snap) {
     var pilot = snap.pilot || {};
-    var box = panel("сверхвизор");
+    var box = panel("supervisor");
     box.appendChild(kv([
-      ["процесс", pilot.running ? "жив, pid " + pilot.pid : "не найден",
+      ["process", pilot.running ? "alive, pid " + pilot.pid : "not found",
         pilot.running ? "ok" : "warn"],
-      ["лог", (pilot.log_size || 0) + " б, изменён " + pilot.log_age + " назад"],
-      ["отчёт", pilot.report_exists ? "есть, обновлён " + pilot.report_age + " назад" : "нет",
+      ["log", (pilot.log_size || 0) + " B, changed " + pilot.log_age + " ago"],
+      ["report", pilot.report_exists ? "yes, updated " + pilot.report_age + " ago" : "no",
         pilot.report_exists ? "" : "warn"],
-      ["отказов в показанных событиях", String(pilot.refusals === undefined ? 0 : pilot.refusals),
+      ["refusals in shown events", String(pilot.refusals === undefined ? 0 : pilot.refusals),
         pilot.refusals ? "warn" : ""],
-      ["последнее действие", pilot.last || "—"]
+      ["last action", pilot.last || "\u2014"]
     ]));
     return box;
   }
@@ -165,23 +165,23 @@
   function taskNode(task) {
     var line = el("div", "task " + task.status);
     line.appendChild(el("div", "text", "#" + task.id + " " + task.text));
-    line.appendChild(el("div", "muted", task.status + " · раунд " + (task.round === null ? "?" : task.round) +
-      (task.added_by ? " · " + task.added_by : "") + (task.closed_by ? " · закрыл " + task.closed_by : "")));
-    if (task.reason) line.appendChild(el("div", "muted", "причина: " + task.reason));
+    line.appendChild(el("div", "muted", task.status + " \u00b7 round " + (task.round === null ? "?" : task.round) +
+      (task.added_by ? " \u00b7 " + task.added_by : "") + (task.closed_by ? " \u00b7 closed by " + task.closed_by : "")));
+    if (task.reason) line.appendChild(el("div", "muted", "cause: " + task.reason));
     return line;
   }
 
   function renderTasks(snap) {
-    var box = panel("задачи");
+    var box = panel("tasks");
     var tasks = snap.tasks || [];
-    if (!tasks.length) return box.appendChild(el("p", "muted", "задач нет")), box;
+    if (!tasks.length) return box.appendChild(el("p", "muted", "no tasks")), box;
     var open = [], done = [];
     tasks.forEach(function (t) { (t.status === "open" ? open : done).push(t); });
-    if (!open.length) box.appendChild(el("p", "tasks-clean", "Все текущие задачи выполнены"));
+    if (!open.length) box.appendChild(el("p", "tasks-clean", "All current tasks done"));
     else open.forEach(function (t) { box.appendChild(taskNode(t)); });
     if (done.length) {
       var det = el("details", "task-archive");
-      det.appendChild(el("summary", "muted", "Архив задач (" + done.length + ")"));
+      det.appendChild(el("summary", "muted", "Task archive: " + done.length));
       done.forEach(function (t) { det.appendChild(taskNode(t)); });
       box.appendChild(det);
     }
@@ -189,10 +189,10 @@
   }
 
   function renderDiscussion(snap) {
-    var box = panel("последнее обсуждение");
+    var box = panel("latest discussion");
     var letters = snap.discussion || [];
     if (!letters.length) {
-      box.appendChild(el("p", "muted", "писем с текстом нет — только пинги или тишина"));
+      box.appendChild(el("p", "muted", "no letters with text — only pings or silence"));
       return box;
     }
     letters.forEach(function (letter) {
@@ -206,26 +206,26 @@
   }
 
   function renderWaiting(snap) {
-    var box = panel("кто кого ждёт");
+    var box = panel("who waits on whom");
     var waiting = snap.waiting || [];
     if (!waiting.length) {
-      box.appendChild(el("p", "tasks-clean", "никто никого не ждёт"));
+      box.appendChild(el("p", "tasks-clean", "nobody waits on anyone"));
       return box;
     }
     waiting.forEach(function (ob) {
       var line = el("div", "event");
       line.appendChild(el("span", "muted", "#" + ob.seq));
-      line.appendChild(el("span", "sum", (ob.from || "?") + " ждёт " + (ob.to || "?") + " — " + (ob.subject || "")));
+      line.appendChild(el("span", "sum", (ob.from || "?") + " waits " + (ob.to || "?") + " \u2014 " + (ob.subject || "")));
       box.appendChild(line);
     });
     return box;
   }
 
   function renderEvents(snap) {
-    var box = panel("события");
+    var box = panel("events");
     var list = el("div", "events");
     var events = snap.events || [];
-    if (!events.length) list.appendChild(el("p", "muted", "событий нет"));
+    if (!events.length) list.appendChild(el("p", "muted", "no events"));
     events.forEach(function (event) {
       var line = el("div", "event");
       if (ALARM.test(event.kind)) line.classList.add("alarm");
@@ -245,18 +245,18 @@
     var app = document.getElementById("app");
     while (app.firstChild) app.removeChild(app.firstChild);
     if (!snap) {
-      app.appendChild(el("p", "banner", "Снимок состояния не прочитан: страница повреждена. " +
-        "Пересоберите: bin/pairboard"));
+      app.appendChild(el("p", "banner", "State snapshot unread: the page is broken. " +
+        "Rebuild: bin/pairboard"));
       return;
     }
     if (snap.read_error) {
-      app.appendChild(el("p", "banner", "state.json не прочитан: " + snap.read_error));
+      app.appendChild(el("p", "banner", "state.json unread: " + snap.read_error));
     }
     document.getElementById("project").textContent =
-      (snap.project || "пара") + " · writer " + ((snap.round && snap.round.writer) || "—");
+      (snap.project || "pair") + " \u00b7 writer " + ((snap.round && snap.round.writer) || "\u2014");
     var stamp = clock(snap.generated_at);
-    document.getElementById("stamp").textContent = stamp === "—" ? "время сборки неизвестно"
-      : "собрано " + stamp + " UTC" + (snap.watch ? " · авто" : " · статично");
+    document.getElementById("stamp").textContent = stamp === "\u2014" ? "build time unknown"
+      : "built " + stamp + " UTC" + (snap.watch ? " \u00b7 auto" : " \u00b7 static");
 
     var topGrid = el("div", "grid kpi-grid");
     topGrid.appendChild(renderRound(snap));
@@ -290,7 +290,7 @@
     var paused = watchEnabled();
     var button = document.getElementById("watch-toggle");
     if (button) {
-      button.textContent = paused ? "обновлять" : "пауза";
+      button.textContent = paused ? "resume" : "pause";
       button.setAttribute("aria-pressed", String(paused));
     }
     var existing = document.querySelector('meta[http-equiv="refresh"]');

@@ -1,67 +1,67 @@
-/* Словарь видов событий журнала: машинное имя -> человеческое.
+/* Journal event-kind dictionary: machine name -> human word.
  *
- * Отдельный файл, а не объект внутри `board.js`, потому что это данные, а не
- * поведение: словарь меняется, когда в журнале появляется новый вид события, и
- * трогать ради этого код отрисовки не должен. Снимок же о словах не знает
- * принципиально — он отвечает за факты, и перевод фактов на язык человека есть
- * работа клиента.
+ * A separate file, not an object inside `board.js`, because this is data, not
+ * behaviour: the dict changes when a new event kind lands in the journal, and the
+ * render code must never be touched for that. The snapshot knows no words on
+ * principle — it owns facts, and translating facts into human language is the
+ * client job.
  *
- * Порядок — по важности для человека, а не по алфавиту: сбой панели человек
- * ищет глазами первым. Неизвестного вида в словаре нет, и клиент показывает его
- * имя как есть: выдумывать смысл события, которого никто не описал, нельзя.
+ * Order runs by human importance, not alphabet: the human looks for the pane
+ * failure first. No unknown kind lives in the dict, and the client shows its name
+ * as is: inventing meaning for an undescribed event is banned.
  */
 window.PAIRBOARD_LABELS = {
-  pane_collision: "конфликт панелей",
-  pane_dead: "панель мертва",
-  pane_address_canonical: "панель: канонический адрес",
-  role_collision: "конфликт ролей",
-  deliver_refused_foreign_pane: "доставка отказана: чужая панель",
-  ring_refused_foreign_pane: "звонок отказан: чужая панель",
-  refusal: "отказ",
-  pilot_restart_failed: "пилот: рестарт не удался",
-  pilot_restart_impossible: "пилот: рестарт невозможен",
-  pilot_restart_throttled: "пилот: рестарт отложен",
-  pilot_pane_dead: "пилот: панель мертва",
-  pilot_pane_missing: "пилот: панели нет",
-  pilot_pane_shared: "пилот: панель общая",
-  pilot_stale_role: "пилот: роль протухла",
-  pilot_wake_failed: "пилот: пробуждение не вышло",
-  pilot_wake_pending: "пилот: ждёт пробуждения",
-  pilot_wake_damaged: "пилот: файл пробуждения битый",
-  pilot_wake_acknowledged: "пилот: пробуждение принято",
-  pilot_unblock: "пилот: разблокировал",
-  pilot_unblock_refused: "пилот: разблокировка отказана",
-  pilot_report: "пилот: отчёт",
-  pilot_deliver: "пилот: доставил",
-  pilot_own_pane: "пилот: своя панель",
-  state_corrupt: "состояние повреждено",
-  damaged: "строка журнала повреждена",
-  transcript_rotated: "журнал в архив",
-  evidence: "свидетельство",
-  human_ok: "человек ок",
-  advance: "фаза",
-  claim: "захват прав",
-  release: "отказ от прав",
-  assign: "назначение",
-  mode: "режим",
-  autonomy: "автономность",
-  task_added: "задача добавлена",
-  task_closed: "задача закрыта",
-  task: "задачи",
-  patch_reserve: "патч зарезервирован",
-  patch_seal: "патч запечатан",
-  patch_verify: "патч проверен",
-  patch_applied: "патч применён",
-  patch_dropped: "патч брошен",
-  patch_release: "патч освобождён",
-  obligation_opened: "обязательство открыто",
-  obligation_answered: "обязательство закрыто",
-  deliver_busy: "доставка: композер занят",
-  deliver: "вставка в панель",
-  send: "письмо",
-  note_rotated: "заметка перенесена",
-  note: "заметка",
-  doorbell: "колокольчик",
-  roles: "состав",
-  roster_pruned: "состав урезан"
+  pane_collision: "pane collision",
+  pane_dead: "pane dead",
+  pane_address_canonical: "pane: canonical address",
+  role_collision: "role collision",
+  deliver_refused_foreign_pane: "delivery refused: foreign pane",
+  ring_refused_foreign_pane: "ring refused: foreign pane",
+  refusal: "refusal",
+  pilot_restart_failed: "pilot: restart failed",
+  pilot_restart_impossible: "pilot: restart impossible",
+  pilot_restart_throttled: "pilot: restart throttled",
+  pilot_pane_dead: "pilot: pane dead",
+  pilot_pane_missing: "pilot: no pane",
+  pilot_pane_shared: "pilot: pane shared",
+  pilot_stale_role: "pilot: role stale",
+  pilot_wake_failed: "pilot: wake failed",
+  pilot_wake_pending: "pilot: waits for wake-up",
+  pilot_wake_damaged: "pilot: wake file damaged",
+  pilot_wake_acknowledged: "pilot: wake acknowledged",
+  pilot_unblock: "pilot: unblocked",
+  pilot_unblock_refused: "pilot: unblock refused",
+  pilot_report: "pilot: report",
+  pilot_deliver: "pilot: delivered",
+  pilot_own_pane: "pilot: own pane",
+  state_corrupt: "state corrupt",
+  damaged: "journal line damaged",
+  transcript_rotated: "journal archived",
+  evidence: "evidence",
+  human_ok: "human ok",
+  advance: "phase",
+  claim: "authority claim",
+  release: "authority release",
+  assign: "assignment",
+  mode: "mode",
+  autonomy: "autonomy",
+  task_added: "task added",
+  task_closed: "task closed",
+  task: "tasks",
+  patch_reserve: "patch reserved",
+  patch_seal: "patch sealed",
+  patch_verify: "patch verified",
+  patch_applied: "patch applied",
+  patch_dropped: "patch dropped",
+  patch_release: "patch released",
+  obligation_opened: "obligation opened",
+  obligation_answered: "obligation answered",
+  deliver_busy: "delivery: composer busy",
+  deliver: "pane insert",
+  send: "letter",
+  note_rotated: "note rotated",
+  note: "note",
+  doorbell: "doorbell",
+  roles: "roster",
+  roster_pruned: "roster pruned"
 };

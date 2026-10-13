@@ -1,26 +1,25 @@
-"""Тесты сборки страницы (`board_render.py`) и её ассетов.
+"""Page-build tests (`board_render.py`) and its assets.
 
-Здесь проверяется не «красиво ли», а четыре вещи, на которых страница держится или
-на которых она молча ломается.
+Checked here is not "pretty or not" but the four things the page stands or
+silently breaks on.
 
-1. **Переносимость.** Собранный файл открывается двойным щелчком: ни одной внешней
-   ссылки, ни одного `fetch`, ни одного `XMLHttpRequest`. Проверка ловит саму
-   вероятную поломку этой схемы: кто-то добавит `<link>` к внешнему CSS «для
-   скорости», и страница будет работать у него и не работать ни у кого.
-2. **Данные не могут закрыть страницу.** Текст из журнала встраивается как JSON, и
-   `</script>` внутри письма обязан остаться текстом. Считается не «есть ли
-   подстрока», а разбирается ли результат и совпадает ли значение.
-3. **Инвариант токенов.** `docs/theme-tokens.md` требует «ноль жёстких цветов
-   вне токенов», а «требует» без проверки — это пожелание. Проверяется и
-   отсутствие `#hex`/`rgb()`, и то, что каждый `var(--x)` действительно объявлен:
-   опечатка в имени токена иначе даёт прозрачный фон и тихую поломку.
-4. **Никакого разбора HTML из данных.** `innerHTML` в клиенте означал бы, что
-   текст задачи может выполнить код на машине человека.
+1. **Portability.** The built file opens on a double click: zero external
+   links, zero `fetch`, zero `XMLHttpRequest`. The check catches the most
+   likely breakage of this scheme: someone adds an external CSS `<link>` "for
+   speed", and the page works for them and nobody else.
+2. **Data never closes the page.** Journal text inlines as JSON, and
+   `</script>` inside a letter must stay text. Counted is not "a substring
+   exists" but whether the result parses and the value matches.
+3. **Token invariant.** `docs/theme-tokens.md` demands "zero hard colors
+   outside tokens", and "demands" with no check is a wish. Checked are both
+   the `#hex`/`rgb()` absence and that every `var(--x)` is truly declared:
+   a token-name typo otherwise gives a transparent background and a quiet break.
+4. **No HTML parsing from data.** Client `innerHTML` would mean task text
+   running code on the human machine.
 
-Ассеты проверяются настоящие: подставив заглушки в `render_page`, легко получить
-зелёный набор, который ничего не проверял, поэтому заглушки используются только
-там, где проверяется сама сборка.
-"""
+Assets check real: stubbing `render_page` makes a green suite checking nothing,
+so stubs only stand where the build itself is checked.
+    """
 from __future__ import annotations
 
 import json
@@ -43,20 +42,20 @@ REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 SNAPSHOT_RE = re.compile(
     r'<script id="snapshot" type="application/json">(.*?)</script>', re.S)
 
-# Закрывающая последовательность script по спецификации HTML5: "</script", после
-# которого идёт tab, LF, FF, пробел, "/" или ">". Регулярное выражение с прогнозом,
-# потому что сам lookahead и есть часть правила, а не украшение.
+# The script closing sequence per the HTML5 spec: "</script" followed by
+# tab, LF, FF, space, "/" or ">". The regex uses lookahead because the
+# lookahead itself is part of the rule, not decor.
 SCRIPT_END_RE = re.compile(r"</script(?=[\t\n\f />])", re.I)
 
 
 def _role_line(tree: str, role: str) -> str:
-    """Строка роли в распечатанном дереве.
+    """The role line in the printed tree.
 
-    Дерево печатается построчно с отступом, и закрывающих тегов в нём нет: конец
-    строки роли — это первая следующая строка с отступом не глубже, чем у самой
-    строки роли. Ищется по имени роли внутри блока, а не «первым вхождением
-    буквы»: буква встречается и в заголовке панели, и в слове writer на другой
-    строке, и такой разбор проверял бы не то место, о котором думает.
+    The tree prints line by line with indent, and no closing tags live in it: the
+    role-line end is the first next line indented no deeper than the role line
+    itself. Sought by the role name inside the block, not by "first letter hit":
+    the letter also sits in the pane header and in the writer word on another
+    line, and such a parse would check the wrong place.
     """
     lines = tree.splitlines()
     for position, line in enumerate(lines):
@@ -70,15 +69,15 @@ def _role_line(tree: str, role: str) -> str:
                 break
             collected.append(follow)
         return "\n".join(collected)
-    raise AssertionError(f"роль {role!r} не найдена в дереве:\n{tree}")
+    raise AssertionError(f"role {role!r} never found in the tree:\n{tree}")
 
 
 def _script_blocks_per_html5(page: str) -> list[str]:
-    """Содержимое блоков `<script>` так, как их увидит браузер.
+    """The `<script>` block contents as the browser sees them.
 
-    Именно эта функция повторяет правило из спецификации, а не полагается на
-    разбор HTML-парсером: разрывы и незакрытые блоки — ровно тот дефект, который
-    здесь ловится, и он обязан быть виден в тесте, а не в браузере человека.
+    Exactly this function repeats the spec rule instead of trusting an HTML-parser
+    parse: breaks and unclosed blocks are exactly the defect caught here, and it
+    must show in the test, not in the human browser.
     """
     blocks: list[str] = []
     position = 0
@@ -93,10 +92,10 @@ def _script_blocks_per_html5(page: str) -> list[str]:
         blocks.append(page[start:match.start()])
         position = match.end()
 
-# Глобалы, которые вызываются, но не объявляются в файле.
+# Globals that are called but never declared in the file.
 BUILTINS = {"isNaN", "parseInt", "parseFloat", "setTimeout", "setInterval",
             "String", "Number", "Boolean", "Array", "Object", "JSON", "Math", "Date"}
-# Слова, которые выглядят как вызовы, но вызовами не являются.
+# Words that read as calls but never call.
 KEYWORDS = {"if", "for", "while", "switch", "catch", "function", "return", "typeof",
             "await", "else", "do", "try"}
 
@@ -107,13 +106,13 @@ def _stub_snapshot(**overrides) -> dict:
             "round": {"number": 3, "phase": "implement", "phases": ["scoping", "plan",
                       "implement", "verify", "done"], "phase_index": 3, "mode": "fix",
                       "autonomy": "auto", "writer": "a", "writer_reason": "",
-                      "task": "задача", "state_age": "1 с", "state_age_seconds": 1,
-                      "event_age": "1 с", "event_age_seconds": 1, "closed": False},
+                      "task": "task", "state_age": "1 s", "state_age_seconds": 1,
+                      "event_age": "1 s", "event_age_seconds": 1, "closed": False},
             "roles": [{"role": "a", "is_writer": True, "pane": "%0", "pane_alive": True,
-                       "pane_note": "", "pid": 1, "pid_alive": True, "silence": "1 с",
+                       "pane_note": "", "pid": 1, "pid_alive": True, "silence": "1 s",
                        "silence_seconds": 1, "restored_by": ""}],
             "pilot": {"running": False, "pid": None, "pids": [], "log_size": 0,
-                      "log_age": "1 с", "log_age_seconds": 1, "report_exists": False,
+                      "log_age": "1 s", "log_age_seconds": 1, "report_exists": False,
                       "report_age": "—", "report_age_seconds": None, "refusals": 0,
                       "last": "", "last_ts": None},
             "tasks": [], "events": [],
@@ -125,8 +124,8 @@ def _stub_snapshot(**overrides) -> dict:
 class AssembleTest(unittest.TestCase):
     def setUp(self) -> None:
         self.snapshot = _stub_snapshot()
-        # Свой каталог для двух тестов, которые пишут ассет на диск: поднимать
-        # ради них `Store` было бы приспособлением без нужды.
+        # Our own dir for the two tests writing an asset to disk: raising a `Store`
+        # for them would be scaffolding with no need.
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
         self.root = Path(self._tmp.name)
@@ -139,11 +138,11 @@ class AssembleTest(unittest.TestCase):
 
     def test_no_external_references_at_all(self):
         page = render_page(self.snapshot)
-        # Ни src, ни href на внешний ресурс: с `file://` страница не переживёт
-        # ни одного из них, и поломка выглядит как «у меня пустая страница».
+        # Neither src nor href to an outside resource: from `file://` the page survives
+        # none of them, and the breakage reads as "my page is blank".
         for match in re.findall(r'(?:src|href)\s*=\s*"([^"]*)"', page):
             self.assertFalse(match.startswith(("http", "//", "./", "/")),
-                             f"внешняя ссылка: {match}")
+                             f"outside link: {match}")
         self.assertNotIn("<link", page)
 
     def test_data_does_not_reach_the_network(self):
@@ -184,25 +183,25 @@ class AssembleTest(unittest.TestCase):
             self.assertIn(needed, parser.ids)
 
     def test_inlined_js_contains_no_script_closer(self):
-        # Находка agy: литерал закрывающего тега script в КОММЕНТАРИИ ассета.
-        # Ассет инлайнится внутрь <script>, и HTML5 закрывает элемент на такой
-        # строке независимо от того, комментарий это или код: всё остальное уезжает
-        # в страницу сырым текстом, DOM не строится, человек видит исходник.
-        # Проверка идёт по собранной странице, а не по исходнику, потому что
-        # именно собранная страница отдаётся браузеру.
+        # agy finding: the closing script tag literal in an asset COMMENT.
+        # The asset inlines inside <script>, and HTML5 closes the element on such a
+        # line whether comment or code: the rest rides into the page as raw text, the
+        # DOM never builds, the human sees source.
+        # The check runs on the built page, not the source, because the built page is
+        # exactly what the browser gets.
         page = render_page(self.snapshot)
         head, _, rest = page.partition("<script>\n")
-        self.assertTrue(rest, "в странице нет блока скриптов")
+        self.assertTrue(rest, "no script blocks on the page")
         body, _, _ = rest.partition("\n</script>")
         self.assertIsNone(breaks_out_of_script(body),
-                          "в инлайненном скрипте есть закрывающий тег script")
-        # Ровно три закрывающих тега на страницу: снимок, скрипты, и ничего лишнего.
+                          "the inlined script holds a closing script tag")
+        # Exactly three closing tags per page: the snapshot, the scripts, nothing extra.
         self.assertEqual(page.lower().count("</script"), 2)
 
     def test_script_closer_in_a_comment_is_refused_by_the_renderer(self):
         hostile = self.root / "hostile.js"
         hostile.write_text(
-            "/* упоминание закрывающего тега: </script> идёт в комментарии */\n"
+            "/* mentioning the closing tag: </script> goes in a comment */\n"
             "console.log(1);\n", encoding="utf-8")
         with self.assertRaises(AssetError) as caught:
             load_asset(hostile, in_script=True)
@@ -211,70 +210,70 @@ class AssembleTest(unittest.TestCase):
         self.assertIn("line 1", message)
 
     def test_a_working_slash_sequence_is_not_a_breaker(self):
-        # Регулярка `/<\\/script/` содержит ту же букву, но страницу не ломает.
-        # Проверка по подстроке запрещала бы писать в ассете рабочий код, поэтому
-        # отличать надо по следующему символу, а не по наличию букв.
+        # The `/<\\/script/` regex holds the same letter but never breaks the page.
+        # A substring check would ban working code in the asset, so the next char must
+        # tell, not the letter presence.
         safe = self.root / "safe.js"
         safe.write_text("var re = /<\\/script/;\nconsole.log(re);\n", encoding="utf-8")
         self.assertIsNone(breaks_out_of_script(safe.read_text(encoding="utf-8")))
         self.assertTrue(load_asset(safe, in_script=True))
 
     def test_every_breaker_shape_is_detected(self):
-        # Правило из спецификации: за "</script" закрывает tab, LF, FF, пробел,
-        # "/" или ">". Каждая форма проверена, иначе правило проверяется на одном
-        # примере и не значит ничего.
+        # The spec rule: tab, LF, FF, space closes past "</script",
+        # "/" or ">". Every shape is checked, or the rule is checked on one example
+        # and means nothing.
         for terminator in SCRIPT_END_TERMINATORS:
             self.assertIsNotNone(breaks_out_of_script("x</script" + terminator + "y"),
-                                 f"не замечен разделитель {terminator!r}")
-        # Регистр не важен, и не-разделитель после букв не закрывает.
+                                 f"unnoticed separator {terminator!r}")
+        # Case never matters, and a non-separator past the letters never closes.
         self.assertIsNotNone(breaks_out_of_script("</SCRIPT>"))
         self.assertIsNone(breaks_out_of_script("</scripta>"))
 
     def test_real_assets_are_clean(self):
         for path in JS_ORDER:
             self.assertIsNone(breaks_out_of_script(path.read_text(encoding="utf-8")),
-                              f"{path.name} содержит закрывающий тег script")
+                              f"{path.name} holds a closing script tag")
 
     def test_client_code_survives_as_one_whole_script_block(self):
-        """Сильная форма той же проверки: блоки скриптов вырезаются по правилу HTML5.
+        """The strong shape of the same check: script blocks cut on the HTML5 rule.
 
-        `HTMLParser` из stdlib разрывает `<script>` на литерале `</script>` так же,
-        как браузер, — но молча: тест, проверяющий только id элементов, такой разрыв
-        не замечает, потому что атрибуты разметки никуда не делись, и страница проходит
-        проверку с кашей из исходника вместо отрисовки. Именно это и произошло с
-        нашим набором до правки: 41 тест были зелёными на сломанной странице.
+        `HTMLParser` from stdlib tears `<script>` on the `</script>` literal just
+        like the browser — but silently: a test checking only element ids never
+        notices such a tear, because markup attributes went nowhere, and the page
+        passes with source mush instead of rendering. Exactly what happened to
+        our suite before the fix: 41 tests green on a broken page.
 
-        Здесь проверяется не «есть ли в файле подстрока», а то, что браузер видит:
-        блок скриптов ровно один, и клиентский код в нём целый — от `function` до
-        финального вызова `render`.
+        Checked here is not "does the file hold a substring" but what the browser
+        sees: exactly one script block, and the client code whole inside — from
+        `function` to the final `render` call.
         """
         page = render_page(self.snapshot)
         blocks = _script_blocks_per_html5(page)
-        # Блок снимка открывается тегом с атрибутами, а не голым <script>, поэтому
-        # регулярка находит ровно один блок — клиентский. Снимок проверяется
-        # отдельно, через SNAPSHOT_RE и json.loads.
-        self.assertEqual(len(blocks), 1, "клиентский скрипт разорван на части")
+        # The snapshot block opens with an attributed tag, not a bare <script>, so the
+        # the regex finds exactly one block — the client one. The snapshot is checked
+        # apart, through SNAPSHOT_RE and json.loads.
+        self.assertEqual(len(blocks), 1, "the client script is torn apart")
         client = blocks[0]
         for fragment in ("function readSnapshot", "function renderRound",
                          "function renderEvents", "render(readSnapshot());"):
             self.assertIn(fragment, client,
-                          f"клиент потерял {fragment!r}: блок разорван")
+                          f"the client lost {fragment!r}: the block is torn")
 
     def test_toggles_are_real_buttons_with_types(self):
         page = render_page(self.snapshot)
-        # Кликабельный div — прямо запрещённый §4 docs/theme-tokens.md.
+        # A clickable div is directly banned by §4 of docs/theme-tokens.md.
         self.assertEqual(len(re.findall(r'<button type="button"', page)), 2)
 
     def test_refresh_meta_appears_only_in_watch_mode(self):
-        # Ищется сам тег, а не подстрока: клиент содержит селектор
-        # `meta[http-equiv="refresh"]`, и проверка по строке искала бы его.
+        # Sought is the tag itself, not a substring: the client holds the selector
+        # `meta[http-equiv="refresh"]`, and a line check would look for it.
         tag = re.compile(r'<meta\s+http-equiv="refresh"\s+content="(\d+)"\s*>')
         self.assertEqual(tag.findall(render_page(self.snapshot)), [])
         self.assertEqual(tag.findall(render_page(self.snapshot, refresh_seconds=5)), ["5"])
 
     def test_watch_seconds_reach_the_body_attribute(self):
-        # Клиент пересоздаёт тег refresh при снятии паузы и не должен при этом
-        # выдумывать период: он берётся отсюда.
+        # The client recreates the refresh tag on unpause and must never invent the
+        # period there: it reads from here.
         self.assertIn('<body data-watch-seconds="5">',
                       render_page(self.snapshot, refresh_seconds=5))
         self.assertIn('<body data-watch-seconds="0">', render_page(self.snapshot))
@@ -283,7 +282,7 @@ class AssembleTest(unittest.TestCase):
         page = render_page(self.snapshot)
         first = page.index("PAIRBOARD_LABELS")
         second = page.index("restoreTheme()")
-        self.assertLess(first, second, "словарь обязан грузиться раньше клиента")
+        self.assertLess(first, second, "the dictionary must load before the client")
 
     def test_assets_can_be_replaced_for_assembly_checks(self):
         page = render_page(_stub_snapshot(), css="/*c*/", js="/*j*/")
@@ -292,14 +291,14 @@ class AssembleTest(unittest.TestCase):
         self.assertNotIn("--background", page)
 
     def test_title_is_html_escaped(self):
-        page = render_page(_stub_snapshot(project="<b>проект</b>"))
-        self.assertIn("&lt;b&gt;проект&lt;/b&gt;", page.split("</title>")[0])
+        page = render_page(_stub_snapshot(project="<b>project</b>"))
+        self.assertIn("&lt;b&gt;project&lt;/b&gt;", page.split("</title>")[0])
 
 
 class AssetTest(PairTestCase):
     def test_missing_asset_is_an_error_not_an_empty_page(self):
         with self.assertRaises(AssetError):
-            load_asset(CSS_FILE.parent / "нет-такого.css")
+            load_asset(CSS_FILE.parent / "no-such.css")
 
     def test_empty_asset_is_an_error(self):
         empty = self.root / "empty.css"
@@ -321,19 +320,18 @@ class AssetTest(PairTestCase):
 
 
 class ThemeContractTest(unittest.TestCase):
-    """Инвариант `docs/theme-tokens.md`: ноль жёстких цветов вне токенов.
+    """The `docs/theme-tokens.md` invariant: zero hard colors outside tokens.
 
-    Проверяются ОБЪЯВЛЕНИЯ, а не весь файл: комментарий, который объясняет запрет,
-    разумеется, пишется словами «#hex» и «rgb()», и проверка по всему тексту
-    запрещала бы писать объяснение инварианта. Комментарии вырезаются, и всё
-    остальное — уже утверждения, где голый цвет означает именно поломку.
+    Checked are DECLARATIONS, not the whole file: the comment explaining the ban
+    of course spells "#hex" and "rgb()", and a whole-text check would ban writing
+    the invariant explanation. Comments cut out, and the rest is claims, where a bare color means exactly breakage.
     """
 
     def setUp(self) -> None:
         raw = CSS_FILE.read_text(encoding="utf-8")
         self.css = re.sub(r"/\*.*?\*/", "", raw, flags=re.S)
-        # Удаление комментариев не должно оставлять файл пустым: иначе все
-        # проверки ниже проходили бы на пустоте.
+        # Deleting comments must never leave the file empty: otherwise every check
+        # below would pass on emptiness.
         self.assertIn("--background", self.css)
 
     def test_no_hex_colors(self):
@@ -345,65 +343,65 @@ class ThemeContractTest(unittest.TestCase):
     def test_every_hsl_reads_a_token(self):
         for use in re.findall(r"hsl\(([^)]*)\)", self.css):
             self.assertTrue(use.lstrip().startswith("var("),
-                            f"hsl() без токена: hsl({use})")
+                            f"hsl() with no token: hsl({use})")
 
     def test_every_referenced_token_is_declared(self):
         declared = set(re.findall(r"(--[\w-]+)\s*:", self.css))
         used = set(re.findall(r"var\((--[\w-]+)", self.css))
         missing = sorted(used - declared)
-        self.assertEqual(missing, [], f"используются необъявленные токены: {missing}")
+        self.assertEqual(missing, [], f"undeclared tokens in use: {missing}")
 
     def test_both_themes_declare_the_contract_tokens(self):
-        # Тёмная тема обязана быть полной: `docs/theme-tokens.md` §1 требует полного
-        # набора от каждой темы, а не «остальное наследуется от светлой».
+        # The dark theme must be complete: `docs/theme-tokens.md` §1 demands the full
+        # set from every theme, not "the rest inherits from light".
         dark = self.css.split('[data-theme="dark"]')[1]
         for token in REQUIRED_TOKENS:
-            self.assertIn(f"{token}:", dark, f"в тёмной теме нет {token}")
+            self.assertIn(f"{token}:", dark, f"missing in the dark theme: {token}")
 
     def test_both_themes_exist(self):
         self.assertIn(":root", self.css)
         self.assertIn('[data-theme="dark"]', self.css)
 
     def test_status_colours_are_tokens_too(self):
-        # Статусные цвета не входят в контракт, но объявляются токенами, иначе
-        # индикаторы пришлось бы красить голыми цветами и сломать инвариант выше.
+        # Status colors sit outside the contract but declare as tokens, or the
+        # indicators would need bare colors and break the invariant above.
         self.assertRegex(self.css, r"--ok\s*:")
         self.assertRegex(self.css, r"--bad\s*:")
         self.assertIn("hsl(var(--ok))", self.css)
 
 
 class ClientBehaviourTest(unittest.TestCase):
-    """Клиент запускается настоящий, а не «прочитан глазами».
+    """The client runs real, not "read with eyes".
 
-    Статические проверки инвариантов ловят опечатки в именах, но не ловят
-    `TypeError` на третьей строке отрисовки: до человека такой баг доходит
-    страницей с пустым `#app` и без единого слова об ошибке. Поэтому клиент
-    исполняется на минимальном DOM-заглушке — `document`, `localStorage`,
-    `createElement` — и дерево панели проверяется по факту.
+    Static invariant checks catch name typos but never a `TypeError` on the third
+    render line: such a bug reaches the human as a page with an empty `#app` and
+    not a word about the error. So the client executes on a minimal DOM stub —
+    `document`, `localStorage`,
+    `createElement` — and the pane tree is checked by fact.
 
-    Заглушка живёт в `scripts/`, а не в `assets/`: это приспособление для
-    проверки, у него нет соответствия исходнику, и в `assets/` оно попало бы в
-    сборку страницы, то есть в код, который увидят живые люди.
+    The stub lives in `scripts/`, not `assets/`: a check contraption with no
+    source counterpart — in `assets/` it would land in the page build, the code
+    live humans see.
 
-    Набор не поднимает `Store`: заглушке нужны только файлы ассетов и готовый
-    снимок, а проверка чтения состояния — работа `test_board_snapshot.py`.
+    The suite never raises `Store`: the stub wants only the asset files and a ready
+    snapshot; state-read checking is `test_board_snapshot.py` work.
     """
 
     def setUp(self) -> None:
         self.snapshot = _stub_snapshot()
         self.snapshot["events"] = [{"ts": "2026-01-01T00:00:00+00:00", "kind": "pilot_pane_dead",
-                                    "role": "pairpilot", "to": "", "summary": "панель мертва"}]
-        self.snapshot["tasks"] = [{"id": 1, "text": "задача", "status": "open", "round": 16,
-                                   "added_by": "agy", "closed_by": "", "reason": "важно"}]
+                                    "role": "pairpilot", "to": "", "summary": "pane dead"}]
+        self.snapshot["tasks"] = [{"id": 1, "text": "task", "status": "open", "round": 16,
+                                   "added_by": "agy", "closed_by": "", "reason": "important"}]
         self.tree, self.state = self._run_client(self.snapshot)
 
     def _run_client(self, snapshot: dict, seconds: str = "5"):
         runner = REPO_ROOT / "scripts" / "board-dom-stub.js"
         node = shutil.which("node")
         if node is None:
-            # Без node клиент нечем запустить, и проверка обязана честно сказать
-            # «пропущено», а не тихо стать зелёной, ни разу не выполнив код.
-            self.skipTest("node недоступен: клиент проверен только статически")
+            # With no node nothing runs the client, and the check must honestly say
+            # "skipped", never quietly turn green having run no code.
+            self.skipTest("node unreachable: the client is only statically checked")
         with tempfile.TemporaryDirectory() as tmp:
             snapshot_path = Path(tmp) / "snapshot.json"
             snapshot_path.write_text(json.dumps(snapshot, ensure_ascii=False),
@@ -411,58 +409,57 @@ class ClientBehaviourTest(unittest.TestCase):
             proc = subprocess.run([node, str(runner), str(LABELS_FILE), str(JS_FILE),
                                    str(snapshot_path), seconds],
                                   capture_output=True, text=True, timeout=60)
-        self.assertEqual(proc.returncode, 0, f"клиент упал: {proc.stderr[:400]}")
+        self.assertEqual(proc.returncode, 0, f"the client fell: {proc.stderr[:400]}")
         lines = proc.stdout.splitlines()
         tree = "\n".join(line for line in lines if line.startswith((" ", "<")))
         meta = [line for line in lines if line.startswith("---")]
         return tree, meta
 
     def test_client_renders_without_throwing(self):
-        self.assertIn("раунд 3", self.tree)
-        for heading in ("агенты", "сверхвизор", "задачи", "события"):
+        self.assertIn("round 3", self.tree)
+        for heading in ("agents", "supervisor", "tasks", "events"):
             self.assertIn(f"<h2 \"{heading}", self.tree)
 
     def test_client_shows_roles_tasks_and_events(self):
-        self.assertIn("панель %0", self.tree)
-        self.assertIn("#1 задача", self.tree)
-        self.assertIn("причина: важно", self.tree)
-        self.assertIn("панель мертва", self.tree)
+        self.assertIn("pane %0", self.tree)
+        self.assertIn("#1 task", self.tree)
+        self.assertIn("cause: important", self.tree)
+        self.assertIn("pane dead", self.tree)
 
     def test_theme_defaults_to_dark_and_is_stored(self):
         self.assertIn("--- theme: dark", self.state)
         self.assertIn("pairboard.theme", " ".join(self.state))
 
     def test_watch_period_comes_from_the_body_attribute(self):
-        # Клиент не должен выдумывать период: он берёт его из data-watch-seconds.
+        # The client must never invent the period: it takes it from data-watch-seconds.
         self.assertIn('--- refresh meta: ["7"]',
                       " ".join(self._run_client(self.snapshot, "7")[1]))
 
     def test_static_mode_still_gets_the_tag_at_the_servers_period(self):
-        # В статическом режиме генератор ставит период 0, и клиент не должен
-        # «помогать»: он создаёт тег refresh только по данным разметки и молчал
-        # бы на нулевом периоде, то есть страница получила бы content="0" —
-        # немедленную перезагрузку по кругу. Поэтому ноль обязан означать «тега
-        # нет вовсе», и это проверяется фактом, а не договорённостью.
+        # In static mode the generator sets period 0, and the client must never
+        # "help": it creates the refresh tag only from markup data, staying silent on a
+        # zero period — a page would get content="0", an instant reload loop. So zero
+        # must read "no tag at all", and that is checked by fact, not agreement.
+        # must read "no tag at all", and that is checked by fact, not agreement.
         _, meta = self._run_client(self.snapshot, "0")
         self.assertIn('--- refresh meta: []', " ".join(meta))
 
     def test_role_tags_are_mutually_exclusive(self):
-        """Писатель получает тег writer, остальные — critic, но не оба сразу.
+        """The writer gets the writer tag, the rest critic — never both at once.
 
-        Регрессия, найденная на живом экране и приехавшая патчем agy: строка роли
-        печатала `writer` и `critic` рядом, то есть утверждала, что один агент
-        одновременно пишет и критикует. Формально это ложь, которую читает человек,
-        а не дефект отрисовки: слово «critic» на строке писателя отвечает на
-        вопрос «кто сейчас проверяет», и два ответа на один вопрос — это уже не
-        ответ.
+        A regression found on the live screen in the agy patch: the role line
+        printed `writer` and `critic` side by side, claiming one agent both writes
+        and criticises. Formally a lie the human reads, not a render defect: the
+        "critic" word on the writer line answers "who checks now", and two answers
+        to one question are no longer an answer.
         """
         snapshot = _stub_snapshot()
         snapshot["roles"] = [
             {"role": "writer-agent", "is_writer": True, "pane": "%0", "pane_alive": True,
-             "pane_note": "", "pid": 1, "pid_alive": True, "silence": "1 с",
+             "pane_note": "", "pid": 1, "pid_alive": True, "silence": "1 s",
              "silence_seconds": 1, "restored_by": ""},
             {"role": "peer-agent", "is_writer": False, "pane": "%1", "pane_alive": True,
-             "pane_note": "", "pid": 2, "pid_alive": True, "silence": "1 с",
+             "pane_note": "", "pid": 2, "pid_alive": True, "silence": "1 s",
              "silence_seconds": 1, "restored_by": ""},
         ]
         tree, _ = self._run_client(snapshot)
@@ -474,8 +471,8 @@ class ClientBehaviourTest(unittest.TestCase):
         self.assertNotIn('"writer"', peer_line)
 
     def test_writer_role_is_labelled_even_without_other_roles(self):
-        # Роль одна, критик ещё не зарегистрировался: тег critic на строке
-        # писателя всё равно не должен появляться — это всё тот же вопрос.
+        # One role, the critic never registered: the critic tag on the writer line
+        # must never appear all the same — the very same question.
         tree, _ = self._run_client(_stub_snapshot())
         role_line = _role_line(tree, "a")
         self.assertIn("writer", role_line)
@@ -483,13 +480,13 @@ class ClientBehaviourTest(unittest.TestCase):
 
     def test_unreadable_snapshot_shows_a_banner_instead_of_a_blank_page(self):
         broken = _stub_snapshot()
-        broken["read_error"] = "state.json не читается: сломан"
+        broken["read_error"] = "state.json unreadable: broken"
         tree, _ = self._run_client(broken)
-        self.assertIn("state.json не прочитан", tree)
+        self.assertIn("state.json unread", tree)
 
 
 class ClientContractTest(unittest.TestCase):
-    """Инварианты `assets/board.js` — то, что страница делает с данными."""
+    """The `assets/board.js` invariants — what the page does with data."""
 
     def setUp(self) -> None:
         self.js = JS_FILE.read_text(encoding="utf-8")
@@ -497,51 +494,51 @@ class ClientContractTest(unittest.TestCase):
     def test_no_html_injection_api(self):
         for banned in ("innerHTML", "outerHTML", "insertAdjacentHTML", "document.write",
                        "eval("):
-            # Имена запрещённых API допускаются только в комментариях, где
-            # объясняется, почему их тут нет.
+            # Banned-API names pass only in comments explaining why they miss here.
+            # why they miss here.
             for line in self.js.splitlines():
                 if banned in line:
                     self.assertTrue(line.strip().startswith(("*", "/*", "//")),
-                                    f"{banned} в коде: {line.strip()}")
+                                    f"{banned} in code: {line.strip()}")
 
     def test_all_text_goes_through_text_content(self):
         self.assertIn("node.textContent = String(text)", self.js)
-        # Создание элементов идёт одним помощником, а не россыпью innerHTML.
+        # Element creation runs through one helper, never scattered innerHTML.
         self.assertIn("document.createElement(tag)", self.js)
 
     def test_calls_only_defined_functions(self):
-        # Опечатка в имени функции проходит синтаксическую проверку и падает в
-        # браузере как ReferenceError, то есть у человека, а не в гейте.
+        # A function-name typo passes the syntax check and falls in the browser as a
+        # ReferenceError — at the human, not in the gate.
         source = self.js
         defined = set(re.findall(r"function\s+([A-Za-z_$][\w$]*)", source))
         defined |= set(re.findall(r"var\s+([A-Za-z_$][\w$]*)", source))
-        # Параметры анонимных функций тоже не объявлены в файле: `draw` ниже
-        # объявлен ровно в момент вызова. Без них проверка ругалась бы на код,
-        # который совершенно корректен.
+        # Anonymous-function params never declare in the file either: `draw` below is
+        # declared exactly at call time. Without them the check would scold perfectly
+        # valid code.
         defined |= set(re.findall(r"function\s*\(\s*([A-Za-z_$][\w$]*)", source))
         defined |= BUILTINS | KEYWORDS
         called = re.findall(r"(?<![\.\w$])([a-z][\w$]*)\s*\(", source)
         missing = sorted({name for name in called if name not in defined})
-        self.assertEqual(missing, [], f"вызывается, но не объявлено: {missing}")
+        self.assertEqual(missing, [], f"called but undeclared: {missing}")
 
     def test_theme_choice_survives_a_reload(self):
-        # Страница перезагружается целиком, поэтому выбор темы обязан лежать в
-        # localStorage, а не в переменной: переменная пережила бы одну загрузку.
+        # The page reloads whole, so the theme choice must sit in localStorage, not a
+        # variable: a variable would survive one load.
         self.assertIn("localStorage", self.js)
         self.assertRegex(self.js, r'var\s+THEME_KEY\s*=\s*"')
         self.assertRegex(self.js, r"remember\(THEME_KEY, theme\)")
 
     def test_watch_pause_is_separate_from_theme(self):
-        # Две кнопки, две настройки: иначе нажатие «светлая» тихо останавливает
-        # автообновление, и человек удивляется замершей ленте.
+        # Two buttons, two settings: otherwise pressing "light" quietly stops the
+        # auto-refresh, and the human wonders at the frozen feed.
         self.assertIn('getElementById("theme-toggle")', self.js)
         self.assertIn('getElementById("watch-toggle")', self.js)
         theme_handler = self.js.split('getElementById("theme-toggle")')[1][:400]
         self.assertNotIn("setWatch", theme_handler)
 
     def test_status_has_three_states_not_two(self):
-        # «Не знаю» обязан быть отдельным состоянием: у агента без панели нет
-        # данных, и это не то же самое, что «панель мертва».
+        # "Unknown" must be its own state: an agent with no pane carries no data, and
+        # that differs from "pane dead".
         self.assertIn('return "unknown"', self.js)
         self.assertIn('return "bad"', self.js)
         self.assertIn('return "ok"', self.js)
@@ -567,7 +564,7 @@ class WritePageTest(PairTestCase):
                          render_page(_stub_snapshot()))
 
     def test_missing_parent_directory_is_created(self):
-        target = self.root / "глубоко" / "внутри" / "board.html"
+        target = self.root / "deep" / "inside" / "board.html"
         write_page(target, _stub_snapshot())
         self.assertTrue(target.exists())
 
@@ -584,14 +581,14 @@ class WritePageTest(PairTestCase):
 class EndToEndTest(PairTestCase):
     def test_real_state_produces_a_page_a_browser_can_open(self):
         self.store.mutate(lambda state: state.update(
-            task="дашборд", phase="implement", writer="writer-agent", round=16,
+            task="dashboard", phase="implement", writer="writer-agent", round=16,
             roles={"writer-agent": {"pid": 1, "pane": "", "last_seen": "2026-01-01T00:00:00+00:00"}}))
-        self.store.append_transcript("send", "agy", to="opencode", subject="привет")
+        self.store.append_transcript("send", "agy", to="opencode", subject="hello")
         page = render_page(build_snapshot(self.root, limit=5), refresh_seconds=5)
         raw = SNAPSHOT_RE.search(page).group(1)
         data = json.loads(raw)
         self.assertEqual(data["round"]["number"], 16)
-        self.assertEqual(data["events"][0]["summary"], "привет")
+        self.assertEqual(data["events"][0]["summary"], "hello")
         self.assertIn("PAIRBOARD_LABELS", page)
         self.assertIn("http-equiv=\"refresh\"", page)
 
