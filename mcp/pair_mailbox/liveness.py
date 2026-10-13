@@ -62,6 +62,7 @@ def peer_status(
     сам модуль mailbox не видит. Нет подсчёта — нет полей, а не нули:
     ноль означал бы «прочитано всё», а отсутствие данных — неизвестно.
     """
+    SILENT_AGENT_GRACE = 30 * 60
     phase = state.get("phase", "scoping")
     now = datetime.now(timezone.utc)
     out: dict[str, Any] = {}
@@ -77,6 +78,20 @@ def peer_status(
         closed = phase == "done"
         pid = info.get("pid")
         alive = alive_check(pid) if pid else None
+        # Сервер роли жив, а агента за ним нет: pid в ростере — pid сервера,
+        # и свежий last_seen пишет сам сервер при старте/обслуживании чужих
+        # вызовов. Роль, ни разу не отправившая ничего за grace после
+        # регистрации, — немая: письмо ей не прочитает никто (R85, pi).
+        mute = False
+        try:
+            born = info.get("first_seen")
+            years_old = (int((now - datetime.fromisoformat(born)).total_seconds())
+                         if born else 0)
+        except Exception:
+            years_old = 0
+        if (alive is not False and not closed and years_old > SILENT_AGENT_GRACE
+                and int(info.get("sends", 0) or 0) == 0):
+            mute = True
         hint = "Listening."
         if closed:
             hint = (
@@ -85,13 +100,17 @@ def peer_status(
             )
         elif alive is False:
             hint = f"Process is no longer running (PID {pid} is dead)."
+        elif mute:
+            hint = ("Server is up but the agent never spoke "
+                    "(no sends since registration). Raise it before writing.")
         out[name] = {
             "role": "writer" if name == writer else "critic",
             "last_seen": info.get("last_seen"),
             "silent_seconds": age,
             "alive": alive,
             "round_closed": closed,
-            "will_read_new_messages": not closed and (alive is not False),
+            "will_read_new_messages": not closed and (alive is not False)
+            and not mute,
             "hint": hint,
         }
         if unread is not None and name in unread:

@@ -12,6 +12,7 @@ from __future__ import annotations
 import os
 import sys
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -162,6 +163,43 @@ class TestWillReadNewMessages(unittest.TestCase):
             role="opencode", writer="opencode", alive_check=alive,
         )
         self.assertIn("pair_advance", status["pi"]["hint"])
+
+
+class TestMuteAgent(unittest.TestCase):
+    """Сервер жив, агента нет: pid в ростере — серверный (R85, pi)."""
+
+    def test_never_spoke_does_not_read(self) -> None:
+        status = liveness.peer_status(
+            state_with(roles={"pi": {
+                "first_seen": "2020-01-01T00:00:00+00:00",
+                "last_seen": "2020-01-05T00:00:00+00:00",
+                "pid": 99, "sends": 0, "reads": 0}}),
+            role="opencode", writer="opencode", alive_check=alive,
+        )
+        peer = status["pi"]
+        self.assertTrue(peer["alive"])
+        self.assertFalse(peer["will_read_new_messages"])
+        self.assertIn("never spoke", peer["hint"])
+
+    def test_sender_reads_despite_old_registration(self) -> None:
+        status = liveness.peer_status(
+            state_with(roles={"pi": {
+                "first_seen": "2020-01-01T00:00:00+00:00",
+                "last_seen": "2020-01-05T00:00:00+00:00",
+                "pid": 99, "sends": 3}}),
+            role="opencode", writer="opencode", alive_check=alive,
+        )
+        self.assertTrue(status["pi"]["will_read_new_messages"])
+
+    def test_fresh_registration_gets_grace(self) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        status = liveness.peer_status(
+            state_with(roles={"pi": {
+                "first_seen": now, "last_seen": now,
+                "pid": 99, "sends": 0}}),
+            role="opencode", writer="opencode", alive_check=alive,
+        )
+        self.assertTrue(status["pi"]["will_read_new_messages"])
 
 
 class TestSilentSeconds(unittest.TestCase):
