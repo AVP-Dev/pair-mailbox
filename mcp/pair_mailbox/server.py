@@ -1421,45 +1421,45 @@ class PairSession:
         entry["last_seen"] = utcnow()
         entry["pid"] = current_pid
         if pin and not pin_unverified:
-            # Переопределение выигрывает у окружения. Именно это и было сломано:
-            # ручная правка state.json не чинила ничего, потому что `_register`
-            # перезаписывал `pane` на каждом вызове любого инструмента. Такая
-            # «починка» жила ровно до следующего звонка.
+            # The override beats the environment. Exactly this lay broken: hand-editing
+            # state.json fixed nothing, because `_register` rewrote `pane` on every call of
+            # any tool. Such a "fix" lived exactly till the next ring.
+            # "fix" lived exactly till the next ring.
             #
-            # В транскрипт пишется отличие, а не сам факт: обновление идёт на
-            # каждом инструменте, и запись на каждом вызове засыпала бы журнал
-            # одинаковыми строками — ровно тот потолок, который здесь чинится.
+            # The transcript records the difference, not the fact itself: the update runs on
+            # every tool, and a record on every call would bury the journal in identical
+            # lines — exactly the ceiling fixed here.
             if entry.get("pane") != pin:
                 self.store.append_transcript("pane_pin_honoured", self.role,
                                              pane=pin, was=entry.get("pane"),
-                                             why="переопределение человека")
+                                             why="the human override")
             entry["pane"] = pin
             entry["pane_pin_why"] = pin_why
         elif pin_unverified:
-            # Закрепление сохраняется, но адрес НЕ остаётся `pane`. Иначе
-            # непроверенный адрес поехал бы в доставку, а весь смысл fail-closed
-            # в том, чтобы туда ничего не отправлялось: прошлая запись `pane` —
-            # это тот же самый адрес, просто из прошлого успешного подтверждения,
-            # и оставить её значило бы печатать в непроверенную панель.
-            # Причина записывается, чтобы человек видел, почему панель пропала.
+            # The pin stays, but the address never stays `pane`. Or an unchecked address
+            # would ride into delivery, while the whole fail-closed point is that nothing
+            # sends there: the old `pane` record is the same address, just from the last
+            # successful confirmation, and keeping it would print into an unchecked pane.
+            # and keeping it would print into an unchecked pane.
+            # The cause records, so the human sees why the pane is gone.
             entry.pop("pane", None)
-            entry["pane_pin_why"] = f"{pin_why}; не подтверждено, панель не используется"
+            entry["pane_pin_why"] = f"{pin_why}; unconfirmed, the pane stays unused"
         elif pane:
-            # Пишем устойчивый адрес `<сессия>:<окно>.<панель>`, а не %N: номер
-            # перенумеровывается и протухает в окружении процесса, имя с окном —
-            # нет. Обратная совместимость не выбирается: pane_exists, deliver и
-            # pane_is_foreign принимают оба формата, иначе обновление сломало бы
-            # доставку у всех живых ролей сразу.
+            # Write the stable `<session>:<window>.<pane>` address, not %N: the number
+            # renumbers and goes stale in the process environment, the name with a window
+            # never does. No backward compatibility to pick: pane_exists, deliver and
+            # pane_is_foreign take both shapes, or the upgrade would break delivery for all
+            # live roles at once.
             #
-            # В транскрипт пишется не «адрес изменился», а «адрес ИМЕНЯЕТСЯ»:
-            # запись повторяется на каждом вызове любого инструмента, и при
-            # буквальном сравнении она шла бы в транскрипт десятки раз за сессию
-            # и съедала бы ровно тот потолок, который здесь и чинится.
+            # The transcript never reads "address changed" but "address IS CHANGING": the
+            # record repeats on every call of any tool, and on a literal compare it would land
+            # in the transcript dozens of times per session, eating exactly the ceiling fixed
+            # here.
             address = ""
             if tmux:
-                # Именно session_address, а не canonical_pane: тот на отказе
-                # возвращает исходный вход, то есть неотличим от успеха, и
-                # «адрес не получился» было бы нечем заметить.
+                # Exactly session_address, not canonical_pane: the latter returns the raw input on
+                # refusal — reads as success — leaving "no address" nothing to notice by.
+                # refusal — reads as success — leaving "no address" nothing to notice by.
                 from composer import session_address
                 address = session_address(tmux, pane)
             previous = entry.get("pane")
@@ -1467,54 +1467,54 @@ class PairSession:
                 self.store.append_transcript(
                     "pane_address_canonical", self.role,
                     previous=previous or pane, canonical=address,
-                    why="%N перенумеровывается и протухает; сессия стабильна")
-            # Адрес не получился — молча продолжать на %N нельзя: тогда причина
-            # неустойчивой адресации навсегда остаётся невидимой. Запись в
-            # транскрипт — это тот случай, когда отсутствие факта само по себе
-            # является фактом.
+                    why="%N renumbers and goes stale; the session stays stable")
+            # No address came out — silently staying on %N is banned: then the unstable-
+            # addressing cause stays invisible forever. The transcript record is the case where
+            # a missing fact is itself a fact.
+            # is itself a fact.
             elif not address and previous != pane:
                 self.store.append_transcript(
                     "pane_address_unavailable", self.role,
                     pane=pane,
-                    why="имя сессии получить не удалось, адресация на %N неустойчива")
+                    why="the session name never resolved, %N addressing stays unstable")
             entry["pane"] = address or pane
             entry.pop("pane_provisional", None)
         elif provisional:
-            # Недоказанная, но живая панель: держим как provisional — доставка
-            # печатью запрещена, опросом работает, адрес чинится следующим
-            # доказательством. Снос здесь возвращал слепоту каждый тик.
+            # An unproven but live pane: held as provisional — delivery printing banned, poll
+            # works, the address heals on the next proof. Dropping here returned blindness every
+            # tick.
             entry["pane_provisional"] = provisional
             entry.pop("pane", None)
         else:
-            # Ни закрепления, ни своей панели, ни provisional — а в ростере
-            # уже стоит адрес. Это ровно тот заражённый случай: панель была
-            # записана, когда проверки ещё не было, и без явного снятия она
-            # жила бы вечно. Снимается с записью в транскрипт, потому что
-            # молчаливую починку нельзя отличить от того, что панели не было
-            # никогда.
+            # Neither a pin, nor our own pane, nor provisional — while the roster already holds
+            # an address. Exactly the infected case: the pane recorded before any check existed,
+            # living forever with no explicit drop. Drops with a transcript record, because a
+            # quiet fix reads as no pane ever was.
+            # a quiet fix reads as no pane ever was.
+            # never.
             stale = entry.get("pane")
-            # Запись, добавлённая владельцем (панель процежена) но снятая здесь,
-            # отличается от записи, которая никогда не проверялась: свою панель
-            # peer докажет в своём _register, здесь снос только гоняет слепоту.
-            # Ровно это ломало тест 4094: peer.tool_pair_read после отправки
-            # снимал %55, который писал только сам peer.
+            # A record added by the owner (pane strained) but dropped here differs from one
+            # never checked: the peer proves its own pane in its _register; dropping here only
+            # chases blindness.
+            # Exactly what broke test 4094: peer.tool_pair_read after sending dropped the %55
+            # only the peer itself wrote.
             if stale and not entry.get("pane_provisional"):
                 entry.pop("pane", None)
                 entry.pop("pane_pin_why", None)
                 self.store.append_transcript(
                     "pane_stale_dropped", self.role, pane=stale,
-                    why="панель не доказана как своя и не подтверждена закреплением",
+                    why="the pane never proven ours and never confirmed by a pin",
                 )
 
-            # Чужая панель СОСЕДА снимается здесь же, а не только своя.
-            # Причина та же: заражённая запись была записана до проверки, и
-            # ждать, пока владелец роли сам себя перерегистрирует, нельзя —
-            # он может и не появиться, а `pair_state` продолжит показывать
-            # соседа с панелью чужого проекта, и `pair_deliver` в неё
-            # целиться будет.
+            # The NEIGHBOUR foreign pane drops here too, not only ours. The cause matches:
+            # an infected record recorded before the check, and waiting for the role owner to
+            # re-register itself is banned — it may never show, while `pair_state` keeps showing
+            # the neighbour on another project pane, with `pair_deliver` aiming into it.
+            # the neighbour on another project pane, with `pair_deliver` aiming into it.
+            # keeps aiming into it.
             #
-            # Проверяется принадлежность проекту, а не живость: мёртвую панель
-            # снимает другой путь, и смешивать эти два факта нельзя.
+            # Project membership checks, not liveness: another path drops a dead pane, never
+            # mix the two facts.
             if tmux:
                 from composer import pane_belongs_to_project
 
@@ -1533,23 +1533,23 @@ class PairSession:
                             pane=other_pane, why=why_theirs,
                         )
 
-        # Самозалечивание ростера (#19.1 + #19.3): перепроверка панелей соседей
-        # и истечение мёртвых записей — при КАЖДОМ вызове, а не только когда
-        # своей панели нет. Старая ветка выше снимала лишь чужой проект и лишь
-        # без своей панели; recheck покрывает протухшие, чужие и занятые
-        # панели всегда, expire удаляет записи без панели после TTL молчания.
-        # Логика в roster_heal (решение по готовым фактам), здесь только вызов
-        # и запись событий в журнал. Без изменений — молча, иначе каждый вызов
-        # писал бы в журнал (тот же потолок, что у pane_pin_honoured).
+        # The roster self-heal (#19.1 + #19.3): neighbour pane recheck and dead-entry expiry
+        # on EVERY call, not only with no pane of ours. The old branch above dropped only
+        # the foreign project and only with no pane of ours; recheck covers stale, foreign
+        # and held panes always, expire deletes paneless entries past the quiet TTL.
+        # and held panes always; expire deletes paneless entries past the quiet TTL.
+        # Logic in roster_heal (decisions on ready facts), only the call and the journal
+        # records here. With no changes — silent, or every call would write into the journal
+        # (the same ceiling as pane_pin_honoured).
         if tmux:
             import roster_heal as _heal
-            # Сверка по уникальному ID панели: открыл — живёт, закрыл — умерла.
-            # Адрес `ml:0.2` плавает при сплитах, `%N` — при рестарте tmux;
-            # `%2751` уникален и умирает вместе с панелью. Пришёл со своим
-            # UID, а записан чужой — панель подменили, запись не трогаем.
+            # Reconciled on the pane unique ID: opened means living, closed means dead.
+            # The `ml:0.2` address floats on splits, `%N` on tmux restarts; `%2751` is unique
+            # and dies with the pane. Arrived with our own UID but recorded another — the pane
+            # swapped, the record stays untouched.
         try:
-            # UID берётся от ДОКАЗАННОЙ панели (pin/ancestry), а не от env:
-            # env у дёмона бывает чужим, и проверять чужую панель — мусор.
+            # The UID reads from the PROVEN pane (pin/ancestry), not env: daemon env runs
+            # foreign, and checking another pane is garbage.
             _uid_probe = (pane or env_pane) if tmux else ""
             _here = _ident(tmux, _uid_probe) if _uid_probe else {}
         except Exception:
@@ -1564,7 +1564,7 @@ class PairSession:
                     self.store.append_transcript(
                         "pane_uid_collision", self.role, other_role=_rn,
                         pane_uid=_uid_here,
-                        why="две роли на одной уникальной панели — доставка неразличима")
+                        why="two roles on one unique pane — delivery cannot tell apart")
                     break
         if pane and not pin:
             try:
@@ -1575,9 +1575,9 @@ class PairSession:
                 entry["pane_uid"] = _cur["pane_uid"]
                 entry["pane_session_id"] = _cur.get("session_id") or ""
         elif pane and pin and tmux and pane_exists(pane):
-            # Pin не обновлял UID — правлено 2026-10-07: stale env у дёмона
-            # оставлял pane_uid от чужой панели навсегда. Реальная панель
-            # доказывается тем же tmux-запросом, без наследованного env.
+            # Pin never refreshed the UID — fixed 2026-10-07: daemon stale env left another
+            # pane UID forever. The real pane proves by the same tmux query, with no inherited
+            # proved by the same tmux query, with no inherited env.
             try:
                 _cur = _ident(tmux, pane)
             except Exception:
@@ -1628,22 +1628,21 @@ class PairSession:
         return sorted(state.get("roles", {}))
 
     def _policy(self, state: dict[str, Any]) -> dict[str, Any]:
-        """Постоянная расстановка ролей, заданная человеком.
+        """The standing role policy, set by the human.
 
-        Без неё каждый раунд начинается гонкой, а гонка — это время впустую и
-        повод остановиться посреди работы. С ней всё известно заранее: один
-        всегда пишет, второй всегда ревьюит, и ни один не тратит ход на спор.
+        Without it every round starts with a race, and a race is wasted time plus
+        a reason to stall mid-work. With it all is known upfront: one always writes,
+        the other always reviews, and neither spends a move disputing.
 
-        Это решение человека, поэтому оно и хранится как решение человека, а не
-        как побочный эффект pair_claim.
+        A human decision, so stored as a human decision, not a pair_claim side effect.
         """
         policy = state.get("policy")
         if isinstance(policy, dict) and policy.get("writer"):
             return policy
-        # Глобальная расстановка действует, только если её писатель РЕАЛЬНО
-        # работает в этом проекте. Иначе она вредна: назначенной роли здесь нет,
-        # она не появится никогда, и право записи не возьмёт уже никто — работа
-        # встанет с причиной, которую никто не формулирует.
+        # The global policy holds only when its writer REALLY works in this project.
+        # Otherwise it harms: the named role misses here, never appears, and nobody
+        # ever takes write authority — the work stalls with a cause nobody phrases.
+        # stalls with a cause nobody phrases.
         roles = state.get("roles") or {}
         if roles:
             inherited = read_global_policy()
@@ -1660,10 +1659,10 @@ class PairSession:
             self._register(state)
             self.store._save(state)
 
-        # Кэш: неизменившееся состояние даёт короткий ответ вместо полного
-        # (~939 токенов, а агенты зовут это 3-4 раза за раунд). Отпечаток
-        # считает statecache — он не знает ни про git, ни про то, где лежат
-        # файлы обязательств, и потому не может разойтись с ответом.
+        # Cache: unchanged state answers short instead of full (~939 tokens, called 3-4
+        # times per round by agents). The fingerprint counts in statecache — knowing
+        # neither git nor where obligation files lie, it cannot drift from the answer.
+        # files lie, it cannot drift from the answer.
         if not statecache.cache_disabled():
             alive = {
                 name: liveness.pid_alive(info.get("pid"))
@@ -1744,39 +1743,39 @@ class PairSession:
                     "Only §12 stops you."
                 ),
             }[autonomy],
-            # Постоянная расстановка, если человек её задал. Тогда роль известна
-            # заранее и спор о праве записи не возникает вовсе.
+            # Standing policy, when the human set it. Then the role is known upfront and no
+            # write-authority dispute ever arises.
             "policy": self._policy(state) or None,
-            # Что я кому должен услышать. Показываю обоим: иначе про ожидание
-            # знает только сверхвизор, а это ровно то, о чём не знает никто.
+            # What I owe whom to hear. Shown to both: or only the supervisor knows about the
+            # wait — exactly what nobody knows.
             "obligations": {
-                # «Жду» — это обязательства, открытые МНОЮ. «От меня ждут» —
-                # обязательства, где я получатель. Путать их опасно: один вариант
-                # ведёт к ожиданию, другой к долгу, и лечатся они противоположно.
+                # "Waiting" means obligations I opened. "Awaited from me" means obligations where
+                # I receive. Confusing them is dangerous: one leads to waiting, the other to debt,
+                # and they cure oppositely.
                 "i_am_waiting_for": self._obligations_where("from", self.role),
                 "they_wait_for_me": self._obligations_where("to", self.role),
             },
             "my_standing": (
-                # Расстановка называет роль, держатель — факт. Совпадают не
-                # всегда: мёртвый holder блокирует назначенного (claim требует
-                # пустого writer), и текст без держателя читается как
-                # разрешение писать при you_are_writer=false.
-                # Writer-pin: пинится только писатель, критик — любой второй
-                # живой, его имя нигде не хранится и в текстах не называется.
-                "writer по постоянной расстановке, право у меня"
+                # Policy names the role, the holder is a fact. They never always match: a dead
+                # holder blocks the named one (claim demands an empty writer), and text with no
+                # holder reads as permission to write at you_are_writer=false.
+                # permission to write at you_are_writer=false.
+                # Writer-pin: only the writer pins, the critic is any second live one — its name
+                # never stores anywhere and never names in texts.
+                "writer by standing policy, the right is mine"
                 if policy_writer == self.role and writer == self.role
-                else "writer по постоянной расстановке, право свободно — забери через pair_claim"
+                else "writer by standing policy, the right is free — take it via pair_claim"
                 if policy_writer == self.role and not writer
-                else f"назначен писателем, право держит {writer!r} — забери через pair_claim, откажет лишь живому"
+                else f"assigned writer, the right held by {writer!r} — take it via pair_claim, refuses only the live"
                 if policy_writer == self.role
-                else f"критик (пишет {policy_writer!r}, держит {writer!r})"
+                else f"critic (writes {policy_writer!r}, holds {writer!r})"
                 if policy_writer
-                else "не задано, определяется гонкой"
+                else "unassigned, decided by race"
                 if not writer
-                else f"гонка за право, держит {writer!r}"
+                else f"race for the right, held by {writer!r}"
             ),
-            # Почему именно он пишет. Без этого сосед видит только факт и не может
-            # понять, спорить ему с выбором или принять его.
+            # Why this one writes. Without it the neighbour sees only the fact, never whether
+            # to dispute the pick or take it.
             "writer_reason": state.get("writer_reason", ""),
             "phase": current_phase,
             "round": state.get("round", 0),
@@ -1785,8 +1784,8 @@ class PairSession:
             "roles": self._known_roles(state),
             "unread": self._unread_count(state),
             "peers": self._peer_status(state, writer),
-            # Что ещё мешает закрыть раунд. Агент должен видеть это ДО того, как
-            # потратит ход на заведомо отказанный pair_advance("done").
+            # What else blocks the round close. The agent must see it BEFORE spending a move
+            # on a doomed pair_advance("done").
             "closing_blocked_by": self._done_blockers(state),
             "evidence_this_round": [
                 {"kind": item.get("kind"), "value": item.get("value"), "ok": item.get("ok"),
@@ -1804,9 +1803,9 @@ class PairSession:
         }
 
     def _peer_status(self, state: dict[str, Any], writer: str | None) -> dict[str, Any]:
-        """Живость соседей. Логика — в `liveness`: её читают оба агента, и она
-        проверяется там без поднятия сервера. Непрочитанные считаем здесь:
-        mailbox виден только серверу (P1 — затык виден за секунды)."""
+        """Neighbour liveness. The logic lives in `liveness`: both agents read it, checked
+        there with no server raised. Unread counts here: only the server sees the
+        mailbox (P1 — a stall shows in seconds)."""
         unread = self._peer_mailbox(state)[1]
         return liveness.peer_status(state, role=self.role, writer=writer, unread=unread)
 
@@ -1815,10 +1814,10 @@ class PairSession:
         return max(0, len(self._inbox_files()) - seen)
 
     def _peer_mailbox(self, state: dict[str, Any]) -> tuple[dict[str, list[str]], dict[str, int]]:
-        """Чужие ящики за один проход: имена — для отпечатка кэша, счётчики — для peers.
+        """Foreign mailboxes in one pass: names for the cache fingerprint, counters for peers.
 
-        Без имён письмо соседу не сдвигало отпечаток: вызыватель получал
-        `unchanged` без новых unread соседа, и затык оставался невидимым.
+        Without names a letter to the neighbour never moved the fingerprint: the caller
+        got `unchanged` with no new neighbour unread, and the stall stayed invisible.
         """
         seen = state.get("seen") or {}
         names: dict[str, list[str]] = {}
@@ -1855,10 +1854,10 @@ class PairSession:
 
     def _done_blockers(self, state: dict[str, Any]) -> list[str]:
         blockers = done_blockers(state)
-        # Очередь ревью и stale-вердикты (карточка review-queue).
-        # Писатель не блокируется в середине работы; блокировка — здесь,
-        # перед фиксацией результата. Всё fail-open: без git и без файлов
-        # обязательств раунд не держим.
+        # The review queue and stale verdicts (the review-queue card).
+        # The writer never blocks mid-work; the block sits here, before the result lands.
+        # Everything fail-open: with no git and no obligation files the round never holds.
+        # holds.
         try:
             from review import changed_between, dirty_files, git_head, is_stale
             pending = 0
@@ -1872,9 +1871,9 @@ class PairSession:
                         pending += 1
             if pending:
                 blockers.append(
-                    f"очередь висящих ревью не пуста (pending_reviews={pending}). "
-                    f"Раунд не закрывается поверх непрочитанного вердикта: "
-                    f"дождись ответов через pair_read или закрой лишние запросы."
+                    f"a pending review queue never empties (pending_reviews={pending}). "
+                    f"The round never closes over an unread verdict: "
+                    f"await answers via pair_read or close the extra requests."
                 )
             verdicts = [v for v in (state.get("verdicts") or []) if isinstance(v, dict)]
             if verdicts:
@@ -1888,13 +1887,13 @@ class PairSession:
                                           dirty_files(self.store.project_root))
                     if stale:
                         blockers.append(
-                            f"последний вердикт {last.get('role')}/{last.get('kind')} "
-                            f"stale относительно HEAD: {why}. "
-                            f"Применять его к новому коду нельзя — запроси повторное ревью."
+                            f"the last verdict {last.get('role')}/{last.get('kind')} "
+                            f"stale against HEAD: {why}. "
+                            f"Applying it to new code is banned — ask for a re-review."
                         )
-        except Exception:  # noqa: BLE001 - ревью-гейт не роняет закрытие
+        except Exception:  # noqa: BLE001 - the review gate never drops the close
             pass
-        try:  # подпись evidence не роняет закрытие; без ключа — как раньше
+        try:  # an evidence signature never drops the close; with no key — as before
             import rolekeys as _keys2
             for item in round_evidence(state):
                 env = item.get("envelope")
@@ -1909,11 +1908,11 @@ class PairSession:
                                                  evidence_kind=item.get("kind"),
                                                  evidence_value=str(item.get("value"))[:120])
                     blockers.append(
-                        f"evidence {item.get('kind')!r} с неверной подписью "
-                        f"не учитывается: {item.get('value')!r}. "
-                        f"Перезапиши факт своим ключом через pair_evidence."
+                        f"evidence {item.get('kind')!r} with a bad signature "
+                        f"never counts: {item.get('value')!r}. "
+                        f"Rewrite the fact under your own key via pair_evidence."
                     )
-        except Exception:  # noqa: BLE001 - подпись не роняет закрытие
+        except Exception:  # noqa: BLE001 - the signature never drops the close
             pass
         return blockers
 
@@ -1924,12 +1923,12 @@ class PairSession:
         return sorted(inbox.glob("*.json"), key=lambda p: p.name)
 
     def _writer_is_dead(self, state: dict[str, Any], writer: str) -> bool:
-        """Держатель мёртв как процесс и как панель: pid не жив И панели нет.
+        """The holder is dead as a process and as a pane: no live pid AND no pane.
 
-        Два факта, а не один: pid переиспользуется ядром, панель — tmux
-        (pane_exists fail-closed без tmux, поэтому без tmux это False и запись
-        живёт — угадывать смерть нельзя). Живой holder этим путём не отбирается
-        никогда: защита длинного сьюта из _writer_is_abandoned здесь в силе.
+        Two facts, not one: the kernel recycles pids, tmux recycles the pane
+        (pane_exists fail-closed with no tmux, so with no tmux this is False and the
+        record lives — guessing death is banned). A live holder never drops by this
+        path: the long _writer_is_abandoned suite guards here.
         """
         info = (state.get("roles") or {}).get(writer) or {}
         pid = info.get("pid")
@@ -1979,13 +1978,13 @@ class PairSession:
             holder_dead = bool(current and current != self.role and self._writer_is_dead(state, current))
             if designated and designated != self.role:
                 raise ProtocolError(
-                    f"по постоянной расстановке ролей писатель {designated!r}, а ты критик.",
-                    "Это решение человека, а не гонка: работай критиком и не трать ход на спор. "
-                    "Сменить расстановку может только человек: `pairctl roles --swap`.",
+                    f"the role-policy writer {designated!r}, and you are the critic.",
+                    "This is the human decision, not a race: work as the critic, never spend a move disputing. "
+                    "Only a human may change the policy: `pairctl roles --swap`.",
                 )
             if designated and designated == self.role and not state.get("writer"):
                 state["writer"] = self.role
-                state["writer_reason"] = "назначено политикой ролей"
+                state["writer_reason"] = "assigned by role policy"
                 return {
                     "already_writer": False,
                     "writer": self.role,
@@ -2008,7 +2007,7 @@ class PairSession:
                 state["writer"] = self.role
                 state["round"] = int(state.get("round", 0)) + 1
                 if by_policy_takeover:
-                    state["writer_reason"] = "назначено политикой ролей (держатель мёртв)"
+                    state["writer_reason"] = "assigned by role policy (holder dead)"
                 elif reason.strip():
                     state["writer_reason"] = reason.strip()
                 if was_closed:
@@ -2057,8 +2056,8 @@ class PairSession:
             "already_held": result["already_writer"],
             "round": result.get("round"),
             "took_over": result.get("took_over", False),
-            # Не выиграл гонку, а получил роль по решению человека: разница важна,
-            # потому что спор о роли тут неуместен.
+            # Never won a race but took the role by human decision: the difference matters,
+            # because a role dispute misses the point here.
             "by_policy": result.get("by_policy", False),
             "note": note,
         }
@@ -2097,16 +2096,16 @@ class PairSession:
 
         An idle process cannot be woken any other way: it has to be handed the keys.
         That is the whole reason this exists. The body is already in the mailbox or in
-        a note, so what gets typed is a short trigger, which is safe to push into a
-        composer where a whole paragraph would be mangled.
+        a note, so what gets typed is a short trigger, safe to push into a composer
+        where a whole paragraph would mangle.
 
-        `detail` is NOT a place for the text of the message. Директива человека:
-        терминал — дисплей, а не шина между агентами (задача #9). `pair_deliver`
-        переписан на «данные в ящик, в TUI указатель», а этот путь остался вторым и
-        нёс в композер соседа 50 символов письма — ровно то, что директива запретила.
-        Не видно было потому, что в наборе стоит `PAIR_DISABLE_RING=1`, то есть
-        ни один тест этого кода не касался. Что именно лежит в ящике, сосед узнает
-        из `pair_read`, а отсюда уходит только название повода.
+        `detail` is NOT a place for the message text. The human directive: the
+        terminal is a display, not a bus between agents (task #9). `pair_deliver`
+        now reads "data in the mailbox, a pointer in TUI", while this path stayed second
+        and carried 50 chars of the letter into the neighbour composer — exactly what
+        the directive banned. Invisible because the suite pins `PAIR_DISABLE_RING=1`:
+        no test ever touched this code. What lies in the mailbox the neighbour learns
+        from `pair_read`; only the cause name leaves from here.
         """
         if os.environ.get("PAIR_DISABLE_RING") == "1":
             return {"rung": False, "why": "ring disabled by PAIR_DISABLE_RING"}

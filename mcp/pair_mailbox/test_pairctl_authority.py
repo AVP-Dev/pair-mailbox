@@ -54,7 +54,7 @@ class TestGlobalRoles(PairTestCase):
             json.dumps({"writer": "opencode", "critic": "agy"}), encoding="utf-8")
         self.writer.tool_pair_state()
         self.peer.tool_pair_state()
-        self.assertIn("гонк", self.writer.tool_pair_state()["my_standing"])
+        self.assertIn("race", self.writer.tool_pair_state()["my_standing"])
         self.assertNotIn("policy", self.store.read())
 
     def test_project_policy_wins_over_the_global_one(self) -> None:
@@ -63,19 +63,19 @@ class TestGlobalRoles(PairTestCase):
         self.writer.tool_pair_state()
         self.peer.tool_pair_state()
         self.store.mutate(lambda st: st.__setitem__("policy", {"writer": "reviewer-agent"}))
-        self.assertIn("writer по постоянной расстановке",
+        self.assertIn("writer by standing policy",
                       self.peer.tool_pair_state()["my_standing"])
 
     def test_missing_or_broken_global_file_leaves_the_race(self) -> None:
-        self.assertIn("гонк", self.writer.tool_pair_state()["my_standing"])
+        self.assertIn("race", self.writer.tool_pair_state()["my_standing"])
         self._roles_file.write_text("{не json", encoding="utf-8")
-        self.assertIn("гонк", self.writer.tool_pair_state()["my_standing"])
+        self.assertIn("race", self.writer.tool_pair_state()["my_standing"])
 
     def test_global_file_without_a_writer_is_ignored(self) -> None:
         self._roles_file.write_text(json.dumps({"critic": "reviewer-agent"}), encoding="utf-8")
         self.writer.tool_pair_state()
         self.peer.tool_pair_state()
-        self.assertIn("не задано, определяется гонкой", self.writer.tool_pair_state()["my_standing"])
+        self.assertIn("unassigned, decided by race", self.writer.tool_pair_state()["my_standing"])
 
     def test_status_shows_effective_policy_with_source(self) -> None:
         self._roles_file.write_text(

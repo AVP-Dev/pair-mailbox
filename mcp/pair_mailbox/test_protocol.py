@@ -198,7 +198,7 @@ class TestPersistentRoles(PairTestCase):
 
     def test_designated_critic_is_refused_and_told_why(self) -> None:
         self.pin("writer-agent", "reviewer-agent")
-        error = self.assertRefused(self.peer.tool_pair_claim, contains="критик")
+        error = self.assertRefused(self.peer.tool_pair_claim, contains="critic")
         self.assertIn("writer-agent", str(error))
         self.assertIn("pairctl roles --swap", error.hint)
 
@@ -225,7 +225,7 @@ class TestPersistentRoles(PairTestCase):
     def test_anyone_may_not_take_over_a_live_holder(self) -> None:
         self.pin("writer-agent", "reviewer-agent")
         self.writer.tool_pair_claim(reason="держу")
-        self.assertRefused(self.peer.tool_pair_claim, contains="расстановке")
+        self.assertRefused(self.peer.tool_pair_claim, contains="role-policy")
         self.assertEqual(self.store.read()["writer"], "writer-agent")
 
     def test_any_live_role_takes_over_a_dead_holder_without_policy(self) -> None:
@@ -247,7 +247,7 @@ class TestPersistentRoles(PairTestCase):
             st["roles"]["reviewer-agent"].__setitem__("pid", 999999999),
             st["roles"]["reviewer-agent"].__setitem__("last_seen", "2000-01-01T00:00:00+00:00"),
         ))
-        self.assertRefused(self.peer.tool_pair_claim, contains="расстановке")
+        self.assertRefused(self.peer.tool_pair_claim, contains="role-policy")
         self.assertEqual(self.store.read()["writer"], "reviewer-agent")
 
     def test_no_policy_keeps_the_race(self) -> None:
@@ -258,19 +258,34 @@ class TestPersistentRoles(PairTestCase):
 
     def test_state_says_what_you_are(self) -> None:
         self.pin("writer-agent", "reviewer-agent")
-        self.assertIn("writer по постоянной расстановке", self.writer.tool_pair_state()["my_standing"])
+        self.assertIn("writer by standing policy", self.writer.tool_pair_state()["my_standing"])
         # Writer-pin: критик безымянный — «критик (пишет …)», без «по постоянной».
         standing = self.peer.tool_pair_state()["my_standing"]
-        self.assertIn("критик", standing)
+        self.assertIn("critic", standing)
         self.assertIn("writer-agent", standing)
 
     def test_state_separates_designated_from_holder(self) -> None:
         self.pin("writer-agent", "reviewer-agent")
         self.writer.tool_pair_claim(reason="держу")
         standing = self.peer.tool_pair_state()["my_standing"]
-        self.assertIn("критик", standing)
+        self.assertIn("critic", standing)
         self.assertIn("writer-agent", standing)
         self.assertFalse(self.peer.tool_pair_state()["you_are_writer"])
+
+    def test_standing_forms_three_and_four_follow_the_canon(self) -> None:
+        """Pin my_standing forms 3-4 (seq 1193): no other test pins them.
+
+        Form 3 (designated writer, holder holds): assigned-writer wording with
+        the live-refusal note. Form 4 (critic view): critic (writes X, holds Y).
+        """
+        self.pin("writer-agent", "reviewer-agent")
+        self.store.mutate(lambda st: st.__setitem__("writer", "reviewer-agent"))
+        standing = self.writer.tool_pair_state()["my_standing"]
+        self.assertIn("assigned writer", standing)
+        self.assertIn("refuses only the live", standing)
+        peer_standing = self.peer.tool_pair_state()["my_standing"]
+        self.assertIn("critic (writes", peer_standing)
+        self.assertIn("holds", peer_standing)
 
     def test_claim_after_release_still_follows_the_policy(self) -> None:
         self.pin("writer-agent", "reviewer-agent")
@@ -766,7 +781,7 @@ class TestEvidenceGate(PairTestCase):
             return {"tampered": True}
         self.store.mutate(tamper)
         self.human_ok()
-        error = self.assertRefused(self.writer.tool_pair_advance, "done", contains="неверной подписью")
+        error = self.assertRefused(self.writer.tool_pair_advance, "done", contains="bad signature")
         kinds = [e.get("kind") for e in self.store.read_transcript(0)]
         self.assertIn("bad_signature", kinds, "подмена видна в транскрипте")
 
