@@ -1815,7 +1815,7 @@ class TestPermissionAllowlist(PairTestCase):
     def test_empty_allowlist_means_confirm_nothing(self) -> None:
         verdict = self.composer.permission_verdict("Allow Read of server.py?", allow=[])
         self.assertEqual(verdict["verdict"], "refuse")
-        self.assertIn("белом списке", verdict["why"])
+        self.assertIn("allowlist", verdict["why"])
 
     def test_refusal_carries_a_reason(self) -> None:
         """Отказ читает человек; необъяснённое «нет» неотличимо от поломки."""
