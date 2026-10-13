@@ -534,7 +534,7 @@ class TestLiveness(PilotCase):
         }), encoding="utf-8")
         pilot.tick()
         first_text = pilot.pending("codex")
-        self.assertIn("запрос 7", first_text,
+        self.assertIn("request 7", first_text,
                       "первое напоминание о зависшем запросе обязательно")
         pilot.tick()
         self.assertEqual(first_text, pilot.pending("codex"),
@@ -544,7 +544,7 @@ class TestLiveness(PilotCase):
         old = time.time() - 3700.0
         os.utime(stamp, (old, old))
         pilot.tick()
-        self.assertIn("уже 2 мин", pilot.pending("codex"),
+        self.assertIn("already 2 min", pilot.pending("codex"),
                       "просроченный штамп обязан дать повторное напоминание")
 
 
@@ -2221,14 +2221,14 @@ class TestObligations(PilotCase):
         self.assertEqual("", pilot.pending("agy"), "минута — ещё ждём")
         self.obligation(9, "opencode", "agy", age=200)
         pilot.tick()
-        self.assertIn("ответа в его почте нет", pilot.pending("agy"))
+        self.assertIn("mailbox holds no answer", pilot.pending("agy"))
 
     def test_recipient_is_poked_first(self) -> None:
         self.obligation(7, "opencode", "agy", age=1000)
         self.write_state(roles={"agy": {"last_seen": ago(30), "pane": "%20"}})
         pilot = self.pilot()
         pilot.tick()
-        self.assertIn("ответа в его почте нет", pilot.pending("agy"))
+        self.assertIn("mailbox holds no answer", pilot.pending("agy"))
         self.assertEqual("", pilot.pending("opencode"), "автор пока не в курсе, рано")
 
     def test_author_is_told_when_the_wait_stretches(self) -> None:
@@ -2236,8 +2236,8 @@ class TestObligations(PilotCase):
         self.write_state(roles={"agy": {"last_seen": ago(30), "pane": "%20"}})
         pilot = self.pilot()
         pilot.tick()
-        self.assertIn("ответа в его почте нет", pilot.pending("agy"))
-        self.assertIn("жди вечно", pilot.pending("opencode"))
+        self.assertIn("mailbox holds no answer", pilot.pending("agy"))
+        self.assertIn("Do not wait forever", pilot.pending("opencode"))
 
     def test_answered_obligation_stops_being_nagged(self) -> None:
         self.obligation(7, "opencode", "agy", age=3000)
@@ -2302,7 +2302,7 @@ class TestDoneParking(PilotCase):
         pilot = self.pilot()
         self.assertFalse(pilot.is_done_parked(pilot.state()))
         pilot.tick()
-        self.assertIn("ответа в его почте нет", pilot.pending("agy"))
+        self.assertIn("mailbox holds no answer", pilot.pending("agy"))
 
     def test_active_phase_is_not_parked(self) -> None:
         # Активная фаза implement — обычный unread nudge работает
