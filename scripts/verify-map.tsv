@@ -59,7 +59,9 @@ install.sh	installer-subset
 cli-profiles.json	installer-subset
 .opencode/plugins/pair-guard.ts	guard-check
 .opencode/opencode.jsonc	composer
-scripts/	scripts-check
+scripts/i18n_apply.py	i18n-selftest
+scripts/i18n_extract.py	i18n-selftest
+scripts/i18n_self_test.py	i18n-selftest
 docs/	docs-check
 mcp/pair_mailbox/wake_opencode.py	wake-api
 mcp/pair_mailbox/test_wake_opencode.py	wake-api
