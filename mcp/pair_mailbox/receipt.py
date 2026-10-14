@@ -35,9 +35,15 @@ def generate_receipt(state_dir: Path, state: dict[str, Any], head_commit: str = 
     roles = state.get("roles", {})
     peers = [r for r in roles if r != writer]
 
-    # Round task gathering
+    # Round task gathering: shared labeled binding (round 94 follow-up).
+    # closed_round → add-round (pre-D2) → transcript window (stale-server).
+    from manifest import tasks_closed_in_round, transcript_closed_ids
     tasks = state.get("tasks", [])
-    round_tasks = [t for t in tasks if t.get("round") == round_number]
+    try:
+        _ids = transcript_closed_ids(state_dir)
+    except Exception:
+        _ids = None
+    round_tasks = tasks_closed_in_round(tasks, round_number, _ids)
 
     # Round evidence gathering
     evidences = state.get("evidence", [])
@@ -62,11 +68,15 @@ def generate_receipt(state_dir: Path, state: dict[str, Any], head_commit: str = 
     ground_lines = _ground_truth_lines(state_dir, round_number)
     now_iso = datetime.now(timezone.utc).isoformat()
 
+    # Round subject from the round's own closed tasks, never the legacy
+    # single-string state['task'] (round 94 D1: it named round 88's task).
+    done_here = [x for x in round_tasks if x.get("status") == "done"]
+    subject = done_here[0].get("text", "—") if done_here else "(no tasks closed — see Tasks Closed)"
     lines = [
         f"# Task Receipt — Round {round_number}",
         "",
         f"- **Closed at**: {now_iso}",
-        f"- **Task**: {state.get('task', '—')}",
+        f"- **Task**: {subject}",
         f"- **Writer**: {writer}",
         f"- **Peers**: {', '.join(peers) or '—'}",
         f"- **Mode**: {state.get('mode', 'fix')}",
@@ -80,7 +90,8 @@ def generate_receipt(state_dir: Path, state: dict[str, Any], head_commit: str = 
     if round_tasks:
         for t in round_tasks:
             status_mark = "x" if t.get("status") == "done" else " "
-            lines.append(f"- [{status_mark}] #{t.get('id')}: {t.get('text')} ({t.get('status')})")
+            label = f" [{t.get('bound_by')}]" if t.get("bound_by") else ""
+            lines.append(f"- [{status_mark}] #{t.get('id')}: {t.get('text')} ({t.get('status')}{label})")
     else:
         lines.append("*(no tasks bound to the round)*")
 

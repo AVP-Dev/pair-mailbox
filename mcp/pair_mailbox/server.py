@@ -2759,6 +2759,16 @@ class PairSession:
                 except Exception:
                     import traceback
                     traceback.print_exc()
+                # Round 94 C9: server-derived manifest beside the receipt.
+                from manifest import ManifestRefused, write_manifest
+                try:
+                    write_manifest(self.store.root, state)
+                except ManifestRefused as exc:
+                    raise ProtocolError(f"round cannot be closed: {exc}",
+                                        "The journal disagrees with the manifest.")
+                except Exception:
+                    import traceback
+                    traceback.print_exc()
 
         self.store.mutate(apply)
         self.store.append_transcript(
@@ -2851,6 +2861,8 @@ class PairSession:
             match["reason"] = str(reason or "").strip()
             match["closed_at"] = utcnow()
             match["closed_by"] = self.role
+            # Round 94 D2: bind by close-round, not add-round.
+            match["closed_round"] = int(st.get("round", 0))
             return match
 
         item = self.store.mutate(close)

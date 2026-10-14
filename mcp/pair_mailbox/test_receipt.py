@@ -45,6 +45,50 @@ def state_for(round_number: int = 1) -> dict:
             "mode": "fix", "autonomy": "auto"}
 
 
+class TestReceiptRoundBinding(unittest.TestCase):
+    """Round 94 D1/D2: the receipt names its own round's subject and tasks."""
+
+    def setUp(self) -> None:
+        self.repo = TempRepo()
+
+    def tearDown(self) -> None:
+        self.repo.cleanup()
+
+    def _state(self) -> dict:
+        return {"round": 94, "task": "STALE legacy string from round 88",
+                "writer": "omp", "roles": {"omp": {}, "agy": {}},
+                "tasks": [], "evidence": [], "mode": "fix", "autonomy": "auto"}
+
+    def test_subject_from_closed_tasks_not_legacy_string(self) -> None:
+        """D1: the Task line names the round's done task, never state['task']."""
+        st = self._state()
+        st["tasks"] = [{"id": 107, "text": "real round-94 work", "status": "done",
+                        "round": 94,
+                        "reason": "", "closed_at": "t", "closed_by": "omp"}]
+        target = receipt.generate_receipt(self.repo.state, st)
+        text = target.read_text(encoding="utf-8")
+        self.assertIn("real round-94 work", text)
+        self.assertNotIn("STALE legacy string", text)
+
+    def test_tasks_bound_by_close_round(self) -> None:
+        """D2: added in N, closed in N+1 — appears in RECEIPT-(N+1)."""
+        st = self._state()
+        st["tasks"] = [{"id": 101, "text": "added in 93, closed in 94",
+                        "status": "done", "round": 93, "closed_round": 94,
+                        "reason": "", "closed_at": "t", "closed_by": "omp"}]
+        text = receipt.generate_receipt(self.repo.state, st).read_text(encoding="utf-8")
+        self.assertIn("#101", text)
+        self.assertNotIn("no tasks bound", text)
+
+    def test_old_tasks_fall_back_to_add_round(self) -> None:
+        """Pre-D2 records carry no closed_round: honest fallback, not invention."""
+        st = self._state()
+        st["tasks"] = [{"id": 99, "text": "closed before D2", "status": "done",
+                        "round": 94, "reason": "", "closed_at": "t", "closed_by": "omp"}]
+        text = receipt.generate_receipt(self.repo.state, st).read_text(encoding="utf-8")
+        self.assertIn("#99", text)
+
+
 class TestReceiptGroundTruth(unittest.TestCase):
     def setUp(self) -> None:
         self.repo = TempRepo()

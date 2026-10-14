@@ -61,6 +61,9 @@ bin/pairdoctor	doctor
 bin/pairdoctor_test.py	doctor
 bin/pairrestart	pairrestart
 bin/pairrestart_test.py	pairrestart
+mcp/pair_mailbox/manifest.py	manifest
+mcp/pair_mailbox/test_manifest.py	manifest
+bin/pairreport	manifest
 install.sh	installer-subset
 cli-profiles.json	installer-subset
 .opencode/plugins/pair-guard.ts	guard-check

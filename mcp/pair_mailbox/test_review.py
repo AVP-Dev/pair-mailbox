@@ -37,7 +37,22 @@ class TestReviewPure(unittest.TestCase):
         git(self.repo, "commit", "-m", "init")
 
     def tearDown(self) -> None:
-        self._tmp.cleanup()
+        # CI 3.10 teardown race: a background git gc holds .git/objects/pack
+        # open while rmtree walks it (Errno 39). Retry, then let go — a temp
+        # dir leftover never fails a test.
+        import errno as _errno
+        import shutil as _shutil
+        import time as _time
+        for _ in range(5):
+            try:
+                self._tmp.cleanup()
+                break
+            except OSError as exc:
+                if exc.errno != _errno.ENOTEMPTY:
+                    raise
+                _time.sleep(0.2)
+        else:
+            _shutil.rmtree(self._tmp.name, ignore_errors=True)
 
     def test_stale_when_same_files_changed(self) -> None:
         """The same file rewritten over — the verdict goes stale."""
@@ -160,7 +175,22 @@ class TestDeliveryFloor(unittest.TestCase):
         git(self.work, "push", "-q", "origin", "master")
 
     def tearDown(self) -> None:
-        self._tmp.cleanup()
+        # CI 3.10 teardown race: a background git gc holds .git/objects/pack
+        # open while rmtree walks it (Errno 39). Retry, then let go — a temp
+        # dir leftover never fails a test.
+        import errno as _errno
+        import shutil as _shutil
+        import time as _time
+        for _ in range(5):
+            try:
+                self._tmp.cleanup()
+                break
+            except OSError as exc:
+                if exc.errno != _errno.ENOTEMPTY:
+                    raise
+                _time.sleep(0.2)
+        else:
+            _shutil.rmtree(self._tmp.name, ignore_errors=True)
 
     def test_pushed_head_is_delivered_a1(self) -> None:
         import review
