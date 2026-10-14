@@ -157,12 +157,12 @@ class TestReviewServer(PairTestCase):
         self.writer.tool_pair_state()
         self.peer.tool_pair_state()
         with mock.patch.object(review, "snapshot", return_value=self.fixed_snapshot()):
-            self.writer.tool_pair_send(to="reviewer-agent", text="ревью 1", expects_reply=True)
-            self.writer.tool_pair_send(to="reviewer-agent", text="ревью 2", expects_reply=True)
+            self.writer.tool_pair_send(to="reviewer-agent", text="review 1", expects_reply=True)
+            self.writer.tool_pair_send(to="reviewer-agent", text="review 2", expects_reply=True)
             with self.assertRaises(Exception) as caught:
-                self.writer.tool_pair_send(to="reviewer-agent", text="ревью 3",
+                self.writer.tool_pair_send(to="reviewer-agent", text="review 3",
                                            expects_reply=True)
-        self.assertIn("очередь", str(caught.exception).lower())
+        self.assertIn("queue", str(caught.exception).lower())
 
     def test_pending_reviews_block_done(self) -> None:
         import review
@@ -172,7 +172,7 @@ class TestReviewServer(PairTestCase):
             self.writer.tool_pair_send(to="reviewer-agent", text="прошу ревью",
                                        expects_reply=True)
         blockers = self.writer._done_blockers(self.store.read())
-        self.assertTrue(any("висящих ревью" in b for b in blockers),
+        self.assertTrue(any("pending review" in b for b in blockers),
                         f"открытая очередь обязана держать done: {blockers}")
 
     def test_stale_verdict_blocks_done(self) -> None:
@@ -201,7 +201,7 @@ class TestReviewServer(PairTestCase):
                 mock.patch.object(review, "changed_between", return_value=[]), \
                 mock.patch.object(review, "dirty_files", return_value=[]):
             blockers = [b for b in self.writer._done_blockers(self.store.read())
-                        if "stale" in b or "висящих ревью" in b]
+                        if "stale" in b or "pending review" in b]
         self.assertEqual([], blockers, f"свежий вердикт держать не должен: {blockers}")
 
 
