@@ -59,6 +59,8 @@ bin/pairup	pairup
 bin/pairup_test.py	pairup
 bin/pairdoctor	doctor
 bin/pairdoctor_test.py	doctor
+bin/pairrestart	pairrestart
+bin/pairrestart_test.py	pairrestart
 install.sh	installer-subset
 cli-profiles.json	installer-subset
 .opencode/plugins/pair-guard.ts	guard-check

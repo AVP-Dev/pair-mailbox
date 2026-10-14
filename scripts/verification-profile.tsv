@@ -47,6 +47,7 @@ board-render	positive	1	python3 mcp/pair_mailbox/test_board_render.py
 board-cli	positive	1	python3 bin/pairboard_test.py
 doctor	positive	1	python3 bin/pairdoctor_test.py
 pairup	positive	1	python3 bin/pairup_test.py
+pairrestart	positive	1	python3 bin/pairrestart_test.py
 wake	positive	1	python3 mcp/pair_mailbox/test_wake.py
 review	positive	1	python3 mcp/pair_mailbox/test_review.py
 statecache	positive	1	python3 mcp/pair_mailbox/test_statecache.py
