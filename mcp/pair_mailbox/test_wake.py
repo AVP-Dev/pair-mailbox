@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Событийное пробуждение без композера (wake-without-composer).
+"""Event waking with no composer (wake-without-composer).
 
-Проверяет контракт: письмо/заметка всегда оставляют файл wake/<role>.json
-(гарантия для опроса pairpilot), а _ring — только оптимизация без ожидания:
-занятый/невидимый композер возвращается сразу, инструмент не висит.
+Checks the contract: a letter/note always leaves the wake/<role>.json file (the
+pairpilot-poll guarantee), while _ring is only a wait-free optimization: a
+busy/invisible composer returns at once, the tool never hangs.
 """
 from __future__ import annotations
 
@@ -24,17 +24,17 @@ class TestEventWake(PairTestCase):
         return self.root / "wake" / f"{role}.json"
 
     def test_send_writes_wake_even_when_ring_disabled(self) -> None:
-        """Письмо оставляет файл пробуждения, даже если звонок отключён.
+        """A letter leaves the wake file even with ringing off.
 
-        Иначе «файловый канал как гарантия» — слова: при PAIR_DISABLE_RING=1
-        (как в наборах) сосед не узнал бы ничего.
+        Or "the file channel as guarantee" reads words: at PAIR_DISABLE_RING=1
+        (as in suites) the neighbour would learn nothing.
         """
         os.environ["PAIR_DISABLE_RING"] = "1"
         self.writer.tool_pair_state()
         self.peer.tool_pair_state()
-        self.writer.tool_pair_send(to="reviewer-agent", text="возьми задачу")
+        self.writer.tool_pair_send(to="reviewer-agent", text="take the task")
         path = self.wake_file("reviewer-agent")
-        self.assertTrue(path.exists(), "send обязан записать wake-файл по событию")
+        self.assertTrue(path.exists(), "send must write the wake file on the event")
         payload = json.loads(path.read_text(encoding="utf-8"))
         self.assertEqual("reviewer-agent", payload.get("role"))
         self.assertIn("message", payload.get("reasons", []))
@@ -43,58 +43,58 @@ class TestEventWake(PairTestCase):
         os.environ["PAIR_DISABLE_RING"] = "1"
         self.writer.tool_pair_state()
         self.peer.tool_pair_state()
-        self.writer.tool_pair_note(kind="plan", text="план готов")
+        self.writer.tool_pair_note(kind="plan", text="the plan is ready")
         path = self.wake_file("reviewer-agent")
-        self.assertTrue(path.exists(), "note обязана разбудить соседа файлом")
+        self.assertTrue(path.exists(), "note must wake the neighbour by file")
         payload = json.loads(path.read_text(encoding="utf-8"))
-        self.assertTrue(any("заметка/plan" in str(r) for r in payload.get("reasons", [])))
+        self.assertTrue(any("note/plan" in str(r) for r in payload.get("reasons", [])))
 
     def test_note_does_not_ring_peers(self) -> None:
-        """Заметка — тихая: wake-файл да, слепой звонок в композер нет.
+        """A note stays silent: the wake file yes, a blind composer ring no.
 
-        tool_pair_note раньше веером звонил всем ролям на каждой заметке;
-        при 30+ заметках за вечер это N слепых send-keys Enter в чужие
-        композеры. Пробуждение — через wake-файл, который опрашивает пилот.
+        tool_pair_note used to fan-ring every role on every note; at 30+ notes an
+        evening that is N blind send-keys Enters into foreign composers. Waking
+        runs over the wake file the pilot polls.
         """
         self.writer.tool_pair_state()
         self.peer.tool_pair_state()
         with mock.patch.object(self.writer, "_ring",
                                wraps=self.writer._ring) as ring:
-            result = self.writer.tool_pair_note(kind="plan", text="план готов")
+            result = self.writer.tool_pair_note(kind="plan", text="the plan is ready")
         rung = [c for c in ring.call_args_list]
-        self.assertEqual([], rung, "note не должна звонить никому")
+        self.assertEqual([], rung, "note must ring nobody")
         self.assertEqual({}, result.get("woke_peers"),
-                         "woke_peers остаётся пустым ради совместимости")
+                         "woke_peers stays empty for compat")
         kinds = [e.get("kind") for e in self.store.read_transcript(limit=0)]
-        self.assertNotIn("doorbell", kinds, "в транскрипте нет звонков")
+        self.assertNotIn("doorbell", kinds, "no rings in the transcript")
         path = self.wake_file("reviewer-agent")
-        self.assertTrue(path.exists(), "wake-файл по-прежнему пишется")
+        self.assertTrue(path.exists(), "the wake file still writes")
 
     def test_wake_merge_keeps_asked_at(self) -> None:
-        """Висящее пробуждение дополняется, а не перезаписывается.
+        """A pending wake appends, never overwrites.
 
-        Иначе два повода (непрочитанное + молчание) эскалировались бы дважды —
-        та же ошибка, что чинилась в раунде 15 для пилота.
+        Or two reasons (unread + silence) would escalate twice — the same bug fixed
+        in round 15 for the pilot.
         """
         from wake import record_wake
         os.environ["PAIR_DISABLE_RING"] = "1"
         self.writer.tool_pair_state()
         self.peer.tool_pair_state()
         state = self.store.read()
-        record_wake(self.root, state, "reviewer-agent", "первый", "текст 1")
+        record_wake(self.root, state, "reviewer-agent", "first", "text 1")
         first = json.loads(self.wake_file("reviewer-agent").read_text(encoding="utf-8"))
-        record_wake(self.root, self.store.read(), "reviewer-agent", "второй", "текст 2")
+        record_wake(self.root, self.store.read(), "reviewer-agent", "second", "text 2")
         second = json.loads(self.wake_file("reviewer-agent").read_text(encoding="utf-8"))
         self.assertEqual(first.get("asked_at"), second.get("asked_at"),
-                         "asked_at обязан сохраняться, иначе терпение сбрасывается")
-        self.assertIn("первый", second.get("reasons", []))
-        self.assertIn("второй", second.get("reasons", []))
+                         "asked_at must persist, or patience resets")
+        self.assertIn("first", second.get("reasons", []))
+        self.assertIn("second", second.get("reasons", []))
 
     def test_ring_returns_immediately_when_composer_busy(self) -> None:
-        """Занятый композер — сразу в файл, без 1.5с ожидания и перехвата ввода.
+        """A busy composer means straight to file, with no 1.5s wait stealing input.
 
-        Мутация: вернуть цикл deadline+sleep — тест обязан покраснеть
-        (sleep будет вызван).
+        Mutation: returning the deadline+sleep loop must redden the test (sleep
+        gets called).
         """
         import composer
         import server as server_mod
@@ -104,7 +104,7 @@ class TestEventWake(PairTestCase):
         orig_line = composer.composer_line
         orig_which = composer.shutil.which
         orig_foreign = composer.pane_is_foreign
-        composer.composer_line = lambda lines: "> печатаю"
+        composer.composer_line = lambda lines: "> typing"
         composer.shutil.which = lambda name: "/usr/bin/tmux"
         composer.pane_is_foreign = lambda tmux, pane, root: (False, "")
         sleeps = []
@@ -126,9 +126,9 @@ class TestEventWake(PairTestCase):
             composer.pane_is_foreign = orig_foreign
             server_mod.time.sleep = orig_sleep  # type: ignore[method-assign]
             server_mod.subprocess.run = orig_sub_run  # type: ignore[method-assign]
-        self.assertFalse(result["rung"], "в занятый композер не лезем")
-        self.assertIn("занят", result["why"])
-        self.assertEqual([], sleeps, "ожидание композера обязано быть single-shot без sleep")
+        self.assertFalse(result["rung"], "never climbing into a busy composer")
+        self.assertIn("busy", result["why"])
+        self.assertEqual([], sleeps, "composer waiting must stay single-shot with no sleep")
 
 
 if __name__ == "__main__":
