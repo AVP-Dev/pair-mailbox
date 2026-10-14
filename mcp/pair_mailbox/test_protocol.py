@@ -2095,7 +2095,7 @@ class TestHeartbeatIsEveryCall(PairTestCase):
         self.writer.invoke("pair_state", {})
         self.writer.invoke("pair_claim", {})
         old = self._backdate_writer()
-        # Отказ тоже heartbeat: писатель не резервирует патчи.
+        # A refusal is a heartbeat too: the writer reserves no patches.
         self.assertRefused(self.writer.invoke, "pair_patch_reserve", {}, contains="must not")
         fresh = self.store.read()["roles"]["writer-agent"]["last_seen"]
         self.assertNotEqual(old, fresh)
@@ -2785,18 +2785,18 @@ class TestTranscriptWindow(PairTestCase):
                          "a broken line must show, never vanish")
         self.assertEqual(["first", "after"],
                          [e["kind"] for e in got if not e.get("_damaged")],
-                         "записи по обе стороны обрыва обязаны читаться")
+                         "records on both sides of the cut must read")
 
     def test_rotation_does_not_happen_on_a_small_file(self) -> None:
-        """Обычный раунд не должен вызывать ротацию на каждом втором вызове."""
+        """A plain round must never rotate on every second call."""
         self.fill(20)
         self.assertFalse((self.store.root / "transcript-archive").exists(),
-                         "маленький журнал ротации не подлежит")
+                         "a small journal never rotates")
 
     def test_chain_links_every_entry_to_the_previous(self) -> None:
-        """Цепь: каждая строка несёт prev_hash предыдущей, первая — генезис.
-        Ручная правка или потеря куска рвёт цепь и видна сразу, в pair_transcript
-        как chain.bad_at, а не при аудите через неделю."""
+        """Chain: every line carries the previous prev_hash, the first — genesis.
+        A hand edit or a lost chunk breaks the chain visibly at once, in pair_transcript
+        as chain.bad_at, not at an audit a week later."""
         self.fill(5)
         entries = self.store.read_transcript(0)
         self.assertEqual(self.server.CHAIN_GENESIS, entries[0].get("prev_hash"),
