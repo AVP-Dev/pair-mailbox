@@ -3,15 +3,15 @@
 
   "instructions": ["AGENTS.md", "docs/PROTOCOL.md"],
 
-  // MCP pair-сервера здесь НЕТ — намеренно. Проектный конфиг читает ЛЮБОЙ CLI
-  // с opencode-discovery (omp/pi), запущенный из корня репо, и ключ `pair`
-  // с ролью внутри подменяет его собственную роль (живой случай 2026-10-07:
-  // процесс omp поднял server.py --role opencode и потерял write authority).
-  // Роль раздаёт только user-конфиг ~/.config/opencode/opencode.jsonc,
-  // который ставит install.sh. Подробнее: docs/SETUP.md «Чужие CLI читают наши конфиги».
+  // No pair-server MCP here — on purpose. ANY CLI with opencode-discovery
+  // (omp/pi) launched from the repo root reads the project config, and the
+  // `pair` key with a role inside swaps its own role (live case 2026-10-07: the
+  // omp process raised server.py --role opencode losing write authority).
+  // Only the user config ~/.config/opencode/opencode.jsonc deals the role, placed
+  // by install.sh. Details: docs/SETUP.md "Foreign CLIs read our configs".
 
-  // Пара работает без человека (§7b auto): рутинные прогоны не спрашивают.
-  // Граница — deny, который человек видит и меняет. Готовый блок из §13c.
+  // The pair runs with no human (§7b auto): routine runs never ask.
+  // The edge is deny the human sees and changes. A ready block from §13c.
   "permission": {
     "bash": {
       "*": "allow",

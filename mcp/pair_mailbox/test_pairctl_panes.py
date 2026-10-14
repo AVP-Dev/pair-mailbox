@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Тесты привязки ролей к панелям tmux: `pairctl pane` и `pairctl roster`.
+"""Tests for binding roles to tmux panes: `pairctl pane` and `pairctl roster`.
 
-Соответствуют `pairctl_panes.py`. Туда же уехала трёхсостояйная проверка
-`pin_verdict`, и её тесты живут здесь по той же причине: состояние
-`unknown` (проверить нечем) и состояние `bad` (проверено, что адрес мёртв)
-различаются только в решениях двух вызывающих, а сами вызывающие — оба здесь.
+Match `pairctl_panes.py`. The three-state `pin_verdict` check moved there too,
+and its tests live here for the same reason: the `unknown` state (nothing to
+check with) and the `bad` state (proven dead address) differ only in the two
+callers’ decisions, and both callers are here.
 
-Запуск:  python3 mcp/pair_mailbox/test_pairctl_panes.py
+Run:  python3 mcp/pair_mailbox/test_pairctl_panes.py
 """
 from __future__ import annotations
 
@@ -26,10 +26,10 @@ from server import main  # noqa: E402
 class TestRosterPrune(PairTestCase):
     """`pairctl roster --prune`.
 
-    Ростер — общая память пары, и в нём годами лежат записи умерших сессий: на
-    живой панели agy числились ещё claude, codex и обе роли duo. Мёртвая запись
-    занимает место, путает отчёт и портит skip. Удалять можно не молча и не по
-    одному признаку, а по двум независимым фактам."""
+    The roster is the pair shared memory, and dead-session entries lie in it
+    for years: claude, codex and both duo roles still listed on agy’s live
+    pane. A dead entry takes space, confuses the report and spoils skip.
+    Deleting must be neither silent nor single-fact, but on two independent facts."""
 
     def ctl(self, *argv: str) -> int:
         return main(["--state", str(self.root), *argv])
@@ -44,14 +44,13 @@ class TestRosterPrune(PairTestCase):
         self.assertNotIn("ghost", self.store.read()["roles"])
 
     def test_prune_keeps_a_dead_role_whose_pane_still_exists(self) -> None:
-        """Одного мёртвого pid мало: после смерти агента могла остаться живая
-        панель, и удалять запись рано.
+        """One dead pid never suffices: the agent death may leave a live pane behind,
+        and deleting the entry is early.
 
-        Подмена идёт по месту, где функция теперь живёт: `pane_exists`
-        использует `pairctl_panes`, и подмена `server.pane_exists` больше не
-        влияла бы ни на что — тест проверял бы настоящий tmux и проходил бы по
-        неверной причине. Поэтому подменяется модуль потребителя, а не модуль,
-        где функция определена.
+        The stub goes where the function lives now: `pane_exists` uses
+        `pairctl_panes`, and stubbing `server.pane_exists` would affect nothing —
+        the test would check the real tmux and pass for the wrong reason. So the
+        consumer module is stubbed, not the module where the function is defined.
         """
         self.dead_role("leftover", "%20")
         with mock.patch("pairctl_panes.pane_exists", return_value=True):
@@ -59,8 +58,8 @@ class TestRosterPrune(PairTestCase):
         self.assertIn("leftover", self.store.read()["roles"])
 
     def test_prune_removes_a_dead_role_whose_pane_belongs_to_someone_living(self) -> None:
-        """Третий случай, который и ждал в бою: панель жива, но принадлежит другой
-        живой роли. Запись не просто устарела — она указывает не туда."""
+        """The third case, the one combat waited for: the pane is alive but belongs
+        to another live role. The entry is not just stale — it points away."""
         self.dead_role("claude", "%20")
         self.store.mutate(lambda st: st.setdefault("roles", {}).update(
             {"agy": {"pane": "%20", "pid": os.getpid()}}))
@@ -68,7 +67,7 @@ class TestRosterPrune(PairTestCase):
             self.assertEqual(0, self.ctl("roster", "--prune"))
         roles = self.store.read()["roles"]
         self.assertNotIn("claude", roles)
-        self.assertIn("agy", roles, "живую роль трогать нельзя")
+        self.assertIn("agy", roles, "never touch a live role")
 
     def test_prune_never_touches_a_living_role(self) -> None:
         self.store.mutate(lambda st: st.setdefault("roles", {}).update(
@@ -77,8 +76,8 @@ class TestRosterPrune(PairTestCase):
         self.assertIn("agy", self.store.read()["roles"])
 
     def test_prune_refuses_to_remove_the_writer(self) -> None:
-        """Иначе можно было бы очистить ростер и вместе с ним держателя права,
-        не сказав ни слова."""
+        """Otherwise the roster could be wiped together with the right holder,
+        without a word."""
         self.writer.tool_pair_claim(reason="writer")
         self.dead_role("writer-agent", "%999999")
         self.assertEqual(2, self.ctl("roster", "--prune"))
@@ -97,17 +96,17 @@ class TestRosterPrune(PairTestCase):
 
 
 class TestPaneOverride(PairTestCase):
-    """Переопределение привязки панели рукой человека (`pairctl pane`).
+    """A human-hand pane-binding override (`pairctl pane`).
 
-    Причина появления — измерена, а не предположена: `_register` берёт адрес из
-    `TMUX_PANE` окружения процесса и перезаписывает `pane` на каждом вызове
-    любого инструмента. Поэтому ручная правка `state.json` не чинила ничего —
-    «починка» жила ровно до следующего звонка. Ключ `pane_pin` читается раньше
-    окружения и потому переживает перерегистрацию.
+    The cause is measured, not guessed: `_register` takes the address from the
+    process `TMUX_PANE` environment and rewrites `pane` on every call of any
+    tool. So hand-editing `state.json` fixed nothing — the "fix" lived exactly
+    till the next ring. The `pane_pin` key reads before the environment and so
+    survives re-registration.
 
-    Цена такого ключа — риск стать дырой в изоляции между проектами, поэтому
-    закрепляемый адрес обязан проходить ту же проверку, что и снятый
-    автоматически: панель жива И панель наша.
+    Such a key costs a hole risk in the cross-project isolation, so the pinned
+    address must pass the same check as the automatic one: the pane is alive
+    AND the pane is ours.
     """
 
     def setUp(self) -> None:
@@ -122,14 +121,14 @@ class TestPaneOverride(PairTestCase):
         return (self.store.read().get("roles") or {}).get("opencode", {})
 
     def with_pane(self, pane: str | None) -> None:
-        """Окружение процесса: либо живая панель набора, либо её отсутствие.
+        """The process environment: either the suite’s live pane or its absence.
 
-        Восстанавливается та панель, с которой набор стартовал, а не то, что лежало
-        в переменной в момент вызова: базовый `setUp` переменную уже вычистил, и
-        cleanup, возвращающий «прежнее», стирал бы то, что `tearDown` уже
-        восстановил. Порядок unittest — `tearDown`, потом cleanup, — и из-за этого
-        все следующие тесты набора начинали молча пропускаться, а набор оставался
-        зелёным. Проверено: пять тестов превратились в skip, и ни один не упал.
+        Restored is the pane the suite started from, not what lay in the variable
+        at call time: the base `setUp` already scrubbed the variable, and a
+        cleanup returning "the old" would wipe what `tearDown` already restored.
+        unittest order is `tearDown`, then cleanup — and over it every following
+        suite test started skipping silently while the suite stayed green.
+        Proven: five tests turned into skips, and none failed.
         """
         before = self._pane_at_startup
         if pane is None:
@@ -148,20 +147,21 @@ class TestPaneOverride(PairTestCase):
     def live_pane(self) -> str:
         pane = self._pane_at_startup
         if not pane:
-            self.skipTest("набор запущен вне tmux")
+            self.skipTest("suite runs outside tmux")
         return pane
 
     def as_ours(self):
-        """Считать панель набора своей, без подмены результата проверки.
+        """Count the suite pane as ours, with no check-result stubbing.
 
-        Набор работает в состоянии во временном каталоге, а панель — в реальном
-        проекте, поэтому подлинность панели здесь всегда «чужая». Подменять её на
-        «своя» надо явно: иначе тест проверял бы только отказ, а не принятие.
+        The suite runs on state in a temp dir, but the pane lives in the real
+        project, so the pane authenticity here is always "foreign". Stubbing it
+        to "ours" must be explicit: otherwise the test would check only refusal,
+        not acceptance.
 
-        Подменяются оба вопроса. `_register` спрашивает «панель этого проекта?»,
-        а `pair_deliver` — «не чужая ли?». С появлением второй проверки подмена
-        осталась на первой, и проверка принятия стала проверкой отказа: тест
-        требовал записи панели, а получал её снятие.
+        Both questions are stubbed. `_register` asks "this project’s pane?",
+        while `pair_deliver` asks "not foreign?". With the second check added the
+        stub stayed on the first, and the acceptance check became a refusal check:
+        the test demanded the pane recorded but got it dropped.
         """
         return mock.patch.multiple(
             "composer",
@@ -175,20 +175,20 @@ class TestPaneOverride(PairTestCase):
                     "last_seen": "then", "reads": 0, "sends": 0}}))
 
     def register(self, role: str) -> None:
-        """Прогнать регистрацию роли — то, что делает сервер при каждом вызове.
+        """Drive the role registration — what the server does on every call.
 
-        Через `mutate`, а не на чтении: `_register` правит состояние на месте, и
-        набор, скормивший ему копию, проверял бы копию, а не то, что сервер
-        сохранил бы в следующий раз.
+        Through `mutate`, not on a read: `_register` edits state in place, and a
+        suite feeding it a copy would check the copy, not what the server would
+        save next time.
         """
         session = self.server.PairSession(role, self.store)
         self.store.mutate(session._register)
 
     def test_the_override_survives_a_reregistration(self) -> None:
-        """Главное свойство, ради которого всё затевалось.
+        """The main property everything was built for.
 
-        Без него переопределение — запись в state.json руками, которая протухает
-        через один вызов, то есть ровно та поломка, которую человек и чинит.
+        Without it the override is a hand-written state.json entry that goes stale
+        in one call — exactly the breakage the human fixes.
         """
         pane = self.live_pane()
         self.with_pane(pane)
@@ -196,76 +196,76 @@ class TestPaneOverride(PairTestCase):
         with self.as_ours():
             self.assertEqual(0, self.ctl("pane", "--role", "opencode", pane))
 
-        # Записанная панель уезжает, а панели в окружении нет. Так выглядит
-        # перерегистрация сервера, который запустили не из той панели.
+        # The recorded pane leaves while no pane sits in the environment. That is what
+        # a re-registration of a server launched from the wrong pane looks like.
         #
-        # Увод в сторону сделан явно: `pairctl pane` сам пишет `pane` при
-        # установке, поэтому без этого тест проходил бы и при полностью
-        # отключённом переопределении — проверить было нечего.
+        # The diversion is explicit: `pairctl pane` itself writes `pane` at setup,
+        # so without it the test would pass even with the override fully disabled —
+        # nothing to check.
         self.store.mutate(lambda st: st["roles"]["opencode"].update(
             {"pane": "%12345"}))
         self.with_pane(None)
         with self.as_ours():
             self.register("opencode")
         self.assertEqual(pane, self.pinned().get("pane"),
-                         "переопределение должно переживать потерю TMUX_PANE")
+                         "the override must survive TMUX_PANE loss")
         self.assertEqual(pane, self.pinned().get("pane_pin"),
-                         "закрепление обязано остаться, а не сработать один раз")
+                         "the pin must stay, not fire once")
 
     def test_a_stale_override_is_dropped_and_says_why(self) -> None:
-        """Закрепление протухшей панели не может висеть вечно.
+        """A stale-pane pin cannot hang forever.
 
-        Иначе доставка уходила бы в никуда молча, и человек считал бы, что роль
-        привязана. Снятие обязано быть замечено в транскрипте: молча снятое
-        переопределение неотличимо от того, которого не было никогда.
+        Otherwise delivery would leave into nowhere silently, and the human would
+        believe the role is bound. Dropping must surface in the transcript: a
+        silently dropped override reads as one that never was.
         """
         self.with_pane(self.live_pane())
         self.bind("opencode", self._pane_at_startup, 999999)
-        # Адрес несуществующей панели отвергается на входе, а не «на всякий случай».
+        # A nonexistent-pane address is refused at entry, not "just in case".
         #
-        # Проверяется ИМЕННО «панели нет», а не просто «отказано»: панель, которой
-        # нет, отвергается ещё и проверкой на чужую, потому что tmux не сообщает
-        # для неё cwd. Утверждение «отказано» проходило бы и при выкинутой
-        # проверке живости — проверено мутацией.
+        # Checked as exactly "no pane", not just "refused": a pane that is gone
+        # is also refused by the foreign check, because tmux reports no cwd for it.
+        # A bare "refused" assertion would pass even with liveness gutted — proven by mutation.
+        # the liveness check — proven by mutation.
         stderr = io.StringIO()
         with contextlib.redirect_stderr(stderr):
             self.assertEqual(1, self.ctl("pane", "--role", "opencode", "%987654"))
-        self.assertIn("больше нет", stderr.getvalue())
+        self.assertIn("no pane left", stderr.getvalue())
         self.assertNotIn("pane_pin", self.pinned())
 
-        # Теперь подложим протухшее закрепление напрямую — так оно выглядит после
-        # того, как человек закрыл окно, а состояние осталось.
+        # Now plant a stale pin directly — how it looks after the human closed the
+        # window while the state stayed.
         self.store.mutate(lambda st: st["roles"]["opencode"].update(
-            {"pane_pin": "%987654", "pane_pin_why": "закреплено человеком"}))
+            {"pane_pin": "%987654", "pane_pin_why": "pinned by human"}))
         self.register("opencode")
         self.assertNotIn("pane_pin", self.pinned(),
-                         "адрес мёртвой панели обязан быть снят")
+                         "a dead-pane address must be dropped")
         kinds = [row["kind"] for row in self.store.read_transcript()]
         self.assertIn("pane_pin_dropped", kinds)
 
     def test_a_foreign_pane_is_refused(self) -> None:
-        """Переопределение не должно стать дырой в изоляции между проектами.
+        """The override must never open a hole in the cross-project isolation.
 
-        Именно для этого адрес проверяется. Если бы проверки не было, человек мог
-        бы одним вводом направить письма роли в чужой проект — и сломал бы то,
-        что чинили пункты 1 и 2.
+        The address is checked exactly for that. Without the check a human could
+        route the role mail into another project with one input — and break what
+        items 1 and 2 fixed.
         """
         self.with_pane(self.live_pane())
         self.bind("opencode", self._pane_at_startup, 999999)
         with mock.patch("composer.pane_is_foreign",
-                        return_value=(True, "другой прокт: /somewhere/else")):
+                        return_value=(True, "another project: /somewhere/else")):
             self.assertEqual(1, self.ctl("pane", "--role", "opencode", "%1"))
         self.assertNotIn("pane_pin", self.pinned())
 
     def test_without_an_override_the_pane_still_comes_from_tmux(self) -> None:
-        """Переопределение обязано быть узким: без него поведение прежнее.
+        """The override must stay narrow: without it the old behaviour holds.
 
-        Иначе это не «переопределение», а новое правило, и агент, который и так
-        работает, вдруг окажется не на той панели.
+        Otherwise this is not an "override" but a new rule, and an agent that
+        already works suddenly sits on the wrong pane.
         """
         pane = self.live_pane()
         self.with_pane(pane)
-        self.bind("opencode", "старое", 999999)
+        self.bind("opencode", "old", 999999)
         with self.as_ours():
             self.register("opencode")
         from composer import _tmux, session_address
@@ -273,10 +273,10 @@ class TestPaneOverride(PairTestCase):
         self.assertEqual(expected, self.pinned().get("pane"))
 
     def test_clearing_returns_the_pane_to_tmux(self) -> None:
-        """Снятие переопределения обязано вернуть управление окружению.
+        """Dropping the override must return control to the environment.
 
-        Иначе единственный способ вернуть роль на её панель — править state.json,
-        что и было исходной поломкой.
+        Otherwise the only way to return the role to its pane is editing
+        state.json — the original breakage.
         """
         pane = self.live_pane()
         self.with_pane(pane)
@@ -292,11 +292,11 @@ class TestPaneOverride(PairTestCase):
                          self.pinned().get("pane"))
 
     def test_the_override_is_not_logged_on_every_call(self) -> None:
-        """Журнал не должен наполняться одинаковыми строками.
+        """The journal must not fill with identical lines.
 
-        Регистрация идёт на каждом вызове любого инструмента. Запись на каждом
-        вызове съедала бы ровно тот потолок транскрипта, который этот раунд и
-        чинит, то есть переопределение стало бы новым источником шума.
+        Registration runs on every call of any tool. Writing on every call would
+        eat exactly the transcript ceiling this round fixes — the override would
+        become a new noise source.
         """
         pane = self.live_pane()
         self.with_pane(None)
@@ -308,16 +308,16 @@ class TestPaneOverride(PairTestCase):
         kinds = [row["kind"] for row in self.store.read_transcript()]
         self.assertLessEqual(
             kinds.count("pane_pin_honoured"), 1,
-            "запись должна появляться на изменении, а не на каждом вызове")
+            "a record belongs on change, not on every call")
 
 
     def test_positional_role_and_address_bind_without_flag(self) -> None:
-        """Позиционная форма из карточки: `pane <role> <addr>` без --role.
+        """The positional shape from the card: `pane <role> <addr>` with no --role.
 
-        Иначе при перезапуске окон чинить привязку можно только длинной
-        формой, а карточка требует именно `pane <role> <tmux-pane>`.
-        Окружение сброшено специально: иначе $TMUX_PANE-fallback
-        замаскировал бы сломанный разбор позиционных (проверено мутацией).
+        Otherwise after a window restart the binding fixes only through the long
+        shape while the card demands exactly `pane <role> <tmux-pane>`. The
+        environment is scrubbed on purpose: otherwise the $TMUX_PANE fallback
+        would mask a broken positional parse (proven by mutation).
         """
         pane = self.live_pane()
         self.with_pane(None)
@@ -327,12 +327,12 @@ class TestPaneOverride(PairTestCase):
         self.assertEqual(pane, self.pinned().get("pane_pin"))
 
     def test_tmux_pane_env_is_used_only_with_current_flag(self) -> None:
-        """$TMUX_PANE берётся только с явным --current (регрессия %2205).
+        """$TMUX_PANE reads only with an explicit --current (the %2205 regression).
 
-        Без флага `pane <role>` из живой панели — только показ: иначе два
-        опроса подряд (`pane opencode` + `pane pi` из одного окна) молча
-        сажают обе роли на одну панель, и супервизор пропускает их как
-        неразличимые. Измерено на живом состоянии 2026-10-06.
+        Without the flag `pane <role>` from a live pane only shows: otherwise two
+        polls in a row (`pane opencode` + `pane pi` from one window) quietly seat
+        both roles on one pane, and the supervisor skips them as indistinguishable.
+        Measured on live state 2026-10-06.
         """
         pane = self.live_pane()
         self.with_pane(pane)
@@ -340,7 +340,7 @@ class TestPaneOverride(PairTestCase):
         with self.as_ours():
             self.assertEqual(0, self.ctl("pane", "opencode"))
         self.assertNotIn("pane_pin", self.pinned(),
-                         "показ из живой панели обязан ничего не писать")
+                         "showing from a live pane must write nothing")
         with self.as_ours():
             self.assertEqual(0, self.ctl("pane", "--role", "opencode", pane))
         with self.as_ours():
@@ -353,7 +353,7 @@ class TestPaneOverride(PairTestCase):
         self.assertEqual(pane, self.pinned().get("pane_pin"))
 
     def test_show_when_no_address_and_no_tmux_pane(self) -> None:
-        """Без address и без $TMUX_PANE — показ, а не выдуманный адрес."""
+        """No address and no $TMUX_PANE — a show, not an invented address."""
         pane = self.live_pane()
         self.with_pane(None)
         self.bind("opencode", pane, 999999)
@@ -364,11 +364,11 @@ class TestPaneOverride(PairTestCase):
         self.assertEqual(pane, self.pinned().get("pane_pin"))
 
 class TestPanes(PairTestCase):
-    """`pairctl panes`: живые панели tmux -> проект -> роль -> живость.
+    """`pairctl panes`: live tmux panes -> project -> role -> liveness.
 
-    Только чтение: состояние не трогает, в журнал не пишет. Ответ на вопрос
-    «какая панель чья», который раньше требовал ps + tmux + state.json
-    (задача 53: панели лезут друг к другу между проектами).
+    Read-only: never touches state, never writes the journal. Answers "which pane
+    is whose", once needing ps + tmux + state.json (task 53: panes climbing at
+    each other across projects).
     """
 
     def ctl_panes(self) -> tuple[int, str]:
@@ -386,7 +386,7 @@ class TestPanes(PairTestCase):
             mock.patch("subprocess.run", return_value=proc)
 
     def test_shows_our_and_foreign_panes(self) -> None:
-        """Своя панель помечена НАШ, чужая — чужой."""
+        """Our pane is marked OURS, the foreign one — foreign."""
         self.store.mutate(lambda st: st.setdefault("roles", {}).update(
             {"writer-agent": {"pane": "proj:0.0", "pid": os.getpid(),
                               "first_seen": "then", "last_seen": "then"}}))
@@ -397,8 +397,8 @@ class TestPanes(PairTestCase):
         with w, r:
             code, out = self.ctl_panes()
         self.assertEqual(0, code)
-        self.assertIn("НАШ", out)
-        self.assertIn("чужой", out)
+        self.assertIn("OURS", out)
+        self.assertIn("foreign", out)
         self.assertIn("writer-agent", out)
 
     def test_without_tmux_reports_instead_of_lying(self) -> None:
@@ -406,7 +406,7 @@ class TestPanes(PairTestCase):
             self.assertEqual(1, self.ctl_panes()[0])
 
     def test_does_not_write_state_or_transcript(self) -> None:
-        """Чтение обязано не оставлять следов."""
+        """Reading must leave no traces."""
         before = self.store.read()
         n_before = len(self.store.read_transcript())
         rows = "p:0.0\tp:0.0\t/tmp\tbash\t%d\t\n" % os.getpid()

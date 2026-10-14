@@ -1,4 +1,4 @@
-"""Тесты для round_summary.py: выжимка только компонует, не выдумывает."""
+"""Tests for round_summary.py: the digest only composes, never invents."""
 
 from __future__ import annotations
 
@@ -58,7 +58,7 @@ class TestBuild(unittest.TestCase):
 
 
 class TestGateCompat(unittest.TestCase):
-    """Совместимость с verify-ground-truth.py (finding agy S5 R83)."""
+    """Compatible with verify-ground-truth.py (agy finding S5 R83)."""
 
     def _gate(self):
         import importlib.util

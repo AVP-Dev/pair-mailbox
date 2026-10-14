@@ -113,7 +113,7 @@ if ! printf '%s' "$REPORT" | grep -q "^Cleanup:" || ! printf '%s' "$REPORT" | gr
   exit 1
 fi
 # Marker gate: successful apply (blocked==false) AND clean tree AND
-# ground-truth PASS/UNKNOWN (BLOCKED — нет маркера), else no file.
+# ground-truth PASS/UNKNOWN (BLOCKED means no marker), else no file.
 # Same HEAD is a no-op ("Nothing to clean").
 BLOCKED="$(printf '%s' "$REPORT" | head -1 | grep -q BLOCKED && echo yes || echo no)"
 TREE_CLEAN="$(git status --porcelain=v1 2>/dev/null | grep -q . && echo no || echo yes)"

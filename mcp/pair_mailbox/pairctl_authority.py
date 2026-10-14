@@ -1,14 +1,14 @@
-"""Власть человека над раундом: кто пишет, какой режим, чекпоинт, леджер задач.
+"""The human authority over the round: who writes, which mode, checkpoint, task ledger.
 
-Вынесено из `server.py` отдельной ответственностью: всё здесь МЕНЯЕТ состояние
-пары, и ничего здесь не читает ради показа. Соседние модули устроены наоборот:
-`pairctl_read.py` только читает, `pairctl_panes.py` работает с привязкой панелей.
+Split out of `server.py` as its own responsibility: everything here CHANGES pair
+state, and nothing here reads for show. The neighbours invert it: `pairctl_read.py`
+only reads, `pairctl_panes.py` works the pane bindings.
 
-Почему это отдельный файл, а не «ещё функция в `server.py`»: право записи —
-ровно та граница, ради которой существует весь протокол. Код, который его
-двигает, должен читаться целиком за один проход, без того чтобы продираться
-через MCP-слой, где живут `pair_state` и `pair_send`. Когда он лежит рядом с
-ними, «кто сейчас пишет» отвечается чтением всего файла.
+Why a separate file, not "one more function in `server.py`": write authority is
+exactly the boundary the whole protocol exists for. The code that moves it must
+read whole in one pass, without wading through the MCP layer where `pair_state`
+and `pair_send` live. Lying next to them, "who writes now" answers only after
+reading the whole file.
 """
 from __future__ import annotations
 
@@ -39,12 +39,12 @@ from server import (
 
 
 def _last_permit(store: Store) -> dict:
-    """Последнее автоподтверждение из журнала (P2, раунд 75).
+    """The last self-confirmation from the journal (P2, round 75).
 
-    Человек видит не «было разрешение», а ЧТО именно подтвердили:
-    exact_command и argv последнего события unblock/unblock_refused.
-    Журнала нет или разрешений не было — пустой словарь, а не ошибка:
-    отсутствие разрешений это нормальное состояние, а не поломка.
+    The human sees not "there was a permission" but WHAT exactly confirmed:
+    exact_command and argv of the last unblock/unblock_refused event. No journal
+    or no permissions means an empty dict, not an error: missing permissions is
+    a normal state, not breakage.
     """
     import json as _json
     path = store.root / "transcript.jsonl"
@@ -71,8 +71,8 @@ def _last_permit(store: Store) -> dict:
 def cmd_status(store: Store, args: argparse.Namespace) -> int:
     state = store.read()
     session = PairSession("pairctl", store)
-    # Оператор видел сырой state.policy (null), а сервер отказывал по
-    # резолвленной _policy (project → global): "пина нет", хотя он есть.
+    # The operator saw raw state.policy (null) while the server refused on the
+    # resolved _policy (project → global): "no pin", though one exists.
     effective = session._policy(state) or None
     raw = state.get("policy") if isinstance(state.get("policy"), dict) else None
     source = "project" if raw and raw.get("writer") else ("global" if effective else None)
@@ -109,9 +109,9 @@ def cmd_assign(store: Store, args: argparse.Namespace) -> int:
 
     def apply(state):
         state["writer"] = role
-        # решение человека — повод поставить метку «выбрано человеком», чтобы
-        # в переписке было видно, что это не гонка
-        state["writer_reason"] = "назначено человеком"
+        # the human decision merits a "chosen by human" mark, so the exchange
+        # shows it is not a race
+        state["writer_reason"] = "assigned by human"
         if state.get("closed_at") or state.get("phase") == "done":
             state.pop("closed_at", None)
             state["phase"] = "implement"
@@ -120,20 +120,20 @@ def cmd_assign(store: Store, args: argparse.Namespace) -> int:
             state["round"] = int(state.get("round", 0)) + 1
     store.mutate(apply)
     store.append_transcript("assign", "human", writer=role,
-                            reason="назначено человеком")
+                            reason="assigned by human")
     print(f"write authority assigned to {role}")
     return 0
 
 
 def cmd_roles(store: Store, args: argparse.Namespace) -> int:
-    # Постоянная расстановка: пинится ТОЛЬКО писатель (writer-pin).
-    # Критик — любой второй живой в ростере, его имя в policy не хранится:
-    # лимиты кончаются, CLI меняются, а переписывать расстановку при каждой
-    # смене критика — это остановка работы ради бумажки. Флаг --critic принят
-    # и проигнорирован (предупреждение, не ошибка): старые вызовы и скрипты
-    # не должны падать после перехода на writer-pin.
-    # Гонка остаётся как запасной вариант, но по умолчанию писатель известен
-    # заранее, и раунд начинается с работы, а не с торговли правами.
+    # Standing policy: ONLY the writer pins (writer-pin).
+    # The critic is any second live roster entry, its name never stored in policy:
+    # limits run out, CLIs change, and rewriting the policy on every critic swap
+    # would halt work for paperwork. The --critic flag is accepted and ignored
+    # (a warning, not an error): old calls and scripts must not fall after the
+    # writer-pin move.
+    # The race stays as fallback, but by default the writer is known upfront, and
+    # the round starts with work, not rights trading.
     policy_path = global_roles_path()
     state = store.read()
     current = state.get("policy") if isinstance(state.get("policy"), dict) else {}
@@ -145,24 +145,24 @@ def cmd_roles(store: Store, args: argparse.Namespace) -> int:
         if args.writer:
             wanted = {"writer": args.writer}
         if args.critic:
-            # Принят и проигнорирован: writer-pin не хранит критика.
-            print(f"предупреждение: --critic {args.critic!r} проигнорирован — "
-                  f"критик теперь любой второй живой (writer-pin)", file=sys.stderr)
+            # Accepted and ignored: writer-pin stores no critic.
+            print(f"warning: --critic {args.critic!r} ignored — "
+                  f"the critic is now any second live one (writer-pin)", file=sys.stderr)
         if args.swap:
-            # Swap без хранимого критика — это смена писателя на второго живого
-            # из ростера; без второго живого — отказ с объяснением.
+            # Swap with no stored critic means moving the writer to the second live one
+            # from the roster; with no second live one — a refusal with a reason.
             roles = state.get("roles") or {}
             others = [r for r in roles if r != wanted.get("writer")]
             if not others:
-                print("error: --swap не с кем: в ростере нет второго живого", file=sys.stderr)
+                print("error: --swap has nobody: the roster holds no second live one", file=sys.stderr)
                 return 2
             wanted = {"writer": others[0]}
-            print(f"писатель -> {others[0]} (первый второй живой из ростера)")
+            print(f"writer -> {others[0]} (first second-live from the roster)")
 
     if not args.clear and not args.writer and not args.swap:
-        # Голый вызов и --critic без --writer — чтение, а не снос: критик
-        # в writer-pin не хранится, и его «установка» молча снимала бы policy
-        # через ветку not wanted ниже. Показываем project + effective.
+        # A bare call and --critic without --writer mean read, not wipe: the critic
+        # is never stored in writer-pin, and its "setup" would quietly drop policy
+        # through the not wanted branch below. Show project + effective.
         session = PairSession("pairctl", store)
         effective = session._policy(state) or None
         print(json.dumps({"project": current or None, "effective": effective},
@@ -172,25 +172,25 @@ def cmd_roles(store: Store, args: argparse.Namespace) -> int:
     if not wanted:
         store.mutate(lambda st: st.pop("policy", None))
         store.append_transcript("roles", "human", policy=None)
-        print("постоянная расстановка снята, роли снова определяются гонкой")
+        print("standing policy dropped, roles fall back to the race")
         return 0
 
     store.mutate(lambda st: st.__setitem__("policy", wanted))
     store.append_transcript("roles", "human", policy=wanted, source=str(policy_path))
 
-    # Расстановка сразу применяется к текущему раунду назначением держателя.
+    # The policy applies to the current round at once by naming the holder.
     holder = state.get("writer")
     if wanted.get("writer") and holder != wanted["writer"]:
         def apply(st):
             st["writer"] = wanted["writer"]
-            st["writer_reason"] = "назначено человеком постоянной расстановкой"
+            st["writer_reason"] = "assigned by human standing policy"
         store.mutate(apply)
 
     if args.global_:
         policy_path.parent.mkdir(parents=True, exist_ok=True)
         policy_path.write_text(json.dumps(wanted, ensure_ascii=False, indent=2), encoding="utf-8")
-        print(f"сохранено для любых проектов: {policy_path}")
-    print(f"расстановка: писатель {wanted.get('writer') or '—'} (критик — любой второй живой)")
+        print(f"saved for all projects: {policy_path}")
+    print(f"policy: writer {wanted.get('writer') or '—'} (critic — any second live one)")
     return 0
 
 
@@ -226,18 +226,18 @@ def cmd_autonomy(store: Store, args: argparse.Namespace) -> int:
     store.mutate(lambda state: state.__setitem__("autonomy", level))
     store.append_transcript("autonomy", "human", level=level, previous=previous)
     notes = {
-        "observe": "сверхвизор только сообщает: упавшего не перезапускает, разрешения не подтверждает",
-        "semi": "работа идёт сама, но закрыть раунд без доказательств и без 'pairctl ok' нельзя",
-        "auto": "работа идёт сама до закрытия раунда, нужен только записанный факт",
+        "observe": "the supervisor only reports: never restarts the fallen, never confirms permissions",
+        "semi": 'the work runs itself, but the round never closes without evidence and without \'pairctl ok\'',
+        "auto": "the work runs itself till the round close, only a recorded fact is needed",
     }
     print(f"autonomy is now {level!r}: {notes[level]}")
     return 0
 
 
 def cmd_launch_autonomy(store: Store, args: argparse.Namespace) -> int:
-    # Выбор режима при старте, ровно один раз и до того, как агенты получили
-    # инструкции. Логика здесь, а не в pair-duo, потому что у bash-обёртки нет
-    # тестов: правило, которое нечем проверить, мы уже находили.
+    # Mode choice at start, exactly once and before the agents get instructions.
+    # The logic lives here, not in pair-duo, because the bash wrapper has no tests:
+    # a rule with nothing to check it by, we already found once.
     level, source = resolve_autonomy(
         store.root, task=args.task or "", flag=args.flag,
     )
@@ -252,12 +252,12 @@ def cmd_launch_autonomy(store: Store, args: argparse.Namespace) -> int:
 
 
 def cmd_ok(store: Store, args: argparse.Namespace) -> int:
-    # Одно слово человека на чекпоинте. Именно это делает semi «полуавтоматом»:
-    # пара работает сама, но закрыть раунд без него не может.
+    # One human word at the checkpoint. Exactly what makes semi "semi-auto": the
+    # pair works alone but cannot close the round without it.
     #
-    # --revoke отзывает сказанное. Отзыв нужен не для удобства: человек
-    # смотрит на правки, говорит «ок» и видит, что после этого изменилось ещё
-    # что-то. Без отзыва единственный выход — сменить настройку или reset.
+    # --revoke takes the word back. Revocation is not for comfort: the human looks
+    # at the edits, says "ok", and sees something else change after. Without revoke
+    # the only exit is switching the setting or reset.
     state = store.read()
     round_number = int(state.get("round", 0))
     revoke = bool(getattr(args, "revoke", False))
@@ -289,9 +289,9 @@ def cmd_ok(store: Store, args: argparse.Namespace) -> int:
 
 
 def _wake_writer(store: Store, reason: str, text: str) -> None:
-    # Задача от человека — событие, а не запись: без пробуждения писатель
-    # узнает о ней только следующим случайным чтением. Будим держателя
-    # записи; если его нет (release), будить некого — человек назначит сам.
+    # A human task is an event, not a record: without a wake-up the writer learns
+    # it only on the next random read. Wake the record holder; with none (release)
+    # there is nobody to wake — the human names one itself.
     writer = store.read().get("writer")
     if not writer:
         return
@@ -299,15 +299,15 @@ def _wake_writer(store: Store, reason: str, text: str) -> None:
         from wake import record_wake
         record_wake(store.root, store.read(), writer, reason, text)
         store.append_transcript("wake_pending", "human", to=writer, reason=reason)
-    except Exception:  # noqa: BLE001 - wake-файл не должен ронять команду:
-        # задача уже записана выше через mutate, будим best-effort, как в server.py
+    except Exception:  # noqa: BLE001 - the wake file must not drop the command:
+        # the task is already recorded above via mutate, wake best-effort, as in server.py
         pass
 
 
 def cmd_task(store: Store, args: argparse.Namespace) -> int:
-    # Список, а не одна строка. Новая задача дописывается: старая не исчезает,
-    # и раунд не закроется, пока что-то не помечено сделанным или брошенным с
-    # причиной.
+    # A list, not one line. A new task appends: the old never vanishes, and the round
+    # never closes while something stays neither done nor dropped with a reason.
+    # a reason.
     if args.done or args.drop:
         target = int(args.done or args.drop)
         want = "done" if args.done else "dropped"
@@ -328,7 +328,7 @@ def cmd_task(store: Store, args: argparse.Namespace) -> int:
         item = store.mutate(close)
         store.append_transcript("task_closed", "human", task_id=item["id"], status=want)
         print(f"task #{item['id']} is {want}")
-        _wake_writer(store, "задача", f"[pair] human: задача #{item['id']} {want}, прочитай pair_state")
+        _wake_writer(store, "task", f"[pair] human: task #{item['id']} {want}, read pair_state")
     else:
         body = " ".join(str(args.text or "").split())
         if not body:
@@ -341,13 +341,13 @@ def cmd_task(store: Store, args: argparse.Namespace) -> int:
                     "round": int(state.get("round", 0)), "reason": "",
                     "closed_at": None, "closed_by": None}
             state.setdefault("tasks", []).append(item)
-            state["task"] = body  # для старых читателей и отчёта
+            state["task"] = body  # for old readers and the report
             return item
 
         item = store.mutate(apply)
         store.append_transcript("task_added", "human", task_id=item["id"], text=body[:200])
         print(f"task #{item['id']} added: {body}")
-        _wake_writer(store, "задача", f"[pair] human: новая задача #{item['id']}, прочитай pair_state")
+        _wake_writer(store, "task", f"[pair] human: new task #{item['id']}, read pair_state")
         still = [i["id"] for i in open_tasks(store.read())]
         if len(still) > 1:
             print(f"  open tasks now: {', '.join(str(i) for i in still)}")
@@ -357,7 +357,7 @@ def cmd_task(store: Store, args: argparse.Namespace) -> int:
 def cmd_tasks(store: Store, args: argparse.Namespace) -> int:
     current = store.read()
     path = write_tasks_md(store.root, current)
-    print(f"# Журнал сессии -> {path}\n")
+    print(f"# Session journal -> {path}\n")
     print(render_tasks_md(current))
     return 0
 
@@ -367,10 +367,10 @@ def cmd_reset(store: Store, args: argparse.Namespace) -> int:
         print("refusing to reset without --yes", file=sys.stderr)
         return 2
 
-    # §11 называет транскрипт землёй, по которой прогон восстанавливается:
-    # append-only относится к файлу, и молчаливое удаление стирает аудит.
-    # Поэтому архив (transcript-<дата>.jsonl), а не unlink; снос считается
-    # с чтением счётчиков, чтобы человек видел масштаб уничтожения.
+    # \u00a711 calls the transcript the ground a run restores from: append-only
+    # covers the file, and silent deletion wipes the audit. So an archive
+    # (transcript-<date>.jsonl), not unlink; the wipe counts with the counters read,
+    # so the human sees the destruction scale.
     archive_dir = store.root / "transcript-archive"
     archive_dir.mkdir(parents=True, exist_ok=True)
     old_lines = 0
@@ -382,12 +382,12 @@ def cmd_reset(store: Store, args: argparse.Namespace) -> int:
         shutil.rmtree(path, ignore_errors=True)
     store.state_path.unlink(missing_ok=True)
     fresh = Store(store.root)
-    # Стирание состояния не должно повышать права — но права измеряются
-    # относительно дефолта, а дефолт теперь auto, то есть ровно то, что человек
-    # задал как норму. Ставить здесь observe было бы противоречием: wipe
-    # остановил бы пару вопреки «работайте сами, вернитесь с выводом» и
-    # заставил бы человека это заметить. §12 вне оси, поэтому auto не значит
-    # «разрешено разрушительное».
+    # Wiping state must not raise rights — but rights count against the default,
+    # and the default is now auto: exactly what the human set as norm. Setting
+    # observe here would contradict: wipe would stop the pair against "work alone,
+    # return with output" and force the human to notice. \u00a712 stays off-axis, so
+    # auto never means "destructive allowed".
+    # destructive allowed".
     fresh.mutate(lambda st: st.__setitem__("autonomy", "auto"))
     store.append_transcript("reset", "human", autonomy="auto")
     print("state reset; autonomy is now 'auto' — the pair works to the end and "
@@ -398,7 +398,7 @@ def cmd_reset(store: Store, args: argparse.Namespace) -> int:
     return 0
 
 def cmd_keys(store: Store, args: argparse.Namespace) -> int:
-    """Сгенерить Ed25519-пару роли: `pairctl keys gen <role>`."""
+    """Generate the role Ed25519 pair: `pairctl keys gen <role>`."""
     if getattr(args, "keys_command", "") != "gen" or not getattr(args, "role", ""):
         print("usage: pairctl keys gen <role>", file=sys.stderr)
         return 2
@@ -417,5 +417,5 @@ def cmd_keys(store: Store, args: argparse.Namespace) -> int:
 
     store.mutate(apply)
     store.append_transcript("keys_gen", "human", target_role=role, key_id=made["key_id"], rekey=bool(old))
-    print(f"{role}: key_id {made['key_id']}" + (" (старый ключ отозван)" if old else ""))
+    print(f"{role}: key_id {made['key_id']}" + (" (old key revoked)" if old else ""))
     return 0

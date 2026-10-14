@@ -1,6 +1,6 @@
-"""Тесты для session_facts.py: детерминированный снимок дерева.
+"""Tests for session_facts.py: a deterministic tree snapshot.
 
-Один тест-файл на один исходник: `session_facts.py` -> `test_session_facts.py`
+One test file per source: `session_facts.py` -> `test_session_facts.py`
 """
 from __future__ import annotations
 
@@ -22,7 +22,7 @@ def git(repo: Path, *args: str) -> str:
 
 
 class TempRepo:
-    """Пустой git-репозиторий во временном каталоге."""
+    "An empty git repo in a temp dir."
 
     def __init__(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()

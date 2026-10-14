@@ -2,12 +2,12 @@
 set -euo pipefail
 
 usage() {
-  printf '%s\n' "Использование: $0 [--profile PATH] [--only LAYER[,LAYER...]] [--list] [--dry-run] [--jobs N]" \
-    "  --profile PATH  профиль команд относительно корня проекта" \
-    "  --only LAYERS   запустить только указанные слои" \
-    "  --list          показать профиль без запуска" \
-    "  --dry-run       показать выбранные проверки без запуска" \
-  "  --jobs N        параллельные проверки (по умолчанию 1; сюиты изолированы: temp-state, уникальные tmux-имена; live-tmux сюиты с пометкой serial всегда идут в одиночку)"
+  printf '%s\n' "Usage: $0 [--profile PATH] [--only LAYER[,LAYER...]] [--list] [--dry-run] [--jobs N]" \
+    "  --profile PATH  the command profile relative to the project root" \
+    "  --only LAYERS   run only the given layers" \
+    "  --list          show the profile with no launch" \
+    "  --dry-run       show the selected checks with no launch" \
+  "  --jobs N        parallel checks (default 1; suites isolated: temp-state, unique tmux names; live-tmux serial-marked suites always run alone)"
 }
 
 fail() {
@@ -25,12 +25,12 @@ seen_names=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --profile)
-      [ "$#" -ge 2 ] || fail "--profile требует путь"
+      [ "$#" -ge 2 ] || fail "--profile needs a path"
       PROFILE_PATH="$2"
       shift 2
       ;;
     --only)
-      [ "$#" -ge 2 ] || fail "--only требует список слоёв"
+      [ "$#" -ge 2 ] || fail "--only needs a layer list"
       ONLY="$2"
       shift 2
       ;;
@@ -43,8 +43,8 @@ while [ "$#" -gt 0 ]; do
       shift
       ;;
     --jobs)
-      [ "$#" -ge 2 ] || fail "--jobs требует число"
-      [[ "$2" =~ ^[1-9][0-9]*$ ]] || fail "--jobs: нужно положительное число, получили '$2'"
+      [ "$#" -ge 2 ] || fail "--jobs needs a number"
+      [[ "$2" =~ ^[1-9][0-9]*$ ]] || fail "--jobs: needs a positive number, got '$2'"
       JOBS="$2"
       shift 2
       ;;
@@ -53,7 +53,7 @@ while [ "$#" -gt 0 ]; do
       exit 0
       ;;
     *)
-      printf 'Неизвестная опция: %s\n' "$1" >&2
+      printf 'Unknown option: %s\n' "$1" >&2
       usage >&2
       exit 2
       ;;
@@ -85,17 +85,17 @@ selected_layer() {
 
 if [ -n "$ONLY" ]; then
   case "$ONLY" in
-    ,*|*,|*,,*) fail "пустой слой в --only" ;;
+    ,*|*,|*,,*) fail "an empty layer in --only" ;;
   esac
   IFS=',' read -r -a requested_layers <<<"$ONLY"
-  [ "${#requested_layers[@]}" -gt 0 ] || fail "пустой --only"
+  [ "${#requested_layers[@]}" -gt 0 ] || fail "empty --only"
   for layer in "${requested_layers[@]}"; do
-    valid_layer "$layer" || fail "неизвестный слой: $layer"
+    valid_layer "$layer" || fail "unknown layer: $layer"
   done
 fi
 
-[ -f "$PROFILE_FILE" ] || fail "профиль не найден: $PROFILE_FILE"
-[ -r "$PROFILE_FILE" ] || fail "профиль недоступен для чтения: $PROFILE_FILE"
+[ -f "$PROFILE_FILE" ] || fail "profile not found: $PROFILE_FILE"
+[ -r "$PROFILE_FILE" ] || fail "profile not readable: $PROFILE_FILE"
 
 cd "$PROJECT_ROOT"
 
@@ -122,19 +122,19 @@ while IFS=$'\t' read -r name layer required command serial extra || [ -n "${name
     \#*) continue ;;
   esac
 
-  [ -z "$extra" ] || fail "строка $line_number: лишние поля"
-  [[ "$name" =~ ^[A-Za-z0-9._-]+$ ]] || fail "строка $line_number: недопустимое имя проверки"
-  valid_layer "$layer" || fail "строка $line_number: неизвестный слой '$layer'"
+  [ -z "$extra" ] || fail "line $line_number: extra fields"
+  [[ "$name" =~ ^[A-Za-z0-9._-]+$ ]] || fail "line $line_number: bad check name"
+  valid_layer "$layer" || fail "line $line_number: unknown layer '$layer'"
   case "$required" in
     0|1) ;;
-    *) fail "строка $line_number: required должен быть 0 или 1" ;;
+    *) fail "line $line_number: required must be 0 or 1" ;;
   esac
   case "$serial" in
     ""|serial) ;;
-    *) fail "строка $line_number: serial должен быть пустым или 'serial'" ;;
+    *) fail "line $line_number: serial must be empty or 'serial'" ;;
   esac
   case ";$seen_names;" in
-    *";$name;"*) fail "строка $line_number: повторяющееся имя проверки '$name'" ;;
+    *";$name;"*) fail "line $line_number: duplicate check name '$name'" ;;
   esac
   seen_names="$seen_names;$name"
   found=1
@@ -156,11 +156,11 @@ while IFS=$'\t' read -r name layer required command serial extra || [ -n "${name
     continue
   fi
 
-  # Live-tmux сюиты (пометка serial в профиле) делят tmux-состояние хоста:
-  # два раннера видят чужие панели и падают друг на друге (backlog
-  # live-tmux-parallel-flake; TestRestart цеплял живую панель %7). При
-  # JOBS>1 такая проверка ждёт хвост пачки, идёт синхронно и только потом
-  # пачка продолжается — в гордом одиночестве.
+  # Live-tmux suites (the serial mark in the profile) share the host tmux state:
+  # two runners see foreign panes falling over each other (the backlog
+  # live-tmux-parallel-flake; TestRestart caught the live pane %7). Past
+  # JOBS>1 such a check awaits the batch tail, runs sync, and only then the batch
+  # goes on — in proud solitude.
   if [ "$serial" = "serial" ] && [ "$JOBS" -gt 1 ]; then
     wait
     running=0
@@ -173,14 +173,14 @@ while IFS=$'\t' read -r name layer required command serial extra || [ -n "${name
     fi
     continue
   fi
-  # Параллельность пачками по JOBS: каждая проверка пишет в свой лог,
-  # итог собирается после wait. Вывод сюиты не перемежается с чужой.
+  # Parallelism in batches of JOBS: every check writes its own log, the total
+  # gathers past wait. No suite output interleaves with a foreign one.
   printf '[verify] %s (%s)\n' "$name" "$layer"
   log="$PROJECT_ROOT/.pair/verify-$name.log"
-  # set +e внутри подшелла: он наследует errexit родителя, и падающая
-  # проверка убивала подшелл ДО записи результата — итог тогда либо
-  # молча обрывался на wait -n (jobs=1), либо сводился как «0 failures»
-  # (jobs>1): красная required-проверка выглядела зелёной.
+  # set +e inside the subshell: it inherits the parent errexit, and a falling check
+  # killed the subshell BEFORE writing the result — then the total either broke
+  # silent on wait -n (jobs=1) or reduced as "0 failures" (jobs>1): a red required
+  # check read green.
   ( set +e; bash -c "$command" >"$log" 2>&1; echo "$? $required $name" >>"$PROJECT_ROOT/.pair/verify-results.txt" ) &
   running=$((running + 1))
   if [ "$running" -ge "$JOBS" ]; then
@@ -189,7 +189,7 @@ while IFS=$'\t' read -r name layer required command serial extra || [ -n "${name
   fi
 done <"$PROFILE_FILE"
 
-# Добираем хвост пачки и сводим итоги из файла результатов.
+# Draining the batch tail, reducing totals from the results file.
 wait
 if [ -f "$PROJECT_ROOT/.pair/verify-results.txt" ]; then
   while read -r status required name; do
@@ -209,13 +209,13 @@ if [ -f "$PROJECT_ROOT/.pair/verify-results.txt" ]; then
   rm -f "$PROJECT_ROOT/.pair/verify-results.txt"
 fi
 
-[ "$found" -eq 1 ] || fail "профиль не содержит проверок"
+[ "$found" -eq 1 ] || fail "the profile holds no checks"
 
 if [ "$LIST_ONLY" -eq 1 ]; then
   exit 0
 fi
 
-[ "$selected" -eq 1 ] || fail "не выбрано ни одной проверки для запуска"
+[ "$selected" -eq 1 ] || fail "no checks selected to run"
 
 if [ "$failures" -gt 0 ]; then
   printf '[verify] failed: %s required check(s), %s warning(s)\n' "$failures" "$warnings" >&2

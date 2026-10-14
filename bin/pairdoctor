@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Диагностика парной работы. Ничего не меняет, только проверяет и объясняет.
+"""Pair-work diagnostics. Changes nothing, only checks and explains.
 
-  bin/pairdoctor            всё
-  bin/pairdoctor --project  сверять ещё и состояние рабочего проекта
+  bin/pairdoctor            everything
+  bin/pairdoctor --project  also reconcile the working project state
 """
 import json, os, shutil, subprocess, sys, tempfile
 from pathlib import Path
@@ -32,7 +32,7 @@ def warn(m):
 
 
 def argv_from_toml(text):
-    """Минимум, который нужен из блока [mcp_servers.pair]: command и args."""
+    """The minimum needed from the [mcp_servers.pair] block: command and args."""
     cmd, args, inside = None, [], False
     for line in text.splitlines():
         s = line.strip()
@@ -52,12 +52,12 @@ def argv_from_toml(text):
     return [cmd] + args
 
 def unittest_tail(stdout: str, stderr: str) -> list:
-    """Строки итога unittest из объединённого вывода.
+    """unittest summary lines from the merged output.
 
-    unittest пишет Ran/OK в stderr, а не stdout: чтение только stdout
-    давало пустой tail навсегда (карточка pairdoctor-reads-stdout).
-    Итог бывает с хвостом — `OK (skipped=1)`, `FAILED (failures=1)` —
-    поэтому ловим по префиксу, а не точным совпадением.
+    unittest writes Ran/OK to stderr, not stdout: reading stdout alone
+    gave an empty tail forever (pairdoctor-reads-stdout card). The summary
+    sometimes has a tail — `OK (skipped=1)`, `FAILED (failures=1)` — so match
+    by prefix, not by exact equality.
     """
     combined = (stdout or "") + (stderr or "")
     out = []
@@ -72,18 +72,18 @@ def unittest_tail(stdout: str, stderr: str) -> list:
 print("pairdoctor, root " + str(ROOT))
 
 def freshness_lines(targets, code_dir=None):
-    """Строки секции [6] freshness как (уровень, текст): 'ok'/'warn'.
+    """Section [6] freshness lines as (level, text): ‘ok’/‘warn’.
 
-    Вынесено из inline-секции (раунд 87): секцию надо проверять через её
-    вызов, а не через библиотеку — иначе подмена в вызывающем коде
-    тесту не видна. code_dir — только для тестов (песочница вместо
-    каталога сервера); в бою всегда None.
+    Moved out of the inline section (round 87): the section must be checked
+    through its own call, not through the library — otherwise a substitution
+    in the calling code stays invisible to the test. code_dir is tests-only
+    (a sandbox instead of the server directory); live runs always pass None.
     """
     sys.path.insert(0, str(ROOT / "mcp" / "pair_mailbox"))
     import server_freshness as _fresh
-    # Свежесть меряется от старта MCP-серверов (pid из state.json),
-    # а не от старта самого врача: врач только что запущен, его /proc/self
-    # новее любого .py, и сравнение с собой зелено по построению.
+    # Freshness counts from the MCP server start (pid from state.json),
+    # not from the doctor start: the doctor just launched, its /proc/self is
+    # newer than any .py, and comparing against itself is green by construction.
     _pids = []
     for _sd in targets:
         try:
@@ -117,7 +117,7 @@ if not srv.exists():
 else:
     r = subprocess.run([sys.executable, str(tests)], cwd=str(ROOT),
                        capture_output=True, text=True)
-    # unittest пишет итог в stderr: читаем объединённый вывод через unittest_tail.
+    # unittest writes its summary to stderr: read the merged output via unittest_tail.
     tail = unittest_tail(r.stdout, r.stderr)
     if r.returncode == 0:
         ok("server tests: " + (tail[0] if tail else "OK"))
@@ -154,15 +154,15 @@ for name, prof in PROFILES.items():
     req = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "initialize",
                       "params": {"protocolVersion": "2024-11-05",
                                  "clientInfo": {"name": "pairdoctor"}}}) + "\n"
-    # Рукопожатие пишет в состояние: `on_initialize` вызывает `_register` и
-    # сохраняет state.json, то есть заносит pid и панель диагностического
-    # процесса в ростер наравне с живыми агентами. Проверка, которая обещает
-    # ничего не менять, стёрла бы pid живого соседа и оставила в ростере
-    # мёртвый, а `pair_state` потом сообщил бы «сосед мёртв» о том, кто жив.
+    # The handshake writes into state: `on_initialize` calls `_register` and
+    # saves state.json, which records the diagnostic process pid and pane
+    # into the roster alongside live agents. A check that promises to change
+    # nothing would wipe a live neighbour’s pid and leave a dead one in
+    # the roster, and `pair_state` would then report "neighbour dead" about the living.
     #
-    # Поэтому сервер поднимается на отдельной пустой директории состояния.
-    # `serve.sh` берёт её вторым аргументом, и `PAIR_STATE` из окружения
-    # диагностики не должен перебить этот путь.
+    # So the server rises on a separate empty state directory.
+    # `serve.sh` takes it as the second argument, and the diagnostics `PAIR_STATE`
+    # must not override that path.
     with tempfile.TemporaryDirectory(prefix="pairdoctor-") as sandbox:
         env = dict(os.environ)
         env.pop("PAIR_STATE", None)

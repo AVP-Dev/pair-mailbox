@@ -1,19 +1,19 @@
-/* Минимальный DOM для запуска клиента дашборда вне браузера.
+/* A minimal DOM for running the dashboard client outside a browser.
  *
- * Зачем он нужен. Статические проверки ассета ловят опечатку в имени функции, но
- * не ловят `TypeError` на третьей строке отрисовки: до человека такой баг доходит
- * страницей с пустым `#app` и ни одного слова об ошибке, потому что страница
- * показывает только то, что нарисовалось. Настоящий браузер в гейте запускать
- * нельзя, а этот файл — ровно те куски DOM, которые клиент использует, и ничего
- * сверх: `createElement`, `getElementById`, `textContent`, `classList`,
- * `appendChild`, `removeChild`, `querySelector` для тега refresh, `localStorage`.
+ * Why it stands. Static asset checks catch a function-name typo, but never a
+ * `TypeError` on the third render line: such a bug reaches the human as a page with
+ * a blank `#app` and not a word about the error, because the page only shows what
+ * rendered. Launching a real browser in the gate is banned, while this file is
+ * exactly the DOM pieces the client uses, nothing more: `createElement`,
+ * `getElementById`, `textContent`, `classList`,
+ * `appendChild`, `removeChild`, `querySelector` for the refresh tag, `localStorage`.
  *
- * Чего здесь НЕТ намеренно: разбора HTML, CSSOM, событийной модели, таймеров.
- * Заглушка не пытается быть браузером — она делает видимой ошибку в коде, который
- * иначе молчал бы до первого открытия страницы человеком.
+ * Deliberately MISSING here: HTML parsing, CSSOM, the event model, timers. The stub
+ * never tries being a browser — it surfaces an error in code that would otherwise stay
+ * silent till the first human page open.
  *
- * Использование: node scripts/board-dom-stub.js <labels.js> <board.js> <snapshot.json> <watch-seconds>
- * Печатает дерево `#app` построчно и три строки `--- ...` о теме, localStorage и теге refresh.
+ * Usage: node scripts/board-dom-stub.js <labels.js> <board.js> <snapshot.json> <watch-seconds>
+ * Prints the `#app` tree line by line plus three `--- ...` lines on theme, localStorage and the refresh tag.
  */
 "use strict";
 
@@ -81,7 +81,7 @@ global.localStorage = {
 
 const [labelsPath, clientPath, snapshotPath, watchSeconds] = process.argv.slice(2);
 if (!labelsPath || !clientPath || !snapshotPath) {
-  console.error("нужны пути: <labels.js> <board.js> <snapshot.json> [watch-seconds]");
+  console.error("paths needed: <labels.js> <board.js> <snapshot.json> [watch-seconds]");
   process.exit(2);
 }
 elements.snapshot._text = fs.readFileSync(snapshotPath, "utf8");

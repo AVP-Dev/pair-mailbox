@@ -1,9 +1,9 @@
-"""Обязательства ответа: кто кого ждёт и кто кому уже ответил.
+"""Reply obligations: who awaits whom, who already answered whom.
 
-Вынесено из `server.py` (карточка server-py-still-a-monolith): запрос с
-`expects_reply` и ответ на него — одна ответственность, ревизия и транскрипт
-при ней. Зависимость одна — store (корни, project_root, транскрипт), обратных
-ссылок на PairSession нет, поэтому server импортирует отсюда, а не наоборот.
+Moved out of `server.py` (the server-py-still-a-monolith card): a request with
+`expects_reply` plus its answer is one responsibility, revision and transcript with
+it. One dependency — the store (roots, project_root, transcript), no back references
+to PairSession, so server imports from here, never the reverse.
 """
 from __future__ import annotations
 
@@ -51,13 +51,13 @@ def open_obligation(store: Any, frm: str, to: str, seq: int, subject: str = "") 
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     path = store.obligations_root / f"{seq:06d}-{stamp}-{frm}-{to}.json"
     record = {"seq": seq, "from": frm, "to": to, "opened_at": _utcnow(), "subject": subject}
-    # Привязка запроса к ревизии (review-queue): HEAD + dirty-hash + файлы.
-    # Без неё вердикт, пришедший после новых коммитов, молча ложился бы
-    # на непроверенный код. Fail-open: без git пишется пустой снимок.
+    # Binding the request to the revision (review-queue): HEAD + dirty-hash + files.
+    # With no it a verdict arriving past new commits would silently land on
+    # unchecked code. Fail-open: with no git an empty snapshot writes.
     try:
         from review import snapshot
         record["rev"] = snapshot(store.project_root)
-    except Exception:  # noqa: BLE001 - снимок не должен ронять запрос
+    except Exception:  # noqa: BLE001 - the snapshot must never drop the request
         record["rev"] = {"head": "", "dirty": "", "files": []}
     _atomic_write_json(path, record)
     store.append_transcript("obligation_opened", frm, to=to, seq=seq, subject=subject)
@@ -86,8 +86,8 @@ def answer_obligations(store: Any, answerer: str, author: str) -> list[int]:
     return closed
 
 def _atomic_write_json(path: Path, payload: Any) -> None:
-    # Одна реализация на проект — в server.py. Ленивый импорт: obligations
-    # импортируется из server на верхнем уровне, обратный импорт на верхнем
-    # уровне был бы циклом; к моменту вызова server уже загружен.
+    # One implementation per project — in server.py. A lazy import: obligations
+    # imports from server at top level, a reverse top-level import would loop;
+    # by call time server already loads.
     from server import atomic_write_json
     atomic_write_json(path, payload)

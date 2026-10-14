@@ -1,14 +1,14 @@
-"""Машинный гейт scoping → plan: фиксация намерений в .pair/intent.md.
+"""Machine gate scoping -> plan: intent pinned in .pair/intent.md.
 
-Зачем: переход в plan без сформулированной проблемы и границ задачи приводит
-к расфокусировке и преждевременным коммитам. Гейт требует наличия артефакта
-`.pair/intent.md` с маркером текущего раунда `round: N` и обязательными секциями:
-- problem (проблема/problem)
-- scope (границы/scope)
-- outcome (ожидаемый результат/outcome/acceptance)
+Why: moving to plan with no stated problem and no task bounds drifts focus
+and commits early. The gate demands a `.pair/intent.md` artefact with the
+current-round marker `round: N` and mandatory sections:
+- problem (problem)
+- scope (scope)
+- outcome (outcome/acceptance)
 
-В режиме `audit` гейт также требует артефакт (исследование проблемы).
-Шаги назад и повторные переходы (reopen) исключены из блокировки.
+In `audit` mode the gate also demands the artefact (problem research).
+Steps back and repeated moves (reopen) stay out of the block.
 """
 from __future__ import annotations
 
@@ -32,13 +32,13 @@ def _intent_path(state_dir: Path) -> Path:
 
 
 def parse_intent(path: Path) -> dict[str, Any]:
-    """Разобрать intent.md: проверить маркер раунда и ключевые секции."""
+    """Parse intent.md: check the round marker and the key sections."""
     try:
         text = path.read_text(encoding="utf-8")
     except OSError as exc:
         return {
             "ok": False,
-            "why": f".pair/{INTENT_FILE} не читается: {exc}",
+            "why": f".pair/{INTENT_FILE} unreadable: {exc}",
             "round": None,
             "missing": [name for name, _ in SECTION_PATTERNS],
         }
@@ -60,13 +60,13 @@ def parse_intent(path: Path) -> dict[str, Any]:
     why = ""
     if round_number is None:
         why = (
-            f"в .pair/{INTENT_FILE} нет маркера раунда: первая строка должна быть "
-            f"`round: N` (N — номер текущего раунда)"
+            f"in .pair/{INTENT_FILE} has no round marker: the first line must be "
+            f"`round: N` (N — the current round number)"
         )
     elif missing:
         why = (
-            f"в .pair/{INTENT_FILE} отсутствуют секции: {', '.join(missing)} "
-            f"(нужны заголовки Проблема/Problem, Границы/Scope, Ожидаемый результат/Outcome)"
+            f"in .pair/{INTENT_FILE} misses sections: {', '.join(missing)} "
+            f"(need Problem, Scope, Outcome headers)"
         )
 
     return {
@@ -78,9 +78,9 @@ def parse_intent(path: Path) -> dict[str, Any]:
 
 
 def gate(state_dir: Path, state: dict[str, Any]) -> dict[str, Any]:
-    """Проверка гейта при переходе scoping → plan.
+    """Gate check on the scoping → plan move.
 
-    Возвращает {"ok": bool, "why": str}.
+    Returns {"ok": bool, "why": str}.
     """
     path = _intent_path(state_dir)
     res = parse_intent(path)
@@ -92,9 +92,9 @@ def gate(state_dir: Path, state: dict[str, Any]) -> dict[str, Any]:
         return {
             "ok": False,
             "why": (
-                f"intent.md помечен round: {res['round']}, а текущий раунд {round_number}. "
-                f"Артефакт намерения должен соответствовать текущему раунду."
+                f"intent.md marks round: {res['round']}, but the current round is {round_number}. "
+                f"The intent artefact must match the current round."
             ),
         }
 
-    return {"ok": True, "why": "intent.md проверен: маркер раунда и секции в порядке"}
+    return {"ok": True, "why": "intent.md checked: round marker and sections in order"}

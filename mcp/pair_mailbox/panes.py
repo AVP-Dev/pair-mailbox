@@ -1,43 +1,42 @@
-"""Кому принадлежит панель: этот проект или другой.
+"""Whose pane this is: this project or another.
 
-Вопрос отделён от `pane_is_foreign` намеренно, и разделение не косметическое.
-`pane_is_foreign` отвечает «можно ли печатать» и потому спрашивает ещё и «жива ли
-панель». Здесь спрашивается только «этот ли проект», потому что `_register`
-записывает панель в ростер, а ростеру не нужен вердикт о смерти: у мёртвой панели
-своя судьба, и её снимает другой путь.
+The question is split from `pane_is_foreign` on purpose, and the split is not
+cosmetic. `pane_is_foreign` answers "may we print" and so also asks "is the
+pane alive". Here only "is it this project" is asked, because `_register`
+writes the pane into the roster, and the roster needs no death verdict: a dead
+pane has its own fate, handled by another path.
 
-Смешать эти два факта было бы дороже, чем кажется. Проверка «своя» ответила бы
-«нет» на мёртвой панели, и роль с умершей панелью получила бы в журнале ещё и
-ложное «чужой проект» — то есть два разных отказа на одну причину, и разбираться
-пришлось бы по журналу.
+Mixing the two facts would cost more than it looks. The "ours" check would
+answer "no" on a dead pane, and a role with a dead pane would also get a false
+"foreign project" in the journal — two different refusals for one cause, to be
+untangled from the log.
 
-Модуль также владеет гонкой при рождении панели: сразу после `split-window -c`
-tmux отдаёт cwd ПРЕДЫДУЩЕЙ панели, и наивная проверка назвала бы чужую панель
-своей — или, что хуже, отвергла бы только что появившегося агента.
+The module also owns the race at pane birth: right after `split-window -c`
+tmux reports the PREVIOUS pane’s cwd, and a naive check would call another pane
+ours — or worse, reject the just-born agent.
 """
 from __future__ import annotations
 
 import time
 from pathlib import Path
 
-# Сколько ждать, пока tmux проставит cwd только что созданной панели. Замерено:
-# первый опрос сразу после `split-window -c` отдаёт cwd предыдущей панели, а
-# примерно через 0.3с — правильный. Значение с запасом: ждать дольше приходится
-# только на регистрации новой панели, а не на каждом звонке.
+# How long to wait for tmux to set the cwd of a newborn pane. Measured:
+# the first poll right after `split-window -c` returns the previous pane’s cwd,
+# and ~0.3s later the right one. A value with margin: longer waits happen only
+# at new-pane registration, not on every ring.
 PANE_CWD_SETTLE_SECONDS = 0.6
 
 
 def _settle_pane_identity(tmux: str, pane: str, ident: dict, project_root) -> dict:
-    """Переспрашивает cwd панели, если первый опрос не доказал её нашу.
+    """Re-asks the pane cwd when the first poll never proved it ours.
 
-    Гонка при рождении панели, измерена: сразу после `split-window -c <dir>` tmux
-    отдаёт cwd ПРЕДЫДУЩЕЙ панели — то есть неверный, а не пустой; примерно через
-    0.3с верный.
+    Birth race, measured: right after `split-window -c <dir>` tmux returns
+    the PREVIOUS pane’s cwd — wrong, not empty; ~0.3s later the right one.
 
-    Поэтому проверка повторяется один раз, а не «пока пусто»: ждать, что неверный
-    путь сам исчезнет, нельзя — он выглядит как уверенный ответ. Один повтор
-    снимает и пустой, и протухший cwd, то есть обе формы гонки. Без него роль
-    отвергала бы собственную панель в первые миллисекунды её жизни.
+    So the check repeats once, not "while empty": a wrong path can never be
+    waited out of existence — it reads as a confident answer. One repeat covers
+    both the empty and the stale cwd, both race shapes. Without it the role
+    would reject its own pane in the first milliseconds of its life.
     """
     if _identity_proves_ours(ident, project_root):
         return ident
@@ -46,7 +45,7 @@ def _settle_pane_identity(tmux: str, pane: str, ident: dict, project_root) -> di
 
 
 def _identity_proves_ours(ident: dict, project_root) -> bool:
-    """Доказывает ли снимок панели, что она наша."""
+    """Whether the pane snapshot proves it ours."""
     if not ident.get("exists") or not ident.get("alive") or not ident.get("path"):
         return False
     try:
@@ -58,84 +57,84 @@ def _identity_proves_ours(ident: dict, project_root) -> bool:
 
 
 def pane_belongs_to_project(tmux: str, pane: str, project_root) -> tuple:
-    """Доказанно ли панель ИЗ ЭТОГО проекта. `(True, "")` или `(False, причина)`.
+    """Whether the pane is provably FROM THIS project. `(True, "")` or `(False, reason)`.
 
-    В отличие от `pane_is_foreign` здесь НЕТ вопроса «жива ли панель», и это
-    разделение существенно. Мёртвая панель принадлежит проекту — она просто мёртвая,
-    и снимать её должен другой путь, отвечающий за устаревшие записи ростера.
-    Смешивать два факта нельзя: проверка «своя» не должна отвечать «нет», иначе
-    роль с умершей панелью получила бы в журнале ещё и ложное «чужой проект».
+    Unlike `pane_is_foreign` there is NO "is the pane alive" question here, and the
+    split matters. A dead pane belongs to the project — it is just dead, and
+    another path in charge of stale roster entries must drop it. Never mix the
+    two facts: the "ours" check must not answer "no", or a role with a dead
+    pane would also get a false "foreign project" in the journal.
 
-    Неизвестное (панели нет, cwd не сообщён) — это не «другая», но и не «своя»:
-    возвращается отказ, потому что доказать принадлежность не удалось.
+    Unknown (no pane, no cwd reported) is neither "other" nor "ours":
+    a refusal returns, because membership stayed unproven.
     """
     ident = composer.pane_identity(tmux, pane)
     if not ident["exists"]:
-        return False, "панель отсутствует"
-    # Живость проверяется ДО принадлежности, и это единственный порядок, при
-    # котором обе ветки отвечают о разном. Панель может быть мёртвой И своей:
-    # тогда принадлежность доказуема, и отказ был бы неверным — именно из-за
-    # этого две проверки и разведены. Обратный порядок давал бы «нет» там, где
-    # надо «да, но её нет», и снятие устаревших записей ростера перестало бы
-    # срабатывать.
+        return False, "pane missing"
+    # Liveness checks BEFORE membership, the only order where both branches
+    # answer different things. A pane can be dead AND ours: membership is then
+    # provable, and a refusal would be wrong — exactly why the two checks split.
+    # The reverse order would say "no" where "yes, but it is gone" belongs, and
+    # stale-roster-entry cleanup would stop firing.
+    # firing.
     if not ident["alive"]:
-        # Мёртвая панель проекту принадлежит: про неё известно, чья она.
-        return _identity_proves_ours(ident, project_root), "панель мертва"
+        # A dead pane still belongs to the project: whose it is, is known.
+        return _identity_proves_ours(ident, project_root), "pane dead"
     if _identity_proves_ours(ident, project_root):
         return True, ""
     fresh = _settle_pane_identity(tmux, pane, ident, project_root)
     if not fresh["exists"]:
-        return False, "панель отсутствует"
+        return False, "pane missing"
     if not fresh["path"]:
-        return False, "tmux не сообщил cwd панели, принадлежность не доказана"
+        return False, "tmux never reported the pane cwd, membership unproven"
     if _identity_proves_ours(fresh, project_root):
         return True, ""
     try:
         theirs = Path(fresh["path"]).resolve()
     except OSError as exc:
-        return False, f"не резолвится путь: {exc}"
-    return False, f"панель принадлежит другому проекту: {theirs}"
+        return False, f"unresolvable path: {exc}"
+    return False, f"pane belongs to another project: {theirs}"
 
 
-# Импорт `composer` в середине файла — не украшение и не забывчивость, а
-# требование цикла: `composer` импортирует `panes` лениво (внутри
-# pane_is_foreign), и прямой импорт на верхнем уровне был бы кругом. Чтобы
-# причина была видна в этом месте, а не в чужом файле, она написана здесь.
+# The `composer` import mid-file is not decor and not forgetfulness, but
+# a cycle demand: `composer` imports `panes` lazily (inside pane_is_foreign),
+# and a top-level direct import would close the circle. So the reason stays
+# visible at this spot, not in another file — it is written here.
 import composer
 
 
 def pane_is_foreign(tmux: str, pane: str, project_root) -> tuple:
-    """Панель доказуемо не наша? Fail-closed: не доказали своё — не печатаем.
+    """Is the pane provably not ours? Fail-closed: unproven ours means no printing.
 
-    Возвращает (True, причина) если в панель печатать нельзя, и (False, "") если
-    можно. Пустой cwd не доказывает ничего, поэтому трактуется как «чужая»:
-    молча отказаться от доставки правильнее, чем вбить текст не туда.
+    Returns (True, reason) when the pane must not be printed to, (False, "") when
+    it may. An empty cwd proves nothing, so it reads as "foreign": quietly
+    refusing delivery beats typing text into the wrong place.
 
-    Строгость намеренная и вторая по важности после fail-closed: панель
-    принимается, только если её cwd совпадает с корнем проекта или лежит внутри
-    него. Панель, запущенная из ОБЩЕГО родителя вроде ~/work, отклоняется, хотя
-    формально это родитель проекта. Иначе такую панель объявили бы своей сразу
-    несколько проектов на этой машине, и межпроектная инъекция вернулась бы
-    ровно тем же путём, который здесь закрывается.
+    The strictness is deliberate, second only to fail-closed: a pane counts
+    only when its cwd equals the project root or sits inside it. A pane launched
+    from a SHARED parent like ~/work is rejected, though formally that parent
+    is the project’s. Otherwise several projects on this machine would claim
+    such a pane as theirs at once, and cross-project injection would return by
+    exactly the path closed here.
     """
     ident = composer.pane_identity(tmux, pane)
     if not ident["exists"]:
-        return True, "панель отсутствует"
+        return True, "pane missing"
     if not ident["alive"]:
-        return True, "панель мертва"
+        return True, "pane dead"
     settled = _settle_pane_identity(tmux, pane, ident, project_root)
     if not settled["exists"]:
-        return True, "панель отсутствует"
+        return True, "pane missing"
     if not settled["alive"]:
-        return True, "панель мертва"
+        return True, "pane dead"
     if _identity_proves_ours(settled, project_root):
         return False, ""
     if not settled["path"]:
-        return True, "tmux не сообщил cwd панели, идентичность не доказана"
+        return True, "tmux never reported the pane cwd, identity unproven"
     try:
         theirs = Path(settled["path"]).resolve()
     except OSError as exc:
-        return True, f"не резолвится cwd панели: {exc}"
-    return True, f"панель принадлежит другому проекту: {theirs}"
+        return True, f"unresolvable pane cwd: {exc}"
+    return True, f"pane belongs to another project: {theirs}"
 
 

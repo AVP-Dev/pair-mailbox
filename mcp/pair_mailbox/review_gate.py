@@ -1,18 +1,18 @@
-"""Машинный гейт слияния PR и Feature Freeze (раунд 60, задача #67).
+"""PR merge machine gate and Feature Freeze (round 60, task #67).
 
-Модуль реализует строгую машинную защиту от слияния PR до завершения ревью:
+The module implements strict machine protection against PR merges before review ends:
 1. `check_pr_merge(store: Store, repo_dir: Path) -> tuple[bool, str]`:
-   - Отказ, если текущая фаза не `verify` (запрещено сливать в scoping, plan, implement, done).
-   - Отказ, если отсутствует git-репозиторий (fail-closed на пути слияния).
-   - Отказ, если в раунде нет успешного test evidence (`kind="test"`, `ok=True`).
-   - Отказ, если нет вердикта критика или последний вердикт не одобрен (reject / нет approve).
-   - Запрет self-approval: отказ, если вердикт оставлен писателем (`role == store.writer`).
-   - Проверка свежести: прямое переиспользование `review.is_stale(...)`. Любой новый коммит
-     или незакоммиченное изменение файлов делает вердикт stale и блокирует слияние.
+   - Refuse when the current phase is not `verify` (merging banned in scoping, plan, implement, done).
+   - Refuse with no git repo (fail-closed on the merge path).
+   - Refuse with no successful test evidence in the round (`kind="test"`, `ok=True`).
+   - Refuse with no critic verdict or a non-approved last verdict (reject / no approve).
+   - Self-approval ban: refuse when the verdict comes from the writer (`role == store.writer`).
+   - Freshness check: direct reuse of `review.is_stale(...)`. Any new commit or
+     uncommitted file change turns the verdict stale and blocks the merge.
 2. `cmd_pr(store: Store, args: argparse.Namespace) -> int`:
-   - CLI-команда `pairctl pr merge [pr_id] [--force] [--reason REASON]`.
-   - Флаг `--force`: требует непустой `--reason`, фиксируется в транскрипте как `pr_merge_forced`.
-   - При успешной проверке вызывает `gh pr merge <pr_id> --squash --delete-branch`.
+   - The `pairctl pr merge [pr_id] [--force] [--reason REASON]` CLI command.
+   - The `--force` flag demands a non-empty `--reason`, recorded in the transcript as `pr_merge_forced`.
+   - On a passed check calls `gh pr merge <pr_id> --squash --delete-branch`.
 """
 from __future__ import annotations
 
@@ -26,9 +26,9 @@ import review
 
 
 def check_pr_merge(store: Any, repo_dir: Path) -> tuple[bool, str]:
-    """Проверить, разрешено ли слияние PR по правилам протокола.
+    """Check whether the PR merge passes the protocol rules.
 
-    Возвращает (True, "") при успешной проверке или (False, причина_отказа).
+    Returns (True, "") on a passed check or (False, refusal_reason).
     """
     head = review.git_head(repo_dir)
     if not head:
@@ -39,7 +39,7 @@ def check_pr_merge(store: Any, repo_dir: Path) -> tuple[bool, str]:
     if phase != "verify":
         return False, f"phase is {phase!r}, PR merge allowed strictly in 'verify'"
 
-    # Проверка наличия успешного test evidence в текущем раунде
+    # Check for successful test evidence in the current round
     cur_round = int(state.get("round", 0))
     round_ev = [
         ev for ev in (state.get("evidence") or [])
@@ -52,7 +52,7 @@ def check_pr_merge(store: Any, repo_dir: Path) -> tuple[bool, str]:
     if not has_test_ok:
         return False, f"round {cur_round} has no passing test evidence (kind='test', ok=True)"
 
-    # Проверка вердикта критика
+    # Check the critic verdict
     verdicts = state.get("verdicts") or []
     if not verdicts:
         return False, "no verdict found: peer review approval is required before merge"
@@ -61,7 +61,7 @@ def check_pr_merge(store: Any, repo_dir: Path) -> tuple[bool, str]:
     author = last_verdict.get("role")
     writer = state.get("writer")
 
-    # Запрет self-approval: писатель не может сам себе одобрить PR
+    # Self-approval ban: the writer cannot approve its own PR
     if writer and author == writer:
         return False, f"self-approval forbidden: verdict author {author!r} is current writer"
 
@@ -70,12 +70,12 @@ def check_pr_merge(store: Any, repo_dir: Path) -> tuple[bool, str]:
     if v_kind != "verdict":
         return False, f"last review note is not a verdict (kind={v_kind!r})"
 
-    # Вердикт обязан иметь привязку к ревизии (head)
+    # The verdict must bind to a revision (head)
     v_head = str(v_rev.get("head") or "").strip()
     if not v_head:
         return False, "verdict has no revision binding (rev.head is empty)"
 
-    # Проверка текста последнего вердикта из notes/verdict.md (fail-closed: файл обязан существовать)
+    # Check the last verdict text from notes/verdict.md (fail-closed: the file must exist)
     notes_dir = store.notes_root
     verdict_file = notes_dir / "verdict.md"
     if not verdict_file.is_file():
@@ -88,24 +88,24 @@ def check_pr_merge(store: Any, repo_dir: Path) -> tuple[bool, str]:
         if not blocks:
             return False, "notes/verdict.md is empty: no verdict text found"
         last_block = blocks[-1]
-        # Д1: Машинный канал одобрения — строго маркер verdict-approve <head|round>, без ложных срабатываний прозы
+        # D1: Machine approve channel — strictly the verdict-approve <head|round> marker, no prose false fires
         VERDICT_APPROVE_RE = re.compile(
             r"^\s*verdict-approve\s+(?:round\s+(\d+)|([0-9a-f]{7,40}))\b",
             re.IGNORECASE | re.MULTILINE,
         )
-        # Отказная ветка толерантна к прозе (ложный отказ безопасен)
+        # The refuse branch tolerates prose (a false refusal is safe)
         VERDICT_REJECT_RE = re.compile(
             r"(?:\bverdict-reject\b|ВЕРДИКТ\b[^\n]*\b(?:ОТКАЗ|REJECT|CHANGES REQUESTED)\b|\bне\s+одобрен[оаы]?\b)",
             re.IGNORECASE,
         )
         if VERDICT_REJECT_RE.search(last_block):
-            return False, "last verdict rejected the changes (ОТКАЗ / REJECT / НЕ ОДОБРЕНО)"
+            return False, "last verdict rejected the changes (REFUSE / REJECT / NOT APPROVED)"
 
         approve_match = VERDICT_APPROVE_RE.search(last_block)
         if not approve_match:
             return False, "last verdict is not approved (no structured 'verdict-approve <head|round>' marker)"
 
-        # Д2: Сверка значения маркера с вердиктом (v_head) или текущим HEAD / текущим раундом
+        # D2: Reconcile the marker value with the verdict (v_head) or the current HEAD / current round
         m_round, m_head = approve_match.groups()
         if m_round:
             cur_round = str(state.get("round", ""))
@@ -122,8 +122,8 @@ def check_pr_merge(store: Any, repo_dir: Path) -> tuple[bool, str]:
     except OSError as err:
         return False, f"failed to read notes/verdict.md: {err}"
 
-    # У3: Защита пути слияния — отказ при любом грязном дереве (tracked или untracked).
-    # Слияние разрешено строго на чистом закоммиченном дереве («сливаем то, что проверено и закоммичено»).
+    # U3: Merge-path guard — refuse on any dirty tree (tracked or untracked).
+    # Merging allowed strictly on a clean committed tree ("merge what is checked and committed").
     uncommitted = review.dirty_files(repo_dir, include_untracked=True)
     try:
         rel_notes = str(notes_dir.resolve().relative_to(repo_dir.resolve()))
@@ -140,7 +140,7 @@ def check_pr_merge(store: Any, repo_dir: Path) -> tuple[bool, str]:
     if uncommitted:
         return False, f"working tree has uncommitted changes ({len(uncommitted)} dirty files): {', '.join(uncommitted[:3])}"
 
-    # Проверка свежести через единый канонический предикат review.is_stale
+    # Freshness check through the single canonical review.is_stale predicate
     cur_dirty = review.dirty_files(repo_dir)
     changed = review.changed_between(repo_dir, v_head, head)
     stale, reason = review.is_stale(v_rev, head, changed, cur_dirty)
@@ -151,7 +151,7 @@ def check_pr_merge(store: Any, repo_dir: Path) -> tuple[bool, str]:
 
 
 def run_gh_merge(repo_dir: Path, pr_id: str | None) -> tuple[int, str]:
-    """Запустить слияние через gh cli."""
+    """Run the merge through the gh cli."""
     cmd = ["gh", "pr", "merge"]
     if pr_id:
         cmd.append(pr_id)
@@ -173,7 +173,7 @@ def run_gh_merge(repo_dir: Path, pr_id: str | None) -> tuple[int, str]:
 
 
 def cmd_pr(store: Any, args: argparse.Namespace) -> int:
-    """Обработчик подкоманд `pairctl pr`."""
+    """Handler for the `pairctl pr` subcommands."""
     action = getattr(args, "pr_action", None)
     if action != "merge":
         print(f"unknown pr action: {action!r}", file=sys.stderr)
@@ -187,8 +187,8 @@ def cmd_pr(store: Any, args: argparse.Namespace) -> int:
         if not reason:
             print("error: --force requires --reason with explanation", file=sys.stderr)
             return 2
-        # Остаточное требование критика: обход не доступен писателю в одиночку,
-        # требуется предварительное одобрение человеком (pairctl ok на текущий раунд)
+        # The critic residual demand: the bypass never serves the writer alone,
+        # a prior human approval is required (pairctl ok on the current round)
         from server import human_ok_for_round
         state = store.read()
         if not human_ok_for_round(state):

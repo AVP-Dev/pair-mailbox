@@ -1,18 +1,18 @@
 #!/usr/bin/env bash
-# bin/pairup — быстрый подъём пары из папки проекта, без тестов и переустановки.
+# bin/pairup — raise the pair from the project folder, no tests, no reinstall.
 #
-# Боль, которую чинит: finish.sh гоняет полные сюиты (5–10 мин) при каждом
-# запуске, а pair-duo не поднимает сверхвизора вовсе. Итог — либо долго ждать,
-# либо пара без сторожа. Здесь только: state → pilot-if-dead → агенты → проверка.
+# Pain it fixes: finish.sh runs full suites (5–10 min) on every launch,
+# while pair-duo never raises the supervisor at all. So either wait long
+# or run the pair with no watchdog. Here only: state → pilot-if-dead → agents → check.
 #
-# Запуск из папки проекта, не из репо автономности:
-#   cd ~/work/nyx-os && pairup            # пара этого проекта
-#   cd ~/work/nyx-os && pairup --swap agy  # сменить критика (лимиты кончились)
-# Первый раз (один раз): pairup --install  # шим в ~/.local/bin, дальше без путей
+# Run from the project folder, not from the autonomy repo:
+#   cd ~/work/nyx-os && pairup            # this project's pair
+#   cd ~/work/nyx-os && pairup --swap agy  # swap the critic (limits ran out)
+# First time (once): pairup --install  # shim into ~/.local/bin, then pathless
 #
-# Резолв состояния — walk-up до .pair/state.json от cwd, тот же что в serve.sh
-# и pairctl_read.walk_up_to_state: запуск из подкаталога не создаёт второе
-# состояние. Репо автономности находится по шиму: pairup знает где живёт.
+# State resolve — walk-up to .pair/state.json from cwd, same as in serve.sh
+# and pairctl_read.walk_up_to_state: launching from a subdir never creates
+# a second state. The autonomy repo is found via the shim: pairup knows home.
 set -euo pipefail
 
 _src="${BASH_SOURCE[0]}"
@@ -27,9 +27,9 @@ STATE_DIR=""
 if [ -n "${PAIR_STATE:-}" ]; then
   STATE_DIR="$PAIR_STATE"
 else
-  # Граница — git-top, а не корень ФС: иначе из galatour цепляется чужой
-  # ~/work/.pair (каталог проектов — не проект), и пара работает не в том
-  # состоянии. Тот же предел, что в serve.sh и walk_up_to_state.
+  # Boundary is git-top, not the FS root: otherwise someone else's ~/work/.pair
+  # (the projects dir, not a project) latches on from galatour, and the pair
+  # runs on the wrong state. Same limit as in serve.sh and walk_up_to_state.
   _top="$(git rev-parse --show-toplevel 2>/dev/null || true)"
   dir="$(pwd -P)"
   for _ in 1 2 3 4 5 6 7 8 9 10 11 12; do
@@ -101,21 +101,21 @@ print(json.dumps(res))
   _target_wt="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1]).get("worktree"))' "$_wt_res")"
   echo "pairup: switching to worktree $_target_wt"
   cd "$_target_wt"
-  # Состояние пары по дефолту остаётся в основном репозитории, чтобы супервизор
-  # и гейты видели один раунд и одного писателя без расщепления состояния.
+  # The pair state stays in the main repo by default, so the supervisor
+  # and the gates see one round and one writer with no state split.
   if [ -z "$STATE_DIR" ]; then
     STATE_DIR="$_git_root/.pair"
   fi
 fi
 
 if [ -z "$STATE_DIR" ]; then
-  # Состояния нет — это новый проект пары: создаём минимальное молча,
-  # писатель и задача назначаются дальше по флагам и расстановке.
-  # Корень — git-top, а не $PWD: запуск из подкаталога не должен плодить
-  # второй .pair в src/. Пары без git не бывает (нет коммитов — нечего ревьюить).
+  # No state — this is a new pair project: create the minimum quietly,
+  # the writer and the task come later via flags and policy.
+  # Root is git-top, not $PWD: launching from a subdir must not breed
+  # a second .pair under src/. No pair without git (no commits — nothing to review).
   _root="$(git rev-parse --show-toplevel 2>/dev/null || pwd -P)"
   mkdir -p "$_root/.pair/mailbox" "$_root/.pair/notes" "$_root/.pair/obligations" "$_root/.pair/patches"
-  # Ground-truth шаблон новому проекту (R84): защита едет с первого дня.
+  # Ground-truth template for the new project (R84): protection from day one.
   if [ ! -f "$_root/anti-mock.json" ] && [ -f "$PAIRUP_ROOT/anti-mock.json" ]; then
     cp "$PAIRUP_ROOT/anti-mock.json" "$_root/anti-mock.json"
   fi
@@ -141,22 +141,22 @@ export PAIR_STATE="$STATE_DIR"
 PAIRCTL="$PAIRUP_ROOT/bin/pairctl"
 PILOT="$PAIRUP_ROOT/bin/pairpilot"
 
-# --- 0. писатель одной командой: флаг бьёт всё, дальше — расстановка проекта,
-# затем глобальная. Человек запоминает два слова вместо полного пути к pairctl.
+# --- 0. writer in one command: the flag beats everything, then the project
+# policy, then the global one. The human remembers two words, not the full pairctl path.
 if [ -n "$WANT_WRITER" ]; then
   "$PAIRCTL" --state "$STATE_DIR" roles --writer "$WANT_WRITER"
 fi
 
-# --- 1. роли ПЕРЕД пилотом: падать с ошибкой — до старта фона, иначе пилот
-# остаётся сиротой (замечание agy на ревью bfbe9a5). Пилот стартует только
-# когда известно, кого поднимать.
+# --- 1. roles BEFORE the pilot: fail loudly before the background starts,
+# otherwise the pilot stays orphaned (agy note on review bfbe9a5). The pilot
+# starts only once it knows whom to raise.
 status_json="$("$PAIRCTL" --state "$STATE_DIR" status 2>/dev/null || true)"
 writer="$(printf '%s' "$status_json" | python3 -c 'import json,sys; s=json.load(sys.stdin); print((s.get("policy") or {}).get("writer") or s.get("writer") or "")' 2>/dev/null || true)"
 critic="$(printf '%s' "$status_json" | python3 -c 'import json,sys; s=json.load(sys.stdin); print((s.get("policy") or {}).get("critic") or "")' 2>/dev/null || true)"
 if [ -z "$critic" ]; then
-  # Только живой: мёртвая запись в ростере иначе становится критиком,
-  # и pairup открывает нерабочий CLI. pid берём из state.json напрямую:
-  # status отдаёт roles строками last_seen, там pid нет.
+  # Only the live one: a dead roster entry would otherwise become the critic,
+  # and pairup would open a dead CLI. Take pid from state.json directly:
+  # status renders roles as last_seen strings, with no pid in them.
   critic="$(python3 -c 'import json,os,sys; s=json.load(open(sys.argv[1])); rs=s.get("roles",{}); w=s.get("writer"); out="";
 for r,info in rs.items():
   if r==w or not isinstance(info,dict): continue
@@ -186,9 +186,9 @@ if [ -z "$SWAP" ]; then
     exit 1
   fi
   if [ -z "$critic" ]; then
-    # Обычный пользователь: скачал, install, pairup — и пара работает.
-    # Спрашивать --swap значит ронять первый запуск. Поднимаем первый
-    # установленный CLI (кроме писателя): agy проверен живым, дальше прочие.
+    # Ordinary user: downloaded, install, pairup — and the pair works.
+    # Asking for --swap would sink the first launch. Raise the first
+    # installed CLI (besides the writer): agy proven live, then the rest.
     for _c in agy claude codex opencode pi omp; do
       if [ "$_c" != "$writer" ] && command -v "$_c" >/dev/null 2>&1; then critic="$_c"; break; fi
     done
@@ -200,13 +200,13 @@ if [ -z "$SWAP" ]; then
     SWAP="$critic"
   fi
 fi
-# --- 1b. Сирота-лока (диагноз 2026-10-10, упрощение agy seq 730): opencode без
-# --standalone гоняет MCP через фоновый `opencode serve --service`, и сервер
-# роли переживает свою панель: flock держит сирота, любая новая панель той же
-# роли в этом проекте падает ProtocolError «роль уже занята». Проверяем ОБЕ
-# роли раунда — и писателя, и критика (находка раунда 50: cure у критика не
-# трогал сироту-писателя opencode в galatour, pairup висел). Родителя держателя
-# проверяем напрямую (pgrep -f со своим паттерном ловит саму обёртку).
+# --- 1b. Orphan lock (diagnosed 2026-10-10, agy simplification seq 730): opencode
+# without --standalone drives MCP through a background `opencode serve --service`,
+# and the role server outlives its pane: the orphan holds the flock, and any new
+# pane of the same role in this project dies with ProtocolError "role taken".
+# Check BOTH round roles — writer and critic (round-50 finding: the critic-side
+# cure never touched the writer-side opencode orphan in galatour, pairup hung).
+# Check the holder parent directly (pgrep -f with its own pattern catches the wrapper).
 _pair_cure_role() {
   local _role="$1" _pid _ppid _pcmd _pane
   _pid="$(python3 -c 'import json,sys; s=json.load(open(sys.argv[1])); print(((s.get("roles") or {}).get(sys.argv[2]) or {}).get("pid") or 0)' "$STATE_DIR/state.json" "$_role" 2>/dev/null || true)"
@@ -217,9 +217,9 @@ _pair_cure_role() {
     *opencode*serve*--service*) ;;
     *) return 0 ;;
   esac
-  # Панель роли может лежать в state голым %N/provisional (agy, seq 730):
-  # has-session по имени сессии вернул бы 0 даже без живой панели — адрес
-  # проверяем именно у панели: tmux display-message -t.
+  # The role pane may lie in state as a bare %N/provisional (agy, seq 730):
+  # has-session by session name would return 0 even with no live pane — check
+  # the address at the pane itself: tmux display-message -t.
   _pane="$(python3 -c 'import json,sys; s=json.load(open(sys.argv[1])); print(((s.get("roles") or {}).get(sys.argv[2]) or {}).get("pane") or "")' "$STATE_DIR/state.json" "$_role" 2>/dev/null || true)"
   if [ -z "$_pane" ] || \
      ! tmux display-message -p -t "$_pane" '#{pane_id}' >/dev/null 2>&1; then
@@ -232,13 +232,13 @@ _pair_cure_role() {
     kill -9 "$_pid" 2>/dev/null || true
   fi
 }
-# Порядок: после резолва обеих ролей (145-165), до пилота — иначе сирота
-# опрокидывает spawn писателя, а pairup уже открутил фоновый пилот.
+# Order: after both roles resolve (145-165), before the pilot — otherwise the orphan
+# topples the writer spawn while pairup already detached the background pilot.
 _pair_cure_role "$writer"
 [ -n "$SWAP" ] && [ "$SWAP" != "$writer" ] && _pair_cure_role "$SWAP"
 
-# --- 2. сверхвизор, если мёртв. Живого не трогаем: второй пилот на тот же state
-# гонял бы тики параллельно и двоил бы пробуждения (замечание agy seq 475).
+# --- 2. supervisor, if dead. Never touch a live one: a second pilot on the same
+# state would tick in parallel and double the wake-ups (agy note seq 475).
 pilot_alive=0
 if command -v pgrep >/dev/null 2>&1; then
   if pgrep -f "bin/pairpilot.*--state $STATE_DIR" >/dev/null 2>&1 \
@@ -264,22 +264,22 @@ else
   if [ -n "$_pid" ] && kill -0 "$_pid" 2>/dev/null; then
     echo "pairup: supervisor started (pid $_pid, log $STATE_DIR/pairpilot.log)"
   else
-    # Врал «поднят» и умирал молча: шим вёл не туда (корень от симлинка),
-    # пилот падал на старте, а человек узнавал из пустого лога. Больше не врём.
+    # It used to lie "raised" and die quietly: the shim pointed wrong (root from
+    # the symlink), the pilot died at start, and the human learned from an empty log. No more lying.
     echo "pairup: supervisor did NOT start, see $STATE_DIR/pairpilot.log" >&2
     tail -5 "$STATE_DIR/pairpilot.log" >&2 || true
     exit 1
   fi
 fi
 
-# --- 2. задача, если дали.
+# --- 2. task, if given.
 if [ -n "$TASK" ]; then
   PAIR_STATE="$STATE_DIR" "$PAIRCTL" --state "$STATE_DIR" task "$TASK"
 fi
 
-# --- 3. swap: сменить критика при кончившихся лимитах. Писателя не трогаем
-# (PROTOCOL §2 — право двигает только человек через assign, а swap это не
-# смена писателя, а смена исполнителя роли критика).
+# --- 3. swap: change the critic when limits run out. Never touch the writer
+# (PROTOCOL §2 — only a human moves the right via assign, and swap is not
+# a writer change but a change of the critic-role performer).
 if [ -n "$SWAP" ]; then
   writer="$("$PAIRCTL" --state "$STATE_DIR" status 2>/dev/null \
     | python3 -c 'import json,sys; print(json.load(sys.stdin).get("writer") or "")' 2>/dev/null || true)"
@@ -289,8 +289,8 @@ if [ -n "$SWAP" ]; then
   fi
   echo "pairup: writer $writer stays, critic -> $SWAP"
   "$PAIRUP_ROOT/bin/pair-duo" --swap-critic "$SWAP" --state "$STATE_DIR" --project "$PROJECT_DIR" || exit $?
-  # Писатель запускается ЗДЕСЬ же: иначе человек остаётся в пустом шелле
-  # и не понимает как пользоваться одной панелью. Критик уже в соседней.
+  # The writer launches RIGHT HERE: otherwise the human stays in an empty shell
+  # not knowing how to use a single pane. The critic is already next door.
   writer_cmd="$(python3 -c "import json; p=json.load(open('$PAIRUP_ROOT/cli-profiles.json')); print(p.get('$writer',{}).get('launch','') or '$writer')")"
   echo "pairup: critic $SWAP in the next pane, starting writer $writer here"
   export PAIR_ROLE="$writer" PAIR_STATE="$STATE_DIR"
@@ -300,9 +300,9 @@ if [ -n "$SWAP" ]; then
   exec $writer_cmd
 fi
 
-# Роли уже разрешены на шаге 1 (до пилота): здесь только подъём.
+# Roles already resolved at step 1 (before the pilot): only raising here.
 
-# Команды запуска из cli-profiles.json — тот же источник, что у finish.sh и пилота.
+# Launch commands from cli-profiles.json — same source as finish.sh and the pilot.
 launch_for() {
   python3 -c "import json; p=json.load(open('$PAIRUP_ROOT/cli-profiles.json')); print(p.get('$1',{}).get('launch','') or '$1')"
 }

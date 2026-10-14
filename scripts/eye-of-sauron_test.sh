@@ -1,6 +1,6 @@
 #!/bin/bash
-# Тест Ока Саурона: deadlock-сигнал на копии скрипта в tmp.
-# Живой tmux не нужен: панели "none" дают стоящий хэш — как idle-панели.
+# The Eye-of-Sauron test: the deadlock signal on a script copy in tmp.
+# No live tmux needed: "none" panes give a still hash — like idle panes.
 set -u
 EYE="$(cd "$(dirname "$0")" && pwd)/eye-of-sauron.sh"
 fail=0

@@ -1,12 +1,12 @@
-"""Подписи ролей: Ed25519-ключи на роль+проект, подписанный конверт писем.
+"""Role signatures: Ed25519 keys per role+project, the signed letter envelope.
 
-Ключ привязан к паре (проект, роль): key_id = sha256(project_root + роль).
-Рестарт CLI ключ не меняет — протухания нет по построению. Потеря ключа =
-регенезис: старый ключ уходит в revoke-лист, проверка fail-open с записью
-в транскрипт (карточка signed-roles-push-channel, п.1).
+The key binds to the (project, role) pair: key_id = sha256(project_root + role).
+A CLI restart never changes the key — no expiry by construction. Key loss means
+regenesis: the old key leaves for the revoke list, verification fail-opens with
+a transcript record (signed-roles-push-channel card, p.1).
 
-Зависимость одна — PyNaCl (уже стоит, новых ноль). Обратных ссылок на
-PairSession нет: server импортирует отсюда, а не наоборот.
+One dependency — PyNaCl (already installed, zero new). No back-references to
+PairSession: server imports from here, not the reverse.
 """
 from __future__ import annotations
 
@@ -22,7 +22,7 @@ from nacl.signing import SigningKey, VerifyKey
 
 
 def key_id_for(project_root: Path | str, role: str) -> str:
-    """Стабильный ID ключа: проект + роль + инсталляция по месту ключа."""
+    """Stable key ID: project + role + install at the key place."""
     root = str(Path(project_root).resolve())
     return hashlib.sha256(f"{root}\x00{role}".encode("utf-8")).hexdigest()[:16]
 
@@ -40,7 +40,7 @@ def _pub_path(state_dir: Path | str, role: str) -> Path:
 
 
 def generate(state_dir: Path | str, project_root: Path | str, role: str) -> dict[str, str]:
-    """Сгенерить пару для роли. Приватный ключ — 0600, иначе отказ."""
+    """Generate the role pair. The private key is 0600, else refuse."""
     key = SigningKey.generate()
     raw = bytes(key)
     d = keys_dir(state_dir)
@@ -71,7 +71,7 @@ def load_verify_key(state_dir: Path | str, role: str) -> VerifyKey | None:
 
 def sign_envelope(signing_key: SigningKey, key_id: str,
                   seq: int, frm: str, to: str, ts: str, text: str) -> dict[str, str]:
-    """Подписать конверт письма. Подпись — по каноническому JSON без sig."""
+    """Sign the letter envelope. The signature covers canonical JSON minus sig."""
     body: dict[str, Any] = {
         "seq": seq, "from": frm, "to": to, "ts": ts,
         "body_sha": hashlib.sha256(text.encode("utf-8")).hexdigest(),
@@ -84,7 +84,7 @@ def sign_envelope(signing_key: SigningKey, key_id: str,
 
 
 def verify_envelope(verify_key: VerifyKey, envelope: dict[str, Any], text: str) -> bool:
-    """Проверить подпись конверта и соответствие текста body_sha."""
+    """Verify the envelope signature and the text body_sha match."""
     try:
         body = {k: envelope[k] for k in ("seq", "from", "to", "ts", "body_sha", "key_id")}
     except KeyError:

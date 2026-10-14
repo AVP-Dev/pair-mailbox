@@ -1,7 +1,9 @@
-# file<TAB>suite — какая проверка покрывает файл. Точное совпадение или префикс каталога.
-# Использует scripts/verify-changed.sh: после правки гоняет static + только
-# затронутые сюиты вместо всего слоя (5.5 мин → секунды).
-# Формат имён сюит — из scripts/verification-profile.tsv.
+# file<TAB>suite — which check covers the file. An exact match or a dir prefix.
+# Used by scripts/verify-changed.sh: past an edit runs static plus only the touched
+# suites instead of the whole layer (5.5 min down to seconds).
+# Suite names use scripts/verification-profile.tsv.
+# The -check suffix (scripts-check, docs-check, pairchat-check): no separate suite,
+# covered by static (verify-changed.sh: static always runs).
 mcp/pair_mailbox/composer.py	composer
 mcp/pair_mailbox/test_composer.py	composer
 mcp/pair_mailbox/test_allowlist_bypass.py	composer-bypass
@@ -59,6 +61,9 @@ install.sh	installer-subset
 cli-profiles.json	installer-subset
 .opencode/plugins/pair-guard.ts	guard-check
 .opencode/opencode.jsonc	composer
+scripts/i18n_apply.py	i18n-selftest
+scripts/i18n_extract.py	i18n-selftest
+scripts/i18n_self_test.py	i18n-selftest
 scripts/	scripts-check
 docs/	docs-check
 mcp/pair_mailbox/wake_opencode.py	wake-api
@@ -74,3 +79,11 @@ mcp/pair_mailbox/round_summary.py	round-summary
 mcp/pair_mailbox/test_round_summary.py	round-summary
 mcp/pair_mailbox/test_ground_truth.py	ground-truth
 scripts/verify-ground-truth.py	ground-truth
+# Cross-suite pins (STOP seq 1187): these modules' output is asserted by
+# test_protocol.py, so their edits also run the protocol suite.
+follow:mcp/pair_mailbox/composer.py	protocol
+follow:mcp/pair_mailbox/panes.py	protocol
+follow:mcp/pair_mailbox/digest.py	protocol
+follow:mcp/pair_mailbox/pairctl_authority.py	protocol
+follow:mcp/pair_mailbox/pairctl_read.py	protocol
+follow:mcp/pair_mailbox/pairctl_panes.py	protocol

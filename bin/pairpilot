@@ -1,38 +1,38 @@
 #!/usr/bin/env python3
-"""Сверхвизор пары: держит работу, когда на неё никто не смотрит.
+"""Pair supervisor: keeps the work moving when nobody watches it.
 
-Зачем он. Агенты пассивны по устройству: отработав шаг, они возвращаются в
-состояние ожидания ввода. Пока оба не пишут друг другу — пара стоит, и разбудить
-её может только человек. Именно это стоило нам ночи: поломался канал доставки,
-оба агента остались свободны, а единственным работающим путём остался терминал
-оператора.
+Why it exists. Agents are passive by design: after a step they return to
+waiting for input. While neither writes to the other, the pair stands still,
+and only a human can wake it. That is what cost us a night: the delivery
+channel broke, both agents stayed idle, and the only working path left was
+the operator terminal.
 
-Поэтому у пары обязан быть кто-то, кто смотрит на неё извне. Этот скрипт.
-Он умеет ровно семь вещей и не умеет ни одной восьмой:
+So the pair needs someone watching it from the outside. This script.
+It does exactly seven things, and not an eighth:
 
-  1. доставить отложенное сообщение, когда композер соседа освободился
-     (переживающая доставка: сообщение живёт в outbox, пока не долетело);
-  2. подтолкнуть молчающего агента — молчание дольше порога это дефект, а не норма;
-  3. подтвердить зависший запрос разрешения, но только из белого списка;
-  4. перезапустить агента, процесс которого умер, а окно ещё живо;
-  5. сказать про зависший sealed-патч обеим сторонам и не дать раунду закрыться;
-  6. собрать дайджест для человека на чекпоинте semi;
-  7. написать отчёт, когда раунд закрылся.
+  1. deliver a queued message once the peer composer frees up
+     (surviving delivery: the message lives in outbox until it lands);
+  2. nudge a silent agent — silence past the threshold is a defect, not normal;
+  3. confirm a stuck permission request, but only from the allowlist;
+  4. restart an agent whose process died while its pane is still alive;
+  5. report a stuck sealed patch to both sides and hold the round open;
+  6. assemble a digest for the human at the semi checkpoint;
+  7. write a report when the round closes.
 
-И принципиально НЕ умеет: двигать фазу, выдавать или забирать право записи,
-коммитить, применять чужие патчи, трогать файлы проекта. Право записи перемещает
-только человек, и если сверхвизор сможет его выдать, то он перестаёт быть
-ограничением (PROTOCOL.md §2). Поэтому спор о том, кто пишет, он разрешает
-только сообщением: «ты молчишь вот столько, вот твоя обязанность по последнему
-событию».
+And on principle it does NOT: move phases, grant or take write authority,
+commit, apply someone else’s patches, touch project files. Only a human moves
+write authority, and if the supervisor could grant it, it would stop being a
+constraint (PROTOCOL.md §2). So it settles disputes about who writes
+with a message only: "you have been silent this long, here is your duty
+from the last event".
 
-Запуск:
+Run:
 
-    bin/pairpilot                 # следить
-    bin/pairpilot --once          # один проход, для проверки вручную
-    bin/pairpilot --silence 300   # порог молчания, секунд
-    bin/pairpilot --launch agy=agy # как поднимать роль, если её процесс умер
-    bin/pairpilot --allow 'r"^git status' # что ещё можно подтверждать само
+    bin/pairpilot                 # watch
+    bin/pairpilot --once          # single pass, for manual checks
+    bin/pairpilot --silence 300   # silence threshold, seconds
+    bin/pairpilot --launch agy=agy # how to raise a role whose process died
+    bin/pairpilot --allow 'r"^git status' # what else may be self-confirmed
 """
 from __future__ import annotations
 
@@ -65,12 +65,12 @@ try:
         pane_role_pid,
         resolve_permission_prompt,
     )
-    from panes import pane_belongs_to_project  # noqa: E402 - принадлежность панели проекту
-except Exception as error:  # noqa: BLE001 - причина должна быть видна сразу
-    print(f"pairpilot: не удалось подключить composer: {error}", file=sys.stderr)
+    from panes import pane_belongs_to_project  # noqa: E402 - the pane's project membership
+except Exception as error:  # noqa: BLE001 - the reason must stay visible
+    print(f"pairpilot: could not attach composer: {error}", file=sys.stderr)
     raise SystemExit(1)
 
-from server import (  # noqa: E402  - после sys.path
+from server import (  # noqa: E402  - after sys.path
     Store,
     autonomy_of,
     done_blockers,
@@ -84,40 +84,40 @@ from server import (  # noqa: E402  - после sys.path
 
 DEFAULT_INTERVAL = 15.0
 DEFAULT_SILENCE = 600.0
-# Сколько ждать ответа на запрос, прежде чем дёрнуть получателя, и сколько —
-# прежде чем сказать об этом автору запроса. 180с: затык «оба молчат +
-# обязательство висит» будится пилотом за <5 мин без человека (раунд 33, P1).
+# How long to wait for a request answer before nudging its recipient, and
+# how long before telling the request author. 180s: the “both silent +
+# obligation hanging” stall wakes via pilot in <5 min with no human (round 33, P1).
 DEFAULT_REPLY_GRACE = 180.0
-# Срок жизни отложенного напоминания. Переживающая доставка полезна, пока
-# вопрос жив: пока композер занят, минута-другая ожидания уместна. Но вопрос,
-# провисевший дольше, уже не помогает — он только отвлекает. Наблюдалось
-# вживую: напоминание ждало композер 22 минуты и было доставлено как свежее.
+# Lifetime of a queued nudge. Surviving delivery helps while the question
+# is alive: with the composer busy, a minute or two of waiting is fine. But a
+# question that hung longer stops helping — it only distracts. Observed
+# live: a nudge waited 22 minutes for the composer and landed as if fresh.
 #
-# Должно быть ЗАВЕДОМО больше WAKE_ESCALATE_REPEAT_SECONDS, и это условие
-# работоспособности, а не вкус: при 600 против 900 эскалация протухала в очереди
-# раньше, чем повтор в неё попадал. Соотношение проверяется тестом.
+# Must be KNOWINGLY above WAKE_ESCALATE_REPEAT_SECONDS, and this is a
+# health condition, not taste: at 600 vs 900 the escalation went stale in queue
+# before the repeat reached it. A test pins the ratio.
 DEFAULT_OUTBOX_TTL = 1800.0
-# Сколько молчит роль, прежде чем пробуждение печатью станет эскалацией.
+# How long a role stays silent before a printed wake-up becomes escalation.
 #
-# Порядок намеренно перевёрнут относительно прежнего: раньше печать в композер была
-# ПЕРВЫМ шагом, и молчание означало «доставлю позже» — то есть почти всегда
-# печать. Теперь печать это исключение, а не правило: сначала пишем факт в файл,
-# затем опрашиваем, и если роль проснулась сама, не печатаем ничего.
+# The order is deliberately flipped from before: printing into the composer was
+# the FIRST step, and silence meant “deliver later” — which almost always meant
+# printing. Now printing is the exception, not the rule: first write the fact to a file,
+# then poll, and if the role woke on its own, print nothing.
 DEFAULT_WAKE_GRACE = 240.0
-# Как часто можно повторить эскалацию, если роль так и не проснулась. Не «один раз
-# навсегда» — причина в may_escalate_again. Пауза заведомо больше wake_grace.
+# How often an escalation may repeat while the role still sleeps. Not “once
+# forever” — see may_escalate_again for why. The pause is knowingly above wake_grace.
 WAKE_ESCALATE_REPEAT_SECONDS = 900.0
 DEFAULT_REPLY_HARD = 2400.0
-# Как часто повторять напоминание о зависшем запросе, пока обязательство висит.
-# Не «один раз навсегда»: штамп reply без TTL будил ровно один раз за жизнь
-# проекта (раунд 43), и зависший запрос умирал в тишине.
+# How often to re-nudge a stuck request while its obligation hangs.
+# Not "once forever": a reply stamp with no TTL woke exactly once per
+# project lifetime (round 43), and the stuck request died in silence.
 DEFAULT_REPLY_REPEAT = 7200.0
-# Сколько провисает sealed-патч, прежде чем это станет дефектом, а не делом,
-# которое писатель возьмёт через минуту.
+# How long a sealed patch hangs before it becomes a defect, not business
+# the writer will pick up in a minute.
 DEFAULT_PATCH_GRACE = 1800.0
-# Потолок перезапусков на роль в скользящем окне. Нужен потому, что ключ по pid
-# не спасает: команда может быть известна и неверна, pid будет каждый раз новый,
-# и без потолка это цикл падения, а не восстановление.
+# Restart ceiling per role in a sliding window. Needed because the pid key
+# does not save us: the command may be known and wrong, the pid will be new
+# every time, and without a ceiling that is a crash loop, not recovery.
 DEFAULT_RESTART_LIMIT = 3
 DEFAULT_RESTART_WINDOW = 600.0
 DEFAULT_STALL_TIMEOUT = 300.0
@@ -126,32 +126,32 @@ AUTONOMIES = ("observe", "semi", "auto")
 
 
 def autonomy(state: dict) -> str:
-    """Уровень самостоятельности из состояния, без выдуманных значений.
+    """Autonomy level from state, with no invented values.
 
-    Неизвестное значение читается как observe — тот уровень, который делает
-    меньше всего. Состояние, записанное более новой сборкой, не должно выдать
-    этой сборке больше прав, чем человек просил.
+    An unknown value reads as observe — the level that does the least.
+    State written by a newer build must not grant this build more rights
+    than the human asked for.
     """
     return autonomy_of(state)
 
 
 def stable_tag(text: str) -> str:
-    """Короткий стабильный отпечаток строки.
+    """Short stable fingerprint of a string.
 
-    Встроенный hash() для строк рандомизирован на каждый запуск процесса, а эти
-    отметки должны переживать перезапуск: иначе после рестарта сверхвизор
-    «забывает», что уже дёргал соседа, и пишет то же самое снова — всю ночь.
+    The builtin hash() for strings is randomized per process run, but these
+    marks must survive restarts: otherwise after a restart the supervisor
+    "forgets" it already nudged the peer and writes the same thing again — all night.
     """
     return hashlib.sha256(text.encode("utf-8", "replace")).hexdigest()[:8]
 
 
 def stamp_name(key: str) -> str:
-    """Имя файла-отметки для ключа.
+    """Mark-file name for a key.
 
-    Ключи строятся из путей (например, пути патча), а путь в имени файла
-    превращается в каталоги, которых нет: `remember()` падал с FileNotFoundError
-    на первом же патче. Поэтому ключ сначала приводится к безопасному виду, а
-    для уникальности к нему добавляется стабильный отпечаток.
+    Keys are built from paths (a patch path, say), and a path inside a file
+    name turns into directories that do not exist: `remember()` died with
+    FileNotFoundError on the very first patch. So the key is first made safe,
+    and a stable fingerprint is appended for uniqueness.
     """
     safe = re.sub(r"[^A-Za-z0-9._-]+", "_", key).strip("_")[:80]
     return f"{safe}.{stable_tag(key)}"
@@ -200,8 +200,8 @@ class Pilot:
         self.outbox_ttl = max(1.0, float(outbox_ttl))
         self.stall_timeout = max(1.0, float(stall_timeout))
         self._screen_hashes: dict[str, tuple[str, float]] = {}
-        # Store умеет root — это сам каталог состояния: server.py делает ровно
-        # то же. Со state_dir.parent мы бы читали несуществующий state.json.
+        # Store knows root — the state directory itself: server.py does exactly
+        # the same. With state_dir.parent we would read a missing state.json.
         self.store = Store(state_dir)
         self.outbox = state_dir / "pilot"
         self.outbox.mkdir(parents=True, exist_ok=True)
@@ -215,32 +215,31 @@ class Pilot:
             self.tmux: str | None = _tmux()
         except Exception:
             self.tmux = None
-        # Панель, в которой живёт сам сверхвизор. Это, обычно, панель оператора,
-        # а иногда и панель агента, который его запустил. Вбивать туда что-либо
-        # нельзя: там ждёт ввод человека, и мы бы съели его текст.
-        # Демон обязан стартовать БЕЗ TMUX_PANE в окружении: наследованный адрес
-        # панели агента превращает его роль в «свою» и молча выкидывает её из
-        # обслуживания (измерено 2026-10-07: пилот с TMUX_PANE=%3332 вечно
-        # пропускал omp через own_pane-skip). Запуск из панели агента без
-        # очистки окружения — это тихая остановка надзора за этой ролью.
+        # The pane the supervisor itself lives in. Usually the operator pane,
+        # sometimes the pane of the agent that launched it. Typing anything there
+        # is forbidden: human input waits there, and we would eat its text.
+        # The daemon must start WITHOUT TMUX_PANE in the environment: an inherited
+        # agent-pane address turns its role into "ours" and silently drops it from
+        # service (measured 2026-10-07: a pilot with TMUX_PANE=%3332 kept
+        # skipping omp via own_pane-skip). Launching from an agent pane without
+        # scrubbing the environment quietly stops supervision of that role.
         self.own_pane = os.environ.get("PAIR_PILOT_PANE") or None
         self._explicit_launch = dict(launch or {})
 
     # ------------------------------------------------------------- restart map
 
     def _launch_commands(self, given: dict[str, str] | None = None) -> dict[str, str]:
-        """Как запустить роль, если её процесс умер.
+        """How to launch a role when its process died.
+        Source order from "explicit" to "guessed": what the human wrote
+        themselves, then the profile in cli-profiles.json, then the environment.
+        Nothing is guessed by name: a command that does not exist is worse than
+        no command, because the pane comes alive and dies at once.
 
-        Порядок источников от «явного» к «угаданному»: то, что человек написал
-        сам, потом профиль в cli-profiles.json, потом переменная окружения.
-        Ничего не угадываем по имени: команда, которой не существует, хуже
-        отсутствия команды, потому что панель оживает и сразу падает.
-
-        Карта пересобирается на каждом обращении (см. `launch_command`), а не
-        морозится в `__init__`: иначе профиль, добавленный позже (как `pi`
-        2026-10-06), и правка `restart.json` вступают в силу только после
-        перезапуска пилота. Измерено: пилот от 05.10 не знал команду `pi` и
-        писал `pilot_restart_impossible`, хотя профиль уже был на диске.
+        The map is rebuilt on every access (see `launch_command`), not frozen
+        in `__init__`: otherwise a later-added profile (like `pi` on
+        2026-10-06) and a `restart.json` edit take effect only after a pilot
+        restart. Measured: a 10-05 pilot did not know the `pi` command and wrote
+        `pilot_restart_impossible` while the profile was already on disk.
         """
         explicit = dict(getattr(self, "_explicit_launch", None)
                         if given is None else (given or {}))
@@ -252,7 +251,7 @@ class Pilot:
                 if isinstance(data, dict):
                     out.update({str(k): str(v) for k, v in data.items()})
         except (OSError, json.JSONDecodeError):
-            log("restart.json не читается, команды запуска беру из профилей")
+            log("restart.json is unreadable, taking launch commands from profiles")
         profiles = ROOT / "cli-profiles.json"
         try:
             data = json.loads(profiles.read_text(encoding="utf-8"))
@@ -272,12 +271,12 @@ class Pilot:
         return self._launch_commands().get(role, "").strip()
 
     def supports_compact(self, role: str) -> bool:
-        """Понимает ли CLI роли команду /compact (флаг в cli-profiles.json).
+        """Whether the role CLI understands /compact (flag in cli-profiles.json).
 
-        pi, omp, opencode. Читается на каждом обращении, как
-        `_launch_commands`: правка профиля вступает в силу без перезапуска
-        пилота. Неизвестная роль и нечитаемый файл — False (default-deny:
-        чужой ввод лучше не трогать, чем слать туда мусор).
+        pi, omp, opencode. Read on every access, like `_launch_commands`:
+        a profile edit takes effect without a pilot restart. An unknown role
+        and an unreadable file mean False (default-deny: better to leave
+        someone else's input alone than to send garbage there).
         """
         profiles = ROOT / "cli-profiles.json"
         try:
@@ -294,7 +293,7 @@ class Pilot:
         return self.outbox / f".restarts-{role}"
 
     def restart_history(self, role: str) -> list[float]:
-        """Когда именно роль перезапускали. Один timestamp на строку."""
+        """When exactly the role was restarted. One timestamp per line."""
         try:
             raw = self.restarts_file(role).read_text(encoding="utf-8").split()
         except OSError:
@@ -308,10 +307,10 @@ class Pilot:
         return out
 
     def note_restart(self, role: str) -> None:
-        """Записать попытку и сразу отбросить всё, что вышло за окно.
+        """Record the attempt and drop everything past the window at once.
 
-        Обрезание здесь, а не при чтении, нужно затем, что иначе файл с историей
-        рос бы бесконечно по мере жизни проекта.
+        Trimming happens here, at write time, not at read time: otherwise the history
+        file would grow without bound over the project lifetime.
         """
         now = time.time()
         keep = [stamp for stamp in self.restart_history(role) if now - stamp < self.restart_window]
@@ -320,13 +319,13 @@ class Pilot:
             self.restarts_file(role).write_text(
                 " ".join(f"{stamp:.0f}" for stamp in keep), encoding="utf-8")
         except OSError as error:
-            log(f"{role}: не записал историю перезапусков ({error}) — ограничение может не сработать")
+            log(f"{role}: did not record the restart history ({error}) — the ceiling may not hold")
 
     def restart_allowed(self, role: str) -> bool:
-        """Не превышен ли лимит перезапусков этой роли в окне.
+        """Whether this role is over its restart ceiling inside the window.
 
-        Считает попытки независимо от pid: скользящее окно останавливает и
-        процесс, падающий сразу после старта, у которого pid каждый раз новый.
+        Attempts count regardless of pid: the sliding window also stops a
+        process that dies right after start, whose pid is new every time.
         """
         now = time.time()
         recent = [stamp for stamp in self.restart_history(role)
@@ -339,12 +338,12 @@ class Pilot:
         return self.store._load()
 
     def remember(self, key: str, ttl: float | None = None) -> bool:
-        """True, если этого мы ещё не делали. Не даёт повторять запись.
+        """True if we have not done this yet. Stops repeat writes.
 
-        Без ttl штамп живёт вечно: второе событие того же вида уже не будит
-        (unread-штамп утекал так весь раунд 43). С ttl штамп старше ttl
-        обновляется и снова возвращает True — напоминание повторяется не чаще,
-        чем раз в ttl, пока причина висит.
+        Without ttl a stamp lives forever: a second event of the same kind
+        never wakes again (the unread stamp leaked exactly like that through
+        round 43). With ttl a stamp older than ttl refreshes and returns True
+        again — a nudge repeats at most once per ttl while the cause hangs.
         """
         stamp = self.state_dir / "pilot" / f".{stamp_name(key)}"
         if stamp.exists():
@@ -359,21 +358,21 @@ class Pilot:
         return True
 
     def unremember(self, key: str) -> None:
-        """Сбросить штамп: событие закрылось, следующее начнётся с чистого листа."""
+        """Drop the stamp: the event closed, the next one starts clean."""
         stamp = self.state_dir / "pilot" / f".{stamp_name(key)}"
         stamp.unlink(missing_ok=True)
 
     def panes(self, state: dict) -> dict[str, list[str]]:
-        """Кто на какой панели, без мёртвых.
+        """Who sits on which pane, minus the dead.
 
-        Мёртвая роль не делает панель общей. Проверено вживую: claude и codex
-        держались в ростере с одной панелью %20, записи пережили их процессы, и
-        `skip` содержал всех троих — включая живого agy. Сверхвизор переставал
-        обслуживать проект из-за двух умерших соседей.
+        A dead role does not make a pane shared. Seen live: claude and codex
+        lingered in the roster on one pane %20, the records outlived their
+        processes, and `skip` held all three — including the live agy. The
+        supervisor stopped serving the project over two dead neighbours.
 
-        Роль считается живой по process'у; панель без живого процесса — просто
-        запись, а не окно, где кто-то сидит. Два независимых факта, как в
-        `pane_exists`: имя панели не доказывает, что в ней кто-то есть.
+        A role counts as live by its process; a pane with no live process is
+        just a record, not a window someone sits in. Two independent facts, as
+        in `pane_exists`: a pane name does not prove anyone is inside.
         """
         table: dict[str, list[str]] = {}
         for role, info in (state.get("roles") or {}).items():
@@ -387,18 +386,18 @@ class Pilot:
         return table
 
     def pane_key(self, pane: str) -> str:
-        """Ключ группировки панелей, одинаковый для обоих форматов ссылки.
+        """Pane-grouping key, identical for both reference formats.
 
-        Группировка по самой строке перестала работать, как только в состоянии
-        появились адреса сессий: `%1` и `mail:0.1` — одна панель, а таблица видела
-        две. Дальше это ломало `ambiguous()`, а тот, не увидев двух ролей на одной
-        панели, считал её свободной и бил в неё — то есть в чужой композер.
+        Grouping by the raw string broke as soon as session addresses appeared
+        in state: `%1` and `mail:0.1` are one pane, but the table saw two.
+        Past that it broke `ambiguous()`, which — missing two roles on one
+        pane — called it free and struck it: into another agent’s composer.
         """
         return pane_key(self.tmux, pane)
 
     def stale_roles(self, state: dict) -> dict[str, str]:
-        """Роли с мёртвым процессом, но всё ещё числящиеся. Не удаляются молча:
-        ростер — общая память, и решение очистить его принимает человек."""
+        """Roles with a dead process that still linger. Never deleted quietly:
+        the roster is shared memory, and the human decides when to clear it."""
         out = {}
         for role, info in (state.get("roles") or {}).items():
             pid = info.get("pid")
@@ -410,17 +409,18 @@ class Pilot:
         return {pane: names for pane, names in self.panes(state).items() if len(names) > 1}
 
     def pane_occupied_by_other(self, state: dict, role: str, pane: str) -> str | None:
-        """Живая роль на этой панели, кроме самой `role`. None — панель свободна.
+        """Live role on this pane, besides `role` itself. None — the pane is free.
 
-        Запись о мёртвом агенте не делает панель занятой: если в ней кто-то жив,
-        перезапуск ушедшего роли ударит по живому соседу. Считаем только по
-        процессам, потому что имя панели — это адрес, а не свидетельство."""
+        A dead-agent record does not make a pane busy: if someone live is in
+        it, restarting the departed role would hit the live neighbour. Count
+        by processes only, because a pane name is an address, not evidence.
+        """
         key = self.pane_key(pane)
         for other, info in (state.get("roles") or {}).items():
-            # Сравнение по ключу, а не по строке: сосед может быть записан адресом
-            # сессии, а `pane` пришёл из `%N`, и это та же панель. При сравнении
-            # строк сверхвизор решил бы, что панель свободна, и перезапустил в
-            # ней чужого агента.
+            # Compare by key, not by string: the neighbour may be recorded as a session
+            # address while `pane` arrived as `%N`, and it is the same pane. On string
+            # comparison the supervisor would call the pane free and restart into it
+            # another agent’s agent.
             if other == role or self.pane_key(info.get("pane")) != key:
                 continue
             pid = info.get("pid")
@@ -429,18 +429,18 @@ class Pilot:
         return None
 
     def pane_occupant(self, role: str, pane: str) -> int:
-        """pid, который реально сидит в панели этой роли, или 0.
+        """The pid actually sitting in this role’s pane, or 0.
 
-        Роль жива, если жив pid ИЛИ панель с процессом, но эти два факта могут
-        расходиться, и важно в каком направлении. Мёртвый pid при живой панели —
-        это не падение: pid в ростере протух, а агент на месте. Обратное, живой
-        pid при отсутствующей панели, — уже настоящая беда, и она ловится в
-        `dead_pane`.
+        A role is alive if its pid is alive OR its pane runs a process, but the two
+        facts can diverge, and the direction matters. A dead pid on a live pane
+        is not a crash: the roster pid went stale while the agent is in place.
+        The reverse — a live pid with no pane — is real trouble, and it is
+        caught in `dead_pane`.
 
-        Панель, занятую чужой живой ролью, сюда не доходит: `restart_agent`
-        проверяет `pane_occupied_by_other` ДО этого вызова, иначе мы записали бы
-        pid соседа в запись этой роли. Проверять здесь ещё раз было бы вторым
-        мнением об одном факте, а не страховкой.
+        A pane held by another live role never reaches here: `restart_agent`
+        checks `pane_occupied_by_other` BEFORE this call, otherwise we would
+        record the neighbour’s pid into this role’s entry. Checking again here
+        would be a second opinion on one fact, not insurance.
         """
         if self.tmux is None or not pane:
             return 0
@@ -450,25 +450,25 @@ class Pilot:
         return occupant if is_pid_alive(occupant) else 0
 
     def gone_roles(self, state: dict) -> None:
-        """Роли, чей процесс умер, но запись в ростере осталась.
+        """Roles whose process died but whose roster entry stayed.
 
-        Молчание здесь вреднее шума: из-за таких записей общая панель выглядела
-        занятой, и сверхвизор переставал будить живого соседа. Говорим один раз
-        за роль и оставляем решать человеку — молча чистить ростер нельзя.
+        Silence is costlier than noise here: such entries made a shared pane
+        look busy, and the supervisor stopped waking the live neighbour. Say it
+        once per role and leave the call to the human — never clear the roster quietly.
         """
         for role, why in self.stale_roles(state).items():
             if not self.remember(f"gone-{role}"):
                 continue
-            log(f"{role}: {why}, но запись в ростере осталась и панель считалась общей. "
-                f"Чистить ростер — `pairctl release` или новая сессия.")
+            log(f"{role}: {why}, but the roster entry stayed and the pane counted as shared. "
+                f"Clear the roster — `pairctl release` or a new session.")
             self.store.append_transcript("pilot_stale_role", "pairpilot", target=role, why=why)
 
     def ambiguous(self, state: dict) -> bool:
-        """Две роли на одной панели — значит ростер врёт, и бить в неё нельзя.
+        """Two roles on one pane means the roster lies, and striking it is forbidden.
 
-        Так бывает: диагностика или чужой скрипт регистрирует роль, отметку не
-        стирая, и в неё попадает текущая панель. Тогда «будим claude» ушло бы в
-        окно agy. Лучше не будить вовсе, чем будить не того.
+        It happens: diagnostics or another script registers a role without wiping
+        the mark, and the current pane lands in it. Then "wake claude" would go
+        to agy’s window. Better to wake nobody than to wake the wrong one.
         """
         shared = self.shared_panes(state)
         if not shared:
@@ -476,45 +476,50 @@ class Pilot:
         key = "shared-" + "-".join(f"{pane}:{','.join(sorted(names))}" for pane, names in sorted(shared.items()))
         if self.remember(key):
             for pane, names in sorted(shared.items()):
-                log(f"панель {pane} указана сразу за {', '.join(sorted(names))} — не трогаю её")
+                log(f"pane {pane} is listed right after {', '.join(sorted(names))} — leaving it alone")
                 self.store.append_transcript("pilot_pane_shared", "pairpilot", pane=pane, roles=sorted(names))
         return True
 
-    # -------------------------------------------------------------- пробуждение
+    # ------------------------------------------------------- wake-up
 
     def mark_wake(self, state: dict, role: str, reason: str, text: str) -> None:
-        """Записать, что роль надо разбудить — в файл, а не в композер.
+        """Record that a role must be woken — in a file, not in the composer.
 
-        Печать в композер была единственным способом сказать соседу «у тебя
-        письмо», и это плохой способ: он ломается о занятый TUI, требует угадать
-        момент и оставляет след в чужом окне. Пробуждение по файлу не печатает
-        ничего — роль увидит его сама, когда посмотрит состояние, — и даёт
-        супервизору факт, по которому можно потом судить: будили или уже проснулся.
+        Printing into the composer was the only way to tell a neighbour "you
+        have mail", and it is a bad way: it breaks on a busy TUI, needs the
+        moment guessed, and leaves a mark in another window. A file wake-up prints
+        nothing — the role sees it itself when it looks at state — and gives the
+        supervisor a fact to judge by later: did we wake it, or was it awake.
 
-        Текущий снимок `last_seen` кладётся рядом с фактом намерения. Сравнение
-        идёт с ним, а не с текущим временем: иначе роль, которая была awake в
-        момент постановки вопроса, была бы признана «проснувшейся» следующим же
-        тиком без единого своего действия.
+        The current `last_seen` snapshot goes next to the intent fact. Comparison
+        runs against it, not against now: otherwise a role that was awake when
+        the question was raised would count as "woken" on the very next tick
+        without a single action of its own.
         """
         path = self.wake_root / f"{role}.json"
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
             info = (state.get("roles") or {}).get(role) or {}
-            # Висящее пробуждение дополняется, а не перезаписывается.
+            # A hanging wake-up is amended, not overwritten.
             #
-            # Поводов о пробуждении два (`unread_peers` и `stale_writer`), а файл
-            # на роль один. Перезапись теряла `asked_at` — терпение начиналось
-            # заново, — и признак `escalated`, то есть один и тот же факт
-            # эскалировался дважды: сначала по первому поводу, потом, уже после
-            # перезаписи, по второму. Снимок `seen_at_ask` берётся только при
-            # первой постановке: он отвечает на вопрос «проснулся ли роль после
-            # вопроса», и обновлять его — значит задавать вопрос заново.
+            # Two wake-up reasons (`unread_peers` and `stale_writer`), but one file
+            # per role. Overwriting lost `asked_at` — patience restarted from zero
+            # — and the `escalated` flag, so the same fact escalated
+            # twice: first for one reason, then, after the overwrite, for the second.
+            # The `seen_at_ask` snapshot is taken only at the first raise: it answers
+            # "did the role wake after the question", and refreshing it means asking
+            # the question anew.
             previous: dict = {}
             try:
                 previous = json.loads(path.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError):
+            except FileNotFoundError:
                 previous = {}
-            if not isinstance(previous, dict):
+            except (OSError, json.JSONDecodeError):
+                # Same class as poll_wakes: the file was there but unreadable,
+                # and this write heals it by overwrite. Without a record nobody
+                # can ever answer "were there damaged wake files".
+                self.store.append_transcript("pilot_wake_damaged", "pairpilot",
+                                             file=path.name)
                 previous = {}
             prior_reasons = previous.get("reasons")
             if not isinstance(prior_reasons, list):
@@ -535,29 +540,29 @@ class Pilot:
             payload.setdefault("asked_at", utcnow())
             path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         except OSError as error:
-            # Не записали — значит, будить нечем, и это надо сказать, а не
-            # сделать вид, что роль получила напоминание.
+            # Not recorded means nothing to wake with, and that must be said, not
+            # faked as if the role got its nudge.
             self.store.append_transcript("pilot_wake_failed", "pairpilot",
                                          target=role, error=str(error)[:120])
-            log(f"{role}: не смог записать пробуждение — {error}")
+            log(f"{role}: could not record the wake-up — {error}")
             return
         self.store.append_transcript("pilot_wake_pending", "pairpilot",
                                      target=role, reason=reason)
-        log(f"{role}: {reason}, жду пробуждения молча (в печать не бью)")
+        log(f"{role}: {reason}, waiting for the wake-up silently (no printing)")
         self.ring(state, role, reason)
 
-    # Роль -> wake-модуль (был `if role == "opencode"`; новый = строка + wake_<cli>.py).
+    # Role -> wake module (was `if role == "opencode"`; new = string + wake_<cli>.py).
     WAKE_ADAPTERS = {"opencode": "wake_opencode"}
 
     def ring(self, state: dict, role: str, reason: str) -> None:
-        """Позвонить в панель роли: display-message, не печать в композер.
+        """Ring the role’s pane: display-message, not composer printing.
 
-        Печать в занятый TUI — мусор в строке ввода; звонок — всплывашка,
-        которую агент видит краем глаза и сам решает, когда отвлечься.
-        Троттл — по полю rung_at в wake-файле: не чаще раза в 5 мин,
-        иначе это тот же спам, только без текста.
+        Printing into a busy TUI is garbage in the input line; a ring is a popup
+        the agent sees from the corner of its eye and decides itself when to look.
+        Throttle by the rung_at field in the wake file: at most once per 5 min,
+        otherwise it is the same spam, just without text.
 
-        После звонка — wake-адаптер из WAKE_ADAPTERS (fail-closed, throttle общий).
+        After the ring — the wake adapter from WAKE_ADAPTERS (fail-closed, shared throttle).
         """
         if self.tmux is None or role in self.skip:
             return
@@ -567,7 +572,7 @@ class Pilot:
         pane = ((state.get("roles") or {}).get(role) or {}).get("pane")
         if not pane or not pane_alive(self.tmux, pane):
             return
-        pointer = f"[pair] {reason} — забери из mailbox через pair_read"
+        pointer = f"[pair] {reason} — pick it up from mailbox via pair_read"
         try:
             subprocess.run([self.tmux, "display-message", "-t", pane,
                             "-d", "4000", pointer],
@@ -581,7 +586,7 @@ class Pilot:
                 self.store.append_transcript("pilot_wake_api", "pairpilot",
                                              target=role, woken=result.get("woken"),
                                              why=(result.get("why") or "")[:120])
-            except Exception as error:  # noqa: BLE001 - адаптер не должен ронять звонок
+            except Exception as error:  # noqa: BLE001 - the adapter must not drop the ring
                 self.store.append_transcript("pilot_wake_api_failed", "pairpilot",
                                              target=role, error=str(error)[:120])
         else:
@@ -603,15 +608,15 @@ class Pilot:
             return 0.0
 
     def poll_wakes(self, state: dict) -> None:
-        """Опросить висящие пробуждения и решить по каждому: проснулся или нет.
+        """Poll hanging wake-ups and decide each: awake or not.
 
-        Три исхода, и каждый виден в журнале:
-        - **проснулся** — `last_seen` сдвинулся или непрочитанных стало ноль.
-          Ничего не печатаем: роль уже в работе, и будить её значило бы мешать.
-        - **терпение кончилось** — роль молчит дольше `wake_grace`. Тогда печатаем,
-          один раз, и это уже эскалация, а не первый шаг.
-        - **всё ещё ждём** — тишина. Молчание, за которым смотрит супервизор,
-          обходится в ноль токенов.
+        Three outcomes, each visible in the journal:
+        - **awake** — `last_seen` moved or unread dropped to zero.
+          Print nothing: the role is already working, waking it would disturb.
+        - **patience spent** — the role is silent past `wake_grace`. Then print,
+          once, and that is escalation, not the first step.
+        - **still waiting** — silence. Silence watched by the supervisor
+          costs zero tokens.
         """
         if not self.wake_root.is_dir():
             return
@@ -620,8 +625,8 @@ class Pilot:
             try:
                 wake = json.loads(path.read_text(encoding="utf-8"))
             except (OSError, json.JSONDecodeError):
-                # Битый файл пробуждения нельзя чинить догадками: он удаляется,
-                # потому что иначе он будет висеть вечно, а роль так и не услышит.
+                # A damaged wake file cannot be fixed by guessing: it is removed,
+                # because otherwise it would hang forever and the role would never hear.
                 path.unlink(missing_ok=True)
                 self.store.append_transcript("pilot_wake_damaged", "pairpilot",
                                              file=path.name)
@@ -633,10 +638,10 @@ class Pilot:
             unread_now = self.unread(state, role)
             woke = (seen_now != seen_ask) or (unread_now < int(wake.get("unread_at_ask", 0)))
             if woke:
-                # Порядок обязателен: раньше файл сначала удалялся, и `stat`
-                # потом всегда давал «нет файла», то есть since_seconds был
-                # всегда 0 — поле, по которому судят, сколько роль молчала,
-                # не сказало ничего.
+                # The order is mandatory: the file used to be removed first, and `stat`
+                # afterwards always said “no file”, so since_seconds stayed
+                # at 0 forever — the field that tells how long the role was silent
+                # said nothing.
                 try:
                     since = int(now - path.stat().st_mtime)
                 except OSError:
@@ -645,38 +650,39 @@ class Pilot:
                 self.store.append_transcript("pilot_wake_acknowledged", "pairpilot",
                                              target=role, reason=wake.get("reason"),
                                              since_seconds=since)
-                log(f"{role}: проснулся сам, печать не понадобилась")
+                log(f"{role}: woke on its own, no printing needed")
                 continue
             if self.is_done_parked(state):
-                # В фазе done пилот припаркован: не эскалируем wake-файлы в композер.
+                # In done phase the pilot is parked: do not escalate wake files into the composer.
                 continue
             asked = parse_iso(wake.get("asked_at"))
             age = now - asked.timestamp() if asked else 0.0
             if age < self.wake_grace:
                 continue
-            # Пауза между повторами и причина — в may_escalate_again.
+            # The pause between repeats and its reason live in may_escalate_again.
             if not self.may_escalate_again(wake, now):
                 continue
             self.store.append_transcript("pilot_wake_escalated", "pairpilot",
                                          target=role, reason=wake.get("reason"),
                                          age_seconds=int(age),
                                          repeat=bool(wake.get("escalated")))
-            log(f"{role}: молчит {int(age // 60)} мин после пробуждения — печатаю")
+            log(f"{role}: silent {int(age // 60)} min past the wake-up — printing")
             self.enqueue(role, str(wake.get("text") or ""))
             wake["escalated"] = True
             wake["escalated_at"] = utcnow()
             path.write_text(json.dumps(wake, ensure_ascii=False, indent=2), encoding="utf-8")
 
     def may_escalate_again(self, wake: dict, now: float) -> bool:
-        """Пора ли повторить эскалацию: роль молчит, а пауза с прошлой прошла.
+        """Whether an escalation repeat is due: the role is silent and the pause passed.
 
-        Прежний контракт был «ровно один раз за жизнь роли», и это ловушка без
-        выхода: файл удаляется только когда роль ПРОСНУЛАСЬ, поэтому у молчащей
-        роли вторая эскалация невозможна в принципе. Найдено вживую — pi молчал
-        час, файл висел с escalated, супервизор писал «ждёт 40 мин» и не печатал.
+        The old contract was "exactly once per role lifetime", and that is a trap
+        with no exit: the file is removed only when the role WAKES UP, so a silent
+        role can never get a second escalation. Found live — pi was silent an
+        hour, the file hung with escalated, the supervisor wrote "waiting 40 min"
+        and never printed.
 
-        Пауза обязана быть меньше срока жизни отложенного, иначе повтор протухнет
-        в очереди, не доехав до композера.
+        The pause must be shorter than the queued item’s lifetime, otherwise the
+        repeat goes stale in queue before reaching the composer.
         """
         if not wake.get("escalated"):
             return True
@@ -695,21 +701,21 @@ class Pilot:
             except OSError:
                 old = ""
             if old.strip() and old != text:
-                # Вытеснение без следа — дыра в аудите: напоминание выглядит
-                # «не бывшим». Пишем замену в журнал (раунд 43).
+                # Eviction without a trace is an audit hole: the nudge looks like it
+                # "never was". Write the replacement into the journal (round 43).
                 self.store.append_transcript("pilot_outbox_replaced", "pairpilot",
                                              to=role, old=old[:120], new=text[:120])
         path.write_text(text, encoding="utf-8")
 
     def mailbox_fallback(self, role: str, text: str) -> int | None:
-        """Дублировать указатель в mailbox получателя как письмо от пилота.
+        """Mirror the pointer into the recipient mailbox as a pilot letter.
 
-        Outbox протухает, если композер занят дольше TTL: агент работает,
-        печатать нельзя, указатель выбрасывается — и агент никогда не узнаёт,
-        что его ждали. Mailbox не протухает: агент заберёт письмо через
-        `pair_read`, когда сам решит. Измерено 2026-10-06: два nudge_expired
-        подряд, оба агента живы, оба ничего не получили.
-        Возвращает seq письма или None, если дублировать нечего/некуда.
+        Outbox goes stale when the composer stays busy past TTL: the agent works,
+        printing is forbidden, the pointer is dropped — and the agent never learns
+        it was waited for. Mailbox never goes stale: the agent picks the letter up
+        via `pair_read` when it chooses. Measured 2026-10-06: two nudge_expired in
+        a row, both agents alive, both got nothing.
+        Returns the letter seq or None when there is nothing/nowhere to mirror.
         """
         if not text.strip():
             return None
@@ -750,21 +756,20 @@ class Pilot:
         return path.read_text(encoding="utf-8").strip() if path.exists() else ""
 
     def outbox_file(self, role: str) -> Path:
-        """Файл отложенного для роли. Метод, чтобы путь очереди не собирали руками."""
+        """The queued-item file for a role. A method so the queue path is never hand-built."""
         return self.outbox / f"{role}.txt"
 
     def flush_outbox(self, state: dict) -> None:
-        """Доставить отложенное. Пока композер занят, текст остаётся на месте —
-        следующий проход попробует снова. Это и есть переживающая доставка.
+        """Deliver the queued item. While the composer is busy the text stays put —
+        the next pass tries again. That is surviving delivery.
 
-        Но переживающая доставка без срока жизни становится доставкой
-        протухшего: очередь переживала сессию, и человек получал вопрос, который
-        уже не имел отношения к делу. Наблюдалось вживую — напоминание про
-        обязательство, закрытое почти за три часа до того, как было составлено,
-        лежало в очереди ещё 22 минуты и было доставлено как свежее.
+        But surviving delivery with no lifetime becomes stale delivery: the queue
+        outlived the session, and the human got a question that no longer meant
+        anything. Observed live — a nudge about an obligation closed almost three
+        hours before it was composed sat in queue 22 more minutes and landed as fresh.
 
-        Поэтому у отложенного есть срок. Молчаливую выброску не делаем: она
-        записывается в транскрипт, иначе выброшенное выглядит как «доставлено».
+        So a queued item has a lifetime. Silent drops are forbidden: a drop is
+        recorded in the transcript, otherwise a dropped item looks "delivered".
         """
         if self.tmux is None:
             return
@@ -785,8 +790,8 @@ class Pilot:
                     "pilot_nudge_expired", "pairpilot", to=role,
                     age_seconds=int(age), text=text[:120],
                     fallback_seq=seq)
-                log(f"отложенное для {role} протухло в композере "
-                    f"{int(age // 60)} мин — дублирую в ящик (seq {seq})")
+                log(f"queued for {role} went stale in the composer "
+                    f"{int(age // 60)} min — mirroring into the mailbox (seq {seq})")
                 continue
             pane = info.get("pane")
             try:
@@ -825,15 +830,15 @@ class Pilot:
             if result.get("delivered"):
                 path.unlink(missing_ok=True)
                 self.store.append_transcript("pilot_deliver", "pairpilot", to=role, text=text[:120])
-                log(f"доставил отложенное для {role}")
+                log(f"delivered the queued item for {role}")
 
     def drop_stale_outbox(self, state: dict) -> None:
-        """Снять протухшее в очереди до попытки печати (#18).
+        """Drop what went stale in queue before trying to print (#18).
 
-        Отдельно от `flush_outbox`, потому что тот без tmux выходит сразу
-        и перепроверка не срабатывала бы ни в тестах, ни в проекте без
-        tmux. Порядок в `tick` — после `stalled_patches`, до `flush_outbox`:
-        свежее условие уже записано, протухшее снимается здесь.
+        Separate from `flush_outbox` because that one exits early without tmux,
+        and the re-check would never fire in tests or in a tmux-less project.
+        Order in `tick` — after `stalled_patches`, before `flush_outbox`:
+        the fresh condition is already recorded, the stale one drops here.
         """
         now = time.time()
         for role in state.get("roles", {}):
@@ -851,30 +856,30 @@ class Pilot:
             self.store.append_transcript(
                 "pilot_nudge_stale", "pairpilot", to=role,
                 age_seconds=int(age), text=text[:120])
-            log(f"отложенное для {role} снято: условие протухло, пока ждало")
+            log(f"queued for {role} dropped: its condition went stale while waiting")
 
     def nudge_still_true(self, state: dict, role: str, text: str) -> bool:
-        """Протухло ли условие отложенного, пока оно ждало композер (#18).
+        """Whether the queued item’s condition went stale while it waited (#18).
 
-        Измерено 2026-10-06: напоминание про sealed-патч zmtcbrb9 легло в
-        очередь до `patch_applied`, а доставлено после — агент получил
-        ложный «висит неприменённым» при applied=true. Условие читается
-        из свежего состояния здесь, а не из момента постановки.
-        Измерено 2026-10-07 (backlog pilot-nudge-about-closed-obligation):
-        напоминание про запрос 370 ушло после закрытия obligation-файла.
-        Поэтому текст про запрос/seq проверяется по файлу
-        obligations/<seq>-*.json: нет файла — условие протухло.
-        Неопознанный текст не трогаем: лучше доставить лишнее, чем молча
-        выбросить то, чего не поняли.
+        Measured 2026-10-06: a nudge about sealed patch zmtcbrb9 queued before
+        `patch_applied` but delivered after — the agent got a false "hangs
+        unapplied" at applied=true. The condition reads from fresh state here,
+        not from the moment of queueing.
+        Measured 2026-10-07 (backlog pilot-nudge-about-closed-obligation):
+        a nudge about request 370 left after its obligation file closed.
+        So request/seq text checks against the file obligations/<seq>-*.json:
+        no file — the condition went stale. Unrecognized text stays untouched:
+        better to deliver extra than to silently drop what we did not parse.
         """
         low = text.lower()
-        if "непрочитанных" in low or "непрочитанн" in low:
+        # Bilingual: old RU pointers ("непрочитанных") and new EN ones ("unread").
+        if "непрочитанных" in low or "непрочитанн" in low or "unread" in low:
             # Unread-pointer: the condition is checked against state, not text.
             # Measured 2026-10-13 (finding-round87): a pointer raised at unread=1
             # was delivered 62s later at unread=0. Stale — drop it, otherwise
             # every fast reply round-trips a bogus nudge.
             return self.unread(state, role) > 0
-        match = re.search(r"(?:запрос|seq)\s+(\d+)", text, re.IGNORECASE)
+        match = re.search(r"(?:запрос|request|seq)\s+(\d+)", text, re.IGNORECASE)
         if match:
             prefix = f"{int(match.group(1)):06d}-"
             root = self.store.obligations_root
@@ -889,17 +894,17 @@ class Pilot:
         return False
 
     def visibly_busy(self, pane: str) -> bool:
-        """Видно ли по панели, что агент работает прямо сейчас.
+        """Whether the panel shows the agent working right now.
 
-        Композер занят — агент печатает или ждёт. Композера не видно вовсе —
-        TUI перерисовывается, и бить в этот момент тоже нельзя. Оба случая
-        означают «не трогать».
+        Composer busy means the agent types or waits. No composer visible at
+        all means the TUI redraws, and striking then is forbidden too. Both mean
+        "hands off".
         """
         if self.tmux is None or not pane_alive(self.tmux, pane):
             return False
         try:
             line = composer_line(capture(self.tmux, pane))
-        except Exception:  # noqa: BLE001 - панель могла исчезнуть между проверками
+        except Exception:  # noqa: BLE001 - the pane may vanish between checks
             return False
         if line is None:
             return True
@@ -917,8 +922,8 @@ class Pilot:
         return len(list(inbox.glob("*.json"))) if inbox.exists() else 0
 
     def is_done_parked(self, state: dict) -> bool:
-        """В фазе done при отсутствии открытых задач и обязательств пилот припаркован.
-        В этом состоянии эскалация тишины и спам толчками запрещены для экономии токенов.
+        """Parked in done phase with no open tasks or obligations.
+        Silence escalation and nudge spam are banned in this state to save tokens.
         """
         if state.get("phase") != "done":
             return False
@@ -930,46 +935,46 @@ class Pilot:
         key = f"parked-{state.get('round')}"
         if self.remember(key, ttl=3600):
             self.store.append_transcript("pilot_parked", "pairpilot", round=state.get("round"))
-            log(f"раунд {state.get('round')} в done: пилот припаркован, спам отключён")
+            log(f"round {state.get('round')} in done: pilot parked, spam off")
         return True
 
     def unread_peers(self, state: dict) -> list[str]:
-        """Кого разбудить из-за непрочитанного. Почтальон на чеку: письмо в ящике
-        без толчка не лежит — память (wake) и толчок (outbox) пишутся вместе.
-        Память — чтобы было видно, кого будили и когда, толчок — чтобы спящий
-        узнал сейчас: следующий flush (этот же тик) вбивает его в композер.
+        """Who to wake over unread mail. The postman on watch: a letter in the box
+        never sits without a push — memory (wake) and push (outbox) are written together.
+        Memory shows who was woken and when; push lets the sleeper learn it
+        now: the next flush (this same tick) drives it into the composer.
         """
         out = []
         if self.is_done_parked(state):
-            # В фазе done без открытых задач и обязательств пилот припаркован:
-            # не спамим агентов толчками «предложи следующий кусок работы».
+            # In done phase with no open tasks or obligations the pilot is parked:
+            # no spamming agents with “suggest the next chunk” pushes.
             return out
         for role in state.get("roles", {}):
             if role in self.skip:
                 continue
             missing = self.unread(state, role)
             if missing <= 0:
-                # Прочитал — штамп сбрасывается: следующее письмо будит заново.
-                # Без этого второе письмо не будило никогда (раунд 43).
+                # Read once — the stamp resets: the next letter wakes anew.
+                # Without it the second letter never woke (round 43).
                 self.unremember(f"unread-{role}")
                 continue
             out.append(role)
             key = f"unread-{role}"
             if self.remember(key):
-                text = (f"[pairpilot] У тебя {missing} непрочитанных сообщений. "
-                        f"Вызови pair_read и ответь соседу. Если всё сделано — "
-                        f"предложи следующий кусок работы через pair_note.")
-                self.mark_wake(state, role, f"{missing} непрочитанных", text)
+                text = (f"[pairpilot] You have {missing} unread messages. "
+                        f"Call pair_read and answer your neighbour. If all is done — "
+                        f"suggest the next chunk via pair_note.")
+                self.mark_wake(state, role, f"{missing} unread", text)
                 self.enqueue(role, text)
                 self.store.append_transcript("pilot_unread_nudge", "pairpilot",
                                              target=role, unread=missing)
-                log(f"{role}: {missing} непрочитанных, толкаю сразу")
+                log(f"{role}: {missing} unread, pushing at once")
         return out
 
     def stale_writer(self, state: dict) -> None:
-        """Писатель молчит дольше порога, а фаза не закрыта. Хуже всего это
-        заканчивается ночью: двигать фазу может только он, поэтому её никто не
-        сдвинет, и работа встанет до утра."""
+        """The writer is silent past the threshold while the phase stays open. Its
+        worst ending is at night: only it may move the phase, so nobody moves
+        it, and the work stands till morning."""
         writer = state.get("writer")
         if not writer or state.get("phase") == "done":
             return
@@ -980,9 +985,9 @@ class Pilot:
             return
         pane = info.get("pane")
         if pane and self.visibly_busy(pane):
-            # last_seen меряет участие в протоколе, а не работу. Писатель,
-            # погружённый в длинную правку, не зовёт pair_* инструменты, и часы
-            # у него сходят, хотя он работает. Видимая занятость — честнее часов.
+            # last_seen measures protocol participation, not work. A writer
+            # deep in a long edit never calls pair_* tools, and its clock
+            # runs out while it works. Visible busyness is fairer than clocks.
             return
         age = self.role_seen_age(info)
         if age < self.silence:
@@ -990,33 +995,33 @@ class Pilot:
         key = f"stale-writer-{state.get('round')}"
         if not self.remember(key):
             return
-        text = (f"[pairpilot] Ты молчишь {int(age // 60)} минут, а держишь право "
-                f"записи в фазе {state.get('phase')!r}. Двигать фазу больше некому, "
-                f"и работа встанет до утра. Продолжай свою часть, закрой фазу, "
-                f"либо пиши в заметку, что заблокировано и чем. Помечать «делаю» "
-                f"не считается: нужен реальный шаг или явная блокировка.")
-        self.mark_wake(state, writer, f"молчит {int(age // 60)} мин и держит фазу", text)
+        text = (f"[pairpilot] You are silent {int(age // 60)} minutes while holding write "
+                f"rights in phase {state.get('phase')!r}. Nobody else can move the phase, "
+                f"and the work will stand till morning. Continue your part, close the phase, "
+                f"or write to the note what blocks and how. Marking “doing” "
+                f"does not count: a real step or an explicit block is needed.")
+        self.mark_wake(state, writer, f"silent {int(age // 60)} min holding the phase", text)
         self.enqueue(writer, text)
-        log(f"{writer} молчит {int(age // 60)} мин и держит фазу {state.get('phase')!r} "
-            f"— толкаю сразу")
+        log(f"{writer} silent {int(age // 60)} min holding phase {state.get('phase')!r} "
+            f"— pushing at once")
 
     def idle_roles(self, state: dict) -> None:
-        """Молчащая роль без входящих — не «ему нечего сказать», а отсутствие связи.
+        """A silent role with no incoming is not "nothing to say" but lost contact.
 
-        Триггеры пилота были реактивными: непрочитанная почта
-        (`unread_peers`), обязательства (`pending_answers`) и молчащий
-        ПИСАТЕЛЬ (`stale_writer`, порог self.silence применён только к нему).
-        У пассивного критика в новой сессии входных событий нет вообще: задача
-        пишется только в state.json, mailbox пуст. Замерено 2026-10-11 по
-        транскрипту: в 2 раундах из 8 писатель не отправил соседу ни одного
-        сообщения до смены фазы, и критика никто не будил — симптом человека
-        «один агент работает, второй молчит».
+        The pilot triggers used to be reactive: unread mail (`unread_peers`),
+        obligations (`pending_answers`) and the silent WRITER (`stale_writer`,
+        with self.silence applied to it alone). A passive critic in a new session
+        has no incoming events at all: the task is written only to state.json,
+        the mailbox is empty. Measured 2026-10-11 from the transcript: in 2 of 8
+        rounds the writer sent the neighbour not a single message before the
+        phase moved, and nobody woke the critic — the human symptom of "one
+        agent works, the other is silent".
 
-        Поэтому порог молчания симметрично применяется к роли, у которой нет
-        входящих: ни непрочитанной почты, ни видимого источника работы.
-        Толчок ОДИН на раунд (`remember` с TTL в два порога) — иначе это тот же
-        спам, что запрещён в `ring`. Закрытый раунд не будим: там молчать —
-        норма. Писателя не трогаем: за него отвечает `stale_writer`.
+        So the silence threshold applies symmetrically to a role with no
+        incoming: neither unread mail nor a visible work source. One push per
+        round (`remember` with a two-threshold TTL) — otherwise it is the same
+        spam banned in `ring`. A closed round is never woken: there silence is
+        normal. The writer stays untouched: `stale_writer` owns it.
         """
         writer = state.get("writer")
         if not writer or state.get("phase") == "done":
@@ -1026,12 +1031,12 @@ class Pilot:
                 continue
             pane = info.get("pane")
             if pane and self.visibly_busy(pane):
-                # Занятый композер — работа, а не молчание: то же правило,
-                # что у писателя в stale_writer.
+                # A busy composer is work, not silence: the same rule as the writer’s
+                # in stale_writer.
                 continue
             if self.unread(state, role) > 0:
-                # Почта разбудит свой путь (unread_peers), второй толчок
-                # тем же текстом — спам.
+                # Mail wakes its own path (unread_peers); a second push with
+                # the same text is spam.
                 continue
             age = self.role_seen_age(info)
             if age < self.silence:
@@ -1039,28 +1044,28 @@ class Pilot:
             key = f"stale-role-{state.get('round')}-{role}"
             if not self.remember(key, ttl=self.silence * 2):
                 continue
-            text = (f"[pairpilot] Ты молчишь {int(age // 60)} минут и у тебя нет "
-                    f"входящих, фаза {state.get('phase')!r}, писатель {writer}. "
-                    f"Вызови pair_digest: там задача раунда и что уже сделано. "
-                    f"Бери следующий кусок или пиши в заметку, чем заблокирован — "
-                    f"«делаю» не считается, нужен шаг или явная блокировка.")
-            self.mark_wake(state, role, f"молчит {int(age // 60)} мин без входящих", text)
+            text = (f"[pairpilot] You are silent {int(age // 60)} minutes with no "
+                    f"incoming, phase {state.get('phase')!r}, writer {writer}. "
+                    f"Call pair_digest: the round task and what is done live there. "
+                    f"Take the next chunk or write to the note what blocks you — "
+                    f"“doing” does not count, a step or an explicit block is needed.")
+            self.mark_wake(state, role, f"silent {int(age // 60)} min with no incoming", text)
             self.enqueue(role, text)
             self.store.append_transcript("pilot_idle_role", "pairpilot", target=role,
                                          minutes=int(age // 60))
-            log(f"{role} молчит {int(age // 60)} мин без входящих — толкаю сразу")
+            log(f"{role} silent {int(age // 60)} min with no incoming — pushing at once")
 
     def check_stalled_busy(self, state: dict) -> None:
-        """Детекция зависшего агента в состоянии 'Working...' (> stall_timeout zero-delta).
+        """Stuck-agent detection in ‘Working...’ state (> stall_timeout zero-delta).
 
-        Агент, зависший на стриме API (timeout) или раздутом контексте (>75%),
-        показывает спиннер, из-за чего visibly_busy() считает его работающим.
-        Если экран не меняется дольше stall_timeout, отправляем Escape, ждём ввода
-        и выполняем /compact с фиксацией в журнале и заметках.
+        An agent stuck on an API stream (timeout) or a bloated context (>75%)
+        shows the spinner, so visibly_busy() counts it as working. If the screen
+        stays unchanged past stall_timeout, send Escape, wait for input,
+        and run /compact, logging to the journal and notes.
         """
         if self.tmux is None:
             return
-        # Не компактаем во время запечатанных патчей (риск прервать review/apply)
+        # No compacting amid sealed patches (risk of interrupting review/apply)
         for _p, rec in (state.get("patches") or {}).items():
             if rec.get("sealed") and not rec.get("applied"):
                 return
@@ -1097,7 +1102,7 @@ class Pilot:
                 continue
 
             compact_ok = self.supports_compact(role)
-            log(f"{role}: завис в Working... {int(stalled_duration)}с (zero-delta) — шлю Escape" + (" и /compact" if compact_ok else " (CLI не понимает /compact — только Escape)"))
+            log(f"{role}: stuck in Working... {int(stalled_duration)}with (zero-delta) — sending Escape" + (" and /compact" if compact_ok else " (CLI has no /compact — Escape only)"))
             try:
                 subprocess.run([self.tmux, "send-keys", "-t", pane, "Escape"],
                                capture_output=True, text=True, timeout=5)
@@ -1105,7 +1110,7 @@ class Pilot:
                 if compact_ok:
                     deliver(pane, "/compact", wait_for_empty=3.0, submit=True)
             except Exception as exc:  # noqa: BLE001
-                log(f"{role}: авто-компакт не удался: {exc}")
+                log(f"{role}: auto-compact failed: {exc}")
                 continue
 
             self._screen_hashes.pop(role, None)
@@ -1114,20 +1119,20 @@ class Pilot:
             self.store.append_transcript("pilot_auto_compact", "pairpilot",
                                          target=role, reason="stalled_busy",
                                          duration_seconds=int(stalled_duration))
-            # Фиксация инцидента в заметках
+            # Recording the incident in notes
             try:
                 notes_dir = self.state_dir / "notes"
                 notes_dir.mkdir(parents=True, exist_ok=True)
                 note_file = notes_dir / "fix.md"
                 with note_file.open("a", encoding="utf-8") as f:
                     f.write(f"\n## {now_iso()} — pairpilot\n\n"
-                            f"Smart Auto-Compact: {role} завис в 'Working...' на "
-                            f"{int(stalled_duration)}с без изменения экрана. Отправлен Escape + /compact.\n")
+                            f"Smart Auto-Compact: {role} stuck in ‘Working...’ for "
+                            f"{int(stalled_duration)}with no screen change. Sent Escape + /compact.\n")
             except OSError:
                 pass
 
     def preventive_compact(self, state: dict) -> None:
-        """Превентивный /compact для живых ролей при phase == 'done'."""
+        """Preventive /compact for live roles at phase == ‘done’."""
         if state.get("phase") != "done" or self.tmux is None:
             return
         round_num = state.get("round", 0)
@@ -1143,7 +1148,7 @@ class Pilot:
                 continue
             try:
                 if not self.supports_compact(role):
-                    log(f"{role}: превентивный /compact пропущен — CLI его не понимает")
+                    log(f"{role}: preventive /compact skipped — the CLI has none")
                     continue
                 line = composer_line(capture(self.tmux, pane))
                 if line is not None and is_composer_empty(line):
@@ -1151,17 +1156,17 @@ class Pilot:
                     self.store.append_transcript("pilot_auto_compact", "pairpilot",
                                                  target=role, reason="preventive_done",
                                                  round=round_num)
-                    log(f"{role}: превентивный /compact на фазе done")
+                    log(f"{role}: preventive /compact at done phase")
             except Exception as exc:  # noqa: BLE001
-                log(f"{role}: превентивный компакт не удался: {exc}")
+                log(f"{role}: preventive compact failed: {exc}")
 
     def check_server_freshness(self, state: dict) -> None:
-        """Проверить свежесть MCP-сервера и зафиксировать в транскрипте при устаревании.
+        """Check MCP server freshness and log to the transcript when stale.
 
-        Осознанно работает и в припаркованном done: устаревший сервер замораживает
-        фазовые переходы (assert_server_fresh), и молчание о нём стоило бы дороже
-        сэкономленных токенов. Авторесета нет: MCP-серверы спавнит клиент
-        (`opencode serve --service`), пилот умеет только предупреждать.
+        Deliberately runs in parked done too: a stale server freezes phase
+        transitions (assert_server_fresh), and silence about it would cost more
+        than the saved tokens. No auto-reset: MCP servers are spawned by the
+        client (`opencode serve --service`); the pilot can only warn.
         """
         try:
             import server_freshness
@@ -1173,17 +1178,17 @@ class Pilot:
                         "pilot_server_stale", "pairpilot",
                         newest_file=verdict.get("newest_code_file"),
                         lag_seconds=int(verdict.get("lag_seconds", 0)),
-                        note="MCP-сервер в памяти исполняет устаревший код; требуется перезапуск"
+                        note="MCP server in memory runs stale code; restart required"
                     )
-                    log(f"ВНИМАНИЕ: MCP-сервер устарел ({verdict.get('why')})")
+                    log(f"WARNING: MCP server is stale ({verdict.get('why')})")
         except Exception:  # noqa: BLE001
             pass
 
     def pending_answers(self, state: dict) -> None:
-        """Отправили запрос, ответа нет. Это хуже молчания: молчание может означать
-        «работаю», а отсутствие ответа на конкретный вопрос — что вопрос умер в
-        ящике. Сначала дёргаем того, кому отвечать: обычно он просто не дочитал.
-        Потом, если молчит и автор, — того, кто ждёт."""
+        """A request was sent, no answer came. Worse than silence: silence may mean
+        "working", but no answer to a concrete question means the question died
+        in the box. First nudge the one who owes the answer: usually it just
+        went unread. Then, if the author is silent too — the one who waits."""
         root = self.state_dir / "obligations"
         if not root.is_dir():
             return
@@ -1205,36 +1210,36 @@ class Pilot:
             if receiver and age >= self.reply_grace and receiver not in self.skip:
                 key = f"reply-{seq}-{receiver}"
                 if self.remember(key, ttl=self.reply_repeat):
-                    text = (f"[pairpilot] {sender} ждёт ответа на запрос {seq} "
-                            f"уже {int(age // 60)} мин{f': {subject}' if subject else ''}. "
-                            f"Это запрос с expects_reply, а ответа в его почте нет. "
-                            f"Ответь или скажи, что он больше не нужен.")
+                    text = (f"[pairpilot] {sender} waits for an answer to request {seq} "
+                            f"already {int(age // 60)} min{f': {subject}' if subject else ''}. "
+                            f"This is a request with expects_reply, and its mailbox holds no answer. "
+                            f"Answer it or say it is no longer needed.")
                     self.enqueue(receiver, text)
-                    log(f"{receiver} не ответил на запрос {seq} от {sender} "
-                        f"({int(age // 60)} мин)")
+                    log(f"{receiver} did not answer request {seq} from {sender} "
+                        f"({int(age // 60)} min)")
 
             if sender and age >= self.reply_hard and sender not in self.skip:
                 key = f"waiting-{seq}-{sender}"
                 if self.remember(key, ttl=self.reply_repeat):
-                    text = (f"[pairpilot] Ты ждёшь ответа на запрос {seq} от {receiver} "
-                            f"уже {int(age // 60)} мин{f': {subject}' if subject else ''}. "
-                            f"Ответа нет. Не жди вечно: сделай следующий шаг сам, "
-                            f"запиши в заметку, что запрос завис без ответа, и двигайся дальше.")
+                    text = (f"[pairpilot] You wait for an answer to request {seq} from {receiver} "
+                            f"already {int(age // 60)} min{f': {subject}' if subject else ''}. "
+                            f"No answer. Do not wait forever: take the next step yourself, "
+                            f"note that the request hung unanswered, and move on.")
                     self.enqueue(sender, text)
-                    log(f"{sender} ждёт ответа на запрос {seq} уже {int(age // 60)} мин")
+                    log(f"{sender} waits for an answer to request {seq} already {int(age // 60)} min")
 
     def live_project_panes(self, state: dict, role: str = "") -> list[str]:
-        """Живые панели этого проекта, не занятые ролями — кандидаты для wake.
+        """Live panes of this project, unclaimed by roles — wake candidates.
 
-        Ростер знает только записанные панели, а агент мог открыть терминал
-        внутри проекта мимо него (критик seq 381: pane None в ростере при
-        живых панелях с cwd проекта). Ищем напрямую через list-panes
-        и доказываем принадлежность через panes-модуль, а не строкой.
+        The roster knows only recorded panes, but an agent may open a terminal
+        inside the project past it (critic seq 381: pane None in the roster with
+        live project-cwd panes). Search directly via list-panes and prove
+        membership via the panes module, not by string.
 
-        Усыновляем только панель с живым server.py роли (первый фактор),
-        cwd — второй: иначе пилот прописал бы роль в шелл человека,
-        открытый в проекте (вердикт раунда 33). Панель из pane_provisional
-        роли — первая в очереди: её уже видел сервер, факторы перепроверяем.
+        Adopt only a pane with the role’s live server.py (first factor),
+        cwd second: otherwise the pilot would register the role into the human’s
+        shell open in the project (round-33 verdict). A pane from pane_provisional
+        of the role goes first in line: the server already saw it, factors rechecked.
         """
         if self.tmux is None:
             return []
@@ -1268,9 +1273,8 @@ class Pilot:
         return found
 
     def dead_pane(self, state: dict) -> None:
-        """Окно агента исчезло. Подтолкнуть нечем — это тот случай, где человек
-        нужен по-настоящему. Но сказать об этом надо громко и один раз, а не
-        оставлять догадываться."""
+        """The agent window is gone. Nothing to push with — the case where a human
+        is truly needed. But say it loudly and once, not left to guess."""
         if self.tmux is None:
             return
         for role, info in (state.get("roles") or {}).items():
@@ -1278,16 +1282,16 @@ class Pilot:
             if role in self.skip:
                 continue
             if not pane:
-                # Ростер без панели, но процесс роли может жить в панели:
-                # TMUX_PANE в окружении MCP-сервера бывает пуст. Обратный путь
-                # по pid из ростера — и запись чинится, будить снова есть куда.
+                # A roster with no pane, but the role process may live in a pane:
+                # TMUX_PANE in the MCP server environment is sometimes empty. The reverse path
+                # by roster pid — and the record heals, somewhere to wake again.
                 healed = ""
                 pid = info.get("pid")
                 if isinstance(pid, int) and pid > 0 and is_pid_alive(pid):
                     healed = find_pane_of_pid(self.tmux, pid)
                 if not healed:
-                    # pid не помог, но агент мог открыть терминал внутри проекта
-                    # мимо ростера: первая свободная панель с его server.py.
+                    # pid did not help, but the agent may have opened a terminal inside the project
+                    # past the roster: the first free pane running its server.py.
                     live = self.live_project_panes(state, role)
                     healed = live[0] if live else ""
                 if healed:
@@ -1296,11 +1300,11 @@ class Pilot:
                     self.store.mutate(heal)
                     self.store.append_transcript("pilot_pane_healed", "pairpilot",
                                                  target=role, pane=healed)
-                    log(f"{role}: панель {healed} найдена в проекте — чиню ростер")
+                    log(f"{role}: pane {healed} found in the project — healing the roster")
                     continue
                 if self.remember(f"nopane-{role}"):
                     self.store.append_transcript("pilot_pane_missing", "pairpilot", target=role)
-                    log(f"{role}: панели нет, он вне tmux — подтолкнуть нечем")
+                    log(f"{role}: no pane, it is outside tmux — nothing to push with")
                 continue
             if pane_alive(self.tmux, pane):
                 continue
@@ -1308,28 +1312,28 @@ class Pilot:
             if not self.remember(key):
                 continue
             self.store.append_transcript("pilot_pane_dead", "pairpilot", target=role, pane=pane)
-            log(f"{role}: панель {pane} мертва — нужно открыть окно")
+            log(f"{role}: pane {pane} is dead — a window must be opened")
 
     # -------------------------------------------------------------- restart
 
     def restart_agent(self, state: dict) -> None:
-        """Перезапустить агента, процесс которого умер, а окно ещё живо.
+        """Restart an agent whose process died while its window stays alive.
 
-        Именно этот случай стоил нам ночи: pid GONE, а запись в ростере живёт
-        часами, потому что перезапускать некому и сказать некому.
+        Exactly this case cost us a night: pid GONE, but the roster entry lives
+        for hours because nobody restarts and nobody tells.
 
-        Чего перезапуск НЕ делает, хотя мог бы, и почему:
+        What a restart does NOT do, though it could, and why:
 
-        - не трогает право записи. Роль возвращается с тем же именем из
-          MCP-конфига, а писателем остаётся тот, кого назначил человек. Это и
-          делает перезапуск безопасным: он чинит процесс, а не границу доверия
-          (PROTOCOL.md §2). Авторитет по-прежнему двигает только человек;
-        - не поднимает панель, которой нет. Окно, закрытое человеком, не
-          resurrected'ится молча: это не зависание, это решение, и решение
-          человека;
-        - не трогает живой процесс, даже если тот молчит. Молчание лечится
-          напоминанием, смерть — перезапуском. Смешивать их нельзя: убитый
-          сосед не потеряет контекст, а занятый работой — потеряет.
+        - never touches write authority. The role returns with the same name from
+          the MCP config, and the writer stays whoever the human named. That is
+          what makes restarts safe: they fix the process, not the trust boundary
+          (PROTOCOL.md §2). Only a human still moves authority;
+        - never raises a pane that is gone. A window closed by the human is not
+          resurrected quietly: that is not a hang, that is a decision, and the human's
+          decision;
+        - never touches a live process, even a silent one. Silence is cured by
+          a nudge, death by a restart. Never mix them: a killed neighbour loses
+          no context, a busy one does.
         """
         if self.tmux is None or autonomy(state) == "observe":
             return
@@ -1343,131 +1347,131 @@ class Pilot:
             if not pane or not pane_alive(self.tmux, pane):
                 if self.remember(f"restart-nopane-{role}"):
                     self.store.append_transcript("pilot_restart_impossible", "pairpilot",
-                                                 target=role, pid=pid, why="нет живой панели")
-                    log(f"{role}: процесс мёртв (pid {pid}), но окна нет — нужен человек")
+                                                 target=role, pid=pid, why="no live pane")
+                    log(f"{role}: process dead (pid {pid}), but no window — a human is needed")
                 continue
-            # Панель могла достаться роли по наследству: запись агента осталась, а
-            # сидит там уже кто-то живой. Стучаться в чужое окно бессмысленно —
-            # respawn без -k всё равно откажет, но лишний шум в журнале хуже.
+            # The pane may have reached the role by inheritance: the agent record stayed, but
+            # someone live already sits there. Knocking on another window is pointless —
+            # respawn without -k refuses anyway, but extra journal noise is worse.
             #
-            # Проверка идёт ПЕРЕД обновлением pid, и порядок здесь не вкус: если
-            # спросить про панель раньше, то у чужой роли найдётся её живой pid,
-            # и мы запишем его в запись ЭТОЙ роли. Две записи об одном процессе —
-            # это ровно то состояние, из которого ростер потом не разберётся, кто
-            # где сидит.
+            # The check runs BEFORE the pid update, and the order is not taste: if the
+            # pane were asked about first, another role would yield its live pid,
+            # and we would record it into THIS role’s entry. Two entries on one process —
+            # exactly the state the roster later cannot resolve into who sits where.
+            # sits where.
             squatter = self.pane_occupied_by_other(state, role, pane)
             if squatter:
                 if self.remember(f"restart-squat-{role}-{pane}"):
                     self.store.append_transcript("pilot_restart_impossible", "pairpilot",
                                                  target=role, pid=pid, pane=pane,
-                                                 why=f"панель занята живой ролью {squatter}")
-                    log(f"{role}: панель {pane} занята живой ролью {squatter} — не трогаю")
+                                                 why=f"pane held by live role {squatter}")
+                    log(f"{role}: pane {pane} held by live role {squatter} — leaving alone")
                 continue
-            # Панель жива, а роль в записи мертва — но это ещё не значит, что роль
-            # упала. Номер `%N` и вообще адрес панели переживают смерть процесса,
-            # который её занимал, а роль могла перезапуститься сама: тогда в панели
-            # есть живой агент, а pid в ростере устарел. Пытаться в этом состоянии
-            # поднять роль — значит убить живого агента вместе с его контекстом.
+            # A live pane with a dead record role does not yet mean the role fell.
+            # A `%N` number — or any pane address — outlives the death of the process
+            # that held it, and the role may have restarted itself: then the pane holds
+            # a live agent while the roster pid is stale. Trying to raise the role in
+            # this state means killing a live agent with its context.
             #
-            # Здесь была причина 21 попытки перезапуска живой панели за ночь: pid
-            # протух, панель жива, а роль цела. Лечится не перезапуском, а
-            # обновлением pid из панели — это и есть «живость по панели».
+            # This was the cause of 21 restarts of a live pane in one night: the pid
+            # went stale, the pane stayed alive, the role unharmed. Cured not by restart
+            # but by refreshing the pid from the pane — that is “liveness by pane”.
             #
-            # Обновление идемпотентно и по гонке тоже: если роль перезапустилась
-            # между чтением состояния и записью, `remember` уже отработал по старому
-            # pid, а следующий тик увидит живой pid и ничего не сделает.
+            # The refresh is idempotent, and under races too: if the role restarted
+            # between the state read and the write, `remember` already fired on the old
+            # pid, and the next tick sees a live pid and does nothing.
             occupant = self.pane_occupant(role, pane)
             if occupant:
                 if self.remember(f"refresh-{role}-{pid}"):
                     self.store.append_transcript("pilot_pid_stale_pane_alive", "pairpilot",
                                                  target=role, pane=pane, pid=pid,
                                                  live_pid=occupant,
-                                                 why="pid в ростере протух, в панели живой процесс")
+                                                 why="roster pid went stale, the pane runs a live process")
                     self.store.mutate(lambda s, r=role, p=occupant: s.setdefault("roles", {})
                                       .setdefault(r, {}).update({"pid": p}))
-                    log(f"{role}: pid {pid} протух, в панели {pane} живёт {occupant} — "
-                        f"обновил запись, перезапуск не нужен")
+                    log(f"{role}: pid {pid} went stale, the pane runs {pane} live: {occupant} — "
+                        f"record refreshed, no restart needed")
                 continue
             command = self.launch_command(role)
             if not command:
                 if self.remember(f"restart-nocmd-{role}"):
                     self.store.append_transcript("pilot_restart_impossible", "pairpilot",
-                                                 target=role, pid=pid, why="не знаю команды запуска")
-                    log(f"{role}: процесс мёртв, а команды запуска я не знаю — скажи "
-                        f"pairpilot --launch {role}='команда' или допиши в .pair/restart.json")
+                                                 target=role, pid=pid, why="no launch command known")
+                    log(f"{role}: process dead, and I know no launch command — tell "
+                        f"pairpilot --launch {role}='command' or append to .pair/restart.json")
                 continue
-            # Два ограничения, и оба нужны. Отметка по pid не даёт трогать один
-            # и тот же упавший процесс снова. Но её одной НЕ хватает: если
-            # команда запуска неверна, процесс умирает с новым pid, отметка
-            # каждый раз новая, и при интервале 15 секунд это бесконечный цикл.
-            # Потолок в окне не зависит от pid вообще и останавливает именно его.
+            # Two limits, and both are needed. The pid mark stops touching the same
+            # fallen process again. But it alone is NOT enough: if the launch
+            # command is wrong, the process dies with a new pid, the mark is
+            # new every time, and at a 15-second interval that is an endless loop.
+            # The window ceiling ignores pid entirely and stops exactly that.
             if not self.remember(f"restart-{role}-{pid}-{state.get('round')}"):
                 continue
             if not self.restart_allowed(role):
                 self.store.append_transcript(
                     "pilot_restart_throttled", "pairpilot", target=role, pane=pane, pid=pid,
                     command=self.launch_command(role),
-                    reason=f"{self.restart_limit} перезапусков за {int(self.restart_window / 60)} мин")
-                log(f"{role}: перезапуск приостановлен — {self.restart_limit} попыток за "
-                    f"{int(self.restart_window / 60)} мин. Похоже, команда запуска неверна: "
-                    f"{self.launch_command(role)!r}. Ждёт человек.")
+                    reason=f"{self.restart_limit} restarts in {int(self.restart_window / 60)} min")
+                log(f"{role}: restart paused — {self.restart_limit} attempts in "
+                    f"{int(self.restart_window / 60)} min. The launch command looks wrong: "
+                    f"{self.launch_command(role)!r}. Waiting on the human.")
                 continue
             self.note_restart(role)
             result = subprocess.run(
-                # Без -k. tmux отказывается перезапускать живую панель, и это
-                # ровно то, что нужно: если после смерти агента в панели открыт
-                # шелл или отладчик, он принадлежит человеку, и -k его убивал бы.
-                # Перезапуск срабатывает только там, где панель действительно мертва,
-                # а занятую панель мы оставляем человеку с записью в транскрипт.
+                # Without -k. tmux refuses to restart a live pane, and that is
+                # exactly what is wanted: if the dead agent’s pane holds a shell
+                # or a debugger, it belongs to the human, and -k would kill it.
+                # A restart fires only where the pane is truly dead, and a held
+                # pane is left to the human with a transcript record.
                 [self.tmux, "respawn-pane", "-t", pane, command],
                 capture_output=True, text=True, timeout=15)
             if result.returncode == 0:
                 self.store.append_transcript("pilot_restart", "pairpilot", target=role,
                                              pane=pane, pid=pid, command=command)
-                # Перезапуск поднимает процесс, а не память: у вернувшейся роли
-                # нет ни задачи, ни истории раунда. Команда запуска в профилях —
-                # «agy», «claude» — без --resume, и подробности того, как
-                # продолжить сессию, не знает никто, кроме человека.
+                # A restart raises a process, not memory: the returned role has
+                # neither the task nor the round history. The launch command in profiles —
+                # "agy", "claude" — with no --resume, and how to continue the
+                # session nobody knows but the human.
                 #
-                # Поэтому оставляем записку, а не угадываем флаг: она указывает
-                # на журнал задач, где написано, что осталось. Работает с любым
-                # CLI и не требует от профиля знания протокола.
+                # So leave a note, not a guessed flag: it points at the task journal,
+                # where the remainder is written. Works with any CLI and needs no
+                # protocol knowledge from the profile.
                 note = self.state_dir / "notes" / f"pilot-restart-{role}.md"
                 try:
                     note.parent.mkdir(parents=True, exist_ok=True)
                     note.write_text(
-                        f"# Перезапуск роли {role}\n\n"
-                        f"Процесс {pid} был мёртв, роль поднята заново в {pane}.\n"
-                        f"Контекста раунда у тебя нет — это цена перезапуска.\n\n"
-                        f"Что делать: прочитай `.pair/tasks.md`. Там список задач, что\n"
-                        f"сделано, чем доказано и что осталось за открытыми пунктами.\n"
-                        f"Фаза раунда и писатель — в `pairctl status`.\n",
+                        f"# Restarting role {role}\n\n"
+                        f"Process {pid} was dead, the role is raised anew in {pane}.\n"
+                        f"You have no round context — that is the price of a restart.\n\n"
+                        f"What to do: read `.pair/tasks.md`. It lists the tasks, what\n"
+                        f"is proven done, and what stays behind the open items.\n"
+                        f"Round phase and writer live in `pairctl status`.\n",
                         encoding="utf-8")
                 except OSError as error:
                     self.store.append_transcript("pilot_restart_note_failed", "pairpilot",
                                                  target=role, error=str(error)[:120])
-                log(f"{role}: процесс {pid} был мёртв, перезапустил в {pane} ({command})")
-                writer = " — это писатель, фаза продолжится" if role == state.get("writer") else ""
+                log(f"{role}: process {pid} was dead, restarted in {pane} ({command})")
+                writer = " — it is the writer, the phase continues" if role == state.get("writer") else ""
                 if writer:
                     log(writer)
             else:
-                # Панель занята — почти всегда это человек или его шелл после
-                # падения агента. Говорим прямо, что это не зависание.
+                # A held pane is almost always the human or its shell after the
+                # agent fell. Say plainly that this is not a hang.
                 detail = (result.stderr or result.stdout or "").strip()[:120]
                 self.store.append_transcript("pilot_restart_failed", "pairpilot", target=role,
                                              pane=pane, pid=pid, command=command, why=detail)
-                log(f"{role}: перезапуск не удался — {detail or 'причина не названа'}")
+                log(f"{role}: restart failed — {detail or 'reason unnamed'}")
 
     def stalled_patches(self, state: dict) -> None:
-        """Sealed-патч, который никто не применил и не отклонил.
+        """A sealed patch nobody applied or rejected.
 
-        Дыра была структурной: `applied` записывался при резервировании и больше
-        никогда не менялся, так что «применён» и «лежит с прошлой ночи» выглядели
-        одинаково. Теперь применение фиксирует писатель, закрытие раунда требует
-        разобраться с каждым патчем, а сверхвизор говорит обеим сторонам.
+        The hole was structural: `applied` was written at reservation and never
+        changed again, so "applied" and "lying since last night" looked identical.
+        Now the writer records the application, round close requires settling
+        every patch, and the supervisor tells both sides.
 
-        Сам патч сверхвизор не применяет. Это правка файлов проекта не писателем,
-        то есть ровно тот обход §1, ради которого схема и выглядит надёжной.
+        The supervisor never applies the patch itself. That edits project files
+        as a non-writer — exactly the §1 bypass the scheme looks sound for.
         """
         if state.get("phase") == "done" or state.get("mode") == "audit":
             return
@@ -1486,31 +1490,31 @@ class Pilot:
                 if not self.remember(key):
                     continue
                 if name == writer:
-                    text = (f"[pairpilot] Патч {path} запечатан {owner}, sha256 "
-                            f"{record.get('sha256')} и до сих пор не применён. Проверь его "
-                            f"pair_patch_verify и либо примени и запиши pair_patch_applied, "
-                            f"либо отпусти через pair_patch_release с причиной: раунд не "
-                            f"закроется, пока это не решено.")
+                    text = (f"[pairpilot] Patch {path} sealed {owner}, sha256 "
+                            f"{record.get('sha256')} and still unapplied. Check it "
+                            f"with pair_patch_verify and either apply and record pair_patch_applied, "
+                            f"or release via pair_patch_release with a reason: the round "
+                            f"will not close until this is settled.")
                 else:
-                    text = (f"[pairpilot] Твой патч {path} запечатан и висит неприменённым. "
-                            f"Скажи соседу: он применён или отклонён, и запиши это через "
-                            f"pair_patch_applied либо pair_patch_release. Молчание здесь "
-                            f"выглядит как готовность, а её нет.")
+                    text = (f"[pairpilot] Your patch {path} is sealed and hangs unapplied. "
+                            f"Tell the neighbour: applied or rejected, and record it via "
+                            f"pair_patch_applied or pair_patch_release. Silence here "
+                            f"reads as readiness, and there is none.")
                 self.enqueue(name, text)
-                log(f"патч {path} висит неприменённым, {name} поставлен в известность")
+                log(f"patch {path} hangs unapplied, {name} is notified")
 
     def allowlist(self) -> list[str]:
-        """Белый список разрешений: явный аргумент, потом файл человека.
+        """Permission allowlist: explicit argument first, then the human file.
 
-        Файла нет — список по умолчанию, и это граница, которую задал человек:
-        внутри проекта можно всё, что нужно для работы, запрещено то, что вредит
-        системе, чужому проекту или необратимо стирает. Запреты проверяются первыми
-        и не отменяются настройкой.
+        No file means the default list, and that is a boundary the human set:
+        inside the project everything the work needs is allowed; what harms the
+        system, another project or wipes irreversibly is banned. Bans check first
+        and no setting overrides them.
 
-        Раньше здесь был пустой список, а пустой значил «не подтверждать ничего».
-        Файла `.pair/permissions.json` при этом не существовало, так что сверхвизор
-        не подтверждал ни одного промпта — и снаружи это выглядело как молчание
-        соседа, а не как отказ по настройке.
+        This used to be an empty list, and empty meant "confirm nothing".
+        But no `.pair/permissions.json` existed then, so the supervisor confirmed
+        not a single prompt — and from outside that looked like neighbour
+        silence, not a settings refusal.
         """
         if self.allow is not None:
             return self.allow
@@ -1523,10 +1527,10 @@ class Pilot:
         return patterns
 
     def note_default_allowlist(self) -> None:
-        """Сказать в журнал, что работа идёт на списке по умолчанию.
+        """Say into the journal that the work runs on the default list.
 
-    Один раз за процесс. Молча работать на дефолтном списке нельзя: человек,
-    читая журнал, должен видеть, каким правилом подтверждались его команды.
+    Once per process. Running silently on the default list is forbidden: the human
+    reading the journal must see which rule confirmed its commands.
     """
         if self._default_list_named:
             return
@@ -1536,19 +1540,18 @@ class Pilot:
             "pilot_default_allowlist", "pairpilot",
             patterns=len(DEFAULT_ALLOW_PATTERNS),
             file=str(permissions_path(self.state_dir)),
-            note="permissions.json не найден, работаю на списке по умолчанию; "
-                 "запреты §12 действуют независимо от него")
-        log("permissions.json не найден — работаю на списке по умолчанию "
-            f"({len(DEFAULT_ALLOW_PATTERNS)} шаблонов). Запреты §12 действуют всегда.")
+            note="permissions.json not found, running on the default list; "
+                 "\u00a712 bans hold regardless of it")
+        log("permissions.json not found — running on the default list "
+            f"({len(DEFAULT_ALLOW_PATTERNS)} patterns). \u00a712 bans always hold.")
 
     def unblock(self, state: dict) -> None:
-        """Агент стоит на [y/N]. До утра это выглядит как зависание, хотя всего
-        один Enter всё решил бы.
+        """The agent stands at [y/N]. Till morning that looks like a hang, though
+        a single Enter would settle it.
 
-        Но «один Enter» — это ещё и «y» на вопросе «rm -rf?». Поэтому
-        подтверждается только то, что попало в белый список, а по умолчанию он
-        состоит из чтения. Отказ — не ошибка, а результат: панель остаётся
-        заблокированной, и об этом должен узнать человек."""
+        But "a single Enter" is also "y" to "rm -rf?". So only allowlisted
+        things confirm, and by default it is reads. A refusal is not an error
+        but a result: the pane stays blocked, and the human must learn it."""
         if self.tmux is None or autonomy(state) == "observe":
             return
         allow = self.allow
@@ -1558,29 +1561,29 @@ class Pilot:
                 continue
             try:
                 result = resolve_permission_prompt(self.tmux, pane, allow=allow)
-            except Exception:  # noqa: BLE001 - сверхвизор не должен падать из-за панели
+            except Exception:  # noqa: BLE001 - the supervisor must not fall over a pane
                 continue
             prompt = result.get("prompt") or ""
             if result.get("approved"):
                 if self.remember(f"unblock-{role}-{stable_tag(prompt)}"):
                     self.store.append_transcript("pilot_unblock", "pairpilot", target=role,
                                                  prompt=prompt[:120], matched=result.get("matched"))
-                    log(f"{role}: подтвердил запрос разрешения — {prompt[:60]}")
+                    log(f"{role}: confirmed the permission request — {prompt[:60]}")
             elif result.get("verdict") == "refuse":
                 if self.remember(f"unblock-refused-{role}-{stable_tag(prompt)}"):
                     self.store.append_transcript("pilot_unblock_refused", "pairpilot", target=role,
                                                  prompt=prompt[:120], why=result.get("why"))
-                    log(f"{role}: НЕ подтвердил «{prompt[:50]}» — {result.get('why')}. Нужен человек.")
+                    log(f"{role}: did NOT confirm “{prompt[:50]}» — {result.get('why')}. A human is needed.")
 
     # ---------------------------------------------------------------- report
 
     def checkpoint(self, state: dict) -> None:
-        """Человеку нужен дайджест, а не вопрос из пустоты.
+        """The human needs a digest, not a question from the void.
 
-        В autonomy=semi закрыть раунд нельзя без `bin/pairctl ok`. Значит,
-        если этого слова нет, а раунд дошёл до проверки, человек должен получить
-        всё, что нужно для решения, и команду, которой это решается. Иначе
-        «полуавтомат» — это способность остановиться и ждать, ничего не говоря.
+        In autonomy=semi a round cannot close without `bin/pairctl ok`. So if
+        that word is missing while the round reached checks, the human must get
+        everything the decision needs, plus the command that decides it. Otherwise
+        "semi-auto" is the ability to stop and wait, saying nothing.
         """
         if autonomy(state) != "semi" or state.get("phase") != "verify":
             return
@@ -1592,25 +1595,25 @@ class Pilot:
             return
         path = self.outbox / f"checkpoint-{round_number}.md"
         lines = [
-            f"# Чекпоинт раунда {round_number}",
+            f"# Round checkpoint {round_number}",
             "",
-            f"- задача: {state.get('task') or 'НЕ ЗАДАЧЕНА'}",
-            f"- писатель: {state.get('writer') or 'НЕ НАЗНАЧЕН'}",
-            f"- режим раунда: {state.get('mode')}   автономность: semi",
+            f"- task: {state.get('task') or 'NOT SET'}",
+            f"- writer: {state.get('writer') or 'UNASSIGNED'}",
+            f"- round mode: {state.get('mode')}   autonomy: semi",
             "",
-            "## Что мешает закрыть раунд",
+            "## What blocks the round close",
             "",
         ]
         lines += [f"- {item}" for item in blockers]
         lines += [
             "",
-            "## Что сделать",
+            "## What to do",
             "",
-            "Прочитай это и одно слово в ответ:",
+            "Read this and answer with one word:",
             "",
             f"    bin/pairctl ok",
             "",
-            "Либо, если работа должна идти дальше без тебя до утра:",
+            "Or, if the work must run on without you till morning:",
             "",
             "    bin/pairctl autonomy auto",
             "",
@@ -1618,42 +1621,42 @@ class Pilot:
         path.write_text("\n".join(lines), encoding="utf-8")
         self.store.append_transcript("pilot_checkpoint", "pairpilot", round=round_number,
                                      path=str(path), blockers=len(blockers))
-        log(f"раунд {round_number} ждёт одного слова человека: {path}")
+        log(f"round {round_number} waits for one human word: {path}")
 
     def report_once(self, state: dict) -> None:
-        """Человек должен получить результат, а не молчание. Пишем отчёт в файл,
-        когда раунд закрыт; в консоль выводим путь."""
+        """The human must get the result, not silence. Write the report to a file
+        when the round closes; print the path to the console."""
         if state.get("phase") != "done" or not state.get("closed_at"):
             return
         key = f"report-{state.get('round')}"
         if not self.remember(key):
             return
         path = write_report(self.state_dir, state)
-        # Журнал сессии пишется рядом с отчётом: раунд закрыт — значит человек
-        # вернётся и захочет одним взглядом увидеть, что было заказано, что
-        # сделано и что осталось за открытыми задачами.
+        # The session journal is written next to the report: the round is closed, so the human
+        # will return and want to see at a glance what was ordered, what was done,
+        # and what stays behind the open tasks.
         journal = write_tasks_md(self.state_dir, state)
         self.store.append_transcript("pilot_report", "pairpilot", path=str(path),
                                      journal=str(journal))
-        log(f"раунд {state.get('round')} закрыт, отчёт: {path}, журнал: {journal}")
+        log(f"round {state.get('round')} closed, report: {path}, journal: {journal}")
 
     # ------------------------------------------------------------------ tick
 
     def tick(self) -> dict:
         state = self.state()
-        # Роли, сидящие на общей панели, неразличимы: в них не тыкаем.
+        # Roles sitting on a shared pane are indistinguishable: never poke them.
         self.skip = {role for names in self.shared_panes(state).values() for role in names}
-        # Свою панель не трогаем никогда: там ввод человека.
+        # Never touch our own pane: human input lives there.
         if self.own_pane:
             own_key = self.pane_key(self.own_pane)
             for role, info in (state.get("roles") or {}).items():
-                # Своя панель приходит из окружения как `%N`, а роль записана
-                # адресом сессии. Сравнение строк перестаёт срабатывать, и
-                # сверхвизор начинает вбивать сообщения в панель человека.
+                # Our own pane arrives from the environment as `%N`, but the role is recorded
+                # as a session address. String comparison stops working, and the supervisor
+                # starts typing messages into the human pane.
                 if self.pane_key(info.get("pane")) == own_key:
                     self.skip.add(role)
                     if self.remember(f"ownpane-{role}-{self.own_pane}"):
-                        log(f"{role} сидит в моей же панели {self.own_pane} — не трогаю её")
+                        log(f"{role} sits in my own pane {self.own_pane} — leaving it alone")
                         self.store.append_transcript("pilot_own_pane", "pairpilot",
                                                      target=role, pane=self.own_pane)
         self.ambiguous(state)
@@ -1662,10 +1665,10 @@ class Pilot:
         self.restart_agent(state)
         self.dead_pane(state)
         self.unread_peers(state)
-        # Опрос идёт ДО постановки новых пробуждений и до печати: у кого роль уже
-        # проснулась, пробуждение снимается молча, и в очередь печати не попадает
-        # ничего. Если бы опрос шёл после flush_outbox, то тик, в котором роль
-        # только что проснулась, всё равно напечатал бы в её композер.
+        # Polling runs BEFORE raising new wake-ups and before printing: whoever already
+        # woke has its wake-up dropped silently, and nothing lands in the print queue.
+        # If polling ran after flush_outbox, the tick where the role just woke would
+        # still print into its composer.
         self.poll_wakes(state)
         self.pending_answers(state)
         self.stalled_patches(state)
@@ -1682,18 +1685,18 @@ class Pilot:
 
 
 def _done_blockers(state: dict) -> list[str]:
-    """Что мешает закрыть раунд — тем же кодом, что и сервер.
+    """What blocks the round close — with the same code as the server.
 
-    Правило принадлежит серверу, и вторая его копия рано или поздно разошлась бы
-    с первой: человек получил бы отчёт «всё хорошо» от одной стороны и отказ от
-    другой. Поэтому сверхвизор не переписывает правило, а спрашивает его у того,
-    кто его применяет.
+    The rule belongs to the server, and a second copy would sooner or later drift
+    from the first: the human would get an "all good" report from one side and
+    a refusal from the other. So the supervisor never rewrites the rule but asks
+    whoever applies it.
     """
     return done_blockers(state)
 
 
 def write_report(state_dir: Path, state: dict) -> Path:
-    """Один экран для человека: что сделано, чем это доказано и что НЕ покрыто."""
+    """One screen for the human: what is done, what proves it, and what is NOT covered."""
     transcript = state_dir / "transcript.jsonl"
     events: list[dict] = []
     if transcript.exists():
@@ -1726,18 +1729,18 @@ def write_report(state_dir: Path, state: dict) -> Path:
             notes.append(f"- {path.stem}: {head}")
 
     lines = [
-        f"# Отчёт по раунду {state.get('round')}",
+        f"# Round report {state.get('round')}",
         "",
-        f"- задача: {state.get('task') or 'НЕ ЗАДАЧЕНА'}",
-        f"- фаза: {state.get('phase')}   режим: {state.get('mode')}   автономность: {autonomy(state)}",
-        f"- писатель: {state.get('writer') or 'НЕ НАЗНАЧЕН'}",
+        f"- task: {state.get('task') or 'NOT SET'}",
+        f"- phase: {state.get('phase')}   mode: {state.get('mode')}   autonomy: {autonomy(state)}",
+        f"- writer: {state.get('writer') or 'UNASSIGNED'}",
         "",
-        "## Задачи: готово / не готово",
+        "## Tasks: done / not done",
         "",
     ]
     task_items = tasks_of(state)
     if task_items:
-        marks = {"open": "НЕ СДЕЛАНО", "done": "сделано", "dropped": "брошено"}
+        marks = {"open": "NOT DONE", "done": "done", "dropped": "dropped"}
         for item in task_items:
             line = f"- #{item.get('id')} {marks.get(item.get('status'), '?')}: " \
                    f"{str(item.get('text'))[:90]}"
@@ -1746,12 +1749,12 @@ def write_report(state_dir: Path, state: dict) -> Path:
             lines.append(line)
         unclosed = [i["id"] for i in task_items if i.get("status") == "open"]
         if unclosed:
-            lines += ["", f"РАУНД НЕ ЗАКРЫТ: открытые задачи {', '.join(f'#{i}' for i in unclosed)}"]
+            lines += ["", f"ROUND OPEN: open tasks {', '.join(f'#{i}' for i in unclosed)}"]
     else:
-        lines.append("- задач не заведено")
+        lines.append("- no tasks filed")
     lines += [
         "",
-        "## Доказательства этого раунда",
+        "## This round’s evidence",
         "",
     ]
     if evidence:
@@ -1759,52 +1762,52 @@ def write_report(state_dir: Path, state: dict) -> Path:
             mark = "OK " if item.get("ok") else "FAIL"
             lines.append(f"- {mark} {item.get('kind')} [{item.get('role')}] {item.get('value')}")
     else:
-        lines.append("- НИ ОДНОГО. Раунд закрыт без единого машинного факта.")
+        lines.append("- NONE. The round closed without a single machine fact.")
     lines += [
         "",
-        "## Что в транскрипте",
+        "## In the transcript",
         "",
     ]
     for kind, count in sorted(kinds.items(), key=lambda kv: -kv[1]):
         lines.append(f"- {kind}: {count}")
     lines += [
         "",
-        f"Отказов и потерянных доставок: {refused}.",
-        f"Разрешений НЕ подтверждено автоматически: {denied}.",
-        f"Перезапущено упавших агентов: {restarted}.",
+        f"Refusals and lost deliveries: {refused}.",
+        f"Permissions NOT self-confirmed: {denied}.",
+        f"Restarted fallen agents: {restarted}.",
         "",
-        "## Чего этот отчёт НЕ доказывает",
+        "## What this report does NOT prove",
         "",
-        "- что код правильный: доказывают тесты, а не заметки;",
-        "- что всё в задаче сделано: сверхвизор видит события, а не смысл работы.",
+        "- that the code is right: tests prove it, not notes;",
+        "- that all the task is done: the supervisor sees events, not work meaning.",
         "",
-        "## НЕ ПОКРЫТО",
+        "## NOT COVERED",
         "",
     ]
     if stalled:
-        lines.append("Sealed-патчи без применения и без отклонения:")
+        lines.append("Sealed patches with no apply and no reject:")
         lines += [f"- {path}" for path in stalled]
     else:
-        lines.append("- sealed-патчей без применения нет.")
+        lines.append("- no unapplied sealed patches.")
     if dropped:
-        lines.append(f"Отклонённые патчи (сознательно снятые): {len(dropped)}")
+        lines.append(f"Rejected patches (deliberately dropped): {len(dropped)}")
     if restarts_blocked:
-        lines.append("Перезапуск не состоялся, нужен человек:")
+        lines.append("Restart never happened, a human is needed:")
         lines += [f"- {event.get('target')}: {event.get('why')}" for event in restarts_blocked]
     if denied:
-        lines.append("Запросы разрешения, оставленные человеку:")
+        lines.append("Permission requests left to the human:")
         lines += [f"- {event.get('target')}: {event.get('why')}"
                   for event in events if event.get("kind") in ("pilot_unblock_refused", "unblock_refused")]
     if state.get("phase") != "done":
         blockers = _done_blockers(state)
-        lines.append("Что мешает закрыть раунд:")
-        lines += [f"- {item}" for item in blockers] or ["- ничего"]
+        lines.append("What blocks the round close:")
+        lines += [f"- {item}" for item in blockers] or ["- nothing"]
     lines += [
         "",
-        "## Последние заметки",
+        "## Latest notes",
         "",
     ]
-    lines += notes or ["- нет"]
+    lines += notes or ["- none"]
     lines += [""]
     out = state_dir / "REPORT.md"
     out.write_text("\n".join(lines), encoding="utf-8")
@@ -1812,12 +1815,12 @@ def write_report(state_dir: Path, state: dict) -> Path:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Сверхвизор парной работы")
+    parser = argparse.ArgumentParser(description="Pair-work supervisor")
     parser.add_argument("--state", default=os.environ.get("PAIR_STATE", ".pair"))
     parser.add_argument("--interval", type=float, default=DEFAULT_INTERVAL)
     parser.add_argument("--silence", type=float, default=DEFAULT_SILENCE)
     parser.add_argument("--outbox-ttl", type=float, default=DEFAULT_OUTBOX_TTL,
-                        help="сколько секунд отложенное напоминание может ждать композер")
+                        help="how many seconds a queued nudge may wait for the composer")
     parser.add_argument("--reply-grace", type=float, default=DEFAULT_REPLY_GRACE,
                         help="seconds before the recipient of a request is poked")
     parser.add_argument("--reply-hard", type=float, default=DEFAULT_REPLY_HARD,
@@ -1839,7 +1842,7 @@ def main() -> int:
                              "list. Empty means confirm nothing.")
     parser.add_argument("--stall-timeout", type=float, default=DEFAULT_STALL_TIMEOUT,
                         help="seconds an agent may stay busy with identical screen before auto-compact")
-    parser.add_argument("--once", action="store_true", help="один проход и выход")
+    parser.add_argument("--once", action="store_true", help="single pass and exit")
     args = parser.parse_args()
 
     launch: dict[str, str] = {}
@@ -1848,7 +1851,7 @@ def main() -> int:
         if role.strip() and command.strip():
             launch[role.strip()] = command.strip()
         else:
-            print(f"pairpilot: --launch ждёт ROLE=CMD, получено {item!r}", file=sys.stderr)
+            print(f"pairpilot: --launch expects ROLE=CMD, got {item!r}", file=sys.stderr)
             return 2
     allow = load_allow_patterns(args.allow)[0] if args.allow else None
 
@@ -1862,16 +1865,16 @@ def main() -> int:
 
     if args.once:
         state = pilot.tick()
-        log(f"проход сделан: фаза={state.get('phase')} писатель={state.get('writer')}")
+        log(f"pass done: phase={state.get('phase')} writer={state.get('writer')}")
         return 0
 
-    log(f"сверхвизор на {state_dir}, порог молчания {int(args.silence)} с, Ctrl-C выход")
+    log(f"supervisor on {state_dir}, silence threshold {int(args.silence)} s, Ctrl-C exits")
     try:
         while True:
             pilot.tick()
             time.sleep(args.interval)
     except KeyboardInterrupt:
-        log("выход")
+        log("exit")
     return 0
 
 

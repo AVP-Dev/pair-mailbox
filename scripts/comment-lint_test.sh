@@ -1,18 +1,18 @@
 #!/usr/bin/env bash
 #
-# comment-lint_test.sh — проверки договора о комментариях.
+# comment-lint_test.sh — the comment-contract checks.
 #
-# Гейт стоит на пути к каждому коммиту, поэтому тестируется строго:
-# не «скрипт запускается», а «каждый его отказ срабатывает по назначению».
-# Молчаливый гейт хуже отсутствующего.
+# The gate stands on the path to every commit, testing strict:
+# not "the script launches" but "every refusal fires as intended".
+# A silent gate reads worse than a missing one.
 #
-# Тест гоняет сам скрипт (COMMENT_LINT_ROOT на изолированный git-корень),
-# а не дубликат его паттерна: дубликат расходится с оригиналом при первой
-# же правке, и тест проверяет уже не гейт. Каждый кейс идёт под C и под
-# UTF-8 — кириллица обязана ловиться в обеих (скрипт пинит LC_ALL сам,
-# тест это доказывает, а не предполагает).
+# The test runs the script itself (COMMENT_LINT_ROOT on an isolated git root),
+# never a duplicate of its pattern: the duplicate drifts from the original on the
+# very first edit, testing no longer the gate. Every case runs under C and under
+# UTF-8 — Cyrillic must catch in both (the script pins LC_ALL itself, proven by
+# the test, never assumed).
 #
-# Запуск: bash scripts/comment-lint_test.sh
+# Run: bash scripts/comment-lint_test.sh
 
 set -euo pipefail
 
@@ -28,7 +28,7 @@ fail() {
   exit 1
 }
 
-# Изолированный git-корень с одним файлом f.py.
+# An isolated git root with one f.py file.
 fresh_root() {
   rm -rf "$TMP_ROOT/case"
   mkdir -p "$TMP_ROOT/case"
@@ -37,26 +37,26 @@ fresh_root() {
   (cd "$TMP_ROOT/case" && git add f.py)
 }
 
-# Слоп ловится: скрипт краснеет под обеими локалями.
+# Slop catches: the script reddens under both locales.
 check_slop() {
   for loc in C C.utf8; do
     fresh_root "$1"
     if COMMENT_LINT_ROOT="$TMP_ROOT/case" LC_ALL="$loc" bash "$LINT" >/dev/null 2>&1; then
-      fail "слоп не пойман [$loc]: $1"
+      fail "slop missed [$loc]: $1"
     else
       passed=$((passed + 1))
     fi
   done
 }
 
-# Норма проходит: скрипт зелёный под обеими локалями.
+# Norm passes: the script stays green under both locales.
 check_norm() {
   for loc in C C.utf8; do
     fresh_root "$1"
     if COMMENT_LINT_ROOT="$TMP_ROOT/case" LC_ALL="$loc" bash "$LINT" >/dev/null 2>&1; then
       passed=$((passed + 1))
     else
-      fail "норма поймана как слоп [$loc]: $1"
+      fail "norm caught as slop [$loc]: $1"
     fi
   done
 }
@@ -72,20 +72,20 @@ check_norm "# Раньше печать была первым шагом, теп
 check_norm "# Тот же обман, что в session_address, только теперь он бьет по другой линии"
 check_norm "# empty means an explicit ban, not a missing file"
 
-# Живое дерево чисто под обеими локалями.
+# The live tree stays clean under both locales.
 for loc in C C.utf8; do
   if LC_ALL="$loc" bash "$LINT" >/dev/null 2>&1; then
     passed=$((passed + 1))
   else
-    fail "живое дерево не проходит собственный lint [$loc]"
+    fail "the live tree fails its own lint [$loc]"
   fi
 done
 
-# Сам скрипт и его тест исключены по имени — фикстуры обязаны цитировать паттерны.
+# The script and its test exclude by name — fixtures must quote the patterns.
 if grep -q "comment-lint.sh|scripts/comment-lint_test.sh" "$LINT"; then
   passed=$((passed + 1))
 else
-  fail "в скрипте нет исключения для себя и своего теста"
+  fail "the script misses the self-and-test exclusion"
 fi
 
 printf 'comment-lint tests: %s passed\n' "$passed"

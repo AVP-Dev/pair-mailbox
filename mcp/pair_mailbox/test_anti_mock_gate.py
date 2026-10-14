@@ -1,6 +1,6 @@
-"""Тесты для anti_mock_gate.py: блок боевых моков, пропуск тестовых.
+"""Tests for anti_mock_gate.py: blocking live mocks, passing test ones.
 
-Один тест-файл на один исходник: `anti_mock_gate.py` -> `test_anti_mock_gate.py`
+One test file per source: `anti_mock_gate.py` -> `test_anti_mock_gate.py`
 """
 from __future__ import annotations
 
@@ -41,14 +41,14 @@ class TestJudge(unittest.TestCase):
     def test_local_state_flagged_for_critic(self) -> None:
         verdict = anti_mock_gate.judge(facts_with(
             [{"file": "web/app.js", "line": 7, "pattern": "local-state",
-              "match": "useState(", "reason": "локальный", "test_path": False}]))
+              "match": "useState(", "reason": "local", "test_path": False}]))
         self.assertFalse(verdict["ok"])
-        self.assertIn("критик", verdict["blockers"][0]["reason"])
+        self.assertIn("critic", verdict["blockers"][0]["reason"])
 
     def test_render_points_at_file_line(self) -> None:
         verdict = anti_mock_gate.judge(facts_with(
             [{"file": "web/app.js", "line": 3, "pattern": "mock-id",
-              "match": "mock-abc", "reason": "хардкод", "test_path": False}]))
+              "match": "mock-abc", "reason": "hardcoded", "test_path": False}]))
         report = anti_mock_gate.render(verdict)
         self.assertIn("web/app.js:3", report)
         self.assertIn("BLOCKED", report)

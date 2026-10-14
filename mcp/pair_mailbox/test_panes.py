@@ -1,17 +1,16 @@
-"""Тесты владения панелью: наша ли она и при каком условии доказана.
+"""Pane-ownership tests: whether it is ours and on what proof.
 
-Один тест-файл на один исходник: `panes.py` отвечает за одну обязанность —
-сказать, панель ли это нашего проекта, — и проверяется здесь.
+One test file per source file: `panes.py` owns one duty — telling whether a
+pane belongs to our project — and it is checked here.
 
-Ключевое разделение, ради которого модуль и выделен: «панель чужого проекта» и
-«панель мертва» — это разные факты. `pane_belongs_to_project` не спрашивает о
-живости, и проверяется здесь именно это: смешать их значит объявить роль с
-умершей панелью ещё и «чужой», а снятие устаревшей записи перестало бы срабатывать
-там, где оно единственно и работает.
+The key split the module exists for: "foreign-project pane" and "dead pane"
+are different facts. `pane_belongs_to_project` never asks about liveness, and
+exactly that is checked here: mixing them would brand a role with a dead pane
+as "foreign" too, and stale-entry cleanup would stop firing where it alone works.
 
-Проверки принадлежности идут на живом tmux и на настоящей панели, созданной
-набором внутри временного проекта: подмена `pane_identity` проверила бы, что
-сравнение строк написано правильно, а не что панель опознаётся как наша.
+Membership checks run on live tmux and a real pane created by the suite inside
+a temp project: stubbing `pane_identity` would prove the string comparison is
+spelled right, not that the pane is recognized as ours.
 """
 from __future__ import annotations
 
@@ -38,19 +37,19 @@ def have_tmux() -> bool:
 
 
 class PaneOwnershipBase(unittest.TestCase):
-    """Временный проект и живая панель внутри него."""
+    """A temp project and a live pane inside it."""
 
     def setUp(self) -> None:
         if not have_tmux():
-            self.skipTest("tmux не установлен")
+            self.skipTest("tmux not installed")
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
         self.project = Path(self._tmp.name) / "proj"
         (self.project / ".pair").mkdir(parents=True)
         self.pane = self._split(self.project)
         if not self.pane:
-            self.skipTest("tmux не дал панель")
-        # Дать tmux проставить cwd: первый опрос отдаёт путь предыдущей панели.
+            self.skipTest("tmux gave no pane")
+        # Let tmux set the cwd: the first poll returns the previous pane’s path.
         time.sleep(panes.PANE_CWD_SETTLE_SECONDS + 0.3)
 
     def _split(self, where: Path) -> str:
@@ -64,7 +63,7 @@ class PaneOwnershipBase(unittest.TestCase):
         return pane
 
     def other_project(self) -> Path:
-        """Второй временный проект с живой панелью — «чужой» для проверки."""
+        """A second temp project with a live pane — the "foreign" side of the check."""
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         other = Path(tmp.name) / "other"
@@ -86,29 +85,29 @@ class TestPaneBelongsToProject(PaneOwnershipBase):
         self.assertIn(str(other), why)
 
     def test_a_panel_inside_the_project_counts_as_ours(self) -> None:
-        """Панель может быть запущена из подкаталога проекта, и это всё ещё наша.
+        """A pane may launch from a project subdir and still be ours.
 
-        Отвергать такой случай нельзя: агент, открывший второй терминал внутри
-        репозитория, потерял бы адресацию.
+        Rejecting that case is forbidden: an agent opening a second terminal
+        inside the repo would lose its addressing.
         """
         nested = self.project / "sub" / "deep"
         nested.mkdir(parents=True)
         pane = self._split(nested)
         if not pane:
-            self.skipTest("tmux не дал панель")
+            self.skipTest("tmux gave no pane")
         time.sleep(panes.PANE_CWD_SETTLE_SECONDS + 0.3)
         ours, why = panes.pane_belongs_to_project(TMUX, pane, self.project)
         self.assertTrue(ours, why)
 
     def test_a_panel_in_the_shared_parent_is_accepted_only_when_it_is_really_ours(
         self) -> None:
-        """Общий родитель вроде ~/work не делает чужую панель своей.
+        """A shared parent like ~/work never makes another pane ours.
 
-        Проверяется на панели ВТОРОГО проекта, а не своей: своя панель лежит в
-        корне проекта, и «панель принята при корне как своя» — это не проверка на
-        родителя, а проверка совпадения. Родитель проверяется тем, что панель
-        соседнего проекта при корне-родителе отвергается: иначе ~/work объявил бы
-        панель своей сразу нескольким проектам на этой машине.
+        Checked on the SECOND project’s pane, not ours: our pane sits at the
+        project root, and "pane accepted at root as ours" proves equality, not
+        parenthood. The parent is proven by the neighbour project’s pane being
+        rejected at a root-parent: otherwise ~/work would declare the pane its
+        own for several projects on this machine at once.
         """
         self.other_project()
         ours, why = panes.pane_belongs_to_project(
@@ -116,17 +115,16 @@ class TestPaneBelongsToProject(PaneOwnershipBase):
         self.assertFalse(ours, why)
 
     def test_a_phantom_pane_is_not_proven(self) -> None:
-        """tmux отвечает на несуществующую панель кодом 0 и пустым выводом.
+        """tmux answers a missing pane with code 0 and empty output.
 
-        Отсюда «панель отсутствует», а не «своя»: несуществующее не может быть
-        доказанным.
+        Hence "pane missing", not "ours": the nonexistent cannot be proven.
         """
         ours, why = panes.pane_belongs_to_project(TMUX, "%999999", self.project)
         self.assertFalse(ours)
-        self.assertIn("отсутствует", why)
+        self.assertIn("pane missing", why)
 
     def test_an_unreported_cwd_is_not_proven(self) -> None:
-        """Нет cwd — нет доказательства, и это не «своя»."""
+        """No cwd — no proof, and that is not "ours"."""
         with mock.patch.object(panes.composer, "pane_identity",
                                return_value={"exists": True, "alive": True,
                                              "path": "", "address": "x:0.0"}):
@@ -135,25 +133,24 @@ class TestPaneBelongsToProject(PaneOwnershipBase):
         self.assertIn("cwd", why)
 
     def test_a_pane_that_died_is_absent_not_foreign(self) -> None:
-        """Убитая панель — это ОТСУТСТВИЕ, а не «чужой проект».
+        """A killed pane is ABSENCE, not "foreign project".
 
-        Различие содержательное: снятие устаревшей записи ростера опирается на
-        «панели нет», и подмена его на «панель чужая» увёл бы снятие не туда.
-        Проверяется на настоящем `kill-pane`, потому что подменённый снимок
-        ничего бы не доказывал.
+        The distinction carries weight: stale roster-entry cleanup leans on
+        "no pane", and swapping it for "foreign pane" would send the cleanup
+        the wrong way. Checked on a real `kill-pane`, because a stubbed snapshot
+        would prove nothing.
         """
         subprocess.run([TMUX, "kill-pane", "-t", self.pane],
                        capture_output=True, timeout=10)
         time.sleep(0.3)
         ours, why = panes.pane_belongs_to_project(TMUX, self.pane, self.project)
         self.assertFalse(ours)
-        self.assertIn("отсутствует", why)
+        self.assertIn("pane missing", why)
 
     def test_a_live_pane_is_not_mistaken_for_a_dead_one(self) -> None:
-        """Обратная сторона: живая панель доказывает принадлежность, а не «нет».
+        """The reverse side: a live pane proves membership, not "no".
 
-        Именно этот промах стоил бы отказа в адресации только что появившемуся
-        агенту.
+        Exactly this miss would cost addressing refusal for the just-born agent.
         """
         ours, why = panes.pane_belongs_to_project(TMUX, self.pane, self.project)
         self.assertTrue(ours, why)
@@ -163,25 +160,25 @@ class TestPaneIsForeignStillRefusesToPrint(PaneOwnershipBase):
     def test_a_phantom_cannot_be_printed_to(self) -> None:
         foreign, why = panes.pane_is_foreign(TMUX, "%999999", self.project)
         self.assertTrue(foreign)
-        self.assertIn("отсутствует", why)
+        self.assertIn("pane missing", why)
 
     def test_a_pane_that_died_cannot_be_printed_to(self) -> None:
-        """Противоположная сторона: печатать нельзя, даже если проект тот же.
+        """The opposite side: printing is forbidden even when the project matches.
 
-        Принадлежность и возможность печати — разные вопросы, и оба закрыты.
+        Membership and printability are different questions, and both are closed.
         """
         subprocess.run([TMUX, "kill-pane", "-t", self.pane],
                        capture_output=True, timeout=10)
         time.sleep(0.3)
         foreign, why = panes.pane_is_foreign(TMUX, self.pane, self.project)
         self.assertTrue(foreign)
-        self.assertIn("отсутствует", why)
+        self.assertIn("pane missing", why)
 
     def test_another_projects_pane_is_refused(self) -> None:
         self.other_project()
         foreign, why = panes.pane_is_foreign(TMUX, self.other_pane, self.project)
         self.assertTrue(foreign)
-        self.assertIn("другому проекту", why)
+        self.assertIn("another project", why)
 
     def test_our_own_pane_is_printable(self) -> None:
         foreign, why = panes.pane_is_foreign(TMUX, self.pane, self.project)
@@ -190,17 +187,17 @@ class TestPaneIsForeignStillRefusesToPrint(PaneOwnershipBase):
 
 class TestComposerDelegatesWithoutForkingBehaviour(PaneOwnershipBase):
     def test_composer_pane_is_foreign_matches(self) -> None:
-        """Обёртка в `composer` обязана вести себя как `panes`.
+        """The wrapper in `composer` must behave as `panes`.
 
-        Иначе доставка печатала бы по одной проверке, а ростер снимал бы панель по
-        другой, и расхождение проявилось бы как «доставка не работает у живого
-        соседа».
+        Otherwise delivery would print by one check while the roster drops the
+        pane by another, and the drift would surface as "delivery broken at a
+        live neighbour".
         """
         for pane, root in ((self.pane, self.project),
                            ("%999999", self.project)):
             self.assertEqual(panes.pane_is_foreign(TMUX, pane, root),
                              composer.pane_is_foreign(TMUX, pane, root),
-                             f"{pane}: composer и panes обязаны отвечать одинаково")
+                             f"{pane}: composer and panes must answer alike")
 
     def test_composer_belongs_matches(self) -> None:
         for pane, root in ((self.pane, self.project),
@@ -211,8 +208,8 @@ class TestComposerDelegatesWithoutForkingBehaviour(PaneOwnershipBase):
 
 class TestFindOwnPane(PaneOwnershipBase):
     def test_chain_meets_pane_pid_in_stub_tmux(self) -> None:
-        """Hermetic: цепочка предков встречается с pane_pid стаба — панель
-        находится без живого tmux. Скип здесь маскировал бы поломку."""
+        """Hermetic: the ancestor chain meets the stub pane_pid — the pane is found
+        with no live tmux. A skip here would mask the breakage."""
         import os
         real_run = composer.subprocess.run
 
@@ -227,7 +224,7 @@ class TestFindOwnPane(PaneOwnershipBase):
             composer.subprocess.run = real_run
 
     def test_empty_pane_list_gives_empty(self) -> None:
-        """Стаб без панелей — честный "", а не выдуманная панель."""
+        """A stub with no panes is an honest "", not an invented pane."""
         real_run = composer.subprocess.run
 
         def stub(cmd, **kw):
@@ -241,7 +238,7 @@ class TestFindOwnPane(PaneOwnershipBase):
             composer.subprocess.run = real_run
 
     def test_unknown_tmux_binary_gives_empty(self) -> None:
-        """Нет tmux — честный "", а не выдуманная панель."""
+        """No tmux is an honest "", not an invented pane."""
         self.assertEqual(composer.find_own_pane("tmux-no-such-binary-xyz"), "")
 
 

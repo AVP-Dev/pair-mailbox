@@ -1,6 +1,6 @@
-"""Тесты для budget ceiling (S2): машинно-считаемые метрики, потолки, отказ и сброс.
+"""Tests for the budget ceiling (S2): machine-counted metrics, ceilings, refusal and reset.
 
-Один тест-файл на один исходник: `budget.py` -> `test_budget.py`
+One test file per source: `budget.py` -> `test_budget.py`
 """
 from __future__ import annotations
 
@@ -52,19 +52,19 @@ class TestBudgetMetrics(unittest.TestCase):
         t_file = self.state_dir / "transcript.jsonl"
         t0 = datetime(2026, 10, 11, 10, 0, 0, tzinfo=timezone.utc)
         entries = [
-            # Предыдущий раунд (закрылся в done)
+            # The prior round (closed in done)
             {"ts": t0.isoformat(), "kind": "advance", "role": "agy", "phase": "done", "previous": "verify"},
-            # Начало раунда 2 (reopened из done)
+            # Round 2 start (reopened from done)
             {"ts": (t0 + timedelta(minutes=5)).isoformat(), "kind": "advance", "role": "agy", "phase": "implement", "previous": "done", "reopened": True},
-            # Сообщения в раунде 2
+            # Messages in round 2
             {"ts": (t0 + timedelta(minutes=10)).isoformat(), "kind": "send", "role": "agy", "to": "omp"},
             {"ts": (t0 + timedelta(minutes=15)).isoformat(), "kind": "deliver", "role": "omp", "to": "agy"},
-            # Переход в verify
+            # Moving to verify
             {"ts": (t0 + timedelta(minutes=20)).isoformat(), "kind": "advance", "role": "agy", "phase": "verify", "previous": "implement"},
         ]
         t_file.write_text("\n".join(json.dumps(e) for e in entries) + "\n", encoding="utf-8")
 
-        # Рестарты пилота
+        # Pilot restarts
         r_file = self.state_dir / ".restarts-agy"
         r_file.write_text(f"{(t0 + timedelta(minutes=12)).timestamp():.0f}", encoding="utf-8")
 
@@ -72,7 +72,7 @@ class TestBudgetMetrics(unittest.TestCase):
         now = t0 + timedelta(hours=2)
         m = budget.collect_metrics(self.state_dir, st, now=now)
         self.assertEqual(m["messages"], 2)
-        self.assertEqual(m["advances"], 1)  # advance в verify
+        self.assertEqual(m["advances"], 1)  # advance to verify
         self.assertAlmostEqual(m["hours"], 1.92, places=2)
         self.assertEqual(m["restarts"], 1)
 
@@ -85,34 +85,34 @@ class TestBudgetMetrics(unittest.TestCase):
         ]
         t_file.write_text("\n".join(json.dumps(e) for e in entries) + "\n", encoding="utf-8")
 
-        # Сброс в 10:15
+        # Resetting at 10:15
         reset_time = t0 + timedelta(minutes=15)
         budget.reset_budget(self.state_dir, round_number=1)
-        # Перезапишем reset_at точным временем для детерминизма
+        # Rewriting reset_at to an exact time for determinism
         (self.state_dir / budget.RESET_FILE).write_text(
             json.dumps({"round": 1, "reset_at": reset_time.isoformat()}), encoding="utf-8"
         )
 
-        # Новое сообщение после сброса
+        # A new message past the reset
         with t_file.open("a", encoding="utf-8") as f:
             f.write(json.dumps({"ts": (t0 + timedelta(minutes=20)).isoformat(), "kind": "send", "role": "agy"}) + "\n")
 
         now = t0 + timedelta(minutes=25)
         m = budget.collect_metrics(self.state_dir, {"round": 1}, now=now)
         self.assertTrue(m["reset_applied"])
-        self.assertEqual(m["messages"], 1)  # Только то, что после 10:15
+        self.assertEqual(m["messages"], 1)  # Only what stands past 10:15
         self.assertAlmostEqual(m["hours"], 0.17, places=2)
 
 
 class TestBudgetServerIntegration(PairTestCase):
-    """Интеграция с tool_pair_advance и CLI pairctl budget."""
+    "Integration with tool_pair_advance and the pairctl budget CLI."
 
     def setUp(self) -> None:
         super().setUp()
         self.writer.tool_pair_claim(reason="writer")
 
     def test_forward_advance_refused_on_budget_breach(self) -> None:
-        # Установим лимит 1 сообщение
+        # Setting a 1-message limit
         (self.store.root / budget.BUDGET_FILE).write_text(
             json.dumps({"max_messages": 1}), encoding="utf-8"
         )
@@ -121,14 +121,14 @@ class TestBudgetServerIntegration(PairTestCase):
         self.ack_plan(1)
         self.writer.tool_pair_advance("implement")
 
-        # Отправим 2 сообщения, чтобы пробить лимит
+        # Sending 2 messages to break the limit
         self.writer.tool_pair_send(to="reviewer-agent", subject="work", text="msg 1")
         self.writer.tool_pair_send(to="reviewer-agent", subject="work", text="msg 2")
 
-        # Попытка шага вперед implement -> verify должна отказать по бюджету
+        # A forward implement -> verify step must refuse on budget
         with self.assertRaises(ProtocolError) as ctx:
             self.writer.tool_pair_advance("verify")
-        self.assertIn("превышен бюджет раунда", str(ctx.exception))
+        self.assertIn("round budget breached", str(ctx.exception))
         self.assertIn("messages:", str(ctx.exception))
 
     def test_backward_step_allowed_even_on_budget_breach(self) -> None:
@@ -143,7 +143,7 @@ class TestBudgetServerIntegration(PairTestCase):
         self.writer.tool_pair_send(to="reviewer-agent", subject="work", text="msg 1")
         self.writer.tool_pair_send(to="reviewer-agent", subject="work", text="msg 2")
 
-        # Шаг назад implement -> plan ДОЛЖЕН БЫТЬ РАЗРЕШЕН
+        # A backward implement -> plan step MUST STAY ALLOWED
         res = self.writer.tool_pair_advance("plan")
         self.assertEqual(res["phase"], "plan")
 
@@ -159,31 +159,31 @@ class TestBudgetServerIntegration(PairTestCase):
         self.writer.tool_pair_send(to="reviewer-agent", subject="work", text="msg 1")
         self.writer.tool_pair_send(to="reviewer-agent", subject="work", text="msg 2")
 
-        # Сбросим бюджет чтобы дойти до verify
+        # Resetting budget to reach verify
         budget.reset_budget(self.store.root, self.writer.store.read().get("round", 0))
         self.writer.tool_pair_advance("verify")
 
-        # Снова исчерпаем бюджет
+        # Exhausting budget again
         self.writer.tool_pair_send(to="reviewer-agent", subject="work", text="msg 3")
         self.writer.tool_pair_send(to="reviewer-agent", subject="work", text="msg 4")
 
-        # Запишем evidence
+        # Writing evidence
         self.record_test_evidence("tests pass")
-        # Прочитаем все входящие
+        # Reading all incoming
         self.writer.tool_pair_read()
 
-        # Переход verify -> done ДОЛЖЕН БЫТЬ РАЗРЕШЕН несмотря на бюджет!
+        # The verify -> done move MUST STAY ALLOWED past budget!
         res = self.writer.tool_pair_advance("done")
         self.assertEqual(res["phase"], "done")
 
     def test_cli_budget_status_and_reset(self) -> None:
         from pairctl_cli import ctl_main
 
-        # Проверка ctl_main budget
+        # Checking ctl_main budget
         code = ctl_main(["budget", "--json"], store=self.store)
         self.assertEqual(code, 0)
 
-        # Проверка ctl_main budget --reset
+        # Checking ctl_main budget --reset
         code = ctl_main(["budget", "--reset"], store=self.store)
         self.assertEqual(code, 0)
         self.assertTrue((self.store.root / budget.RESET_FILE).is_file())

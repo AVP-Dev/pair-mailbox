@@ -1,6 +1,6 @@
-"""Budget ceiling (S2): защита от зацикливания раундов по машинным метрикам.
-Метрики: messages (send/deliver), advances, hours (wall-clock), restarts (.restarts-*).
-Инварианты: done и шаги назад не блокируются, pair_send свободен. Сброс: pairctl budget --reset.
+"""Budget ceiling (S2): loop protection for rounds on machine metrics.
+Metrics: messages (send/deliver), advances, hours (wall-clock), restarts (.restarts-*).
+Invariants: done and steps back never block, pair_send stays free. Reset: pairctl budget --reset.
 """
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ DEFAULT_BUDGET: dict[str, Any] = {
 
 
 def load_budget(state_dir: Path) -> dict[str, Any]:
-    """Загрузить конфигурацию потолков из .pair/budget.json с дефолтами."""
+    """Load the ceiling config from .pair/budget.json with defaults."""
     target = Path(state_dir) / BUDGET_FILE
     budget = dict(DEFAULT_BUDGET)
     try:
@@ -48,10 +48,10 @@ def _parse_ts(stamp: str | None) -> datetime | None:
 
 
 def _find_round_start(transcript_path: Path, current_round: int) -> tuple[datetime | None, int]:
-    """Найти время начала раунда и смещение (номер строки в транскрипте).
+    """Find the round start time and offset (transcript line number).
 
-    Начало текущего раунда определяется последним переходом `advance` из `done`
-    (переоткрытие) или первым событием файла, если advance из done не найден.
+    The current round start is the last `advance` move from `done` (reopen)
+    or the first file event when no advance-from-done is found.
     """
     if not transcript_path.is_file():
         return None, 0
@@ -82,7 +82,7 @@ def _find_round_start(transcript_path: Path, current_round: int) -> tuple[dateti
     if last_open_idx != -1:
         return last_open_ts, last_open_idx
 
-    # Если не было reopen из done, раунд начался с первой записи транскрипта
+    # With no reopen from done, the round started at the first transcript record
     for idx, line in enumerate(lines):
         try:
             entry = json.loads(line)
@@ -94,16 +94,16 @@ def _find_round_start(transcript_path: Path, current_round: int) -> tuple[dateti
 
 
 def collect_metrics(state_dir: Path, state: dict[str, Any], now: datetime | None = None) -> dict[str, Any]:
-    """Подсчитать фактические машинно-считаемые метрики текущего раунда.
+    """Count the actual machine-counted metrics of the current round.
 
-    Учитывает сброс через budget-reset.json для текущего раунда.
+    Counts the reset through budget-reset.json for the current round.
     """
     state_dir = Path(state_dir)
     current_round = int(state.get("round", 0))
     if now is None:
         now = datetime.now(timezone.utc)
 
-    # Проверка маркера сброса
+    # The reset marker check
     reset_file = state_dir / RESET_FILE
     reset_ts: datetime | None = None
     if reset_file.is_file():
@@ -148,7 +148,7 @@ def collect_metrics(state_dir: Path, state: dict[str, Any], now: datetime | None
                     if kind in ("send", "deliver"):
                         messages_count += 1
                     elif kind == "advance":
-                        # Не считаем сам переход reopen, если он был началом раунда
+                        # Never count the reopen move itself when it started the round
                         if idx != round_start_idx:
                             advances_count += 1
         except OSError:
@@ -159,7 +159,7 @@ def collect_metrics(state_dir: Path, state: dict[str, Any], now: datetime | None
         delta = (now - effective_start_ts).total_seconds()
         hours = max(0.0, delta / 3600.0)
 
-    # Рестарты пилота (.restarts-*)
+    # Pilot restarts (.restarts-*)
     restarts_count = 0
     start_epoch = effective_start_ts.timestamp() if effective_start_ts else 0.0
 
@@ -197,17 +197,17 @@ def collect_metrics(state_dir: Path, state: dict[str, Any], now: datetime | None
 
 
 def check_budget(state_dir: Path, state: dict[str, Any], to_phase: str, now: datetime | None = None) -> tuple[bool, str, dict[str, Any]]:
-    """Проверить, не превышен ли бюджет при переходе в to_phase.
+    """Check whether the budget breaks on the move to to_phase.
 
-    Возвращает (ok, reason, metrics).
-    Инварианты:
-    - Переход в 'done' ВСЕГДА разрешен.
-    - Шаги назад ВСЕГДА разрешены (проверяется вызывающим кодом или по to_phase == backward).
+    Returns (ok, reason, metrics).
+    Invariants:
+    - The move to 'done' is ALWAYS allowed.
+    - Steps back are ALWAYS allowed (checked by caller code or by to_phase == backward).
     """
     metrics = collect_metrics(state_dir, state, now=now)
     budget = load_budget(state_dir)
 
-    # Переход в done освобожден от проверки
+    # The move to done stays out of the check
     if to_phase == "done":
         return True, "", metrics
 
@@ -223,10 +223,10 @@ def check_budget(state_dir: Path, state: dict[str, Any], to_phase: str, now: dat
 
     if breaches:
         why = (
-            f"превышен бюджет раунда {metrics['round']}: {', '.join(breaches)}. "
-            f"Движение вперед остановлено для защиты от зацикливания. "
-            f"Закрытие в 'done' или шаги назад разрешены. "
-            f"Сброс лимитов: `pairctl budget --reset`."
+            f"round budget breached {metrics['round']}: {', '.join(breaches)}. "
+            f"Forward motion stops against looping. "
+            f"Closing into 'done' or steps back stay allowed. "
+            f"Limit reset: `pairctl budget --reset`."
         )
         return False, why, metrics
 
@@ -234,7 +234,7 @@ def check_budget(state_dir: Path, state: dict[str, Any], to_phase: str, now: dat
 
 
 def reset_budget(state_dir: Path, round_number: int) -> None:
-    """Сбросить счетчики бюджета текущего раунда, записав маркер."""
+    """Reset the current round budget counters, writing a marker."""
     state_dir = Path(state_dir)
     target = state_dir / RESET_FILE
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -246,13 +246,13 @@ def reset_budget(state_dir: Path, round_number: int) -> None:
 
 
 def cmd_budget(store: Any, args: Any) -> int:
-    """Обработчик CLI: `pairctl budget [--reset] [--json]`."""
+    """CLI handler: `pairctl budget [--reset] [--json]`."""
     state = store.read()
     current_round = int(state.get("round", 0))
     if getattr(args, "reset", False):
         reset_budget(store.root, current_round)
         store.append_transcript("budget_reset", "human", round=current_round)
-        print(f"бюджет раунда {current_round} сброшен.")
+        print(f"round budget {current_round} reset.")
         return 0
 
     metrics = collect_metrics(store.root, state)
@@ -274,11 +274,11 @@ def cmd_budget(store: Any, args: Any) -> int:
         print(json.dumps(out, ensure_ascii=False, indent=2))
         return 0
 
-    print(f"Бюджет раунда {current_round}:")
-    print(f"  сообщения: {metrics['messages']}/{budget['max_messages']}")
-    print(f"  переходы:  {metrics['advances']}/{budget['max_advances']}")
-    print(f"  часы:      {metrics['hours']:.1f}/{budget['max_hours']}h")
-    print(f"  рестарты:  {metrics['restarts']}/{budget['max_restarts']}")
+    print(f"Round budget {current_round}:")
+    print(f"  messages: {metrics['messages']}/{budget['max_messages']}")
+    print(f"  moves:      {metrics['advances']}/{budget['max_advances']}")
+    print(f"  hours:      {metrics['hours']:.1f}/{budget['max_hours']}h")
+    print(f"  restarts:   {metrics['restarts']}/{budget['max_restarts']}")
     if metrics.get("reset_applied"):
-        print("  (активен маркер сброса)")
+        print("  (reset marker active)")
     return 0

@@ -1,21 +1,18 @@
-"""Привязка ревью к ревизии и лимит очереди (review-queue-and-stale-verdicts).
+"""Binding reviews to revisions plus a queue limit (review-queue-and-stale-verdicts).
 
-Вердикт критика относится к конкретному состоянию кода, а не к задаче
-вообще: HEAD плюс хэш незакоммиченного diff. Писатель продолжает коммитить,
-не дожидаясь, поэтому вердикт, применённый дословно к уехавшей ревизии,
-создаёт видимость проверенности на непроверенном.
+A critic verdict covers a concrete code state, never the task at large: HEAD plus the
+uncommitted-diff hash. The writer keeps committing with no wait, so a verdict applied
+verbatim to a moved revision fakes coverage on the uncovered.
 
-Правила (согласованы, карточка в docs/backlog/):
-- stale только при пересечении файлов (dirty overlap): ревьюил composer.py,
-  а писатель ушёл в scripts/file-size-gate.sh — вердикт не stale;
-- писатель не блокируется в середине работы; блокировка — перед done:
-  очередь висящих ревью пуста и нет stale-вердиктов;
-- лимит очереди: не более 2 неподтверждённых запросов; на третьем —
-  остановиться и войти в pair_read.
+Rules (agreed, card in docs/backlog/):
+- stale only on file overlap (dirty overlap): reviewed composer.py while the writer
+  moved into scripts/file-size-gate.sh — the verdict stays fresh;
+- the writer never blocks mid-work; the block stands before done: the pending-review
+  queue is empty with no stale verdicts;
+- queue limit: no more than 2 unacked requests; on the third stop and enter pair_read.
 
-Всё, что касается git, — fail-open: нет репозитория или команда не
-ответила — не stale и не блокировка. Иначе окружение без git (или с
-битым git) навсегда закрывало бы раунд.
+All git touches run fail-open: no repo or a dead command means neither stale nor
+block. Or a gitless env (or a broken git) would close the round forever.
 """
 from __future__ import annotations
 
@@ -33,7 +30,7 @@ def _run_git(root: Path, *args: str) -> str | None:
             ["git", *args], cwd=str(root),
             capture_output=True, text=True, timeout=5,
         )
-    except Exception:  # noqa: BLE001 - git недоступен, это не приговор раунду
+    except Exception:  # noqa: BLE001 - git unavailable, no round sentence
         return None
     if proc.returncode != 0:
         return None
@@ -46,10 +43,10 @@ def git_head(root: Path) -> str:
 
 
 def dirty_files(root: Path, include_untracked: bool = False) -> list[str]:
-    """Файлы с незакоммиченными изменениями.
+    """Files with uncommitted changes.
 
-    По умолчанию возвращает только отслеживаемые (tracked) изменения (M, D, A, R).
-    Строки untracked (??) игнорируются, если include_untracked не установлен в True.
+    By default only tracked changes return (M, D, A, R). Untracked (??) lines skip
+    unless include_untracked sets True.
     """
     out = _run_git(root, "status", "--porcelain")
     if out is None:
@@ -59,7 +56,7 @@ def dirty_files(root: Path, include_untracked: bool = False) -> list[str]:
         line = line.rstrip()
         if not line:
             continue
-        # Формат: XY <path> или XY <old> -> <new> при переименовании.
+        # Format: XY <path> or XY <old> -> <new> on rename.
         status_prefix = line[:2]
         if not include_untracked and status_prefix == "??":
             continue
@@ -80,7 +77,7 @@ def dirty_hash(root: Path) -> str:
 
 
 def head_files(root: Path, head: str) -> list[str]:
-    """Файлы, затронутые коммитом head (для чистого ревью без dirty)."""
+    "Files touched by the head commit (for clean review with no dirty)."
     if not head:
         return []
     out = _run_git(root, "show", "--pretty=format:", "--name-only", head)
@@ -99,11 +96,11 @@ def changed_between(root: Path, old: str, new: str) -> list[str]:
 
 
 def snapshot(root: Path) -> dict[str, Any]:
-    """Снимок ревизии для привязки запроса/вердикта.
+    """A revision snapshot binding a request/verdict.
 
-    У1: Покрытие объединяет файлы коммита и реальные tracked-изменения
-    (head_files ∪ tracked-dirty), чтобы наличие dirty файлов не вытесняло
-    файлы коммита из покрытия вердикта.
+    U1: coverage unions commit files with real tracked-dirty ones (head_files ∪
+    tracked-dirty), so dirty-file presence never pushes commit files out of the
+    verdict coverage.
     """
     head = git_head(root)
     dirty = dirty_files(root, include_untracked=False)
@@ -117,34 +114,34 @@ def snapshot(root: Path) -> dict[str, Any]:
 
 def is_stale(old: dict[str, Any], current_head: str,
              changed_since: list[str], current_dirty: list[str]) -> tuple[bool, str]:
-    """Устарел ли вердикт/снимок old относительно текущего состояния.
+    """Whether verdict/snapshot old went stale against current state.
 
-    Stale — только если ревизия уехала И пересечение по файлам есть.
-    Пустые old['files'] означают «покрытие неизвестно» — тогда любая смена
-    HEAD считается stale (чистое ревью коммита без списка файлов).
-    Без git (current_head пуст) — никогда не stale: fail-open.
+    Stale only when the revision moved AND file overlap stands. Empty old[files]
+    means "coverage unknown" — then any HEAD move counts stale (a clean commit
+    review with no file list). With no git (empty current_head) never stale:
+    fail-open.
     """
     if not current_head:
-        return False, "нет HEAD для сравнения"
+        return False, "no HEAD to compare against"
     old_head = str(old.get("head") or "")
     if not old_head:
-        return False, "у запроса нет привязки к ревизии"
+        return False, "the request owns no revision binding"
     if old_head == current_head and not current_dirty:
-        return False, "ревизия не уехала"
+        return False, "the revision never moved"
     old_files = set(old.get("files") or [])
     if not old_files:
         if old_head != current_head:
-            return True, f"HEAD уехал {old_head[:8]}..{current_head[:8]} без списка файлов"
-        return False, "HEAD тот же"
+            return True, f"HEAD moved {old_head[:8]}..{current_head[:8]} with no file list"
+        return False, "same HEAD"
     touched = set(changed_since) | set(current_dirty)
     overlap = sorted(old_files & touched)
     if overlap:
-        return True, f"затронуты те же файлы: {', '.join(overlap[:5])}"
-    return False, "последующие изменения те же файлы не затронули"
+        return True, f"the same files touched: {', '.join(overlap[:5])}"
+    return False, "later changes never touched the same files"
 
 
 def open_count(obligations_root: Path, frm: str) -> int:
-    """Сколько неподтверждённых запросов висит у автора frm."""
+    "How many unacked requests hang at author frm."
     import json
 
     if not obligations_root.is_dir():
@@ -166,12 +163,12 @@ def queue_full(obligations_root: Path, frm: str,
 
 
 def pin_verdict(store: Any, role: str, kind: str, text: str, utcnow: Any) -> dict[str, Any]:
-    """Привязать вердикт к ревизии: HEAD + dirty-hash + файлы.
+    """Bind the verdict to the revision: HEAD + dirty-hash + files.
 
-    Вынесено из server.tool_pair_note (server-py-still-a-monolith): привязка
-    живёт рядом со snapshot, который её строит. Молчаливое применение вердикта
-    к уехавшей ревизии хуже отсутствия вердикта. Fail-open: без git пишется
-    пустой снимок, снимок не роняет вердикт.
+    Moved out of server.tool_pair_note (server-py-still-a-monolith): the binding
+    lives beside the snapshot building it. Silently applying a verdict to a moved
+    revision reads worse than no verdict. Fail-open: with no git an empty snapshot
+    writes, never dropping the verdict.
     """
     rev = snapshot(store.project_root)
 

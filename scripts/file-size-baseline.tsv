@@ -1,118 +1,118 @@
-# Замороженные исключения по размеру файла.
+# Frozen file-size exceptions.
 #
-# Формат: path<TAB>max_lines<TAB>reason
+# Format: path<TAB>max_lines<TAB>reason
 #
-# Смысл записи: файл проверен, ответственность у него одна, и он заморожен на
-# этом размере. Расти нельзя ни на строку без новой, более крупной записи с
-# новой причиной. Уменьшаться можно и нужно: если файл сжался, запись протухла,
-# и гейт потребует опустить cap — иначе рэтчёт перестанет описывать реальность.
+# A record means: the file checked, its responsibility one, frozen at this size.
+# Growing past a line needs a new, larger record with a new reason. Shrinking is
+# allowed and wanted: a shrunk file stales the record, and the gate demands lowering
+# cap — or the ratchet stops describing reality.
 #
-# Порядок из агент-кита (docs/project-structure.md §2): до 300 — нормальный
-# целевой размер, 300–500 — допустимо при одной ответственности, 500–800 —
-# обязательное ревью границ, выше 800 — только с зафиксированной причиной и
-# планом разделения. Этот проект начинает с честного признания долга, а не с
-# имитации чистоты: все шесть файлов ниже перешли порог до того, как появился
-# гейт. Массовое разбиение запрещено делать попутно с задачей (там же §9), по
-#этому сначала замораживаем, потом разбираем по отдельным задачам.
+# Order from the agent kit (docs/project-structure.md §2): to 300 a normal target
+# size, 300–500 allowed under one responsibility, 500–800 a mandatory edge review,
+# past 800 only with a pinned reason and a split plan. This project starts from an
+# honest debt admission, not a clean imitation: all six files below crossed the cap
+# before the gate stood. Mass splitting stays out of task work (same §9), so freeze
+# first, split in separate tasks.
+#
 
-# Потолки server.py, test_protocol.py и composer.py подняты один раз, в раунде 13:
-# правки доставки и файлового гейта выросли именно эти файлы, а не новые.
-# Рэтчет сработал и остановил коммит на красном гейте — это его работа, и
-# повторение такого означает вынести изменение, а не поднять потолок.
-# Раунд 14: потолки server.py и test_protocol.py подняты во второй раз. Причина
-# не в том, что правило обходится: правки Раунда 14 относятся именно к этим
-# файлам, потому что дефект привязки панели живёт в server.py, а тест — в
-# test_protocol.py. Куда-то ещё их деть было нельзя.
+# The server.py, test_protocol.py and composer.py caps rose once, in round 13: delivery
+# and file-gate edits grew exactly these files, not new ones. The ratchet fired stopping
+# the commit on a red gate — that is its job, and repeating it means moving the change
+# out, never raising the cap.
+# Round 14: the server.py and test_protocol.py caps rise a second time. The reason
+# is no rule bypass: the Round-14 edits belong exactly to these files, because the
+# pane-binding defect lives in server.py, the test in test_protocol.py. Nowhere else
+# could take them.
 #
-# Раунд 14, третий раз: адресация панелей по имени сессии. Здесь потолки подняты
-# не впервые и не потому, что правило обходится: сначала было сделано то, что
-# записи в baseline предписывают, — разбор. Вся логика адресации (session_address,
-# pane_ref_format, same_pane, pane_key) вынесена из server.py в composer.py рядом с
-# pane_identity, где ей и место, а server.py получил две короткие обёртки. Потолок
-# server.py вырос на 20 строк, и почти все они — комментарии о том, почему
-# нельзя было уйти на один вызов tmux вместо сверки адреса.
+# Round 14, third time: pane addressing by session name. Here the caps rise neither
+# first nor bypassing: first came what the baseline records prescribe — analysis. All
+# addressing logic (session_address, pane_ref_format, same_pane, pane_key) moved out of
+# server.py into composer.py beside pane_identity, where it belongs, leaving server.py
+# two short wrappers. The server.py cap grew 20 lines, nearly all comments on why no
+# single tmux call could replace the address check.
 #
-# Что осталось невынесенным и почему это записано здесь, а не стёрто: план
-# разделения server.py из записи ниже («первым выносится pairctl») НЕ выполнен и в
-# этом раунде не мог быть: разбиение на 400 строк запрещено делать попутно с
-# задачей (docs/project-structure.md §9), а задача была не про pairctl. Третий
-# подряд подъём потолка означает, что разделение server.py обязано состояться в
-# СЛЕДУЮЩЕЙ задаче, которая к нему относится, — иначе правило перестанет работать
-# и перестанет чего-либо защищать.
 #
-# Раунд 14, четвёртый и пятый раз. Первый — `pairctl pane`, переопределение
-# привязки панели рукой человека: pin_verdict и ветка в run_ctl, 147 строк в
-# server.py. Второй — та же работа по тестам, 204 строки в test_protocol.py.
+# What stayed unmoved and why it records here, never wiped: the server.py split plan
+# from the record below ("pairctl moves first") stands UNDONE, impossible this round:
+# a 400-line split never runs beside a task (docs/project-structure.md §9), while the
+# task was no pairctl one. The third straight cap rise means splitting server.py must
+# happen in the NEXT task touching it — or the rule stops working, guarding nothing.
 #
-# Что здесь важно и почему это записано, а не подтёрто. Обе правки ЧИТАЮТ и
-# проверяют состояние панели, но не меняют способ, которым панель находится:
-# поиск адреса, сверку с запросом и разбор permission-меню по-прежнему живут в
-# server.py. Уменьшить файл ими нельзя, а вынести нечего — переносить можно
-# только целиком, а это разбиение, которое запрещено делать попутно с задачей.
 #
-# Итог раунда честно такой: правило перестало быть защитой. Оно теперь ОПИСЫВАЕТ
-# размер и фиксирует, что следующая задача обязана быть про разбиение server.py
-# на файлы. Дальнейший подъём этих двух потолков без вынесения считать не
-# «сделанной работой по правилу», а его отменой.
 #
-# Разбор сделан до записи, как требует начало этого файла, и вот что он дал:
-# planctl действительно можно вынести целиком — он не импортирует MCP-слой, —
-# и это первым идёт в следующую задачу. Вторым кандидатом назван сверхвизор:
-# bin/pairpilot держит уже 1167 строк и плана разделения не имеет вовсе.
+# Round 14, fourth and fifth time. First — `pairctl pane`, overriding the pane bind by
+# human hand: pin_verdict plus the run_ctl branch, 147 lines in server.py. Second — the
+# same work on tests, 204 lines in test_protocol.py.
 #
-# Раунд 14, седьмой раз: скользящее окно транскрипта и чтение хвоста с конца
-# файла. Здесь потолки подняты по той же причине и по тому же правилу, но с
-# оговоркой, которая важнее самого подъёма.
+# What matters here and why it records, never wiped. Both edits READ and check the
+# pane state, never changing how the pane finds: address search, query check and
+# permission-menu parsing still live in server.py. The file cannot shrink by them,
+# nothing to move — moving means whole, and that is a split banned beside a task.
 #
-# Оговорка: этот пункт начали с неверной цифры. «46 тысяч токенов» — это размер
-# файла (196 КБ), делённый на четыре. В контекст агента эти токены не попадали
-# никогда: `pair_transcript` по умолчанию берёт 40 записей, то есть ~2k. Ротация
-# потому и не «снимет 46k», как написано было в плане, и цифра исправлена в
-# plan-task4.md. Что она чинит на самом деле — измерено: чтение хвоста перестало
-# разбирать весь файл (67.5 мс -> 0.4 мс на файле в 2 МБ, ускорение 169x, хвост
-# побайтово тот же), а `pairctl log` без `--limit` перестал вливать в терминал
-# пол-мегабайта.
 #
-# Объём прироста: server.py +159, test_protocol.py +183. Из них в server.py
-# примерно треть — комментарии, объясняющие, почему чтение идёт с конца и почему
-# дефолтный лимит лучше «всего».
+# The round honest total: the rule stopped guarding. It now DESCRIBES the size, pinning
+# that the next task must split server.py into files. Further raising these two caps
+# with no moving counts not as "rule work done" but as its repeal.
 #
-# Направление после этого подъёма: новых функций в server.py не добавлять без
-# вынесения. Файл перевалил за 3900 строк, и следующий пункт (дайджест) должен
-# либо уместиться, либо потребовать разбиения раньше, чем писать.
 #
-# Раунд 15: раздел состоялся, и обе записи, которые четыре раза подряд требовали
-# подъёма, опущены. Это и было предписано предыдущими абзацами: «разбор сделан
-# до записи», «следующая задача обязана быть про разбиение server.py». Задача
-# была именно такой, и вот что из неё вышло.
+# Analysis ran before the record, as this file head demands, giving this: pairctl
+# truly moves whole — it never imports the MCP layer — first into the next task. Second
+# candidate names the supervisor: bin/pairpilot already holds 1167 lines with no split
+# plan at all.
 #
-# Что вынесено и почему так, а не одним файлом на 725 строк. `pairctl` разделён
-# по владению состоянием, и границы видны по побочному эффекту:
+# Round 14, seventh time: the transcript sliding window and tail reading from the file
+# end. Here the caps rise for the same reason under the same rule, but with a caveat
+# outweighing the rise itself.
 #
-# - `pairctl_authority.py` — только запись в состояние раунда;
-# - `pairctl_panes.py` — адреса панелей и трёхсостояйная проверка `pin_verdict`;
-# - `pairctl_read.py` — только чтение, плюс обзор проектов для человека;
-# - `pairctl_cli.py` — грамматика команд и маршрутизация, 227 строк.
+# Caveat: this item started from a wrong figure. "46 thousand tokens" is the file size
+# (196 KB) divided by four. Those tokens never entered agent context: `pair_transcript`
+# by default takes 40 records, near 2k. So rotation never drops 46k as the plan wrote,
+# the figure fixed in plan-task4.md. What it truly fixes measured: tail reading stopped
+# parsing the whole file (67.5 ms -> 0.4 ms on a 2 MB file, 169x faster, the tail byte
+# same), while `pairctl log` with no `--limit` stopped pouring half a megabyte into
+# the terminal.
 #
-# Один файл `pairctl_cli.py` на 725 строк был бы не разбиением, а переносом
-# монолита в соседний файл: те же 19 команд, тот же `run_ctl` на пол-экрана, и
-# ни одна граница не проходит по тому, что важно. Порядок команд разбирается
-# словарём имён, поэтому добавление команды не требует править длинный `if`.
 #
-# Направление зависимости выбрано одно: CLI зависит от сервера, а не наоборот.
-# Обратное было бы возможно только если бы `Store` и `PairSession` выехали в
-# общий слой — это отдельная задача, и она названа первой в плане ниже.
+# Growth volume: server.py +159, test_protocol.py +183. Of server.py near a third is
+# comments explaining why reading runs from the end, why a default limit beats all.
 #
-# Тесты поехали за исходниками сразу, а не отдельным заходом: четыре набора
-# запускаются каждый отдельно в `scripts/verification-profile.tsv`, потому что
-# молчаливо исключённый набор выглядит как зелёный. Общая фикстура — в
-# `pair_test_base.py`, и это приспособление, а не третий тест-файл на исходник.
-mcp/pair_mailbox/server.py	4119	Раунд 82 (+16): гейт kind=ground-truth в done_blockers + проброс GroundTruthBlocked из receipt в отказ закрытия. Раунд 75 (+13): P2 — exact_command/argv в событиях unblock/unblock_refused (лог того, на что дано согласие) + поле last_permit из хвоста журнала. Раунд 65 (+4): wiring проверки свежести сервера server_freshness в tool_pair_state (поля server_fresh и server_stale_files) и tool_pair_advance (assert_server_fresh). Раунд 63 (+31): приоритет явного канала --pane/PAIR_PANE (pin > explicit > env > ancestry) и снятие дедлока занятости панели живым процессом при мертвом держателе (pane_stale_cleared). Раунд 58 (+6): вызов trigger_heal из heal.py в tool_pair_evidence при сбое в done — логика авто-реопена вынесена в heal.py. Раунд 57 (+11): intent_gate (scoping->plan) и Task Receipt при done в tool_pair_advance — монолит заморожен, логика в intent_gate.py и receipt.py. Раунд 56 (+5): проверка budget ceiling (check_budget из budget.py) в tool_pair_advance. Раунд 55 (+17): машинный гейт план→implement в tool_pair_advance — сам чек вынесен в plan_gate.py, в монолите остался вызов и отказ с инструкцией. Раунд 53 (+6): баннер задачи ВЫНЕСЕН из server.py в task_banner.py (одна ответственность: состояние -> текст панели); в server.py остались импорт и два вызова в tool_pair_task. Причина молчащего критика в новой сессии: .pair/notes/finding.md. Раунд 48 (+17): REFUSED на несуществующую роль в tool_pair_send.apply (urок 47: 4 письма в opencode-agent создали мёртвый ящик, delivered:true, молчаливая потеря) + guard OSError в _ring probe (критик seq 702: tmux, умерший между which() и запуском, ронял звонящего). Раунд 47 (+10): same_pane доказывает тождество …
-mcp/pair_mailbox/test_protocol.py	4381	Раунд 82 (+8): гейт ground-truth в done_blockers — test_done_refused_without_writer_ground_truth (отказ без прогона и с чужим прогоном) + компакт подписи в test_signed_evidence. Раунд 75 (+30): P0 — test_test_runners_require_isolated_runner_p0 + обновление test_real_test_commands_are_still_allowed, test_project_work_is_confirmed_without_any_file, test_a_yes_no_prompt_still_gets_y (тесты на хосте — refuse). Раунд 63 (+37): тесты test_daemon_foreign_env_explicit_channel_wins и test_deadlock_living_host_takes_over_dead_occupant_pane для закрытия бэклог-карточки pane-channel-explicit-not-env. Раунд 62 (+3): test_cannot_send_to_yourself_or_nowhere покрывает отказ tool_pair_deliver на незарегистрированную роль (ghost-role) для закрытия бэклог-карточки pair-send-unregistered-role-refused. Раунд 55 (+7): миграция фикстур под план-гейт — проход по фазам теперь пишет артефакт плана и визу (write_plan/ack_plan в pair_test_base.py, сам харнесс не заморожен); в тестах остались только точки вызова. Раунд 48 (+34): test_ring_probe_oserror_is_reported_not_raised + 3 теста зарегистрировали peer.tool_pair_state() перед send (правка REFUSED правильно отказывает роли, не зарегистрировавшей себя — старые тесты рассчитывали на молчаливое принятие). Раунд 47 (+104): TestOldPythonStillRuns — AST-скан PEP 604 …
-bin/pairpilot	1879	Verdict-87 follow-up (+2): check_failed flag — failed ownership check never counts as proven foreign. Verdict-87 (+13): foreign vs unproven split — alive+foreign drops, dead/unavailable keeps the file for next tick. Раунд 87 (+20): F6 — unread-ветка в nudge_still_true (указатель снимается при unread=0); F7 — belongs-сверка в flush_outbox (чужая панель в журнал, не в печать). Раунд 66 (+24): is_done_parked — парковка супервизора в фазе done при отсутствии открытых задач и обязательств; отключение холостого спама тишины и wake-эскалаций заметок для защиты токенов. Раунд 65 (+19): детекция и фиксация в транскрипте устаревшего сервера (check_server_freshness) в тике супервизора. Раунд 64 (+106): Smart Auto-Compact (check_stalled_busy) при зависшем Working... > stall_timeout (300с zero-delta) и превентивный /compact (preventive_compact) при phase=done. Раунд 53 (+51): idle_roles — симметричный порогу писателя толчок роли без входящих. Молчащий критик в новой сессии: у пилота не было для него пути (stale_writer смотрит только на писателя). Существующий stale_roles (мёртвые pid) не тронут. Раунд 49 (+2): перенос строки `from __future__ import annotations` (e0e44ce, fix macOS python3.9) — забыли поднять baseline при коммите; agy (seq 731) подтвердил и предложил значение. Раунд 77 (+24): supports_compact — гейт /compact по профилю CLI (только Claude Code), Escape-only для остальных; тесты гейта. Раунд 78 (+6): stale-check exempt из парковки done — docstring (осознанное решение: замороженные фазы надо чинить). Карточка server-freshness-wiring закрыта.
-mcp/pair_mailbox/composer.py	1416	Раунд 86 (+20): граница как fallback без хинта + typed-guard против занятого поля. Раунд 85 (+21): детект пустого поля ввода opencode (Ask-подсказка над нижней границей, статус/футер ниже не сканировать) + is_input_box_hint. Раунд 75 (+44): P0 — TEST_RUNNER_NEVER (pytest/unittest/jest/cargo test/go test/bun test/npm test + интерпретатор с test-аргументом) с исключением ISOLATED_RUNNER для run-isolated-test.sh; остальные NEVER действуют и внутри раннера. Раунд 74 (+50): P1 — split_command_segments (shlex в режиме punctuation_chars: сегментация составных команд по разделителям вне кавычек) + NEVER для env-префиксов (LD_PRELOAD, PYTHONPATH и др.) и назначений cp/mv/ln вне проекта. Раунд 54 (+51): bun и bin/ в DEFAULT_ALLOW_PATTERNS (рутина, на которой агент вставал на промпте: bun — рантайм панелей omp/pi, bin/pair* — наши раннеры; границы относительности и .. как у scripts/) + нумерованные меню: menu_allow_key шлёт цифру ТОЛЬКО при verdict=allow и явном Allow-item (Enter по дефолту мог оказаться Deny). Раунд 53 (+31): WIP-правка TUI-подсказок в строке ввода (OpenCode/Claude/Codex) доведена до рабочего состояния: добавлен маркер ❯ в PROMPT_MARKERS (без него ветка очистки была недостижима — хвост «⇧⇥ to change thinking effort» делал панель занятой навсегда, и пилот не будил спящего агента, .pair/notes/finding.md), а небезопасный регекс `ctrl\+x.*` заменён на словарь фраз с полным совпадением — прежний вариант объявлял пустым композер с настоящим текстом «ctrl+x не помогает…», то есть пилот перезаписал бы чужой ввод. Входящие +2 строки pi-рамки (раунд 51, f1412c1) подняты здесь же: cap забыли поднять при коммите. Раунд 53 (+2): поднят по факту, а не по новой правке — pi-рамка (раунд 51, f1412c1) дала +2 строки, cap при коммите забыли поднять (та же история, что в раунде 49 у pairpilot). Кода composer.py этот раунд не касался. Раунд 51 (+5): pi-стиль рамка ввода — контент между двумя полными `───` разделителями, статус (cwd/токены) ниже. Первая содержательная строка после пропущенного разделителя = поле ввода; два разделителя подряд = пустое поле (верхний разделитель читается как пустая рамка). Без этого pi считался занятым всегда (находка agy, finding-pi-support.md; живой capture 2026-10-10).
-bin/pairpilot_test.py	2281	Verdict-87 follow-up (+36): failed-check-keeps-file test + unproven dedup via remember TTL. Verdict-87 (+36): dead-pane-keeps-file test + alive stubs in belongs tests. Раунд 87 (+90): 4 поведенческих теста F6/F7 (stale/survive/foreign/own) + belongs-стабы во flush-тестах и patch_composer. Раунд 82 (+2): ground-truth в фикстуре pilot checkpoint (finding agy). Раунд 79 (+6): hermetic-гейт под новый список compact (pi/omp/opencode True; agy/claude/nosuchrole/weird False). Раунд 66 (+52): TestDoneParking — тесты парковки пилота в done при отсутствии задач/обязательств и эскалации при активных обязательствах. Раунд 65 (+18): test_pilot_detects_and_logs_stale_server в TestSmartAutoCompact. Раунд 64 (+89): TestSmartAutoCompact — тесты детекции зависшего Working... (zero-delta), сброса таймера при изменении экрана и превентивного /compact на phase=done. Раунд 53 (+38): тесты idle_roles — молчащая роль без входящих будится один раз; закрытый раунд и роль с почтой не трогаются. Старый пин test_critic_silence_is_not_a_nudge_by_itself удалён: он фиксировал дефект как намерение. Раунд 47 (+2): from __future__ import annotations — PEP 604 аннотации вычисляются при импорте и требуют 3.10, а системный python3 macOS — 3.9, откуда он и весь класс 210 ошибок самой установки. Раунд 34 (+16): test_daemon_ignores_inherited_tmux_pane — демон не усыновляет панель из окружения. Раунд 42 (+24): test_obligation_nudge_answered_while_queued_is_dropped_not_delivered — напоминание про закрытый запрос дропается. Раунд 42 (+6): hermetic-моки pane_role_pid/deliver в TestRestart.setUp + %999999 вместо живой %7 в dead_writer_state и 3 ассертах — тесты больше не шлют send-keys в живой tmux (backlog live-tmux-parallel-flake). Раунд 43 (+67): 3 теста — второе письмо после прочтения будит заново + вытеснение из очереди видно в транскрипте + повтор зависшего запроса по reply_repeat. Раунд 46 (+6): test_role_without_wake_adapter_is_named_not_silent — нет адаптера, запись в журнал, а не молчание. Раунд 77 (+64): supports_compact — 3 теста гейта /compact (stall Escape-only, preventive skip, hermetic profile parse) + изоляция гейта в setUp/tearDown. Раунд 78 (+20): test_stale_server_warns_even_when_parked — stale-warning в припаркованном done (прекондиция is_done_parked + assert pilot_server_stale).
-mcp/pair_mailbox/pairctl_authority.py	420	Раунд 75 (+28): P2 — _last_permit (последнее unblock/unblock_refused из хвоста transcript.jsonl) + поле last_permit в status. Раунд 36 (+14): status показывает effective policy с источником project|global; голый roles — чтение, а не clear. Раунд 38 (+10): writer-pin — policy только writer, --critic принят и проигнорирован с предупреждением, --swap меняет писателя на второго живого.
-mcp/pair_mailbox/pairctl_read.py	351	Раунд 63 (+23): extract_pane для извлечения явного канала --pane и PAIR_PANE. Раунд 31 (+1): PAIR_STATE строкой целиком — вердикт-нит про путь с пробелом. Раунд 31 (+20): walk_up_to_state — запуск из подкаталога не создаёт второй .pair, nested-тест — ВОЗРАЖАЮ-2. Раунд 31 (+3): дефолт состояния из PAIR_STATE — один резолвер для сервера и утилит. Команды человека, которые только читают, плюс обзор проектов (discover_projects/project_row/render_table), откуда же берёт данные bin/pairchat. Обзор живёт здесь, а не в отдельном модуле: иначе pairchat зависел бы от CLI, который ему не нужен.
-bin/pairchat	438	Раунд 33 (+5): белый список видов заменён deny по шуму z*/-wrap — backlog и finding-* видны (карточка pairchat-hides-prescribed-notes). Тонкий CLI поверх pair_send. Ниже порога обязательного ревью (500), но выше целевого размера, поэтому зафиксирован явно. Раунд 15: импорт обзора переехал в pairctl_read, потолок опущен с 434.
-install.sh	572	Раунд 68 (+33): авторский ASCII-баннер AVP-Dev, тихий прогон вложенной сюиты ядра с компактным статусом и выводом ошибок только при падении, приветственный блок быстрого старта и ссылок в финале установки. Раунд 54 (+21): write_native_permissions — установщик пишет нативный permission-слой (allow-list) профилям opencode/agy/claude; codex/pi остаются на пилоте, нативного слоя у них нет. Bypass-флаги не используем: deny остаётся неоспоримым. Раунд 47 (+8): проверка версии Python ДО установки — на macOS системный python3 3.9 (CommandLineTools) выдавал 210 ошибок импорта вместо одной строки о версии; сообщение называет и что не так, и что делать. Гвард в serve.sh — то же самое же для каждого запуска MCP (exit 6). Раунд 33 (+4): PAIR_INSTALL_SKIP_SUITE — вложенная сюита пропускается в тестах (698с→47с). Раунд 31 (+1): убран абсолютный --state из общих конфигов (все проекты делили бы одно состояние) — ВОЗРАЖАЮ-1. Раунд 31 (+20): verify переписывает --state на scratch (регрессия pin писала в живой ростер). Раунд 31 (+129): splice_json_block правит только блок pair, комментарии и форматирование человека целы (pin позже убран по вердикту: общие конфиги состояния не несут). Инсталлер, одна ответственность. 309 строк — на границе целевого размера; рост выше 500 потребует ревью границ. Починка 2026-10-06 (+3): server_key для CLI на общем mcp.json (pi/omp) + omp в списке бинарей. Раунд 44 (+16): вложенная сюита наследует живые site-пакеты через PYTHONPATH (наст…
+#
+# Past this rise: no new server.py functions with no moving out. The file passed 3900
+# lines, and the next item (the digest) must either fit or demand splitting before
+# writing.
+#
+# Round 15: the split happened, and both records that demanded rises four straight
+# times dropped. Exactly what the paragraphs above prescribed: "analysis before the
+# record", "the next task must split server.py". The task was exactly that, giving
+# this.
+#
+# What moved and why so, not one 725-line file. `pairctl` splits by state ownership,
+# edges visible by side effect:
+#
+# - `pairctl_authority.py` — only writing the round state;
+# - `pairctl_panes.py` — pane addresses plus the three-state `pin_verdict` check;
+# - `pairctl_read.py` — reading only, plus the human project overview;
+# - `pairctl_cli.py` — command grammar and routing, 227 lines.
+#
+# One 725-line `pairctl_cli.py` would move the monolith next door, not split it: the
+# same 19 commands, the same half-screen `run_ctl`, no edge over what matters. Commands
+# resolve by a name dict, so adding a command never edits a long `if`.
+#
+#
+# The dependency runs one way: the CLI depends on the server, never reversed. The
+# reverse could only stand had `Store` and `PairSession` moved into a shared layer — a
+# separate task, named first in the plan below.
+#
+# Tests followed sources at once, never a separate pass: four suites each launch alone
+# in `scripts/verification-profile.tsv`, because a silently excluded suite reads as green.
+# The shared fixture lives in `pair_test_base.py` — a fixture, not a third test file per
+# source.
+mcp/pair_mailbox/server.py	4119	Round 82 (+16): kind=ground-truth gate in done_blockers + GroundTruthBlocked from receipt into the close refusal. Round 75 (+13): P2 exact_command/argv in unblock/unblock_refused events + last_permit from the journal tail. Round 65 (+4): server_freshness wiring into tool_pair_state and tool_pair_advance. Round 63 (+31): explicit --pane/PAIR_PANE channel priority + pane-busy deadlock removal.
+mcp/pair_mailbox/test_protocol.py	4381	Round 82 (+8): ground-truth gate in done_blockers + signature compaction. Round 75 (+30): P0 isolated-runner tests + yes/no prompt tests. Round 63 (+37): explicit-channel and deadlock pane tests closing pane-channel-explicit-not-env.
+bin/pairpilot	1882	Round 88 (+3): mark_wake reports pilot_wake_damaged on broken-file overwrite (R2 seq 1157). Verdict-87 follow-up (+2): check_failed flag. Verdict-87 (+13): foreign vs unproven split. Round 87 (+20): F6 unread branch in nudge_still_true; F7 belongs check in flush_outbox. Round 66 (+24): done-phase supervisor parking.
+mcp/pair_mailbox/composer.py	1416	Round 86 (+20): edge as hintless fallback + typed-guard on the busy field. Round 85 (+21): opencode empty-input detection + is_input_box_hint. Round 75 (+44): P0 TEST_RUNNER_NEVER with the ISOLATED_RUNNER exception. Round 74 (+50): P1 split_command_segments.
+bin/pairpilot_test.py	2380	Round 88 (+38): producer/consumer round-trip test (F3 seq 1153) + damaged-wake tests (R2) + damaged-test move to tick (R1). Round 88 (+16): EN unread-nudge twin. Round 88 (+25): damaged-wake removal regression. Verdict-87 follow-up (+36): failed-check-keeps-file + unproven dedup. Verdict-87 (+36): dead-pane-keeps-file + alive stubs. Round 87 (+90): 4 F6/F7 behaviour tests + belongs stubs. Critic seq 1219 (+19): round-trip on the obligation-reminder producer.
+mcp/pair_mailbox/pairctl_authority.py	420	Round 75 (+28): P2 _last_permit from the transcript tail + last_permit in status. Round 36 (+14): effective-policy status. Round 38 (+10): writer-pin, --critic ignored with a warning, --swap moves the writer.
+mcp/pair_mailbox/pairctl_read.py	351	Round 63 (+23): extract_pane for the explicit --pane/PAIR_PANE channel. Round 31 (+1): whole-line PAIR_STATE. Round 31 (+20): walk_up_to_state, no second .pair from subdirs. Round 31 (+3): one state resolver for server and utils. Human read-only commands + project overview.
+bin/pairchat	438	Round 33 (+5): kind allowlist replaced by noise deny (pairchat-hides-prescribed-notes card). Thin CLI over pair_send. Under the review cap, above target, pinned explicit. Round 15: overview import moved to pairctl_read.
+install.sh	572	Round 68 (+33): AVP-Dev ASCII banner, quiet nested core-suite run, quickstart block. Round 54 (+21): native permission layer for opencode/agy/claude profiles; codex/pi stay on pilot. No bypass flags. Round 47 (+8): checks.

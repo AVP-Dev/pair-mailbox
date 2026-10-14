@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
-"""Живой просмотр диалога между двумя агентами.
+"""Live view of the dialogue between the two agents.
 
-Тексты сообщений лежат в .pair/mailbox, события (отказы, смена авторитета,
-заметки) — в .pair/transcript.jsonl и .pair/notes.
+Message texts live in .pair/mailbox; events (refusals, authority moves,
+notes) in .pair/transcript.jsonl and .pair/notes.
 
-  bin/pairchat               следить за текущим проектом, Ctrl-C выход
-  bin/pairchat --once        напечатать переписку и выйти
-  bin/pairchat --all --once  одна таблица и вся переписка по всем проектам
-  PAIR_STATE=путь bin/pairchat --once    конкретный проект
+  bin/pairchat               watch the current project, Ctrl-C exits
+  bin/pairchat --once        print the exchange and exit
+  bin/pairchat --all --once  one table and the full exchange for all projects
+  PAIR_STATE=path bin/pairchat --once    a concrete project
 
-Почему --once существует: «покажи, что там было» — это вопрос, на который нужен
-ответ и выход, а не окно, которое надо закрывать руками.
+Why --once exists: "show me what happened" is a question that wants
+an answer and an exit, not a window to close by hand.
 """
 from __future__ import annotations
 
@@ -32,11 +32,11 @@ BOLD, DIM, RED, YELLOW, CYAN, MAGENTA, OFF = (
 )
 
 WIDTH = 100
-# Рабочий шум человека о самом pair-mailbox: куски кода, которым не место
-# в переписке агентов. Прячется по префиксу, а не белым списком видов:
-# иначе каждый новый вид из §9 (backlog, finding-<ID>) молча исчезал бы
-# из ленты (карточка pairchat-hides-prescribed-notes). Скрыты, а не
-# потеряны: `--all-notes` их показывает.
+# Human work noise about pair-mailbox itself: code scraps with no place
+# in the agent exchange. Hidden by prefix, not by a kind allowlist:
+# otherwise every new \u00a79 kind (backlog, finding-<ID>) would silently vanish
+# from the feed (pairchat-hides-prescribed-notes card). Hidden, not lost:
+# `--all-notes` shows them.
 NOISE_NOTE_PREFIXES = ("z",)
 NOISE_NOTE_SUFFIXES = ("-wrap",)
 
@@ -55,15 +55,15 @@ def clock(ts) -> str:
 
 
 class Feed:
-    """Один проект: .pair, который читается вперёд с места, где мы остановились.
+    """One project: the .pair read forward from where we stopped.
 
-    Курсоры свои у каждого объекта: сообщения — по имени файла, события — по строке
-    транскрипта, заметки — по числу прочитанных байт. Благодаря этому один и тот же
-    объект можно опустошать в цикле, и ничего не печатается дважды.
+    Each object keeps its own cursor: messages by file name, events by transcript
+    line, notes by bytes read. So the same object can be drained in a loop
+    with nothing printed twice.
 
-    Блок возвращается как (ключ сортировки, вид, метка проекта, текст): метка лежит
-    внутри блока, а не подкладывается снаружи, иначе два одинаковых сообщения из
-    разных проектов склеились бы в одно.
+    A block returns as (sort key, kind, project label, text): the label sits
+    inside the block, never attached outside — otherwise two identical messages
+    from different projects would glue into one.
     """
 
     def __init__(self, root: Path, label: str, *, notes: bool = True) -> None:
@@ -77,20 +77,19 @@ class Feed:
         self.seen_events: set[str] = set()
         self.note_pos: dict[str, int] = {}
         self.seen_note_stem = False
-        # заголовок заметки печатается один раз на файл: при перезаписи заметки мы
-        # показываем только новое содержимое, а не второй заголовок того же имени
+        # the note header prints once per file: when a note is overwritten we show
+        # only the new content, not a second header of the same name
         self.heads: dict[str, str] = {}
 
     def _add(self, out: list, order, kind: str, text: str) -> None:
         out.append((order, kind, self.label, text))
 
     def body_prefix(self) -> str:
-        """Отступ для продолжений строк: метка проекта плюс два пробела.
+        """Indent for wrapped lines: the project label plus two spaces.
 
-        Считается здесь, а не в show(), потому что перенос по словам обязан знать
-        свою реальную ширину. Раньше он считал два пробела, печатал строку длиной
-        93 символа, а show() сверху добавлял ещё 14 — выходило 107 колонок и текст
-        всё равно рвался в терминале.
+        Counted here, not in show(), because word wrap must know its real
+        width. It used to count two spaces, print a 93-char line, and show()
+        added 14 more on top — 107 columns, and the text still tore in the terminal.
         """
         return " " * (self.label_width + 2) if self.label_width else "  "
 
@@ -116,12 +115,12 @@ class Feed:
                 prefix = self.body_prefix()
                 if body:
                     parts.append(reflow(body, prefix))
-                # Тему переносим только если она не влезла в одну строку вместе с
-                # заголовком. Порядок частей: заголовок, тема, тело — читается как
-                # «кто кому, о чём, а вот подробности».
+                # Wrap the subject only when it missed one line together with the header.
+                # Part order: header, subject, body — reads as "who to whom, about what,
+                # here are the details".
                 if msg.get("subject"):
                     subject = str(msg["subject"])
-                    # метка проекта ещё не напечатана, её ширину тоже считаем
+                    # the project label is not printed yet, count its width too
                     overhead = self.label_width
                     if len(head) + len(subject) + overhead + 4 > WIDTH:
                         parts.insert(1, reflow(subject, prefix))
@@ -150,40 +149,40 @@ class Feed:
         ts = str(event.get("ts") or "")
         kind = event.get("kind")
         if kind == "send":
-            # текст сообщения уже показан из mailbox, повторять не нужно; но молчание
-            # по нему считается, потому что тишину меряет transcript
+            # the message text already showed from mailbox, no repeat; but silence on
+            # it still counts, because the transcript measures quiet
             return
         if self.messages_only and kind != "refusal":
-            # отказ оставляем всегда: это самое важное, что бывает в молчании
+            # a refusal always stays: the most important thing quiet ever holds
             return
         if kind == "refusal":
-            # «assign», «release» и прочие служебные слова прячем: человеку нужен
-            # факт отказа и что делать, а не имя внутреннего вида события
-            head = f"[{clock(ts)}] ОТКАЗ  {event.get('role')} → {event.get('tool')}"
+            # "assign", "release" and other service words hide: the human needs the
+            # refusal fact and what to do, not the inner event-kind name
+            head = f"[{clock(ts)}] REFUSED  {event.get('role')} → {event.get('tool')}"
             self._add(out, (0, ts), "refusal",
                       head + "\n" + reflow(str(event.get("reason", "")), self.body_prefix()))
             return
         if kind in ("claim", "assign", "release", "advance"):
             if kind == "assign":
                 self._add(out, (0, ts), "control",
-                          f"[{clock(ts)}] АВТОРИТЕТ ПЕРЕДАН: {event.get('writer')}"
-                          f"   (вы, {event.get('role')})")
+                          f"[{clock(ts)}] AUTHORITY MOVED: {event.get('writer')}"
+                          f"   (you, {event.get('role')})")
                 return
             if kind == "release":
                 self._add(out, (0, ts), "control",
-                          f"[{clock(ts)}] АВТОРИТЕТ СВОБОДЁН   ({event.get('role')})")
+                          f"[{clock(ts)}] AUTHORITY FREE   ({event.get('role')})")
                 return
             if kind == "advance":
                 self._add(out, (0, ts), "control",
-                          f"[{clock(ts)}] ФАЗА: {event.get('phase')}   ({event.get('role')})")
+                          f"[{clock(ts)}] PHASE: {event.get('phase')}   ({event.get('role')})")
                 return
             self._add(out, (0, ts), "control",
-                      f"[{clock(ts)}] ПИСАТЕЛЬ: {event.get('writer')}   ({event.get('role')})")
+                      f"[{clock(ts)}] WRITER: {event.get('writer')}   ({event.get('role')})")
             return
         if kind == "note":
             self._add(out, (0, ts), "note_head",
-                      f"[{clock(ts)}] ЗАМЕТКА {event.get('note_kind')} "
-                      f"({event.get('chars')} симв., {event.get('role')})")
+                      f"[{clock(ts)}] NOTE {event.get('note_kind')} "
+                      f"({event.get('chars')} chars, {event.get('role')})")
             return
 
     def notes(self, out: list) -> None:
@@ -198,44 +197,44 @@ class Feed:
             except Exception:
                 continue
             stem = path.stem
-            # Показываем всё, кроме рабочего шума (NOISE_* выше): белый список
-            # видов расходился с §9 в обе стороны — прятал backlog и finding-*,
-            # которые предписывают навыки, и показывал review, которого в §9 нет.
+            # Show everything except work noise (NOISE_* above): the kind allowlist
+            # drifted from \u00a79 both ways — hid the backlog and finding-* kinds the
+            # skills prescribe, and showed review, which \u00a79 never had.
             if not self.keep_noise and (stem.startswith(NOISE_NOTE_PREFIXES)
                                         or stem.endswith(NOISE_NOTE_SUFFIXES)):
                 self.note_pos[path.name] = len(text)
                 continue
             pos = self.note_pos.get(path.name, 0)
-            # файл мог быть перезаписан целиком — тогда прежнее содержимое больше
-            # не действительно и показывать надо новое с начала, а не хвост
+            # the file may be rewritten whole — then the old content no longer holds
+            # and the new shows from the start, not the tail
             rewritten = len(text) < pos
             if len(text) == pos and not rewritten:
                 continue
-            # «новая версия» — файл уже показывали, и теперь он короче прежнего,
-            # то есть был перезаписан: печатаем пометку и содержимое с начала
+            # "new version" means the file already showed and now runs shorter than
+            # before: it was rewritten, so print the mark and the content from the start
             fresh = rewritten and path.name in self.heads
             if rewritten:
                 pos = 0
             self.note_pos[path.name] = len(text)
-            # Заметку на заметку перезаписывают, и второй файл с тем же именем — это
-            # обычно новая версия того же документа, а не другой документ. Печатаем
-            # пометку, чтобы два разговора не выглядели одним сплошным.
+            # A note overwritten onto a note, and the second same-named file is usually
+            # a new version of the same document, not another document. Print the mark
+            # so two conversations never read as one unbroken one.
             lines = [
                 line for line in text[pos:].splitlines()
                 if line.strip() and not line.startswith("#") and "—" not in line[:4]
             ]
             if not lines:
                 continue
-            # заметки в конце: своей метки времени у них нет, и вставлять их в
-            # хронологию значило бы выдумать её
+            # notes last: they carry no timestamp of their own, and inserting them into
+            # the chronology would invent one
             prefix = self.body_prefix()
             if path.name not in self.heads:
-                # первый раз: заголовок один, без пометки
+                # first time: one header, no mark
                 head = f"── {stem} ──"
                 self.heads[path.name] = head
                 self._add(out, (1, path.name), "note_head", head)
             elif fresh:
-                self._add(out, (1, path.name), "note_head", f"── {stem} (новая версия) ──")
+                self._add(out, (1, path.name), "note_head", f"── {stem} (new version) ──")
             self._add(out, (1, path.name), "note_body",
                       reflow("\n".join(lines), prefix))
 
@@ -248,21 +247,21 @@ class Feed:
 
 
 def reflow(text: str, indent: str, width: int = WIDTH) -> str:
-    """Переносит длинные строки по словам.
+    """Wraps long lines by word.
 
-    Агенты пишут абзацами по 300-400 символов. Без переноса терминал рвёт их
-    где-то в середине слова, и читать невозможно. Ширину считаем в символах, а не
-    в байтах: кириллица в UTF-8 — два байта, и счёт по байтам обрезал бы слова.
+    Agents write in 300-400 char paragraphs. Without wrapping the terminal
+    tears them mid-word and reading is impossible. Width counts in chars, not
+    bytes: Cyrillic in UTF-8 is two bytes, and byte counting would cut words.
     """
     out = []
     for line in text.splitlines():
         if len(line) <= width - len(indent):
             out.append(indent + line if line else "")
             continue
-        # Отступ метки проекта уже включён в prefix, поэтому room считаем от
-        # оставшегося места. Длинное слово посреди строки не режем: это URL или
-        # путь, разрыв сделает его некопируемым. Такие строки выходят за край
-        # терминала, и это осознанный размен.
+        # the project-label indent already sits inside prefix, so room counts from
+        # the remaining space. A long word mid-line stays whole: it is a URL or a
+        # path, and a break would make it uncopyable. Such lines run past the
+        # terminal edge, a deliberate trade.
         room = max(20, width - len(indent))
         current = ""
         for word in line.split():
@@ -277,8 +276,8 @@ def reflow(text: str, indent: str, width: int = WIDTH) -> str:
 
 
 def labels_for(roots: list[Path]) -> list[str]:
-    """Короткие имена проектов. Повторяющиеся уточняем родителем — иначе в таблице
-    две строки `app` и ни одна не говорит, какая."""
+    """Short project names. Repeats are qualified by parent — otherwise the table
+    holds two `app` rows and neither says which."""
     counts: dict[str, int] = {}
     for root in roots:
         counts[root.parent.name] = counts.get(root.parent.name, 0) + 1
@@ -292,8 +291,8 @@ def labels_for(roots: list[Path]) -> list[str]:
 
 
 def show(blocks: list, width: int) -> None:
-    """Печатает блоки по порядку. Метка проекта — на первой строке, остальное сдвинуто
-    под неё, чтобы строки одного блока читались как один блок."""
+    """Prints blocks in order. The project label goes on the first line, the rest
+    shifts under it so one block’s lines read as one block."""
     for _, kind, label, text in sorted(blocks, key=lambda block: block[0]):
         prefix = label.ljust(width) if width else ""
         colour = KIND_COLOR.get(kind, "")
@@ -302,23 +301,23 @@ def show(blocks: list, width: int) -> None:
             print(colour + prefix + lines[0] + OFF)
         else:
             print(prefix + lines[0])
-        # продолжения уже отступлены на всю ширину метки в reflow; пустые строки
-        # не добиваем пробелами — это мусор, которого в тексте не было
+        # continuations already indent to the full label width in reflow; empty lines
+        # get no padding spaces — garbage the text never held
         for line in lines[1:]:
             print(line)
 
 
 def overview(roots: list[Path], labels: list[str], stuck_min: int) -> None:
-    """Шапка перед перепиской. Ширины считаем по данным: имена проектов разной
-    длины, и жёсткий отступ разъезжал бы колонки на первой же строке."""
-    header = ("проект", "фаза", "писатель", "тишина")
+    """Header before the exchange. Widths count from the data: project names run
+    different lengths, and a hard indent would skew the columns on line one."""
+    header = ("project", "phase", "writer", "silence")
     table = [
         (
             label,
             row["phase"],
             row["writer"] or "—",
-            "не начат" if row["silence_seconds"] is None
-            else row["silence"] + ("  ЗАВИС" if row["stuck"] else ""),
+            "not started" if row["silence_seconds"] is None
+            else row["silence"] + ("  STUCK" if row["stuck"] else ""),
         )
         for root, label in zip(roots, labels)
         for row in [project_row(root, stuck_min)]
@@ -330,11 +329,11 @@ def overview(roots: list[Path], labels: list[str], stuck_min: int) -> None:
 
 
 def pick_roots(args) -> list[Path]:
-    """Корень по умолчанию — тот, где вы стоите, и никакого --all.
+    """The default root is where you stand, and no --all.
 
-    Догадка «а покажу-ка сразу всё» здесь вредна: в пяти проектах пять переписок
-    вперемешку, и про тот, в котором вы работаете, вы не узнаете ничего.
-    Обзор по всем — отдельное действие, когда человек его выбрал сам.
+    Guessing "let me show everything" harms here: five projects hold five
+    exchanges in a mix, and you learn nothing about the one you work in.
+    The all-view is a separate act, once the human chose it.
     """
     here = Path(os.environ.get("PAIR_STATE") or ".pair").expanduser()
     local = here.resolve() if (here / "state.json").is_file() else None
@@ -342,13 +341,13 @@ def pick_roots(args) -> list[Path]:
     if args.everywhere or args.paths:
         named = discover_projects(args.paths) if args.paths else discover_projects([])
         if not named:
-            print("ни одного проекта с состоянием пары не найдено")
-            print("укажите путь:  bin/pairchat --all ~/work/foo")
+            print("no project with pair state found")
+            print("point the path:  bin/pairchat --all ~/work/foo")
         return named
     if local is None:
-        print(f"нет {here} — вы не в папке проекта, где идёт работа")
-        print("  посмотреть один:   cd <проект> && bin/pairchat --once")
-        print("  посмотреть все:    bin/pairchat --all --once")
+        print(f"no {here} — you are not in a project folder under work")
+        print("  view one:   cd <project> && bin/pairchat --once")
+        print("  view all:    bin/pairchat --all --once")
         return []
     return [local]
 
@@ -356,23 +355,23 @@ def pick_roots(args) -> list[Path]:
 def main() -> int:
     parser = argparse.ArgumentParser(
         prog="pairchat",
-        description="Переписка между агентами: одного проекта или всех сразу.",
+        description="Exchange between agents: one project or all at once.",
     )
     parser.add_argument("--once", action="store_true",
-                        help="напечатать и выйти вместо окна до Ctrl-C")
+                        help="print and exit instead of a window till Ctrl-C")
     parser.add_argument("--all", dest="everywhere", action="store_true",
-                        help="все проекты сразу, вперемешку. По умолчанию — только тот, "
-                             "где вы стоите: смешанные переписки не читаются")
+                        help="all projects at once, intermixed. Default — only the one "
+                             "where you stand: mixed exchanges do not read")
     parser.add_argument("--stuck-min", type=int, default=30,
-                        help="с какой тишины считать проект зависшим (по умолчанию 30)")
+                        help="which silence counts the project stuck (default 30)")
     parser.add_argument("--messages-only", action="store_true",
-                        help="только переписка, без служебных событий и заметок")
-    parser.add_argument("--no-notes", action="store_true", help="без заметок")
+                        help="only the exchange, no service events or notes")
+    parser.add_argument("--no-notes", action="store_true", help="no notes")
     parser.add_argument("--all-notes", action="store_true",
-                        help="заметки тоже, включая мои отладочные (их много)")
+                        help="notes too, including my debug ones (many)")
     parser.add_argument("--since", default="",
-                        help="только события не старше N минут назад, например --since 60")
-    parser.add_argument("paths", nargs="*", help="проекты или .pair, если не --all")
+                        help="only events newer than N minutes ago, e.g. --since 60")
+    parser.add_argument("paths", nargs="*", help="projects or .pair, unless --all")
     args = parser.parse_args()
 
     if args.all_notes:
@@ -394,13 +393,13 @@ def main() -> int:
         overview(roots, labels, args.stuck_min)
         print()
 
-    where = "проектов: " + ", ".join(labels) if width else str(roots[0])
-    tail = "печатаю и выхожу" if args.once else "Ctrl-C чтобы выйти"
-    print(f"смотрю {where}, {tail}\n")
+    where = "projects: " + ", ".join(labels) if width else str(roots[0])
+    tail = "printing and exiting" if args.once else "Ctrl-C to exit"
+    print(f"watching {where}, {tail}\n")
 
     if args.messages_only:
-        # события нужны, чтобы понять, кто что делает, но когда человек читает саму
-        # переписку, служебные строки только мешают
+        # events show who does what, but when the human reads the exchange itself
+        # the service lines only distract
         for feed in feeds:
             feed.want_notes = False
             feed.messages_only = True
@@ -410,7 +409,7 @@ def main() -> int:
         try:
             minutes = float(args.since)
         except ValueError:
-            print(f"--since: нужно число минут, не {args.since!r}")
+            print(f"--since: need a minute count, not {args.since!r}")
             return 1
         floor = (datetime.now(timezone.utc) - timedelta(minutes=minutes)).strftime("%Y-%m-%dT%H:%M:%S")
 
@@ -431,7 +430,7 @@ def main() -> int:
                 emit(feed)
             time.sleep(0.4)
     except KeyboardInterrupt:
-        print("\nвыход")
+        print("\nexit")
     return 0
 
 

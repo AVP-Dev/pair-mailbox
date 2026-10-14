@@ -1,16 +1,16 @@
-"""Баннер задачи раунда для панели, в которой агент начинается.
+"""The round task banner for the pane the agent starts in.
 
-Зачем отдельный модуль: server.py заморожен (scripts/file-size-baseline.tsv),
-и рост монолита запрещён без вынесения. Здесь живёт единственная ответственность —
-превращать состояние в текст, который человек и агенты видят в панели до первого
-хода. Ровно как obligations.py вынесены из server.py в своё время.
+Why a separate module: server.py is frozen (scripts/file-size-baseline.tsv),
+and monolith growth is banned without extraction. The single responsibility here
+is turning state into the text the human and the agents see in the pane before
+the first move. Exactly as obligations.py once moved out of server.py.
 
-История: `pairup --task` пишет задачу только в state.json (bin/pairup:238-241), и
-критик в новой сессии оставался без входного события — замерено 2026-10-11
-(2 раунда из 8 без единого send'а до смены фазы, .pair/notes/finding.md).
-Баннер печатается в обе панели при старте (`writer_init`/`critic_init`).
+History: `pairup --task` writes the task only into state.json (bin/pairup:238-241),
+and the critic in a new session stayed with no incoming event — measured 2026-10-11
+(2 rounds in 8 with zero sends before the phase moved, .pair/notes/finding.md).
+The banner prints into both panes at start (`writer_init`/`critic_init`).
 
-Баннер — проекция из состояния, а не рукописный текст: устареть не может.
+The banner is a projection from state, not handwriting: it cannot go stale.
 """
 
 from __future__ import annotations
@@ -20,25 +20,25 @@ from typing import Any
 
 
 def render_task_banner(state: dict[str, Any]) -> str:
-    """Открытые задачи раунда одной строкой каждая. Нет открытых — пустая строка."""
+    """The round open tasks, one line each. None open — an empty line."""
     open_items = [item for item in (state.get("tasks") or [])
                   if isinstance(item, dict) and item.get("status") == "open"]
     if not open_items:
         return ""
-    lines = ["", "=== ЗАДАЧА РАУНДА (pair) ==="]
+    lines = ["", "=== ROUND TASK (pair) ==="]
     for item in open_items:
         lines.append(f"#{item.get('id')} [{item.get('text', '')}]")
-    lines.append("Прочитай подробности: pair_digest / pair_state. Задачи закрывает писатель.")
+    lines.append("Read the details: pair_digest / pair_state. The writer closes tasks.")
     return "\n".join(lines) + "\n"
 
 
 def write_task_banner(state_dir: Path, state: dict[str, Any]) -> Path:
-    """Файл-баннер рядом с состоянием; пустая задача — пустой файл, не молчание."""
+    """The banner file next to state; an empty task means an empty file, not silence."""
     target = Path(state_dir) / "task-banner.txt"
     try:
         target.write_text(render_task_banner(state), encoding="utf-8")
     except OSError:
-        # Ошибка записи не должна ронять саму задачу: баннер — удобство
-        # панели, а не протокол, и его отсутствие возвращает прежнее поведение.
+        # A write failure must not drop the task itself: the banner is pane comfort,
+        # not protocol, and its absence returns the old behaviour.
         pass
     return target

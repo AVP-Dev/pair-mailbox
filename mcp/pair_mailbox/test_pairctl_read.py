@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Тесты команд человека, которые только читают: `pairctl all/why`, обзор проектов.
+"""Tests for the human-only read commands: `pairctl all/why`, project overview.
 
-Соответствуют `pairctl_read.py`. Сюда же едет проверка `bin/pairchat`, потому что
-он печатает обзор из того же модуля: проверять их раздельно означало бы дважды
-поднимать одну и ту же фикстуру ради одного и того же кода.
+Match `pairctl_read.py`. The `bin/pairchat` check rides here too, because it
+prints the overview from the same module: checking them apart would raise the
+same fixture twice for the same code.
 
-Запуск:  python3 mcp/pair_mailbox/test_pairctl_read.py
+Run:  python3 mcp/pair_mailbox/test_pairctl_read.py
 """
 from __future__ import annotations
 
@@ -31,26 +31,26 @@ from pairctl_read import (  # noqa: E402
 from server import Store, main  # noqa: E402
 
 class TestMultiProject(PairTestCase):
-    """Видеть все проекты сразу, а не переключаться между окнами.
+    """See all projects at once, not switching windows.
 
-    Здесь же регрессия на `pairchat --once`: флага не было, а я всё равно советовал
-    его набирать. Тест запускает скрипт как подпроцесс и требует, чтобы он сам
-    завершился — иначе это снова ложь в документации.
+    The `pairchat --once` regression rides here too: the flag never existed,
+    yet I kept advising to type it. The test runs the script as a subprocess
+    and demands it exit on its own — otherwise documentation lies again.
     """
 
     def _project(self, name: str, *, phase: str = "scoping", writer=None, events: int = 0):
         root = Path(self._tmp.name) / name / ".pair"
         store = Store(root)
         store.mutate(lambda state: state.update({"phase": phase, "writer": writer,
-                                                 "task": f"задача {name}"}))
+                                                 "task": f"task {name}"}))
         for _ in range(events):
             store.append_transcript("claim", writer or "opencode", writer=writer or "opencode")
         return root
 
     def setUp(self) -> None:
         super().setUp()
-        # discover_projects по замыслу не теряет проект, в котором стоишь, — а мы стоим
-        # в репозитории, где .pair есть. Без chdir каждый тест видел бы ещё и umputum.
+        # discover_projects never loses the project you stand in by design — and we stand
+        # in the repo that has .pair. Without chdir every test would also see umputum.
         self._cwd = os.getcwd()
         os.chdir(self._tmp.name)
 
@@ -61,7 +61,7 @@ class TestMultiProject(PairTestCase):
 
     def test_discovers_only_directories_that_actually_have_state(self) -> None:
         good = self._project("good", events=1)
-        # каталог без state.json — не проект, и в таблице у него быть не должно
+        # a dir with no state.json is not a project and must stay out of the table
         (Path(self._tmp.name) / "empty" / ".pair").mkdir(parents=True)
         os.environ["PAIR_SCAN"] = str(Path(self._tmp.name) / "*" / ".pair")
         try:
@@ -91,7 +91,7 @@ class TestMultiProject(PairTestCase):
         self.assertEqual(found, [root.resolve()])
 
     def test_cwd_project_survives_an_empty_pair_scan(self) -> None:
-        # где бы человек ни стоял, его собственный проект не должен пропасть из вида
+        # wherever the human stands, its own project must stay in view
         root = self._project("here", events=1)
         cwd = os.getcwd()
         os.chdir(root.parent)
@@ -114,10 +114,10 @@ class TestMultiProject(PairTestCase):
         self.assertLess(age, 60.0)
 
     def test_silence_ignores_state_writes_that_changed_nothing(self) -> None:
-        # пишем state.json без единого события: пара не двигалась, значит и молчание
-        # не должно выглядеть как свежая активность
+        # writing state.json with zero events: the pair never moved, so silence must
+        # not read as fresh activity
         root = self._project("idle", events=1)
-        Store(root).mutate(lambda state: state.update({"task": "трогаем state"}))
+        Store(root).mutate(lambda state: state.update({"task": "touching state"}))
         self.assertLess(silence_seconds(root), 60.0)
 
     def test_a_finished_project_is_never_reported_as_stuck(self) -> None:
@@ -144,8 +144,8 @@ class TestMultiProject(PairTestCase):
         self.assertGreaterEqual(len(lines), 4)
 
         def columns(line: str, count: int = 5) -> list:
-            # последний столбец может содержать пробелы, поэтому сравниваем только
-            # начала первых пяти: именно они должны совпадать на всех строках
+            # the last column may hold spaces, so compare only the first five starts:
+            # those must align across rows
             return [match.start() for match in re.finditer(r"\S+", line)][:count]
 
         reference = columns(lines[0])
@@ -153,7 +153,7 @@ class TestMultiProject(PairTestCase):
         for line in lines[2:]:
             if line.strip():
                 self.assertEqual(columns(line), reference,
-                                 "столбцы разъехались:\n" + "\n".join(lines))
+                                 "columns drifted:\n" + "\n".join(lines))
 
     def test_ctl_all_gives_one_row_per_project(self) -> None:
         self._project("alpha", events=1)
@@ -166,7 +166,7 @@ class TestMultiProject(PairTestCase):
         text = out.getvalue()
         self.assertIn("alpha", text)
         self.assertIn("beta", text)
-        # ровно наши два проекта, ничего лишнего из глобов по умолчанию
+        # exactly our two projects, nothing extra from the default globs
         table = text.split("\n\n")[0].splitlines()
         names = [line.split()[0] for line in table[2:] if line.strip()]
         self.assertEqual(sorted(names), ["alpha", "beta"])
@@ -184,7 +184,7 @@ class TestMultiProject(PairTestCase):
                 self.assertIn(key, row)
 
     def test_ctl_all_signals_stall_with_a_distinct_exit_code(self) -> None:
-        # 3 — чтобы скрипт мог отличить «всё живо» от «кто-то встал»
+        # 3 — so the script can tell "all alive" from "someone stalled"
         self._project("dead", phase="verify", writer="opencode", events=1)
         os.environ["PAIR_SCAN"] = str(Path(self._tmp.name) / "*" / ".pair")
         try:
@@ -208,23 +208,23 @@ class TestMultiProject(PairTestCase):
         self.assertIn("PAIR_SCAN", out.getvalue())
 
     def test_pairchat_once_exits_on_its_own(self) -> None:
-        # ровно то, в чём я ошибался: флага не было, скрипт висел до Ctrl-C
+        # exactly what I got wrong: no flag existed, the script hung till Ctrl-C
         self.store.mutate(lambda state: state.update({"phase": "done", "writer": "writer-agent"}))
         self.store.append_transcript("claim", "writer-agent", writer="writer-agent")
         (self.root / "notes").mkdir(parents=True, exist_ok=True)
-        (self.root / "notes" / "plan.md").write_text("план на две строки\n", encoding="utf-8")
+        (self.root / "notes" / "plan.md").write_text("two-line plan\n", encoding="utf-8")
         env = dict(os.environ, PAIR_STATE=str(self.root))
         try:
             done = subprocess.run([sys.executable, str(PAIRCHAT), "--once"],
                                   capture_output=True, text=True, timeout=30, env=env)
         except subprocess.TimeoutExpired:
-            self.fail("--once не завершился сам: скрипт висит, как и до флага")
+            self.fail("--once never exited on its own: the script hangs as before the flag")
         self.assertEqual(done.returncode, 0, done.stderr)
-        self.assertIn("ПИСАТЕЛЬ: writer-agent", done.stdout)
-        self.assertIn("план на две строки", done.stdout)
+        self.assertIn("WRITER: writer-agent", done.stdout)
+        self.assertIn("two-line plan", done.stdout)
 
     def test_naming_a_project_replaces_the_built_in_search(self) -> None:
-        # иначе «посмотри ~/work/blog» показал бы пять проектов из глобов плюс blog
+        # otherwise "look at ~/work/blog" would show five glob projects plus blog
         named = self._project("named", events=1)
         self.assertEqual(discover_projects([str(named)]), [named.resolve()])
 
@@ -240,24 +240,42 @@ class TestMultiProject(PairTestCase):
         plain = re.sub(r"\x1b\[[0-9;]*m", "", done.stdout)
         self.assertIn("proj-one", plain)
         self.assertIn("proj-two", plain)
-        self.assertIn("фаза", plain.splitlines()[0])
+        self.assertIn("phase", plain.splitlines()[0])
         for line in plain.splitlines():
             if "CLAIM" in line or "ADVANCE" in line:
                 head = line.split("CLAIM")[0].split("ADVANCE")[0].strip()
                 self.assertRegex(head, r"^(proj-one|proj-two)\s+\[\d\d:\d\d:\d\d\]$",
-                                 "у блока нет метки проекта: " + line)
+                                 "no project label on the block: " + line)
+
+    def test_table_words_follow_the_canon(self) -> None:
+        """R3 seq 1167: the table vocabulary is pinned, not advisory.
+
+        pairchat and pairctl_read print two tables from one module; a
+        near-miss spelling (not_started, Stuck) would pass every other
+        test while the human reads two dictionaries.
+        """
+        rows = [{"project": "p", "phase": "implement", "mode": "fix",
+                 "writer": "agy", "peers": ["opencode"], "silence_seconds": None,
+                 "silence": "", "stuck": False, "reason": "", "task": "t"},
+                {"project": "q", "phase": "implement", "mode": "fix",
+                 "writer": "agy", "peers": [], "silence_seconds": 3600,
+                 "silence": "60 min", "stuck": True, "reason": "", "task": "t"}]
+        text = render_table(rows)
+        for word in ("project", "phase", "mode", "writer", "critic",
+                     "silence", "why", "task", "not started", "STUCK"):
+            self.assertIn(word, text, f"canon word missing: {word}")
 
     def test_pairchat_shows_only_the_project_you_are_in(self) -> None:
-        # Пользователь попросил именно этого: в папке проекта — диалог этого
-        # проекта, без чужих. Смешанная выдача здесь вредна.
+        # The user asked exactly this: in the project folder — that project’s
+        # dialogue, no strangers. Mixed output harms here.
         mine = self._project("mine", events=1)
         self._project("theirs", events=1)
         os.environ["PAIR_SCAN"] = str(Path(self._tmp.name) / "*" / ".pair")
         cwd = os.getcwd()
         os.chdir(mine.parent)
-        # Подпроцесс наследует окружение: чужой PAIR_STATE из оболочки (а у
-        # пары он всегда есть) перебивает cwd в pick_roots, и тест видит живой
-        # проект вместо временного. Чистим — проверяется именно поиск от cwd.
+        # The subprocess inherits the environment: another PAIR_STATE from the shell (and
+        # the pair always has one) overrides cwd in pick_roots, and the test sees the
+        # live project instead of the temp one. Scrubbed — the cwd search is checked.
         env = dict(os.environ)
         env.pop("PAIR_STATE", None)
         try:
@@ -269,12 +287,12 @@ class TestMultiProject(PairTestCase):
         self.assertEqual(done.returncode, 0, done.stderr)
         plain = re.sub(r"\x1b\[[0-9;]*m", "", done.stdout)
         self.assertIn("mine", plain)
-        self.assertNotIn("theirs", plain, "показан чужой проект без --all")
+        self.assertNotIn("theirs", plain, "stranger project shown without --all")
 
     def test_pairchat_outside_a_project_points_back_at_the_project(self) -> None:
         self._project("somewhere-else", events=1)
         cwd = os.getcwd()
-        os.chdir(self._tmp.name)  # тут .pair нет
+        os.chdir(self._tmp.name)  # no .pair here
         env = dict(os.environ)
         env.pop("PAIR_STATE", None)
         try:
@@ -284,19 +302,19 @@ class TestMultiProject(PairTestCase):
             os.chdir(cwd)
         self.assertEqual(done.returncode, 1)
         text = done.stdout + done.stderr
-        self.assertIn("--all", text, "не сказано, что делать, чтобы увидеть всё")
-        self.assertIn("cd", text, "не сказано, что надо зайти в папку проекта")
+        self.assertIn("--all", text, "never told what to do to see it all")
+        self.assertIn("cd", text, "never told to enter the project folder")
 
     def test_agent_notes_are_shown_by_default_and_work_notes_are_not(self) -> None:
-        # Заметки агентов (plan, finding...) — часть работы, их видно.
-        # Мои рабочие заметки о самом pair-mailbox — нет, их сотни строк кода.
-        # backlog и finding-<ID> предписаны §9 и навыками: их отсутствие
-        # в выдаче — тот же дефект, что чинился в pairchat (вердикт раунда 33).
+        # Agent notes (plan, finding...) are work, they show.
+        # My work notes about pair-mailbox itself — not, they run to hundreds of code lines.
+        # backlog and finding-<ID> are prescribed by §9 and the skills: their absence
+        # from the output is the same defect fixed in pairchat (round-33 verdict).
         for kind in ("plan", "finding", "finding-12", "backlog", "verdict",
                      "z-scratch", "x-wrap"):
             path = self.root / "notes" / f"{kind}.md"
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(f"содержимое заметки {kind}\n", encoding="utf-8")
+            path.write_text(f"note content {kind}\n", encoding="utf-8")
         self.store.mutate(lambda state: state.update({"phase": "plan"}))
         self.store.append_transcript("note", "writer-agent", note_kind="plan", chars=10)
         env = dict(os.environ, PAIR_STATE=str(self.root))
@@ -310,24 +328,24 @@ class TestMultiProject(PairTestCase):
         finally:
             os.chdir(cwd)
         self.assertEqual(done.returncode, 0, done.stderr)
-        self.assertIn("содержимое заметки plan", done.stdout)
-        self.assertIn("содержимое заметки verdict", done.stdout)
-        self.assertIn("содержимое заметки backlog", done.stdout)
-        self.assertIn("содержимое заметки finding-12", done.stdout)
-        self.assertNotIn("z-scratch", done.stdout, "рабочая заметка попала в выдачу")
-        self.assertNotIn("x-wrap", done.stdout, "рабочая заметка попала в выдачу")
-        self.assertIn("содержимое заметки z-scratch", loud.stdout,
-                      "--all-notes должен показывать и рабочие заметки")
+        self.assertIn("note content plan", done.stdout)
+        self.assertIn("note content verdict", done.stdout)
+        self.assertIn("note content backlog", done.stdout)
+        self.assertIn("note content finding-12", done.stdout)
+        self.assertNotIn("z-scratch", done.stdout, "work note leaked into the output")
+        self.assertNotIn("x-wrap", done.stdout, "work note leaked into the output")
+        self.assertIn("note content z-scratch", loud.stdout,
+                      "--all-notes must also show work notes")
 
     def test_long_lines_are_wrapped_to_a_readable_width(self) -> None:
-        # Агенты пишут абзацами по 300+ символов; без переноса терминал рвёт
-        # их посреди слова.
+        # Agents write 300+ char paragraphs; without wrapping the terminal tears them
+        # mid-word.
         self.store.mutate(lambda state: state.update({"phase": "plan"}))
         (self.root / "mailbox" / "peer").mkdir(parents=True, exist_ok=True)
-        payload = " ".join(["слово%02d" % i for i in range(60)])
+        payload = " ".join(["word%02d" % i for i in range(60)])
         (self.root / "mailbox" / "peer" / "000001-t.json").write_text(
             json.dumps({"seq": 1, "ts": "2026-10-02T20:00:00+00:00",
-                        "from": "peer", "to": "writer-agent", "subject": "длинная тема " + payload,
+                        "from": "peer", "to": "writer-agent", "subject": "long subject " + payload,
                         "text": payload, "label": "Chat from peer: "}),
             encoding="utf-8")
         env = dict(os.environ, PAIR_STATE=str(self.root))
@@ -337,7 +355,7 @@ class TestMultiProject(PairTestCase):
         plain = re.sub(r"\x1b\[[0-9;]*m", "", done.stdout)
         for line in plain.splitlines():
             self.assertLessEqual(len(line), 105,
-                                 "строка не перенесена: " + repr(line[:120]))
+                                 "line never wrapped: " + repr(line[:120]))
 
     def test_refuses_when_there_is_no_state(self) -> None:
         empty = Path(self._tmp.name) / "no-project"
@@ -348,11 +366,11 @@ class TestMultiProject(PairTestCase):
             env=dict(os.environ, PAIR_STATE=str(empty / ".pair")),
         )
         self.assertEqual(done.returncode, 1)
-        self.assertIn("нет", done.stdout + done.stderr)
+        self.assertIn("not in a project folder", done.stdout + done.stderr)
 
     def test_state_resolution_prefers_flag_over_env_over_cwd(self) -> None:
-        """Три компонента разрешали путь по-разному — второе состояние в одном
-        проекте (state-dir-not-pinned). Приоритет: --state, затем PAIR_STATE."""
+        """Three components resolved the path three ways — a second state in one
+        project (state-dir-not-pinned). Priority: --state, then PAIR_STATE."""
         from pairctl_read import extract_state
         explicit = str(self.root)
         self.assertEqual(extract_state(["--state", explicit, "status"])[0], Path(explicit))
@@ -369,8 +387,8 @@ class TestMultiProject(PairTestCase):
         self.assertNotEqual(explicit, str(Path(".pair").resolve()))
 
     def test_nested_cwd_resolves_to_project_root_state(self) -> None:
-        """Запуск из подкаталога не создаёт второй .pair: walk-up до
-        .pair/state.json (state-dir-not-pinned, ВОЗРАЖАЮ-2)."""
+        """Launching from a subdir creates no second .pair: walk-up to
+        .pair/state.json (state-dir-not-pinned, OBJECT-2)."""
         from pairctl_read import extract_state, walk_up_to_state
         proj = Path(self._tmp.name) / "proj"
         (proj / ".pair").mkdir(parents=True)
@@ -389,7 +407,7 @@ class TestMultiProject(PairTestCase):
                 os.environ["PAIR_STATE"] = old_env
 
     def test_extract_pane_prefers_flag_over_env(self) -> None:
-        """Явный канал --pane/PAIR_PANE извлекается из аргументов и выигрывает у env."""
+        """The explicit --pane/PAIR_PANE channel extracts from args and beats env."""
         from pairctl_read import extract_pane
         self.assertEqual(extract_pane(["--pane", "%42", "status"]), ("%42", ["status"]))
         self.assertEqual(extract_pane(["--pane=%42", "status"]), ("%42", ["status"]))

@@ -1,20 +1,20 @@
-"""Снимок состояния пары для статического дашборда: только данные, ни байта HTML.
+"""The pair-state snapshot for the static dashboard: data only, not a byte of HTML.
 
-Зачем отдельный слой. Дашборд открывается двойным щелчком по файлу, то есть
-страница не имеет ни сервера, ни права читать `.pair/` сама: с `file://` браузер
-запрещает `fetch()` локальных файлов. Единственный честный источник данных —
-процесс, который прочитал состояние и вложил его в страницу; `board_render.py`
-только превращает его вывод в страницу.
+Why a separate layer. The dashboard opens on a double click, so the page owns no
+server and no right to read `.pair/` itself: from `file://` the browser bans
+`fetch()` of local files. The only honest data source is the process that read
+state and inlined it into the page; `board_render.py` only turns its output into
+a page.
 
-Почему арифметика «молчит» здесь, а не в `pairctl_read.silence_seconds`. Тот разбирает
-весь `transcript.jsonl` целиком, потому что у него нет хвоста в руках. Здесь хвост уже
-прочитан (`Store.read_transcript(limit)` читает с конца файла: 67.5 мс -> 0.4 мс на
-файле в 2 МБ). Форматирование секунд в текст по-прежнему одно: `human_age`.
+Why the "silent" arithmetic lives here, not in `pairctl_read.silence_seconds`. That
+one parses the whole `transcript.jsonl`, having no tail at hand. Here the tail is
+already read (`Store.read_transcript(limit)` reads from the file end: 67.5 ms ->
+0.4 ms on a 2 MB file). Second-to-text formatting stays single: `human_age`.
 
-Про «жив» — в `board_hosts.py`: это вопросы к системе, а не к протоколу, и держать
-их здесь означало бы тестировать снимок только при наличии tmux. Ничего не пишется:
-дашборд — наблюдатель, и единственный появляющийся файл — сам HTML, который пишет
-`bin/pairboard`.
+About "alive" — in `board_hosts.py`: those are system questions, not protocol
+ones, and keeping them here would test the snapshot only with tmux around.
+Nothing writes: the dashboard observes, and the only file ever appearing is the
+HTML itself, written by `bin/pairboard`.
 """
 from __future__ import annotations
 
@@ -28,23 +28,23 @@ from board_hosts import (clean_pid, mtime_age, pane_status, pilot_section,
 from pairctl_read import human_age
 from server import PHASES, Store, is_pid_alive, utcnow
 
-# Сколько последних записей журнала попадает на страницу. Журнал растёт сам собой и
-# на длинном раунде это сотни мегабайт; дашборд показывает картину, а не архив.
+# How many latest journal records land on the page. The journal grows on its own and
+# on a long round that is hundreds of megabytes; the dashboard shows the picture, not the archive.
 DEFAULT_EVENTS = 40
 
-# После скольких секунд без пересборки снимок считается протухшим: страница
-# показывает это меткой, а не продолжает изображать бодрую картину.
+# After how many seconds without a rebuild the snapshot counts as stale: the page
+# shows it with a mark instead of faking a lively picture.
 DEFAULT_STALE_AFTER = 90
 
-# Обрезание длинных значений. Причины в evidence и `why` — абзацы, и в дашборд
-# им не место: страница должна читаться, а не скроллиться.
+# Trimming long values. Causes in evidence and `why` run to paragraphs, and the dashboard
+# has no place for them: the page must read, not scroll.
 MAX_VALUE_CHARS = 160
 
 TASK_TEXT_CHARS = 300
 
 
 def _age(stamp: Any) -> float | None:
-    """Сколько секунд назад была метка времени. None, если разбирать нечего."""
+    """Seconds since the timestamp. None when nothing parses."""
     if not stamp:
         return None
     try:
@@ -62,12 +62,12 @@ def _clip(value: Any, limit: int = MAX_VALUE_CHARS) -> str:
 
 
 def summarise_event(entry: dict[str, Any]) -> str:
-    """Одна короткая строка на событие.
+    """One short line per event.
 
-    Журнал разнороден: у `send` есть subject, у `evidence` — value, у `advance` —
-    фаза. Выбор первого осмысленного поля даёт читаемую ленту, где ни одна запись
-    не превращается в дамп json. Неизвестный вид остаётся именем самого вида:
-    выдумывать смысл события, которого нет в словаре, нельзя.
+    The journal is mixed: `send` carries subject, `evidence` value, `advance` the
+    phase. Picking the first meaningful field gives a readable feed where no record
+    turns into a json dump. An unknown kind stays its own kind name: inventing a
+    meaning for an event missing from the dictionary is banned.
     """
     for field in ("subject", "why", "value", "prompt", "reason", "text", "note",
                   "phase", "mode", "autonomy", "status", "path", "bell_kind",
@@ -78,7 +78,7 @@ def summarise_event(entry: dict[str, Any]) -> str:
 
 
 def _role_rows(state: dict[str, Any]) -> list[dict[str, Any]]:
-    """Роли: три факта о живости и молчание в человеческих единицах."""
+    """Roles: three liveness facts and silence in human units."""
     writer = state.get("writer")
     rows: list[dict[str, Any]] = []
     for name in sorted(state.get("roles") or {}):
@@ -106,19 +106,20 @@ def _role_rows(state: dict[str, Any]) -> list[dict[str, Any]]:
             "seen": int((state.get("seen") or {}).get(name) or 0),
             "restored_by": _clip(info.get("pane_restored_by")),
         })
-    # Писатель первым: это тот, за кем смотрят в первую очередь.
+    # The writer first: the one watched before all.
     rows.sort(key=lambda row: (not row["is_writer"], row["role"]))
     return rows
 
 
 def _state_read_error(state_dir: Path) -> str:
-    """Почему состояние не читается как состояние. Пустая строка — читается.
+    """Why the state never reads as state. An empty line means it reads.
 
-    Отдельная проверка нужна потому, что `Store.read()` битый `state.json` не
-    поднимает, а тихо заменяет дефолтами. Для протокола это верно: сервер не должен
-    падать из-за файла. Для ДАШБОРДА это ложь: страница показала бы пустую фазу и
-    ноль ролей, и человек решил бы, что пара потеряла агентов, хотя файл просто
-    повреждён. Цена — один проход по маленькому файлу, польза — правда на экране.
+    A separate check is needed because `Store.read()` never raises on a broken
+    `state.json` but quietly swaps in defaults. For the protocol that is right: the
+    server must never fall over a file. For the DASHBOARD it is a lie: the page
+    would show a blank phase and zero roles, and the human would decide the pair
+    lost its agents while the file merely broke. Cost — one pass over a small file,
+    gain — truth on screen.
     """
     path = Path(state_dir) / "state.json"
     if not path.exists():
@@ -126,12 +127,12 @@ def _state_read_error(state_dir: Path) -> str:
     try:
         json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as error:
-        return f"state.json не читается: {error}"
+        return f"state.json unreadable: {error}"
     return ""
 
 
 def _task_rows(state: dict[str, Any]) -> list[dict[str, Any]]:
-    """Задачи: открытые первыми, внутри — от новых к старым."""
+    """Tasks: open first, inside from new to old."""
     rows = []
     for item in state.get("tasks") or []:
         rows.append({
@@ -151,11 +152,11 @@ def _task_rows(state: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def _discussion_rows(store: "Store", limit: int = 5) -> list[dict[str, Any]]:
-    """Последнее обсуждение: письма с текстом, а не пинги.
+    """The last discussion: letters with text, not pings.
 
-    Ящик лежит по ролям, общих seq нет — порядок восстанавливаем по `ts`.
-    Пустой subject при содержательном тексте — пинг-антипаттерн (§9a):
-    в обсуждение не попадает, в ленте событий остаётся.
+    The mailbox lies by role, with no shared seq — order restores from `ts`.
+    An empty subject on meaningful text is the ping-antipattern (§9a): never
+    reaching the discussion, staying in the event feed.
     """
     letters: list[dict[str, Any]] = []
     root = store.mailbox_root
@@ -183,7 +184,7 @@ def _discussion_rows(store: "Store", limit: int = 5) -> list[dict[str, Any]]:
 
 
 def _obligation_rows(store: "Store") -> list[dict[str, Any]]:
-    """Открытые обязательства: кто кого ждёт и с каким вопросом."""
+    """Open obligations: who waits on whom and with what question."""
     rows: list[dict[str, Any]] = []
     root = store.obligations_root
     try:
@@ -205,11 +206,11 @@ def _obligation_rows(store: "Store") -> list[dict[str, Any]]:
 
 
 def _event_rows(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Лента событий: факты без слов о них, словарь живёт в клиенте."""
+    """The event feed: facts with no words about them, the dict lives in the client."""
     rows = []
     for entry in entries:
-        # Битая строка журнала — событие со своим видом, а не пропуск:
-        # молча пропустить значило бы сделать вид, будто события не было.
+        # A broken journal line is an event of its own kind, not a skip:
+        # skipping quietly would pretend the event never was.
         if entry.get("_damaged"):
             rows.append({"ts": None, "kind": "damaged", "role": "",
                          "to": "", "summary": _clip(entry.get("_raw"))})
@@ -248,25 +249,25 @@ def _round_section(state: dict[str, Any], event_age: float | None) -> dict[str, 
 
 def build_snapshot(state_dir: Path, *, limit: int = DEFAULT_EVENTS,
                    stale_after: int = DEFAULT_STALE_AFTER) -> dict[str, Any]:
-    """Снимок состояния пары. Никогда не бросает на битом состоянии.
+    """The pair-state snapshot. Never throws on broken state.
 
-    Дашборд открывают, когда что-то сломалось, и «не смог прочитать state.json» —
-    худший возможный ответ: вместо картины был бы пустой экран без причины.
-    Поэтому каждый разбор прощается с None, а снимок помечает себя неполным.
+    The dashboard opens when something broke, and "could not read state.json" is
+    the worst possible answer: a blank screen with no cause instead of a picture.
+    So every parse forgives with None, and the snapshot marks itself partial.
     """
     state_dir = Path(state_dir)
     store = Store(state_dir)
     read_error = _state_read_error(state_dir)
     try:
         state = store.read()
-    except Exception as error:  # noqa: BLE001 - причина показывается, а не проглатывается
+    except Exception as error:  # noqa: BLE001 - the reason shows, never swallowed
         state = store.default_state()
         read_error = read_error or str(error)
 
     entries = store.read_transcript(limit)
     try:
         total = store.transcript_entry_count()
-    except Exception:  # noqa: BLE001 - счётчик — украшение, его отсутствие не повод падать
+    except Exception:  # noqa: BLE001 - the counter is decor, its lack is no reason to fall
         total = len(entries)
 
     tasks = _task_rows(state)
@@ -292,20 +293,19 @@ def build_snapshot(state_dir: Path, *, limit: int = DEFAULT_EVENTS,
 
 
 def snapshot_json(snapshot: dict[str, Any]) -> str:
-    """Снимок как строка, безопасная для вставки внутрь `<script>`.
+    """The snapshot as a string, safe to inline inside `<script>`.
 
-    Закрывающий тег в данных ломает страницу, а данные здесь — текст писем и задач,
-    то есть ровно то, что человек писал сам. Поэтому `<`, `>` и `&` уходят в
-    escape-последовательности JSON: значение после разбора остаётся тем же самым
-    символом, а страница перестаёт быть чем-то, что можно закрыть.
-    U+2028 и U+2029 — разделители строк в JS, но не в JSON, наивная вставка ломает
-    парсер, и их тоже уводим в escape.
+    A closing tag in data breaks the page, and data here is letter and task text —
+    exactly what the human wrote itself. So `<`, `>` and `&` leave into JSON
+    escape sequences: the value after parsing stays the very same char, and the
+    page stops being something closable. U+2028 and U+2029 are JS line separators
+    but not JSON ones; naive inlining breaks the parser, and they escape too.
     """
     text = json.dumps(snapshot, ensure_ascii=False, sort_keys=True)
-    # Обратный слэш экранировать НЕ нужно: `json.dumps` уже выдал корректный JSON.
-    # Экранировать его второй раз значило бы превратить каждую экранированную
-    # кавычку в `\\\"` и сломать разбор. Добавляются только escape-последовательности,
-    # которых в исходном тексте не было, поэтому порядок замен не важен.
+    # The backslash needs NO escaping: `json.dumps` already gave valid JSON.
+    # Escaping it twice would turn every escaped quote into backslash-quote and break parsing.
+    # Only escape sequences join that the source text never held, so replacement order
+    # never matters.
     for needle, replacement in (("&", "\\u0026"), ("<", "\\u003c"), (">", "\\u003e"),
                                 ("\u2028", "\\u2028"), ("\u2029", "\\u2029")):
         text = text.replace(needle, replacement)

@@ -1,24 +1,24 @@
 #!/usr/bin/env bash
 #
-# comment-lint.sh — договор о комментариях, а не греп ради грепа.
+# comment-lint.sh — the comment contract, not grep for its own sake.
 #
-# Правило (§10c): в комментариях только текущее состояние + «почему так,
-# а не иначе» со ссылкой на измерение/карточку. Пересказ прогресса под
-# запретом: что код делал раньше и что с ним сделали.
+# Rule (§10c): comments hold only current state plus why-this-way with a
+# measurement/card link. Progress retelling stays banned: what the code did
+# before, what was done to it.
 #
-# Ловушка наивного паттерна «теперь»: шесть живых мест пишут «раньше Х,
-# теперь Y» как объяснение выбора — это «почему», а не прогресс, и греп
-# по «теперь/раньше» дал бы ложные срабатывания на своих же нормах.
-# Поэтому «теперь/раньше» здесь НЕ паттерны: их различает только чтение,
-# и их ловит критик как часть ревью, а не скрипт.
+# The naive "now" pattern trap: six live places write "before X, now Y" as the
+# choice reason — that is "why", not progress, and grepping "now/before" would
+# false-fire on its own norms.
+# So "now/before" are NO patterns here: only reading tells them apart, caught by
+# the critic as review part, not the script.
 #
-# Сам скрипт и его тест из проверки исключены: они обязаны цитировать
-# паттерны в фикстурах, иначе договор нельзя ни проверить, ни прочитать.
-# Исключение — по имени файла, два файла, не маска: широкое исключение
-# превратило бы гейт в декорацию.
+# The script and its test stay excluded from the check: they must quote the
+# patterns in fixtures, or the contract neither checks nor reads.
+# The exception runs by file name, two files, no mask: a wide exception would
+# turn the gate into decor.
 #
-# Запуск: bash scripts/comment-lint.sh [--staged]
-#   без флага — tracked .py/.sh; --staged — только staged.
+# Run: bash scripts/comment-lint.sh [--staged]
+#   with no flag — tracked .py/.sh; --staged means staged only.
 
 set -euo pipefail
 export LC_ALL=C.UTF-8
@@ -29,11 +29,11 @@ if [ "${1:-}" = "--staged" ]; then
 else
   files="$(git ls-files -- '*.py' '*.sh' || true)"
 fi
-# Локаль прибита к C.UTF-8 внутри: uu-grep под C не складывает кириллицу
-# в -i, а корень без окончания ловит все формы без [[:<:]] (границу
-# кириллического слова uu-grep не видит). Кавычка в классе [^"'] тоже
-# ломает -i для кириллицы — поэтому два прохода: строки с `#`, минус
-# строки где кавычка раньше `#`, потом простая подстрока grep -i -F.
+# Locale pins to C.UTF-8 inside: uu-grep under C never folds Cyrillic into -i,
+# while a bare stem catches all forms with no [[:<:]] (uu-grep never sees a
+# Cyrillic word edge). A quote in the [^"'] class breaks -i for Cyrillic too —
+# hence two passes: lines with `#` minus lines where the quote precedes `#`,
+# then a plain grep -i -F substring.
 comment_only() { grep -n '#' "$1" 2>/dev/null | grep -v '"[^#]*#' || true; }
 fixed_pat() {
   printf '%s\n' 'добавлен' 'исправлен' 'пофикшен' 'was added' 'was fixed' \
@@ -54,7 +54,7 @@ while IFS= read -r file; do
 done <<< "$files"
 
 if [ "$findings" -gt 0 ]; then
-  printf 'comment-lint: %s finding(s) — коммент про прошлое кода, перепиши на «почему»\n' "$findings" >&2
+  printf 'comment-lint: %s finding(s) — a comment about the code past, rewrite as why\n' "$findings" >&2
   exit 1
 fi
 printf 'comment-lint: clean\n'

@@ -1,4 +1,4 @@
-"""Unit-тесты для модуля worktree.py (Git Worktrees — S5)."""
+"""Unit tests for the worktree.py module (Git Worktrees - S5)."""
 from __future__ import annotations
 
 import subprocess
@@ -20,7 +20,7 @@ class TestWorktree(PairTestCase):
     def test_setup_and_list_and_remove_worktree(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
-            # Инициализируем git репозиторий
+            # Setting up a git repo
             subprocess.run(["git", "init"], cwd=str(tmp_path), check=True, capture_output=True)
             subprocess.run(
                 ["git", "config", "user.email", "pair@test.local"],
@@ -39,27 +39,27 @@ class TestWorktree(PairTestCase):
             subprocess.run(["git", "add", "README.md"], cwd=str(tmp_path), check=True, capture_output=True)
             subprocess.run(["git", "commit", "-m", "init"], cwd=str(tmp_path), check=True, capture_output=True)
 
-            # Список исходных worktree
+            # The source worktree list
             wts = worktree.list_worktrees(tmp_path)
             self.assertEqual(len(wts), 1)
 
-            # Создаем worktree для ветки feat-test
+            # Creating a worktree for the feat-test branch
             res = worktree.setup_worktree(tmp_path, "feat-test")
             self.assertTrue(res.get("ok"))
             self.assertTrue(res.get("created"))
             wt_path = Path(res["worktree"])
             self.assertTrue(wt_path.exists())
 
-            # Повторный вызов setup_worktree возвращает ok: True, created: False
+            # A repeat setup_worktree call returns ok: True, created: False
             res2 = worktree.setup_worktree(tmp_path, "feat-test")
             self.assertTrue(res2.get("ok"))
             self.assertFalse(res2.get("created"))
 
-            # Проверяем, что в списке теперь 2 worktrees
+            # Checking the list now holds 2 worktrees
             wts2 = worktree.list_worktrees(tmp_path)
             self.assertEqual(len(wts2), 2)
 
-            # Удаляем созданный worktree
+            # Removing the created worktree
             ok = worktree.remove_worktree(tmp_path, wt_path)
             self.assertTrue(ok)
 
@@ -74,14 +74,14 @@ class TestWorktree(PairTestCase):
             store = MagicMock()
             store.root = tmp_path / ".pair"
 
-            # Проверяем вызов cmd_worktree list
+            # Checking the cmd_worktree list call
             args = MagicMock()
             args.worktree_action = "list"
             args.json = True
             code = worktree.cmd_worktree(store, args)
             self.assertEqual(code, 0)
 
-            # Проверяем вызов cmd_worktree prune
+            # Checking the cmd_worktree prune call
             args.worktree_action = "prune"
             args.json = True
             code = worktree.cmd_worktree(store, args)

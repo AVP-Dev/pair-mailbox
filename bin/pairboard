@@ -1,27 +1,26 @@
 #!/usr/bin/env python3
-"""Дашборд пары: собирает один статический HTML и (по желанию) держит его свежим.
+"""The pair dashboard: builds one static HTML, optionally keeping it fresh.
 
-Запуск:
+Run:
 
-    bin/pairboard                     раз собрать board.html в корень и напечатать путь
-    bin/pairboard --watch 5           пересобирать каждые 5 секунд
-    bin/pairboard --out /tmp/x.html   собрать в другое место
-    bin/pairboard --print-json        вывести снимок в stdout, HTML не писать
+    bin/pairboard                     build board.html once into the root, printing the path
+    bin/pairboard --watch 5           rebuild every 5 seconds
+    bin/pairboard --out /tmp/x.html   build elsewhere
+    bin/pairboard --print-json        print the snapshot to stdout, writing no HTML
 
-Почему не сервер. Задача раунда — наблюдение без localhost. Страница, открытая с
-`file://`, не может прочитать `.pair/` сама: браузер запрещает `fetch()` локальных
-файлов. Значит свежесть обеспечивается с этой стороны: генератор перезаписывает
-файл, а открытая страница перезагружается через `<meta http-equiv="refresh">`.
-Это единственная честная схема без веб-сервера, и она же объясняет, почему
-`--watch` — не украшение, а способ получить живую картину.
+Why no server. The round task is watching with no localhost. A page opened over
+`file://` cannot read `.pair/` alone: the browser bans `fetch()` of local files.
+So freshness serves from this side: the generator rewrites the file, while the open
+page reloads over `<meta http-equiv="refresh">`. The only honest scheme with no web
+server, also explaining why `--watch` is no decor but a way to a live picture.
 
-Модули живут в `mcp/pair_mailbox/`, потому что состояние пары описано там же, и
-дублировать чтение `.pair/` здесь означало бы завести вторую арифметику, которая
-разъедется с первой при первом же изменении формата.
+Modules live in `mcp/pair_mailbox/` because pair state reads there too, and
+duplicating `.pair/` reads here would start a second arithmetic drifting from the
+first on the very first format change.
 
-В `.pair/` не пишется ничего: витрина живёт в корне репо, источник — только
-`.pair/`. Наблюдатель, который меняет состояние, которым наблюдает, — худший
-вид инструмента для наблюдения.
+Nothing writes into `.pair/`: the showcase lives at the repo root, the only source
+is `.pair/`. An observer changing the state it watches is the worst kind of watching
+tool.
 """
 from __future__ import annotations
 
@@ -41,8 +40,8 @@ from board_snapshot import DEFAULT_EVENTS, DEFAULT_STALE_AFTER, build_snapshot  
 DEFAULT_OUT = "board.html"
 MIN_WATCH = 1
 MAX_WATCH = 3600
-# На сколько секунд засыпать за раз между проверками флага остановки. Мало —
-# отвечает быстро на Ctrl-C, много — не будит процесс слишком часто.
+# How many seconds to sleep at once between stop-flag checks. Short means
+# fast Ctrl-C answers, long means never waking the process too often.
 SLEEP_SLICE = 0.25
 
 
@@ -63,11 +62,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def resolve_state(raw: str) -> Path:
-    """Путь к состоянию: относительный — от корня проекта, не от текущего каталога.
+    """The state path: relative means from the project root, not the current dir.
 
-    От текущего каталога получается ровно то самое, что человек не ожидает: запустил
-    из подкаталога, получил «пара не найдена» и пустую страницу. Корень проекта
-    один, и `.pair` живёт именно в нём.
+    From the current dir comes exactly what the human never expects: launching
+    from a subdir, taking "pair not found" plus a blank page. The project root stands
+    one, and `.pair` lives exactly there.
     """
     candidate = Path(raw).expanduser()
     if candidate.is_absolute():
@@ -77,7 +76,7 @@ def resolve_state(raw: str) -> Path:
 
 def build_once(state_dir: Path, out: Path, *, limit: int, stale_after: int,
                refresh: int) -> Path:
-    """Один проход: снимок -> страница -> файл."""
+    """One pass: snapshot -> page -> file."""
     snapshot = build_snapshot(state_dir, limit=limit, stale_after=stale_after)
     snapshot["watch"] = refresh > 0
     return write_page(out, snapshot, refresh_seconds=refresh)
@@ -85,11 +84,11 @@ def build_once(state_dir: Path, out: Path, *, limit: int, stale_after: int,
 
 def run_watch(state_dir: Path, out: Path, *, interval: float, limit: int,
               stale_after: int, once: bool = False) -> int:
-    """Пересобирать, пока не остановят. Ctrl-C заканчивает работу кодом 0.
+    """Rebuilding till stopped. Ctrl-C ends the work with code 0.
 
-    Сигнал ловится явно, а не через исключение по умолчанию: без него первый же
-    Ctrl-C оставил бы временный файл `board.html.tmp` в `.pair/` и тихо вернул бы
-    код 130, который в гейте читается как падение.
+    The signal catches explicit, never over the default exception: with no it the very
+    first Ctrl-C would leave a `board.html.tmp` temp file in `.pair/`, silently returning
+    code 130, which the gate reads as a fall.
     """
     stopping = {"now": False}
 
@@ -113,8 +112,8 @@ def run_watch(state_dir: Path, out: Path, *, interval: float, limit: int,
                 build_once(state_dir, out, limit=limit, stale_after=stale_after,
                            refresh=int(seconds))
             except (OSError, AssetError) as error:
-                # Падение одного прохода не должно убивать наблюдение: файл на
-                # диске остаётся предыдущим и протухшим, и страница об этом скажет.
+                # One fallen pass must never kill watching: the on-disk file stays the prior
+                # stale one, and the page says so.
                 print(f"dashboard: pass failed: {error}", file=sys.stderr)
         print("dashboard: stopped")
         return 0
@@ -124,13 +123,13 @@ def run_watch(state_dir: Path, out: Path, *, interval: float, limit: int,
 
 
 def _sleep_until(seconds: float, stopping: dict) -> None:
-    """Спать, но не дольше `SLEEP_SLICE`, и выходить по флагу остановки.
+    """Sleeping, but never past `SLEEP_SLICE`, exiting on the stop flag.
 
-    Почему не `time.sleep(seconds)` одной строкой. После срабатывания обработчика
-    сигнала Python (PEP 475) возобновляет прерванный `sleep` на оставшееся время, а
-    не прерывает его. С `--watch 3600` это значит одно: Ctrl-C не останавливает
-    дашборд в течение часа, и человек решает, что он сломан. Нарезка на короткие
-    куски делает реакцию мгновенной и не требует ни потоков, ни сигнализации.
+    Why not one-line `time.sleep(seconds)`. Past the Python signal handler firing (PEP
+    475) the broken `sleep` resumes for the remaining time, never interrupting. With
+    `--watch 3600` that means one thing: Ctrl-C never stops the dashboard for an hour,
+    and the human decides it broke. Slicing into short chunks answers instant, needing
+    neither threads nor signalling.
     """
     waited = 0.0
     while waited < seconds and not stopping["now"]:

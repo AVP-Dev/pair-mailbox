@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
-"""Вбивает сообщение в композер соседнего агента и проверяет, что оно дошло.
+"""Types a message into the neighbour agent composer and verifies it landed.
 
-Это перенос подхода umputun/agterm на tmux. Он нужен, когда агент не просто должен
-проснуться, а когда сообщение должно прийти как обычная реплика в его окно.
+This ports the umputun/agterm approach onto tmux. Needed when the agent must not
+just wake but receive the message as an ordinary line in its window.
 
-Почему это не «просто отправить клавиши»:
+Why not "just send keys":
 
-- композер может быть занят. Если сосед что-то печатает, вбивка сожёт его текст;
-- длинный текст ломается при вставке целиком — как у него, режем на куски;
-- вставка может не сработать. Тогда нужен откат, иначе в промпте останется мусор.
+- the composer may be busy. Typing over the neighbour keystrokes eats its text;
+- long text breaks when pasted whole — chunked, as theirs;
+- the paste may fail. Then a rollback is due, or garbage stays in the prompt.
 
-Поэтому: снимок → проверка «свободен» → кусками → сверка хвоста → Enter или откат.
+So: snapshot → "free" check → chunks → tail verify → Enter or rollback.
 """
 from __future__ import annotations
 
@@ -23,49 +23,49 @@ import time
 import json
 from pathlib import Path
 
-# Живая реплика прокручивается; окно снимка берём с запасом.
+# A live line scrolls; take the snapshot window with margin.
 CAPTURE_LINES = 40
 
-# Сколько байт за одну вставку. У умпутуна 197: при 1627 байтах он ещё терял окна
-# по 1022 на 1663-м. Чуть меньше — надёжнее.
+# Bytes per paste. umputun runs 197: at 1627 bytes it still lost windows of
+# 1022 at the 1663rd. Slightly less is safer.
 CHUNK_BYTES = 170
 
-# Сколько раз перечитывать панель, прежде чем признать вставку неподтверждённой.
-# Замерено, а не выбрано: в обычном шелле текст появляется в capture через 0.05с,
-# а в тяжёлом TUI (Gemini в панели 30x70) одиночный BSpace отражается около 2с.
-# Окно 8 x 0.4 = 3.2с перекрывает худший случай с запасом. Одно чтение через
-# 0.35с после ввода — это чаще устаревший кадр, чем отсутствие вставки.
+# How many times to re-read the pane before calling the paste unconfirmed.
+# Measured, not chosen: in a plain shell the text shows in capture in 0.05s,
+# while in a heavy TUI (Gemini in a 30x70 pane) a lone BSpace lands in ~2s.
+# The 8 x 0.4 = 3.2s window covers the worst case with margin. One read 0.35s
+# after typing is a stale frame more often than a missing paste.
 VERIFY_ATTEMPTS = 8
 VERIFY_PAUSE = 0.4
 
-# Сколько строк над вопросом берём в вердикт. На Claude Code команда стоит
-# предпоследней строкой, поэтому нужен минимум одна; взято две с запасом, потому
-# что у разных CLI между командой и вопросом иногда есть ещё и рамка.
+# How many lines above the question feed the verdict. On Claude Code the command
+# sits second to last, so at least one is needed; two with margin, because
+# different CLIs sometimes frame between the command and the question.
 OVERSCAN_LINES = 3
 
-# Угловые глифы НИЖНЕЙ границы поля ввода. Боковые рамки панели используют
-# вертикаль `┃`/`│` и в этот набор намеренно не входят: по вертикали панель
-# отличить нельзя, по нижнему углу — можно.
+# Corner glyphs of the input-field BOTTOM edge. Pane side frames use the
+# `┃`/`│` vertical and deliberately miss this set: a pane never tells by the
+# vertical, but by the bottom corner it does.
 INPUT_BOX_CORNERS_LOWER = "\u2579\u258c\u2588"
 
 INPUT_BOX_CORNERS = "\u2579\u257a\u2578\u2576\u257b\u2502\u2503\u2551\u2552"
 
-# Что считаем приглашением ввести текст. Универсально: последняя строка, где
-# после маркера пусто или почти пусто. `❯` — маркер композера OpenCode: без
-# него ветка очистки TUI-подсказок в is_composer_empty была недостижима, и
-# панель с хвостом «⇧⇥ to change thinking effort» читалась занятой навсегда —
-# пилот не будил спящего агента (.pair/notes/finding.md, idle_roles).
+# What counts as a text-entry invitation. Universal: the last line where the
+# marker stands followed by empty or near-empty. `❯` is the OpenCode composer
+# marker: without it the TUI-hint cleanup branch in is_composer_empty stayed
+# unreachable, and a pane trailing "⇧⇥ to change thinking effort" read busy
+# forever — the pilot never woke the sleeping agent (.pair/notes/finding.md, idle_roles).
 PROMPT_MARKERS = (">", "\u203a", "$", "#", "::", "ask>", "╰─", "\u276f")
 
-# Стрелки-подсказки TUI в строке ввода. Убираются как глифы: в тексте агента
-# они не несут содержания, а в хвосте подсказки OpenCode/Codex стоят всегда.
+# TUI hint arrows in the input line. Scrubbed as glyphs: they carry no agent-text
+# meaning, while OpenCode/Codex hint tails always stand there.
 TUI_HINT_ARROWS = re.compile("[\u21e7\u21e5\u2191\u2193\u2192\u2190]")
 
-# Известные фразы-подсказки целиком. Совпадение проверяется на ВЕСЬ остаток
-# строки после маркера: префиксный вариант (`ctrl\+x.*`) объявляет пустым
-# композер с настоящим текстом «ctrl+x не помогает: текст», и пилот перезаписал
-# бы чужой ввод. Новый вид подсказки добавляется сюда явно — молчаливого
-# расширения быть не должно.
+# Known hint phrases whole. Matching checks the WHOLE remainder of the line past
+# the marker: the prefix form (`ctrl\+x.*`) declares a composer with real text
+# "ctrl+x does not help: text" empty, and the pilot would overwrite another input.
+# A new hint kind joins here explicitly — no silent widening.
+# widening allowed.
 TUI_HINT_PHRASES = (
     r"to change thinking effort",
     r"to change model",
@@ -77,13 +77,12 @@ TUI_HINT_PHRASES = (
 
 
 def looks_like_status_line(line: str) -> bool:
-    """Строка статуса TUI распознаётся структурно, без названий брендов.
+    """The TUI status line reads structurally, with no brand names.
 
-    Правка на марках брендов не держится: первая же смена темы возвращает исходный
-    баг. Единственный устойчивый признак — `$`, за которым сразу идёт значение, то
-    есть цена: `$0.00`. Настоящий промпт на `$` заканчивается знаком, как
-    `user@host:~$`, и знака в конце строки быть не должно — иначе перестаёт
-    работать доставка в обычный шелл.
+    A brand-mark fix never holds: the first theme change returns the original bug.
+    The only stable mark is `$` immediately followed by a value — a price: `$0.00`.
+    A real `$`-prompt ends in a mark, as in `user@host:~$`, and no mark may stand
+    at the line end — or delivery into a plain shell stops working.
     """
     text = line.strip()
     if not text:
@@ -106,28 +105,28 @@ class ComposerBusy(Exception):
 def _tmux() -> str:
     exe = shutil.which("tmux")
     if not exe:
-        raise ComposerBusy("tmux не найден в PATH")
+        raise ComposerBusy("tmux not found in PATH")
     return exe
 
 
 def pane_alive(tmux: str, pane: str) -> bool:
-    """Жива ли панель tmux, и является ли она вообще панелью.
+    """Whether the tmux pane lives, and whether it is a pane at all.
 
-    Строка, которая не похожа на панель, не панель: без этой проверки tmux на
-    `-t opencode` (имя процесса, а не ссылка) отвечал кодом 0 и ПУСТЫМ выводом,
-    а вердикт «жива» выводился из поля `alive`, которое для такого ответа
-    оказывалось правдой. Проверка формы стоит ДО разговора с tmux именно поэтому:
-    нельзя отвечать за то, о чём не спросили.
+    A line unlike a pane is no pane: without this check tmux answered `-t opencode`
+    (a process name, not a reference) with code 0 and EMPTY output, while the
+    "alive" verdict derived from the `alive` field — true for such an answer. The
+    shape check stands BEFORE talking to tmux exactly for that: never answer for
+    what was never asked.
 
-    Правило ровно то же, что в server.pane_exists, и это не совпадение: tmux на
-    запрос несуществующей панели отвечает кодом 0 и ПУСТЫМ выводом, поэтому
-    проверка «код успеха и не „1“» объявляет живой любую фантомную панель. Раньше
-    правка живла только в server.pane_exists, а pairpilot зовёт эту функцию — и
-    фантом %999999 считался живым, из-за чего pilot_pane_dead не писался
-    никогда. Расхождение двух одинаково названных функций и было дырой.
+    The rule matches server.pane_exists exactly, and that is no coincidence: tmux
+    answers a missing-pane query with code 0 and EMPTY output, so the "success code
+    and not \"1\"" check declares any phantom pane alive. The fix used to live in
+    server.pane_exists alone, while pairpilot calls this function — and phantom
+    %999999 counted as living, so pilot_pane_dead never wrote. The drift of two
+    same-named functions was the hole.
 
-    Поэтому обе функции зовут pane_identity, а не читают tmux сами: одна мысль —
-    одно место, иначе правка одной из них роняет ту самую проверку согласия.
+    So both functions call pane_identity instead of reading tmux themselves: one
+    thought — one place, or fixing one drops the agreement check.
     """
     if not pane_ref_format(pane):
         return False
@@ -138,32 +137,31 @@ def pane_alive(tmux: str, pane: str) -> bool:
     return bool(ident["exists"] and ident["alive"])
 
 
-# Два формата ссылки на панель, оба принимаются всегда: `%N` и
-# `<сессия>:<окно>.<панель>`. Второй устойчивее: номер сквозной внутри одного
-# tmux-сервера, он перенумеровывается при пересоздании панелей и протухает в
-# окружении процесса, а имя сессии с окном и панелью такой срок службы не имеет.
+# Two pane-reference formats, both always accepted: `%N` and `<session>:<win>.<pane>`.
+# The second is stabler: the number runs through one tmux server, renumbers on
+# pane recreation and goes stale in the process environment, while the session
+# name with window and pane never lives that short.
 #
-# Обратная совместимость не из вежливости: у живых ролей в состоянии лежат `%N`,
-# и если бы запись перестала их принимать, обновление сломало бы доставку у всех
-# сразу. Поэтому пишется предпочтительный формат, а читаются оба.
+# Backward compatibility is no politeness: live roles carry `%N` in state, and had
+# the record stopped taking them, the upgrade would break delivery for all at once.
+# So the preferred format writes, and both read.
 PANE_ID_FORMAT = "id"
 PANE_ADDRESS_FORMAT = "address"
 
 PANE_ID_RE = re.compile(r"%\d+\Z")
-# Имя сессии в tmux не может содержать `:` (проверено: `new-session -s 'a:b'`
-# отказывает), а `.` в нём заменяется на `_`. Поэтому двоеточие однозначно
-# отделяет имя сессии, а `\d+\.\d+` в хвосте — окно и панель.
+# A tmux session name never holds `:` (checked: `new-session -s 'a:b'` refuses),
+# while `.` inside turns into `_`. So the colon splits the session name unambiguously,
+# and `\d+\.\d+` at the tail means window and pane.
 PANE_ADDRESS_RE = re.compile(r"(?P<session>[^:]+):(?P<window>\d+)\.(?P<pane>\d+)\Z")
 
 
 def pane_ref_format(pane: str) -> str:
-    """Какой это формат ссылки: `id`, `address` или "" (не панель вовсе).
+    """Which reference shape this is: `id`, `address`, or "" (no pane at all).
 
-    Отдельная функция, потому что её результат решает судьбу вызова, а не
-    сообщает о факте: `_ring` отказывается звонить в собственную панель по
-    сравнению строк, а `pairpilot` отказывается трогать панель, занятую другой
-    ролью. Обе проверки обязаны понимать оба формата, иначе после перехода на
-    адреса сессий они молча перестают срабатывать.
+    A separate function, because its result decides the call fate instead of
+    reporting a fact: `_ring` refuses to ring our own pane on string comparison,
+    while `pairpilot` refuses to touch a pane held by another role. Both checks
+    must parse both shapes, or past the session-address move they silently stop firing.
     """
     text = str(pane or "")
     if PANE_ID_RE.fullmatch(text):
@@ -174,12 +172,12 @@ def pane_ref_format(pane: str) -> str:
 
 
 def session_address(tmux: str, pane: str) -> str:
-    """Устойчивый адрес панели: `<сессия>:<окно>.<панель>`, либо "" если не вышло.
+    """The stable pane address: `<session>:<window>.<pane>`, or "" when it fails.
 
-    Ограничение, важное и измеренное: имя сессии изолирует проекты ТОЛЬКО если у
-    каждого проекта своя сессия. При общей сессии `mail:0.0` может принадлежать
-    чужому проекту, и ловится это только проверкой `pane_current_path`. Поэтому
-    адрес сессии и проверка пути — две независимые линии, а не замена одна другой.
+    A measured, important limit: the session name isolates projects ONLY when every
+    project owns its session. On a shared session `mail:0.0` may belong to another
+    project, caught only by the `pane_current_path` check. So the session address
+    and the path check are two independent lines, never one replacing the other.
     """
     r = subprocess.run(
         [tmux, "display-message", "-p", "-t", pane,
@@ -188,46 +186,44 @@ def session_address(tmux: str, pane: str) -> str:
     out = r.stdout.strip()
     if r.returncode != 0 or not out or out.startswith(":"):
         return ""
-    # ЗАМЕРЕНО, и это ломает наивную реализацию: на несуществующую панель tmux
-    # отвечает кодом 0, а не ошибкой, и ПЕРЕИМЕНОВЫВАЕТ запрос на соседнюю живую
-    # панель того же окна. Сессия из двух панелей, панель `.1` умерла, и
-    # `display-message -t S:0.1` спокойно отдаёт адрес `S:0.0`. На `%N` такого
-    # нет: `display-message -t %499999` даёт пустой вывод.
+    # MEASURED, and it breaks the naive take: tmux answers a missing pane with code
+    # 0, not an error, and RENAMES the query onto the neighbouring live pane of the
+    # same window. A two-pane session, pane `.1` dead, and `display-message -t S:0.1`
+    # calmly returns `S:0.0`. On `%N` nothing like that: `display-message -t %499999`
+    # gives empty output.
     #
-    # Значит адрес нельзя ни принять, ни записать, не сверив его с тем, о чём
-    # спрашивали: иначе протухший адрес молча указывает на чужую панель, и
-    # недоставленное сообщение уходит соседу вместо отказа.
+    # So an address is never taken or recorded unchecked against what was asked:
+    # otherwise a stale address quietly points at another pane, and the undelivered
+    # message leaves to the neighbour instead of a refusal.
     if pane_ref_format(pane) == PANE_ADDRESS_FORMAT and out != str(pane):
         return ""
     return out
 
 
 def canonical_pane(tmux: str, pane: str) -> str:
-    """Что записывать в состояние: адрес сессии, если он есть, иначе исходный вход.
+    """What to record into state: the session address when present, else the raw input.
 
-    Обратная совместимость здесь обязательна не из вежливости: у живых ролей в
-    состоянии лежат `%N`, и если бы запись перестала их принимать, обновление
-    сломало бы доставку у всех сразу. Поэтому оба формата принимаются при
-    обращении, а пишется предпочтительный.
+    Backward compatibility here is mandatory, not polite: live roles carry `%N` in
+    state, and had the record stopped taking them, the upgrade would break delivery
+    for all at once. So both shapes take on read, and the preferred one writes.
     """
     address = session_address(tmux, pane)
     return address or pane
 
 
 def same_pane(tmux: str, left, right) -> bool:
-    """Одна и та же панель, записанная двумя форматами. Fail-closed.
+    """One pane recorded in two shapes. Fail-closed.
 
-    Сравнение строк здесь было тихой поломкой: своя панель из окружения приходит
-    как `%1`, а в состоянии лежит `mail:0.1`, и `pane == TMUX_PANE` переставал
-    быть верным. Проверки, построенные на этом равенстве, не падали — они просто
-    переставали срабатывать: `_ring` начинал звонить в собственную панель, а
-    `pairpilot` — считать чужую панель занятой и не трогать её, пока реальный
-    сосед в ней сидел.
+    String comparison was the quiet breakage here: our own pane arrives from the
+    environment as `%1` while state holds `mail:0.1`, and `pane == TMUX_PANE` stopped
+    holding. Checks built on that equality never fell — they just stopped firing:
+    `_ring` started ringing our own pane, while `pairpilot` read another pane as held
+    and left it alone while the real neighbour sat inside.
 
-    Обе ссылки приводятся к адресу сессии: это единственное имя, которое даёт
-    tmux обоим форматам. Если адрес не разрешился, остаётся точное сравнение
-    строк — два одинаковых адреса сессии всё же одна панель, и отказ здесь
-    сломал бы доставку соседу, который сидит рядом.
+    Both references resolve to the session address: the only name tmux gives both
+    shapes. When the address never resolves, exact string comparison stays — two
+    identical session addresses are still one pane, and refusing here would break
+    delivery to the neighbour sitting next door.
     """
     if not left or not right:
         return False
@@ -237,21 +233,21 @@ def same_pane(tmux: str, left, right) -> bool:
         return False
     left_addr = pane_identity(tmux, left).get("address")
     right_addr = pane_identity(tmux, right).get("address")
-    # Пустой адрес означает «панели нет», и две такие ссылки разными панелями не
-    # считаются: иначе фантом совпал бы с фантомом.
+    # An empty address means "no pane", and two such references never count as
+    # different panes: otherwise a phantom would match a phantom.
     return bool(left_addr) and left_addr == right_addr
 
 
 def pane_key(tmux, pane) -> str:
-    """Ключ группировки панелей, одинаковый для обоих форматов ссылки.
+    """The pane-grouping key, identical for both reference shapes.
 
-    Нужен там, где панели сравниваются попарно или группируются в таблицу: после
-    перехода на адреса сессий `%1` и `mail:0.1` — одна панель, а сравнение строк
-    видело две. Дальше это ломало `ambiguous()` у сверхвизора, и тот, не увидев
-    двух ролей на одной панели, считал её свободной и бил в чужой композер.
+    Needed where panes compare pairwise or group into a table: past the move to
+    session addresses `%1` and `mail:0.1` are one pane, while string comparison saw
+    two. Past that it broke the supervisor `ambiguous()`, which — missing two roles
+    on one pane — called it free and struck another composer.
 
-    tmux недоступен или панели нет — исходная строка: ключ группировки, а не
-    приговор, и хуже, чем было, от этого не станет.
+    tmux unreachable or no pane means the source line: a grouping key, not a
+    verdict, and worse than before never follows.
     """
     if not pane or not tmux:
         return str(pane or "")
@@ -263,43 +259,43 @@ def pane_key(tmux, pane) -> str:
 
 
 def pane_identity(tmux: str, pane: str) -> dict:
-    """Кто именно сидит в панели: не «жива ли», а «наша ли».
+    """Who exactly sits in the pane: not "alive or not" but "ours or not".
 
-    Одного `#{pane_dead}` мало, и это была дыра между проектами. Номер панели
-    `%N` переживает смерть процесса, который его занимал: панель жива, но
-    принадлежит уже другому проекту. На этой машине несколько проектов на
-    pair-mailbox, поэтому звонок по записанному в состоянии номеру попадал в
-    чужой композер, и один проект вбивал свои сообщения в агента другого.
+    One `#{pane_dead}` never suffices, and that was the cross-project hole. The `%N`
+    number outlives the death of the process that held it: the pane lives but belongs
+    to another project already. Several pair-mailbox projects run on this machine, so
+    ringing the state-recorded number landed in another composer, with one project
+    typing its messages into another agent.
 
-    Один запрос tmux отвечает сразу на всё, и это не экономия ради экономии:
-    `#{pane_dead}` и `#{session_name}` берутся из одного снимка панели. Два
-    отдельных вызова означали бы два разных момента времени, между которыми
-    панель могла умереть, и вердикт «жива, наша» собрался бы из двух снимков
-    разных панелей.
+    One tmux query answers everything at once, and that is no saving for saving’s
+    sake: `#{pane_dead}` and `#{session_name}` come from one pane snapshot. Two
+    separate calls would mean two different times, with the pane possibly dead
+    between them, and an "alive, ours" verdict assembled from two snapshots of
+    different panes.
     """
     r = subprocess.run(
         [tmux, "display-message", "-p", "-t", pane,
          "#{pane_dead}\t#{pane_current_path}\t#{session_name}:#{window_index}.#{pane_index}\t#{session_id}\t#{pane_id}"],
         capture_output=True, text=True, timeout=5)
-    # tmux на НЕСУЩЕСТВУЮЩУЮ панель отвечает кодом 0 и пустым выводом — это
-    # ровно тот же факт, из-за которого фантомная панель когда-то считалась
-    # живой. Поэтому одного кода возврата мало: пустой вывод тоже означает,
-    # что панели нет. Раньше exists выводился только из returncode и врал:
-    # итог был безопасным случайно, а не по замыслу.
+    # tmux answers a NONEXISTENT pane with code 0 and empty output — exactly the
+    # same fact over which the phantom pane once counted as living. So return code
+    # alone never suffices: empty output also means no pane. `exists` used to derive
+    # from returncode alone and lied: the total stayed safe by accident, not design.
+    # An empty FLAT cwd field stays a nonempty answer: `pane_current_path` may run
     #
-    # Пустое ПЛАТОЕ поле cwd остаётся непустым ответом: `pane_current_path` может
-    # быть пустым у живой панели, и это «не доказано», а не «отсутствует» —
-    # разные отказы с разными причинами, и путать их нельзя.
+    # empty on a live pane, and that is "unproven", not "missing" — different refusals
+    # with different causes, never to confuse.
+    # The `\d+\.\d+` tail means window and pane.
     parts = r.stdout.strip("\n").split("\t")
     dead = parts[0].strip() if parts else ""
     if r.returncode != 0 or not dead:
         return {"exists": False, "alive": False, "path": "", "address": ""}
     path = parts[1].strip() if len(parts) > 1 else ""
     address = parts[2].strip() if len(parts) > 2 else ""
-    # Тот же обман, что в session_address, только теперь он бьёт по линии
-    # «наша ли панель»: протухший адрес сессии отдаёт cwd и alive СОСЕДНЕЙ панели,
-    # и проверка пути прошла бы, печать пошла бы в чужой композер. Сверяем адрес
-    # с тем, о чём спрашивали, и при расхождении панели просто нет.
+    # The same deception as in session_address, only now it strikes the "is it ours"
+    # line: a stale session address returns the NEIGHBOUR pane cwd and alive.
+    # and the path check passed, printing would go to another composer. Reconcile the
+    # address with what was asked: on mismatch there is simply no pane.
     if address and pane_ref_format(pane) == PANE_ADDRESS_FORMAT and address != str(pane):
         return {"exists": False, "alive": False, "path": "", "address": ""}
     if not address:
@@ -311,11 +307,11 @@ def pane_identity(tmux: str, pane: str) -> dict:
 
 
 def _ancestor_chain(pid: int) -> set:
-    """Цепочка предков pid по /proc — общий корень обоих поисков панели.
+    """The pid-ancestor chain over /proc — the shared root of both pane searches.
 
-    Пустое множество вместо [""] : различие «не знаю» и «знаю, что нет»
-    здесь не нужно, оба означают «панель не найдена». pid<=1 отпадает сам:
-    у init нет предков в панелях, и цикл не стартует.
+    An empty set instead of [""]: the "unknown" vs "known absent" distinction is
+    needless here, both read "pane not found". pid<=1 drops on its own: init has
+    no pane ancestors, and the loop never starts.
     """
     chain: set = set()
     try:
@@ -333,11 +329,11 @@ def _ancestor_chain(pid: int) -> set:
 
 
 def find_pane_of_pid(tmux: str, pid: int) -> str:
-    """Панель, в чьём дереве живёт pid — или "".
+    """The pane in whose tree the pid lives — or "".
 
-    Обратный путь: цепочка предков pid до pane_pid одной из живых панелей.
-    Нужен дважды: роль ищет себя без TMUX_PANE (find_own_pane), пилот ищет
-    чужую роль по pid из ростера. Вне Linux или без панели — честный "".
+    The reverse path: the pid ancestor chain up to some live pane pane_pid.
+    Needed twice: the role finds itself with no TMUX_PANE (find_own_pane), the
+    pilot finds another role by roster pid. Off Linux or with no pane — an honest "".
     """
     chain = _ancestor_chain(pid)
     if not chain:
@@ -355,25 +351,24 @@ def find_pane_of_pid(tmux: str, pid: int) -> str:
 
 
 def find_own_pane(tmux: str) -> str:
-    """Панель, из чьего дерева процессов зовут — или "".
+    """The pane whose process tree calls — or "".
 
-    TMUX_PANE в окружении MCP-сервера может не быть (наследует от CLI), а
-    ростер без панели делает deliver/unblock слепыми: роль жива, а будить
-    некуда. Тонкий вызов find_pane_of_pid на своём pid.
+    TMUX_PANE may miss in the MCP server environment (inherited from the CLI),
+    while a paneless roster blinds deliver/unblock: the role lives but nowhere to
+    wake. A thin find_pane_of_pid call on our own pid.
     """
     return find_pane_of_pid(tmux, os.getpid())
 
 
 def pane_is_foreign(tmux: str, pane: str, project_root) -> tuple:
-    """Панель доказуемо не наша? Fail-closed: не доказали своё — не печатаем.
+    """Is the pane provably not ours? Fail-closed: unproven ours means no printing.
 
-    Логика уехала в `panes`: там же гонка при рождении панели и разделение
-    «чужой проект» против «панель мертва». Здесь остаётся вызов, потому что
-    `pair_deliver` и `pairctl` зовут это имя, а переименовывать его в четырёх
-    местах ради одного переезда незачем.
+    The logic moved to `panes`: same birth race and the "foreign project" vs "dead
+    pane" split live there. The call stays here because `pair_deliver` and `pairctl`
+    call this name, and renaming it in four places for one move is needless.
 
-    Импорт ленивый по той же причине, что и остальные здесь: `panes` берёт из
-    `composer` `pane_identity`, и импорт на верхнем уровне был бы циклом.
+    The import stays lazy for the same reason as the rest here: `panes` takes
+    `pane_identity` from `composer`, and a top-level import would cycle.
     """
     from panes import pane_is_foreign as impl
 
@@ -381,29 +376,27 @@ def pane_is_foreign(tmux: str, pane: str, project_root) -> tuple:
 
 
 def pane_belongs_to_project(tmux: str, pane: str, project_root) -> tuple:
-    """Принадлежит ли панель этому проекту. Логика — в `panes`."""
+    """Whether the pane belongs to this project. The logic lives in `panes`."""
     from panes import pane_belongs_to_project as impl
 
     return impl(tmux, pane, project_root)
 
 
 def pane_pid(tmux: str, pane: str) -> int:
-    """pid ПРОЦЕССА ПАНЕЛИ — обычно это шелл, а не агент. Не «pid роли».
+    """The PANE PROCESS pid — usually a shell, not the agent. Not "the role pid".
 
-    Возвращать его и называть «pid процесса, который занимает панель» было бы
-    верно только формально. Измерено на живых панелях: `#{pane_pid}` в панели с
-    работающим агентом отдаёт bash, потому что агент живёт ребёнком шелла.
-    Отсюда две беды, и обе приходят от того, что поле называли не тем, чем оно
-    являлось:
+    Returning it under "the pid of the process holding the pane" would hold only
+    formally. Measured on live panes: `#{pane_pid}` in an agent pane returns bash,
+    because the agent lives as a shell child. Two troubles follow calling the field
+    what it never was:
 
-    - в ростер, где лежит pid сервера роли, попадал pid шелла, и значения
-      начинали флипать каждый тик, потому что `_register` перезаписывал своё;
-    - хуже: упавший агент оставляет после себя ЖИВОЙ шелл, поэтому «в панели
-      кто-то есть» всегда истинно, и роль, которая упала, никогда не
-      перезапускалась бы.
+    - the roster, holding the role-server pid, took the shell pid, and values
+      started flipping every tick as `_register` overwrote its own;
+    - worse: a fallen agent leaves a LIVE shell behind, so "someone sits in the
+      pane" always holds, and a fallen role would never restart.
 
-    Для вопроса «жива ли роль» есть `pane_role_pid`. Эта функция остаётся как
-    нижний слой: её честное имя — процесс панели, и больше она ничего не значит.
+    For "is the role alive" there is `pane_role_pid`. This function stays as the
+    bottom layer: its honest name is the pane process, and nothing more.
     """
     ident = pane_identity(tmux, pane)
     if not (ident["exists"] and ident["alive"]):
@@ -427,11 +420,11 @@ def _cmdline(pid: int) -> list:
 
 
 def _is_role_server(pid: int, role: str) -> bool:
-    """Процесс это `server.py --role <role>`, или нет.
+    """Whether the process is `server.py --role <role>`, or not.
 
-    Сверяются и имя файла, и соседние аргументы. Искать просто подстроку роли
-    нельзя: ошибка здесь стоила бы чужого pid в чужой записи, а это ровно тот тип
-    поломки, который проверка пути уже ловила между проектами.
+    Both the file name and the neighbour args check. Searching a bare role
+    substring is banned: an error here would cost another pid in another record —
+    exactly the breakage class the path check already caught across projects.
     """
     args = _cmdline(pid)
     if not any(part.endswith("server.py") for part in args):
@@ -443,10 +436,10 @@ def _is_role_server(pid: int, role: str) -> bool:
 
 
 def _descendants(root: int) -> list:
-    """Все потомки процесса по `/proc`, в ширину.
+    """All child processes of `/proc`, breadth-first.
 
-    Порядок важен: ближайший предок идёт первым, и при нескольких кандидатах
-    выигрывает тот, кто ближе к панели, а не тот, у кого pid больше.
+    Order matters: the nearest ancestor goes first, and with several candidates
+    the one closer to the pane wins, not the bigger pid.
     """
     children: dict = {}
     try:
@@ -472,12 +465,12 @@ def _descendants(root: int) -> list:
 
 
 def find_role_pid(root: int, role: str) -> int:
-    """Сервер роли среди потомков `root`, или 0.
+    """The role server among `root` descendants, or 0.
 
-    Отделено от `pane_role_pid` намеренно: tmux здесь нужен только чтобы узнать
-    pid панели, а весь вопрос «кто в панели» решается по `/proc`. Разделение
-    сделано ради проверяемости — сращивать их было бы ровно тем, из-за чего баг
-    прожил: функция проверялась подменой, которая не влияла на код под ней.
+    Split from `pane_role_pid` on purpose: tmux here only learns the pane pid,
+    while the whole "who sits in the pane" question resolves over `/proc`. The
+    split serves checkability — merging them was exactly what let the bug live:
+    the function checked by a stub that never touched the code below.
     """
     if not root or not role:
         return 0
@@ -488,24 +481,23 @@ def find_role_pid(root: int, role: str) -> int:
 
 
 def pane_role_pid(tmux: str, pane: str, role: str) -> int:
-    """pid сервера РОЛИ, если её процесс живёт в этой панели, иначе 0.
+    """The ROLE server pid, when its process lives in this pane, else 0.
 
-    Это тот вопрос, который на самом деле нужен сверхвизору, и он не равен
-    `pane_pid`: в панели всегда есть шелл, даже когда агент упал, поэтому «в
-    панели кто-то есть» не доказывает «роль жива».
+    The actual question the supervisor needs, and it never equals `pane_pid`:
+    a shell always sits in the pane, even after the agent fell, so "someone in
+    the pane" never proves "the role lives".
 
-    Искать надо сервер роли, потому что именно его pid пишет `_register`
-    (`os.getpid()` сервера) и именно его ждёт `is_pid_alive` в ростере. Отсюда
-    смысл: обновление записи возвращает в неё значение того же рода, иначе pid
-    двух разных процессов дрались бы за одно поле.
+    Search the role server, because its pid is what `_register` writes
+    (`os.getpid()` of the server) and what `is_pid_alive` awaits in the roster.
+    Hence the meaning: the record update returns a same-kind value, or pids of
+    two different processes would fight over one field.
 
-    Один запрос к tmux на всё: сведения о панели берутся из `pane_identity`, а не
-    из второго `display-message`. Панель могла умереть между двумя вызовами, и
-    тогда вердикт собрался бы из снимков разных панелей.
+    One tmux query for everything: pane facts come from `pane_identity`, not a
+    second `display-message`. The pane may die between two calls, and the verdict
+    would assemble from snapshots of different panes.
 
-    Ноль означает «не нашёл», и это не ошибка: вызывающий обязан трактовать это
-    как «не знаю», а не как «панели нет». Вне Linux дерева процессов нет, и
-    честный ответ здесь 0.
+    Zero means "not found", never an error: the caller must read it as "unknown",
+    not "no pane". Off Linux no process tree exists, and the honest answer is 0.
     """
     return find_role_pid(pane_pid(tmux, pane), role)
 
@@ -519,22 +511,22 @@ def capture(tmux: str, pane: str) -> list:
     return lines[-CAPTURE_LINES:]
 
 
-# Рамки TUI: box-drawing и блочные глифы. Одна константа намеренно: вопрос
-# «это часть рамки?» задавался в двух местах двумя разными диапазонами —
-# 2500-259f в одном и 2500-257f в другом, — и разница в один символ была
-# ровно тем, что делало занятый композер пустым. Тот же урок, что и с
-# расхождением pane_alive / server.pane_exists: одна мысль, одно место.
+# TUI frames: box-drawing and block glyphs. One constant on purpose: the
+# "is it frame part?" question rang in two places in two different ranges —
+# 2500-259f in one and 2500-257f in another — and the one-char difference was
+# exactly what read a busy composer as empty. The same lesson as the
+# pane_alive / server.pane_exists drift: one thought, one place.
 BOX_GLYPH = r"\u2500-\u259f"
 
 
 def is_input_box_row(line: str) -> bool:
-    """Строка поля ввода TUI — и пустая, и с набранным текстом.
+    """The TUI input-field line — empty and with typed text alike.
 
-    Различать их здесь не нужно: нужно знать, что строка принадлежит полю ввода,
-    а занятость определяет is_composer_empty. Раньше распознавание требовало, чтобы
-    строка целиком состояла из рамочных глифов, и как только в поле ввода
-    появлялся хоть один символ, composer_line отдавал None, то есть «печатать
-    некуда»: начал человек печатать — доставка снова невозможна.
+    Telling them apart here is needless: what matters is that the line belongs to
+    the input field, while busyness is is_composer_empty’s call. Recognition used
+    to demand the line consist wholly of frame glyphs, and as soon as one char
+    landed in the input field, composer_line returned None — "nowhere to print":
+    the human starts typing, delivery breaks again.
     """
     text = line.lstrip()
     if not text:
@@ -543,19 +535,19 @@ def is_input_box_row(line: str) -> bool:
 
 
 def is_input_box_hint(line: str) -> bool:
-    """Подсказка пустого поля ввода (Ask anything…): текст не набран."""
+    """The empty-input-field hint (Ask anything…): no text typed."""
     return "ask anything" in line.strip().lower()
 
 
 def is_input_box_border(line: str) -> bool:
-    """Нижняя граница поля ввода TUI: рамка, которая расширяется при наборе.
+    """The TUI input-field bottom edge: a frame widening as you type.
 
-    Признак структурный, без названий брендов: строка состоит только из
-    рамочных и блочных глифов. Нужна потому, что у OpenCode нет ASCII-маркера
-    промпта: поле ввода — рамка, а под ней строка статуса. Композер искался
-    только как «строка, начинающаяся с маркера», поэтому панель OpenCode не
-    опознавалась никогда и молча считалась занятой — доставка и звонок в неё
-    были невозможны в принципе, а не изредка.
+    A structural mark, with no brand names: the line holds only frame and block
+    glyphs. Needed because OpenCode owns no ASCII prompt marker: the input field
+    is a frame, with a status line below. The composer was sought only as "a line
+    starting with a marker", so an OpenCode pane never recognized and silently
+    counted as busy — delivery and ringing into it were impossible in principle,
+    not occasionally.
     """
     text = line.rstrip()
     if not text.strip():
@@ -566,48 +558,48 @@ def is_input_box_border(line: str) -> bool:
 
 
 def is_footer_or_status_line(line: str) -> bool:
-    """Проверка, является ли строка служебным футером или рамкой TUI."""
+    """Whether the line is a service footer or a TUI frame."""
     s = line.strip()
     if not s:
         return True
-    # Чистые горизонтальные разделители и рамки (─, ━, ═, ▀, ▄, ╹, etc.)
+    # Clean horizontal separators and frames.
     if re.fullmatch(rf"[{BOX_GLYPH}\s═─━╹▀_-]+", s):
         return True
     return False
 
 
 def composer_line(lines: list) -> str | None:
-    """Последняя строка, куда человек может печатать, или None если композера нет.
+    """The last line a human may type into, or None when no composer shows.
 
-    Три формы панели, и ошибка в любой из них молча отключает доставку целиком.
+    Three pane shapes, and an error in any one silently disables all delivery.
 
-    **Голый шелл.** Последняя непустая строка и есть промпт.
+    **Bare shell.** The last nonempty line is the prompt.
 
-    **TUI со строкой статуса ПОД композером.** Композер — последняя строка,
-    начинающаяся с маркера промпта, всё ниже неё — обстановка.
+    **TUI with the status line UNDER the composer.** The composer is the last
+    line starting with a prompt marker; everything below is scenery.
 
-    **TUI с полем ввода-рамкой** (opencode). Маркера промпта нет вообще: поле
-    ввода это рамка, под ней строка статуса. Раньше композер искался только как
-    «строка с маркером», поэтому такая панель не опознавалась никогда, функция
-    отдавала None, а None по контракту вызывающего это «занято» — доставка и
-    звонок в opencode были невозможны в принципе, а не изредка.
+    **TUI with a frame input field** (opencode). No prompt marker at all: the
+    input field is a frame, with a status line below. The composer used to be
+    sought only as "a marker line", so such a pane never recognized, the function
+    returned None, and None by the caller contract means "busy" — delivery and
+    ringing into opencode were impossible in principle, not occasionally.
 
-    Приоритет именно такой: рамка поля ввода сильнее строки-маркера. TUI рисует
-    свёрнутый вызов инструмента как `› pair.pair_send (...)`, а `›` состоит в
-    PROMPT_MARKERS, поэтому такая строка выглядит как промпт. Но композером она
-    не является, и из-за неё панель opencode считалась занятой всегда, даже когда
-    в неё только что положили текст.
+    Priority runs exactly so: the input-field frame beats the marker line. The TUI
+    draws a collapsed tool call as `› pair.pair_send (...)`, and `›` sits in
+    PROMPT_MARKERS, so such a line reads as a prompt. But no composer it is, and
+    over it the opencode pane counted as busy forever, even right after text landed
+    in it.
 
-    None означает «композер не виден», и это не то же самое, что «свободен»:
-    панель из одной рамки печатать некуда, и сообщить о ней как о свободной
-    значит отправить keystrokes в никуда. Вызывающий обязан считать None занятой.
+    None means "no composer visible", never "free": a one-frame pane takes typing
+    nowhere, and reporting it free sends keystrokes into nowhere. The caller must
+    count None as busy.
     """
-    # Геометрия opencode снизу вверх: строка пути/статуса, над ней нижняя
-    # граница поля ввода (угол `╹`/`▌`). pi-подобная рамка: контент МЕЖДУ
-    # двумя полными разделителями `───`, под ними — статус (cwd, токены).
-    # Первая содержательная строка ПОСЛЕ пропущенного разделителя — поле
-    # ввода (pi, живой capture 2026-10-10: набранный текст между двумя
-    # ─-рядами). Без этого признака pi считался занятым всегда.
+    # opencode geometry bottom-up: the path/status line, above it the input-field
+    # bottom edge (the `╹`/`▌` corner). A pi-like frame: content BETWEEN two full
+    # `───` separators, with status (cwd, tokens) below.
+    # The first content line PAST the skipped separator is the input field (pi, live
+    # capture 2026-10-10: typed text between two ─-rows). Without this mark pi read
+    # busy forever.
     seen_sep_below = False
     low_idx = None
     for i, line in enumerate(lines):
@@ -618,11 +610,11 @@ def composer_line(lines: list) -> str | None:
         if text and text[0] in INPUT_BOX_CORNERS_LOWER:
             low_idx = i
     if low_idx is not None:
-        # Рамочные строки над нижней границей; ниже — статус/футер.
-        # Подсказка — признак пустого поля; без неё сама граница —
-        # композер (заморожено: TestInputBoxCornerVsSideFrame,
-        # TestComposerOfAnOpencodePane). Но набранный текст над границей —
-        # занятое поле: тогда границы нет, есть ввод (test_composer:
+        # Frame lines above the bottom edge; status/footer below.
+        # A hint marks an empty field; without it the edge alone means a composer
+        # (frozen: TestInputBoxCornerVsSideFrame, TestComposerOfAnOpencodePane). But typed
+        # text above the edge means a busy field: then no edge, but input (test_composer:
+        # frozen contract).
         # test_opencode_typed_text_reads_busy).
         hint = None
         for line in lines[:low_idx]:
@@ -636,10 +628,10 @@ def composer_line(lines: list) -> str | None:
             if is_input_box_border(s):
                 continue
             stripped = re.sub(r"^[\u2500-\u257f\u2588|]+", "", tx).strip()
-            # Build-строка — хром TUI внутри поля (заморожено:
-            # "Build · something", живой idle: "Build auto · …").
-            # Край: текст пользователя с "build" сначала прочтётся
-            # свободным — принято ради замороженного контракта.
+            # Build-line chrome — TUI chrome inside the field (frozen: "Build · something",
+            # live idle: "Build auto · …").
+            # Edge case: user text starting with "build" first reads free — taken for the
+            # frozen contract.
             if stripped and not stripped.lower().startswith("build"):
                 return None
         if hint is not None:
@@ -653,10 +645,10 @@ def composer_line(lines: list) -> str | None:
         if looks_like_status_line(stripped):
             is_sep = bool(re.fullmatch(r"[\u2500\u2550\u2501\s]+", text))
             if is_sep and seen_sep_below:
-                # Два ГОРИЗОНТАЛЬНЫХ ряда подряд (─ ═ ━, без боковых
-                # '┃'): между ними лежит ПУСТОЕ поле ввода (pi idle).
-                # Боковые рамки opencode (' ┃') не разделители — на них
-                # признак не срабатывает (test_protocol 1354, regression).
+                # Two HORIZONTAL rows in a row (─ ═ ━, no side frames): an EMPTY input field
+                # lies between (pi idle).
+                # opencode side frames (' ┃') are no separators — the mark never fires on them
+                # (test_protocol 1354, regression).
                 return line
             if is_sep:
                 seen_sep_below = True
@@ -666,7 +658,7 @@ def composer_line(lines: list) -> str | None:
         if text.startswith("~/") or text.startswith("/"):
             continue
         if seen_sep_below:
-            # Содержательная строка между разделителями — pi-стиль.
+            # A content line between separators — the pi style.
             return line
         break
 
@@ -684,41 +676,40 @@ def composer_line(lines: list) -> str | None:
             if stripped.lstrip().startswith(marker):
                 return stripped
 
-    # Маркера нет вовсе. Тогда это либо чистая рамка TUI, где печатать некуда
-    # (None, то есть занят), либо незнакомый вид панели — голый шелл, — где
-    # последняя строка и есть промпт, как было до всех этих правок.
+    # No marker at all. Then either a clean TUI frame with nowhere to type (None —
+    # busy), or an unknown pane kind — a bare shell — where the last line is the
+    # prompt, as before all these fixes.
     return None if is_footer_or_status_line(fallback or "") else (
         None if looks_like_status_line(fallback or "") else fallback)
 
 
 def is_composer_empty(line: str) -> bool:
-    """Грубая, но честная проверка: после маркера почти ничего нет."""
+    """A rough but honest check: almost nothing past the marker."""
     s = line.rstrip()
     if not s.strip():
         return True
-    # Пустая рамка TUI: '  ┃  ', '  │  ' или нижняя граница поля ввода OpenCode.
-    # Диапазон здесь намеренно BOX_GLYPH, а не прежние 2500-257f: ▀ — это 2580, он
-    # на единицу выше той границы, поэтому рамка поля ввода не проходила и
-    # пустой композер OpenCode читался как занятый. Проверка живёт в
-    # is_input_box_border, отдельного дубликата здесь нет намеренно: две
-    # одинаковые проверки в двух местах — это ровно тот класс расхождения,
-    # который уже стоил нам неработающей доставки.
+    # An empty TUI frame: '  ┃  ', '  │  ' or the OpenCode input-field bottom edge.
+    # The range here is deliberately BOX_GLYPH, not the old 2500-257f: ▀ is 2580, one
+    # past that edge, so the input-field frame never passed and the empty OpenCode
+    # composer read as busy. The check lives in is_input_box_border, with no duplicate
+    # here on purpose: two identical checks in two places is exactly the drift class
+    # that already cost us broken delivery.
     if is_input_box_border(s):
         return True
     if is_input_box_hint(s):
-        return True  # подсказка пустого поля — не ввод
+        return True  # an empty-field hint — not input
     for marker in PROMPT_MARKERS:
         idx = s.rfind(marker)
         if idx != -1:
             tail = s[idx + len(marker):].strip()
-            # рамка TUI, рамки-разделители, курсор
+            # TUI frame, separator frames, cursor
             tail = re.sub(r"[\u2500-\u257f\u2588|]", "", tail).strip()
-            # TUI-подсказки и шорткаты в конце строки ввода (OpenCode / Claude Code
-            # / Codex): «⇧⇥ to change thinking effort», «ctrl+x commands». Стрелки
-            # убираются как глифы, а слова — только если ВЕСЬ остаток совпал с
-            # известной фразой. Не префиксом: вариант с `.*` после `ctrl\+x`
-            # объявлял бы пустым композер с настоящим текстом «ctrl+x не помогает…»,
-            # и пилот перезаписал бы чужой ввод.
+            # TUI hints and shortcuts at the input-line end (OpenCode / Claude Code
+            # / Codex): "⇧⇥ to change thinking effort", "ctrl+x commands". Arrows leave
+            # as glyphs, while words only match when the WHOLE remainder equals a known
+            # phrase. Never by prefix: the `.*`-suffixed `ctrl\+x` form would declare a
+            # composer with real text "ctrl+x does not help…" empty,
+            # and the pilot would overwrite another input.
             tail = re.sub(TUI_HINT_ARROWS, "", tail).strip()
             if tail and any(re.fullmatch(phrase, tail, re.IGNORECASE)
                             for phrase in TUI_HINT_PHRASES):
@@ -728,15 +719,15 @@ def is_composer_empty(line: str) -> bool:
 
 
 def composer_overflowed(lines: list) -> bool:
-    """Свёрнут ли длинный ввод в «↑ N more lines».
+    """Whether long input collapses into "↑ N more lines".
 
-    Проверка доставки ищет ХВОСТ набранного текста в строке композера. Когда текст
-    длиннее видимой области, TUI сворачивает его, и хвоста на экране нет — проверка
-    даёт ложный отказ при тексте, который на экране есть.
+    Delivery checks look for the TAIL of the typed text in the composer line. When
+    the text outgrows the visible area, the TUI collapses it, the tail leaves the
+    screen — and the check falsely refuses text that stands on screen.
 
-    Наблюдалось вживую: 4259 символов доставки легли в композер соседа, композер
-    показал «↑ 14 more lines», доставка была объявлена неподтверждённой, сообщение
-    продублировалось в ящик — и человек увидел одно и то же дважды.
+    Observed live: 4259 delivery chars landed in the neighbour composer, the
+    composer showed "↑ 14 more lines", delivery reported unconfirmed, the message
+    duplicated into the mailbox — and the human saw the same thing twice.
     """
     line = composer_line(lines)
     if line is None:
@@ -745,7 +736,7 @@ def composer_overflowed(lines: list) -> bool:
 
 
 def chunks(text: str, size: int = CHUNK_BYTES) -> list:
-    """Режем по границам слов, чтобы не разорвать идентификаторы."""
+    """Cut on word edges, never tearing identifiers."""
     out, buf = [], ""
     for word in text.split():
         candidate = (buf + " " + word) if buf else word
@@ -763,8 +754,8 @@ def type_text(tmux: str, pane: str, text: str) -> None:
     """Type in chunks, restoring the separator that chunking consumed.
 
     chunks() joins words with a space and drops it at every boundary, so sending the
-    pieces back to back loses one space per chunk: "должна найтись" arrived as
-    "должнанайтись". Harmless in prose, corrupting in a patch, so put it back.
+    pieces back to back loses one space per chunk: "must be found" arrived as
+    "mustbefound". Harmless in prose, corrupting in a patch, so put it back.
     """
     parts = chunks(text)
     for index, chunk in enumerate(parts):
@@ -793,20 +784,19 @@ def erase(tmux: str, pane: str, count: int) -> None:
 def tail_present(lines: list, needle: str) -> bool:
     """Did the typed text actually appear on screen?
 
-    The check is on the HEAD, not the tail, and это не переименование ради
-    красоты. Измерено в своём же композере: текст длиннее экрана рисуется от
-    начала, а всё, что ниже, уходит за нижнюю границу и в `capture` не попадает
-    вовсе. Проверка хвоста для такого текста не может сработать никогда — она
-    и не срабатывала, поэтому доставка длинных сообщений всякий раз объявлялась
-    неподтверждённой, хотя текст доходил и сосед его выполнял.
+    The check reads the HEAD, not the tail — no renaming for beauty. Measured in
+    our own composer: over-screen text draws from the start, while everything below
+    leaves past the bottom edge and never reaches `capture` at all. A tail check for
+    such text can never fire — and never fired, so every long-message delivery
+    reported unconfirmed while the text landed and the neighbour ran it.
 
-    Старая версия искала хвост по другой причине: курсор стоит внизу, а напечатанное
-    остаётся наверху, поэтому «последние строки» — это пустое. Но и «начало» там
-    не искалось — просто не оказалось нужным, пока тексты были короткими.
+    The old version sought the tail for another reason: the cursor sits at the
+    bottom while typed text stays on top, so "last lines" means empty. But no
+    "start" was sought there either — simply unneeded while texts ran short.
 
-    Проверяется начало, потому что оно единственное гарантированно видно. Хвост
-    как дополнительный признак тоже годится: если текст поместился целиком, то
-    видно и то, и другое, и совпадение по хвосту подтверждает доставку сильнее.
+    The start checks because it alone is guaranteed visible. The tail also serves
+    as an extra mark: when the whole text fits, both show, and a tail match confirms
+    delivery stronger.
     """
     meaningful = [line for line in lines if line.strip()]
     joined = " ".join(" ".join(meaningful).split())
@@ -827,8 +817,8 @@ PERMISSION_PATTERNS = (
     r"\bDo you allow this tool call\?",
 )
 
-# Промпт-меню: TUI показывает не «[y/N]», а список вариантов с подсказкой про
-# выбор и подтверждение. Клавиши там другие, и «y» не значит согласие.
+# Prompt menu: the TUI shows no "[y/N]" but an option list with a select-and-
+# confirm hint. Different keys there, and "y" never means agreement.
 PERMISSION_MENU_MARKERS = (
     r"allow\s+once",
     r"always\s+allow",
@@ -837,22 +827,22 @@ PERMISSION_MENU_MARKERS = (
 )
 PERMISSION_HEADER = re.compile(r"permission\s+(?:required|needed)", re.IGNORECASE)
 
-# Пункт меню, который разрешает операцию, вместе с его цифрой. Два вида меню
-# встречаются в живых TUI: горизонтальное (`Allow once · Always allow · Reject`
-# с `⇆ select`) — там Enter жмёт выбранный пункт, и нумерованное
-# (`1) Allow once  2) Always allow  3) Deny`) — там Enter жмёт ДЕФОЛТ, а им
-# часто оказывается отказ. Цифра шлётся только когда пункт явно разрешающий:
-# «Allow once» предпочитается «Always allow» — минимальная привилегия.
+# The menu item allowing the op, with its digit. Two live menu kinds in real
+# TUIs: horizontal (`Allow once · Always allow · Reject` with `⇆ select`) — Enter
+# presses the selected item there — and numbered (`1) Allow once  2) Always allow
+#  3) Deny`) — Enter presses the DEFAULT there, often a refusal. The digit sends
+# only when the item explicitly allows: `Allow once` beats `Always allow` — least
+# privilege.
 MENU_ALLOW_ITEM = re.compile(
     r"^\s*(\d+)\s*[).:\]]\s*(Allow\s+once|Always\s+allow|Allow|Yes)\b", re.IGNORECASE)
 
 
 def menu_allow_key(lines: list) -> str | None:
-    """Цифра разрешающего пункта нумерованного меню, либо None.
+    """The digit of the allowing item in a numbered menu, or None.
 
-    None — это тоже ответ: меню не нумеровано (горизонтальное), и жать надо
-    Enter по выделенному пункту, как было. Угадывать цифру нельзя: пункт
-    «Deny» нумерован так же, как «Allow».
+    None answers too: the menu runs unnumbered (horizontal), and Enter presses the
+    selected item as before. Guessing the digit is banned: the `Deny` item numbers
+    just like `Allow`.
     """
     once: str | None = None
     always: str | None = None
@@ -869,15 +859,15 @@ def menu_allow_key(lines: list) -> str | None:
 
 
 def detect_permission_menu(lines: list) -> str | None:
-    """Промпт в виде меню, а не «y/N». Вернёт строку-заголовок или None.
+    """A prompt shaped as a menu, not "y/N". Returns the header line or None.
 
-    Отдельная функция вместо расширения detect_permission_prompt: тот смотрит
-    только на две последние непустые строки, а в меню заголовок «Permission
-    required» стоит на шесть строк выше самых нижних. Расширять его окно значило
-    бы ловить эту строку в обычном выводе, где она ничего не разрешает.
+    A separate function instead of widening detect_permission_prompt: that one reads
+    only the last two nonempty lines, while in a menu the "Permission required"
+    header stands six lines above the bottom ones. Widening its window would catch
+    that line in ordinary output, where it allows nothing.
 
-    Нужен и заголовок, и признаки меню: по одному признаку это ещё не промпт,
-    а по одному заголовку — обычный лог.
+    Both the header and the menu marks are needed: one mark alone is no prompt yet,
+    and one header alone is an ordinary log.
     """
     text = [line.strip() for line in lines if line.strip()]
     joined = "\n".join(text)
@@ -892,22 +882,21 @@ def detect_permission_menu(lines: list) -> str | None:
 
 
 def extract_permission_context(lines: list, prompt: str) -> str:
-    """Текст, по которому выносится вердикт.
+    """The text the verdict reads.
 
-    Для меню нужен весь экран: команда, которую видно как «$ git status», живёт в
-    теле модалки, а не в заголовке. По одному заголовке «Permission required» белый
-    список не разрешит ничего и откажет всегда.
+    A menu needs the whole screen: the command showing as `$ git status` lives in
+    the modal body, not the header. On the header alone ("Permission required") the
+    allowlist allows nothing and always refuses.
 
-    Для «y/N» раньше хватало самой строки вопроса, и на Claude Code это было
-    ошибкой: там вопрос идёт последней строкой, а команда — предпоследней, так
-    что вердикт выносился по строке без единого слова о команде и отказывал
-    100% безопасных команд. То есть режим auto на Claude Code просто не работал.
+    For "y/N" the question line alone used to suffice, and on Claude Code that was
+    a bug: the question runs last there while the command runs second to last, so
+    the verdict read a line with zero words about the command and refused 100% of
+    safe commands. Auto mode on Claude Code simply never worked.
 
-    Поэтому берём и строку вопроса, и строки над ней — но не весь экран: лишний
-    текст мог бы разрешиться по слову, которое к команде отношения не имеет.
-    Верхняя граница — OVERSCAN_LINES строк, и это решение открытое: agy спросил,
-    две, три или до разделителя, и я выбрал три с запасом на рамку между
-    командой и вопросом.
+    So both the question line and the lines above read — but never the whole screen:
+    extra text could allow on a word unrelated to the command. The top edge is
+    OVERSCAN_LINES lines, an open decision: agy asked two, three or till the
+    separator, and I took three with margin for the frame between command and question.
     """
     text = [line.strip() for line in lines if line.strip()]
     joined = "\n".join(text)
@@ -930,9 +919,9 @@ def detect_permission_prompt(lines: list) -> str | None:
     return None
 
 
-# Шесть стоп-категорий PROTOCOL.md §12 плюс всё, что меняет состояние вне
-# репозитория. Совпадение с любым из них запрещает автоподтверждение при любом
-# белом списке: решение человека не переопределяется настройкой инструмента.
+# The six PROTOCOL.md §12 stop categories plus everything changing state outside
+# the repo. A match on any of them bans self-confirmation under any allowlist:
+# the human decision never yields to a tool setting.
 NEVER_ALLOW_PATTERNS = (
     r"\.env\b",
     r"\bsecrets?\b",
@@ -940,9 +929,9 @@ NEVER_ALLOW_PATTERNS = (
     r"\bapi[_ -]?keys?\b",
     r"\bpasswords?\b",
     r"\bcredentials?\b",
-    # Чтение тоже умеет красть. `cat` стоит в белом списке как чтение, поэтому
-    # путь к секрету должен быть запрещён сам по себе, иначе «прочитать ключ» —
-    # это разрешённое чтение.
+    # Reading steals too. `cat` allowlists as reading, so the secret path itself
+    # must ban: otherwise "read the key" counts as allowed reading.
+    # that counts as allowed reading.
     r"\.ssh\b",
     r"id_rsa|id_dsa|id_ecdsa|id_ed25519",
     r"/etc/(?:shadow|passwd|sudoers)",
@@ -951,19 +940,19 @@ NEVER_ALLOW_PATTERNS = (
     r"\.aws\b",
     r"\.git-credentials\b",
     r"\.kube/config",
-    # Назначение cp/mv/ln за пределами проекта: запись туда, куда агент
-    # писать не должен. Первый аргумент (источник) уже ограничивают
-    # allow-паттерны, а второй (назначение) не проверял никто:
-    # `cp test.txt /etc/passwd` получал allow. Исключения — /tmp (свои
-    # времянки, та же граница что у touch/mkdir/printf) и /dev/null.
+    # cp/mv/ln assignments past the project: writing where the agent must never
+    # write. The first arg (source) already binds allow-patterns, while the second
+    # (target) nobody checked: `cp test.txt /etc/passwd` passed allow. Exceptions —
+    # /tmp (own temp files, same edge as touch/mkdir/printf) and /dev/null.
+    # A bare /tmp, /tmp/* and rm -rf / stay refuse (see NEVER above).
     r"\b(?:cp|mv|ln)\b[^\n]*?\s/(?!tmp/|dev/null\b)",
-    # Труба в шелл превращает любое чтение в выполнение.
+    # A pipe into a shell turns any read into execution.
     r"\|\s*(?:sudo\s+)?(?:ba|z|k|da)?sh\b",
-    # Код, переданный интерпретатору строкой, — это произвольное выполнение, а не
-    # проверка. Именно так выглядел обход белого списка:
+    # Code handed to an interpreter as a string is arbitrary execution, not a check.
+    # That is exactly how the allowlist bypass looked:
     # `python3 -c "import urllib.request; urllib.request.urlopen('http://x')" # test`
-    # Слово «test» в комментарии удовлетворяло шаблону разрешения, а `urllib` в
-    # запрещённых категориях не значится — сеть через него не отлавливалась.
+    # The word "test" in a comment satisfied the allow pattern, while `urllib` never
+    # stood in the banned categories — network through it went uncaught.
     r"\b(?:python3?|node|ruby|perl)\s+-c\b",
     r"\$\(",
     r"`",
@@ -984,9 +973,9 @@ NEVER_ALLOW_PATTERNS = (
     r"\bdrop\s+(?:table|database)\b",
     r"\btruncate\b",
     r"\bdelete\s+(?:from|all)\b",
-    # §10: «в main не пушат никогда». Push в фиче-ветку и создание PR — часть
-    # работы по протоколу, поэтому запрещён не push вообще, а push в main/master
-    # и переписывание истории.
+    # §10: never push into main. Pushing a feature branch and opening a PR is protocol
+    # work, so banned is not push at large but push into main/master plus history
+    # rewrites.
     r"\bgit\s+push\b[^\n]*\b(?:main|master)\b",
     r"\bgit\s+push\b[^\n]*--force\b",
     r"\bgit\s+reset\s+--hard\b",
@@ -994,11 +983,11 @@ NEVER_ALLOW_PATTERNS = (
     r"\bgit\s+filter-branch\b",
     r"\bgit\s+reflog\s+expire\b",
     r"\bgit\s+rebase\b[^\n]*\b(?:main|master)\b",
-    # Деструкция системы. Внутри проекта rm -rf build/ — обычная уборка, и её
-    # нельзя запрещать вместе с rm -rf /: разница не в команде, а в цели.
-    # /tmp — именованные одноуровневые подпути без глобов (уборка своих
-    # времянок): вырез ниже сужает гард ровно на них, голый /tmp, /tmp/*
-    # и rm -rf / остаются refuse и проверяются тестами.
+    # System destruction. Inside the project rm -rf build/ is routine cleanup, never
+    # bannable next to rm -rf /: the difference sits in the target, not the command.
+    # /tmp means named single-level subpaths with no globs (own temp cleanup): the cut
+    # below narrows the guard to exactly them; bare /tmp, /tmp/* and rm -rf / stay
+    # refuse, covered by tests.
     r"\brm\s+-[a-zA-Z]*[rf][a-zA-Z]*\s+(?:~|\$HOME|\*|\.\s*$|\.\.)",
     r"\brm\s+-[a-zA-Z]*[rf][a-zA-Z]*\s+/(?!tmp/[A-Za-z0-9_.-]+(?:\s|$))",
     r"\brm\s+-[a-zA-Z]*[rf][a-zA-Z]*\s+/tmp(?:\s|$|/\*|/\.?$)",
@@ -1008,55 +997,55 @@ NEVER_ALLOW_PATTERNS = (
     r"\bchmod\s+777\b",
     r"\bprod(?:uction)?\b",
     r":\d{2,5}\b",
-    # Сеть. Не потому что сеть опасна сама по себе, а потому что она позволяет
-    # вынести наружу то, что §12 защищает, и скачать то, что не проверял никто.
+    # Network. Not because the network is dangerous alone, but because it carries out
+    # what §12 guards and downloads what nobody checked.
     r"\bcurl\b",
     r"\bwget\b",
     r"\bnc\b\s+-",
-    # Установка пакетов тянет чужой код в проект и меняет окружение оператора.
+    # Package installs drag foreign code into the project and change the operator env.
     r"\bpip[23]?\s+install\b",
     r"\bnpm\s+install\b",
-    # Запуск тестов на хосте — произвольный код от прав оператора (P0).
-    # Тесты выполняются изолированно через scripts/run-isolated-test.sh
-    # (контейнер без сети и без $HOME); прямой запуск на хосте
-    # автоподтверждению не подлежит — только человек. Паттерн намеренно
-    # широкий: `pytest -q`, `python3 -m pytest`, `bun test`, `cargo test`.
-    # Честная граница: прямой `python3 path/to/test_foo.py` (слово не в конце
-    # токена) этим не ловится — allow-паттерн интерпретатора его покрывает.
-    # Полный разбор argv вместо regex — вне P0-скоупа, см. THREAT_MODEL.md.
-    # Проверка ниже в permission_verdict: сегмент с run-isolated-test.sh
-    # пропускает тестовые NEVER-паттерны (но не остальные: сеть, секреты,
-    # sudo по-прежнему refuse даже внутри раннера).
+    # Running tests on the host means arbitrary code with operator rights (P0).
+    # Tests run isolated through scripts/run-isolated-test.sh (a container with no
+    # network and no $HOME); a direct host run never self-confirms — human only. The
+    # pattern deliberately runs wide: `pytest -q`, `python3 -m pytest`, `bun test`, `cargo test`.
+    # Honest edge: a direct `python3 path/to/test_foo.py` (word not at token end) escapes
+    # this — the interpreter allow-pattern covers it. A full argv parse instead of regex
+    # sits past the P0 scope, see THREAT_MODEL.md.
+    # The check below in permission_verdict: the run-isolated-test.sh segment skips the
+    # The check below in permission_verdict: the run-isolated-test.sh segment skips the
+    # test NEVER-patterns (but not the rest: network, secrets, sudo still refuse inside).
+    # sudo still refuses even inside the runner).
     r"\bpytest\b",
     r"\b(?:python3?|node|ruby)\s+(?:-\S+\s+)*(?:[^\s]*[_./-]?)(?:test|tests|pytest|unittest)\b",
     r"\b(?:jest|vitest|mocha|rspec|nox|tox|nose|unittest)\b",
     r"\b(?:cargo\s+test|go\s+test)\b",
     r"\b(?:bun\s+(?:test|run\s+test)|npm\s+(?:test|ci))\b",
     r"\bnpm\s+publish\b",
-    # Префикс-переменные окружения меняют поведение процесса без изменения
-    # самой команды: LD_PRELOAD подменяет библиотеки, PYTHONPATH/NODE_PATH —
-    # код, который интерпретатор загрузит. `LD_PRELOAD=/tmp/x.so pytest` —
-    # это уже не «свои тесты», а чужая библиотека в процессе тестов.
-    # Список закрытый: PATH/HOME/TZ/LANG и подобные поведение не меняют
-    # так, чтобы это обходило allow-проверку, и остаются разрешены.
+    # Env-prefix variables change the process behaviour without changing the command
+    # itself: LD_PRELOAD swaps libraries, PYTHONPATH/NODE_PATH swap the code the
+    # interpreter loads. `LD_PRELOAD=/tmp/x.so pytest` is no longer "own tests" but
+    # another library inside the test process.
+    # Closed list: PATH/HOME/TZ/LANG and alike never change behaviour past the
+    # allow-check, and stay allowed.
     r"(?:^|[\s;&|])LD_PRELOAD\s*=",
     r"(?:^|[\s;&|])(?:PYTHONPATH|PYTHONHOME|NODE_PATH|RUBYLIB|PERL5LIB|LD_LIBRARY_PATH)\s*=",
 )
 
-# Белый список по умолчанию: чтение плюс локальная работа внутри проекта.
+# The default allowlist: reading plus local work inside the project.
 #
-# Границу провели там, где она проходит по §10 и §12, а не там, где строго:
-# §10 требует коммитов и PR, поэтому «только чтение» парализует пару, а §12
-# запрещает не «работу», а конкретные вещи — секреты, деплой, миграции,
-# удаление данных и истории git, прод. Запрещённое остаётся запрещённым при любом
-# белом списке (см. NEVER_ALLOW_PATTERNS), а разрешённое здесь — это работа, которую
-# протокол и так обязан делать без человека.
+# The edge runs where §10 and §12 draw it, not where strictest: §10 demands
+# commits and PRs, so "reads only" paralyzes the pair, while §12 bans not "work"
+# but concrete things — secrets, deploys, migrations, data and git-history
+# deletion, prod. Banned stays banned under any allowlist (see NEVER_ALLOW_PATTERNS),
+# while allowed here is the work the protocol must do with no human anyway.
+# the protocol owes with no human anyway.
 #
-# Чего здесь нет и почему: сетевых вызовов (curl/wget) и `ssh`. «Позволить сеть» —
-# это не про чтение файлов, это про возможность вынести их наружу, а §12 про секреты
-# не делает исключений на «только чтение».
+# What misses here and why: network calls (curl/wget) and `ssh`. "Allow network"
+# is not about reading files but about carrying them out, while §12 on secrets
+# grants no "reads only" exception.
 DEFAULT_ALLOW_PATTERNS = (
-    # чтение
+    # reading
     r"\bRead\b",
     r"\bread_file\b",
     r"\bview\b",
@@ -1069,7 +1058,7 @@ DEFAULT_ALLOW_PATTERNS = (
     r"\btail\b",
     r"\bls\b",
     r"\bfind\b",
-    # правка внутри проекта
+    # editing inside the project
     r"\bwrite\b",
     r"\bedit\b",
     r"\bcreate\b",
@@ -1078,91 +1067,91 @@ DEFAULT_ALLOW_PATTERNS = (
     r"\bapply\b",
     r"\bformat\b",
     r"\blint\b",
-    # локальные проверки: тесты и сборки
+    # local checks: tests and builds
     r"\b(?:pytest|unittest|nose|tox|nox|jest|vitest|mocha|rspec|cargo\s+test|go\s+test)\b",
     r"\b(?:ruff|flake8|pylint|mypy|pyright|eslint|prettier|tsc|black|isort)\b",
-    # Интерпретатор с проверкой в команде: `python3 -m pytest`,
-    # `python3 mcp/pair_mailbox/test_protocol.py`, `node --test`. Ключевое слово
-    # должно быть АРГУМЕНТОМ. Прежний `[^\n]*` позволял ему всплыть откуда угодно
-    # дальше по строке, и хватало слова «test» в комментарии или внутри строковой
-    # константы — см. NEVER_ALLOW_PATTERNS про `-c`.
+    # Interpreter with a check in the command: `python3 -m pytest`,
+    # `python3 mcp/pair_mailbox/test_protocol.py`, `node --test`. The keyword must be
+    # an ARGUMENT. The old `[^\n]*` let it surface from anywhere further down the
+    # line, and the word "test" in a comment or inside a string constant sufficed —
+    # see NEVER_ALLOW_PATTERNS on `-c`.
     r"\b(?:python3?|node|ruby)\s+(?:-\S+\s+)*(?:[^\s]*[_./-]?)(?:test|tests|pytest|unittest|lint|check|build)",
     r"\bmake\b",
     r"\bnpm\s+(?:run\s+\w+|test|ci)\b",
-    # bun — рантайм, на котором крутятся omp и pi (pane_current_command показал
-    # bun на панелях пары): bun test / bun run / bun x — та же работа, что
-    # pytest напрямую, и без этого агент вставал на промпте рутины.
+    # bun is the runtime omp and pi turn on (pane_current_command showed bun on pair
+    # panes): bun test / bun run / bun x is the same work as pytest directly, without
+    # which the agent stalled on the routine prompt.
     r"\bbun\s+(?:test|run|x)\b",
     r"\bbuild\b",
-    # Наши раннеры из bin/: pairup/pairpilot/pair-duo/pairchat/pairctl/pairwatch/
-    # pairdoctor/pairboard. Относительность и защита от .. те же, что у scripts/.
-    # Имена с префикссом pair — все: семья инструментов одной ответственности.
+    # Our bin/ runners: pairup/pairpilot/pair-duo/pairchat/pairctl/pairwatch/pairdoctor/
+    # pairboard. Relativity and `..` guard match scripts/.
+    # Pair-prefixed names — all: one-responsibility tool family.
     r"\bbash\s+bin/(?!/)(?![^\s]*\.\.)pair[a-z-]*\b",
-    # Прямой запуск раннера: `bin/pairup` в начале команды. `(?<!\S)` — перед
-    # `bin/` только пробел или начало строки: иначе `/usr/local/bin/pairup`
-    # матчится как «наш раннер», а это чужой путь извне проекта.
+    # A direct runner launch: `bin/pairup` at the command start. `(?<!\S)` means only
+    # space or line start before `bin/`: or `/usr/local/bin/pairup` matches as "our
+    # runner" while a foreign path from outside the project.
     r"(?<!\S)bin/(?!/)(?![^\s]*\.\.)pair[a-z-]*\b",
-    # Свои гейты через bash: verify-project, file-size-gate, eye-of-sauron,
-    # comment-lint, security-scan и *_test.sh. Относительность в самом паттерне:
-    # `scripts/` без `/` и `..` впереди — абсолютный путь и выход из проекта
-    # не матчатся здесь, а не только в тестах. Задача seq 329: рутинные прогоны
-    # требовали ручного Allow, хотя это та же работа, что pytest напрямую.
+    # Our bash gates: verify-project, file-size-gate, eye-of-sauron, comment-lint,
+    # security-scan and *_test.sh. Relativity inside the pattern itself: `scripts/` with
+    # no `/` or `..` ahead — an absolute path or a project escape never matches here,
+    # not only in tests. Task seq 329: routine runs demanded manual Allow for the same
+    # work as pytest directly.
     r"\bbash\s+scripts/(?!/)(?![^\s]*\.\.)[A-Za-z0-9_.-]+\.sh\b",
-    # Наблюдение без записи: чтение состояния, а не изменение (§12 не задевают).
-    # Чистое наблюдение — без редиректа (>), без -i, без -o: printf > /etc,
-    # sed -i /etc, sort -o /etc — это запись вне проекта, а не наблюдение.
-    # awk — refuse (тот же класс, что python3 -c: system()/pipe исполняют);
-    # trap/export — refuse (безопасность в значении, матчем не отличить).
+    # Observation with no write: state reading, never changing (§12 untouched).
+    # Clean observation — no redirect (>), no -i, no -o: printf > /etc, sed -i /etc,
+    # sort -o /etc writes outside the project, not observation.
+    # awk means refuse (the python3 -c class: system()/pipe execute);
+    # trap/export mean refuse (safety in the value, no match tells apart).
     r"\b(?:date|du|wc|sleep|mktemp|which|command|echo|uptime|uniq|cut|tr|diff)\b",
     r"\b(?:mkdir|touch)\s+(?:-[a-zA-Z]+\s+)*(?:(?![/~$*])(?!\.{1,2}(?:\s|$))[^\s-]+|/tmp/[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*)",
     r"\b(?:printf|sort)\b(?![^\n]*\s*>+\s*/(?!tmp/|dev/null))(?![^\n]*\s-o\s*/(?!tmp/))(?![^\n]*>+/(?!tmp/|dev/null))",
     r"\bsed\b(?![^\n]*-i[^\n]*\s/(?!tmp/))(?![^\n]*-i/(?!tmp/))",
     r"\bgit\s+check-ignore\b",
     r"\bpython3\s+--version\b",
-    # Файловые операции внутри проекта и /tmp: cp/mv/ln, rm файла
-    # без флагов, rm -rf одноуровневых именованных подпутей /tmp без глобов.
-    # Голый /tmp, /tmp/* и rm -rf / остаются refuse (см. NEVER выше).
-    # touch/mkdir — выше, в скоупе observe (те же границы).
+    # File ops inside the project and /tmp: cp/mv/ln, flagless file rm, rm -rf of
+    # named single-level /tmp subpaths with no globs. Bare /tmp, /tmp/* and rm -rf /
+    # stay refuse (see NEVER above).
+    # touch/mkdir live above, in the observe scope (same edges).
     r"\b(?:cp|mv|ln)\s+(?:(?![/~$*])(?!\.{1,2}(?:\s|$))[^\s]+|/tmp/[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*)",
     r"\brm\s+(?:(?![/~$*./-])(?!\.{1,2}(?:\s|$))[^\s]+|/tmp/[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*)",
     r"\brm\s+-[a-zA-Z]+\s+(?:(?![/~$*])(?!\.{1,2}(?:\s|$))[^\s]+|/tmp/[A-Za-z0-9_.-]+)",
-    # локальный git: §10 требует ветку и коммит, поэтому это разрешено
+    # local git: §10 demands a branch and a commit, so this is allowed;
     r"\bgit\s+(?:status|diff|log|show|branch|remote|describe|rev-parse|add|commit|"
     r"checkout|switch|stash|tag|blame|shortlog|reflog)\b",
-    # отправка работы: push в фиче-ветку и PR. Запрет push в main/master и
-    # --force стоит в NEVER_ALLOW_PATTERNS и проверяется первым.
+    # shipping the work: push into a feature branch and PR. The ban on push into
+    # main/master plus --force sits in NEVER_ALLOW_PATTERNS, checked first.
     r"\bgit\s+push\b",
     r"\bgh\s+(?:pr|issue|run|workflow)\b",
 )
 
 
 def load_allow_patterns(spec: str | None) -> tuple[list[str], bool]:
-    """Прочитать белый список разрешений: JSON-файл или список шаблонов.
+    """Read the permission allowlist: a JSON file or a pattern list.
 
-    Возвращает (шаблоны, работали_ли_мы_на_дефолтных).
+    Returns (patterns, whether_we_ran_on_defaults).
 
-    Раньше здесь стояло «пусто = не подтверждать ничего», и это привело к тому, что
-    сверхвизор не подтверждал вообще ничего: файла `.pair/permissions.json` не
-    существует, путь к нему превращался в единственный шаблон '.pair/permissions.json',
-    он не находился в тексте промпта — и каждый запрос получал отказ. Снаружи это
-    выглядело как «сосед перестал подтверждать».
+    "Empty means confirm nothing" used to stand here, and the supervisor ended up
+    confirming nothing at all: no `.pair/permissions.json` file exists, its path
+    turned into the only pattern '.pair/permissions.json', never met the prompt
+    text — and every request refused. From outside that read as "the neighbour
+    stopped confirming".
 
-    Теперь граница та, что задал человек: внутри проекта можно всё, что нужно для
-    работы, запрещено то, что вредит системе, чужому проекту или необратимо стирает.
-    Это ровно DEFAULT_ALLOW_PATTERNS плюс NEVER_ALLOW_PATTERNS поверх, который
-    проверяется первым. Отсутствие файла означает «работай на списке по умолчанию»,
-    а не «не подтверждать ничего»; файл по-прежнему сужает и расширяет.
+    Now the edge is what the human set: inside the project everything the work
+    needs is allowed; what harms the system, another project or wipes irreversibly
+    is banned. Exactly DEFAULT_ALLOW_PATTERNS plus NEVER_ALLOW_PATTERNS on top,
+    checked first. A missing file means "run on the default list", never "confirm
+    nothing"; the file still narrows and widens.
 
-    Явный пустой список — это осознанный отказ от автоподтверждения, и он
-    отличается от отсутствующего файла. Нечитаемый файл даёт пустой: сломанная
-    настройка не должна молча расширять права.
+    An explicit empty list is a deliberate self-confirm refusal, distinct from a
+    missing file. An unreadable file yields empty: a broken setting must never
+    silently widen rights.
     """
     if spec is None:
         return list(DEFAULT_ALLOW_PATTERNS), True
     if not str(spec).strip():
-        # Пустая строка — это осознанный отказ от автоподтверждения, и он отличается
-        # от отсутствующего файла. Разница видна только в этой функции, поэтому
-        # различаем здесь, а не в вызывающем коде.
+        # An empty line is a deliberate self-confirm refusal, and it differs from a
+        # missing file. The difference shows only in this function, so tell apart here,
+        # not in the caller.
         return [], False
     text = str(spec).strip()
     try:
@@ -1173,19 +1162,19 @@ def load_allow_patterns(spec: str | None) -> tuple[list[str], bool]:
         try:
             raw: object = json.loads(candidate.read_text(encoding="utf-8"))
         except (OSError, ValueError):
-            # Файл есть и он сломан. Молча брать дефолты здесь нельзя: оператор
-            # явно что-то настраивал, и тихо откатывать его настройку к дефолту —
-            # хуже, чем остановиться и сказать.
+            # The file exists and is broken. Silently taking defaults is banned: the operator
+            # configured something explicitly, and quietly rolling its setting back to default beats
+            # stopping and telling for worse.
             return [], False
     else:
-        # Строка без запятых и без существующего файла. Раньше она становилась
-        # шаблоном целиком, и это молча ломало автоподтверждение; теперь это
-        # читается как список из одного элемента только если в строке есть запятые.
+        # A comma-less line with no existing file. It used to become the whole pattern,
+        # silently breaking self-confirm; now it reads as a one-item list only when the
+        # line holds commas.
         parts = [part.strip() for part in text.split(",") if part.strip()]
-        # Путь к несуществующему файлу — это тоже «настройки нет», а не шаблон.
-        # Раньше именно он становился единственным шаблоном ('.pair/permissions.json')
-        # и не находился в тексте промпта, то есть автоподтверждение не работало
-        # никогда. Список через запятую — настоящая настройка и читается как список.
+        # A path to a missing file also means "no settings", not a pattern. It used to
+        # become the only pattern ('.pair/permissions.json') and never met the prompt text —
+        # self-confirm never worked. A comma list is a real setting and reads as a list.
+        # never worked. A comma list is a real setting and reads as a list.
         if len(parts) == 1 and ("/" in parts[0] or "\\" in parts[0]):
             return list(DEFAULT_ALLOW_PATTERNS), True
         return parts, False
@@ -1197,15 +1186,14 @@ def load_allow_patterns(spec: str | None) -> tuple[list[str], bool]:
 
 
 def split_command_segments(prompt: str) -> list[str]:
-    """Разбить строку на команды по шелл-разделителям вне кавычек.
+    """Split the line into commands on shell separators outside quotes.
 
-    Разбор через shlex в режиме punctuation_chars: `;`, `&&`, `||`, `|` и `&`
-    выделяются в отдельные токены даже без пробелов (`pytest;rm`, `a||b`),
-    а внутри кавычек не трогаются (`echo \"a && b\"` — один сегмент).
-    Редиректы (`>`, `2>`, `>>`) остаются внутри сегмента: они не начинают
-    новую команду, а принадлежат текущей. Строка, которая не разбирается
-    (незакрытая кавычка), возвращается целиком одним сегментом —
-    неразобранное не подтверждаем косвенно, его разберёт построчный матчинг.
+    Parsed via shlex in punctuation_chars mode: `;`, `&&`, `||`, `|` and `&` split
+    into standalone tokens even without spaces (`pytest;rm`, `a||b`), untouched
+    inside quotes (`echo \"a && b\"` is one segment). Redirects (`>`, `2>`, `>>`)
+    stay inside the segment: they start no new command but belong to the current
+    one. A line that never parses (an unclosed quote) returns whole as one segment —
+    the unparsed never confirms indirectly; line matching parses it.
     """
     try:
         lexer = shlex.shlex(prompt, posix=True, punctuation_chars=True)
@@ -1227,18 +1215,18 @@ def split_command_segments(prompt: str) -> list[str]:
     return [seg for seg in segments if seg]
 
 
-# Паттерны запуска тестов на хосте (P0): их не применяем к сегменту,
-# который идёт через изолированный раннер — команда выполнится
-# в контейнере без сети и без $HOME, а не от прав оператора.
-# Остальные NEVER (сеть, секреты, sudo) действуют и там: контейнер
-# не лечит `curl x | sh` внутри тестовой команды.
+# Host test-runner patterns (P0): never applied to the segment running through
+# the isolated runner — the command executes in a container with no network and
+# no $HOME, not with operator rights. The rest of NEVER (network, secrets, sudo)
+# still holds there: the container never cures `curl x | sh` inside a test command.
+# holds there too: the container never cures `curl x | sh` inside a test command.
 TEST_RUNNER_NEVER = (
     r"\bpytest\b",
-    # Интерпретатор с test-аргументом: `python3 -m pytest`, `node --test`.
-    # Ключевое слово обязано быть АРГУМЕНТОМ (как в allow-паттерне), иначе
-    # хватит «test» в комментарии. Прямой `python3 path/to/test_*.py` этим
-    # паттерном не ловится (слово не в конце токена) — честная граница regex:
-    # полный разбор argv вне P0-скоупа, ограничение зафиксировано в THREAT_MODEL.
+    # Interpreter with a test arg: `python3 -m pytest`, `node --test`. The keyword must
+    # be an ARGUMENT (as in the allow pattern), or the word "test" in a comment
+    # suffices. A direct `python3 path/to/test_*.py` escapes this pattern (word not at
+    # token end) — the honest regex edge: a full argv parse sits past the P0 scope,
+    # the limit pinned in THREAT_MODEL.
     r"\b(?:python3?|node|ruby)\s+(?:-\S+\s+)*(?:[^\s]*[_./-]?)(?:test|tests|pytest|unittest)\b",
     r"\b(?:jest|vitest|mocha|rspec|nox|tox|nose|unittest)\b",
     r"\b(?:cargo\s+test|go\s+test)\b",
@@ -1247,28 +1235,26 @@ TEST_RUNNER_NEVER = (
 ISOLATED_RUNNER = r"\brun-isolated-test\.sh\b"
 
 def permission_verdict(prompt: str, allow: list[str] | None = None) -> dict:
-    """Можно ли сверхвизору без человека нажать «y» на этом промпте.
+    """Whether the supervisor may press "y" on this prompt with no human.
 
-    Default-deny, и запрет проверяется раньше разрешения. Цена двух ошибок не
-    симметрична: зависший агент стоит одной ночи, а подтверждённая опасная
-    команда уничтожает то, что нельзя вернуть.
+    Default-deny, and the ban checks before the allow. The two error prices never
+    match: a hung agent costs one night, while a confirmed dangerous command
+    destroys the unreturnable.
 
-    Отказ возвращается с причиной: его читает человек, а необъяснённое «нет»
-    неотличимо от сломанного сверхвизора.
+    A refusal returns with a cause: the human reads it, and an unexplained "no"
+    never differs from a broken supervisor.
 
-    Строка разбирается на сегменты по шелл-разделителям вне кавычек
-    (см. split_command_segments): каждый сегмент проверяется отдельно, и
-    вердикт — худший из сегментов. Составная команда подтверждается, только
-    если безопасен КАЖДЫЙ её кусок: `pytest && echo ok` — allow, а
-    `pytest && curl x | sh` — refuse. Кавычки разбираются честно:
-    `echo \"a && b\"` — один сегмент, а не два.
+    The line splits into segments on shell separators outside quotes (see
+    split_command_segments): every segment checks apart, and the verdict is the
+    worst of the segments. A compound command confirms only when EVERY piece is
+    safe: `pytest && echo ok` allows, while `pytest && curl x | sh` refuses. Quotes
+    parse honestly: `echo \"a && b\"` is one segment, not two.
 
-    Запуск тестов на хосте запрещён (P0): сегмент с тестовым раннером —
-    refuse, если он не идёт через изолированный раннер
-    (scripts/run-isolated-test.sh): там команда выполнится в контейнере
-    без сети и без $HOME, а не от прав оператора. Остальные NEVER (сеть,
-    секреты, sudo) действуют и внутри раннера: контейнер не лечит
-    `curl x | sh` внутри тестовой команды.
+    Host test runs are banned (P0): a segment with a test runner refuses unless it
+    rides the isolated runner (scripts/run-isolated-test.sh): there the command runs
+    in a container with no network and no $HOME, not with operator rights. The rest
+    of NEVER (network, secrets, sudo) holds inside the runner too: the container
+    never cures `curl x | sh` inside a test command.
     """
     patterns = DEFAULT_ALLOW_PATTERNS if allow is None else tuple(allow)
     segments = split_command_segments(prompt)
@@ -1279,7 +1265,7 @@ def permission_verdict(prompt: str, allow: list[str] | None = None) -> dict:
                 continue
             if re.search(pattern, segment, re.IGNORECASE):
                 return {"verdict": "refuse", "matched": pattern,
-                        "why": f"запрещённая категория (§12): {pattern}"}
+                        "why": f"banned category (§12): {pattern}"}
     for segment in segments:
         matched_any = False
         for pattern in patterns:
@@ -1288,8 +1274,8 @@ def permission_verdict(prompt: str, allow: list[str] | None = None) -> dict:
                 break
         if not matched_any:
             return {"verdict": "refuse", "matched": None,
-                    "why": "не в белом списке разрешений"}
-    return {"verdict": "allow", "matched": None, "why": "в белом списке"}
+                    "why": "not on the permission allowlist"}
+    return {"verdict": "allow", "matched": None, "why": "on the allowlist"}
 def resolve_permission_prompt(tmux: str, pane: str, allow: list[str] | None = None) -> dict:
     """Check if the pane is stalled waiting for a permission confirmation and confirm it.
 
@@ -1299,7 +1285,7 @@ def resolve_permission_prompt(tmux: str, pane: str, allow: list[str] | None = No
     """
     idle = {"approved": False, "verdict": "none", "prompt": "", "why": "", "matched": None}
     if not pane_alive(tmux, pane):
-        return {**idle, "why": "панель мертва"}
+        return {**idle, "why": "pane dead"}
     lines = capture(tmux, pane)
     menu = detect_permission_menu(lines)
     prompt = menu or detect_permission_prompt(lines)
@@ -1307,19 +1293,19 @@ def resolve_permission_prompt(tmux: str, pane: str, allow: list[str] | None = No
         return idle
 
     if menu:
-        # В меню нет строки ввода, и жать «y» там бессмысленно: у этого TUI
-        # «y» не значит согласие, а подтверждение — Enter по выбранному пункту.
-        # Проверять композер нечего: его там просто нет, и это нормально.
+        # No input line lives in a menu, and "y" there means nothing: for this TUI "y"
+        # never means agreement — confirmation is Enter on the selected item.
+        # Nothing to check the composer for: none stands there at all, and that is fine.
         context = extract_permission_context(lines, prompt)
     else:
         line = composer_line(lines)
-        # Нет композера — значит и печатать некому: молча подтверждать нельзя.
+        # No composer means nobody to type to: silently confirming is banned.
         if line is None:
             return {**idle, "prompt": prompt, "verdict": "refuse",
-                    "why": "композера не видно, подтверждать нечем"}
+                    "why": "no composer visible, nothing to confirm with"}
         if not detect_permission_prompt([line]) and not is_composer_empty(line):
             return {**idle, "prompt": prompt, "verdict": "refuse",
-                    "why": "строка ввода занята своим текстом"}
+                    "why": "the input line holds its own text"}
         context = extract_permission_context(lines, prompt)
 
     decision = permission_verdict(context, allow)
@@ -1328,12 +1314,12 @@ def resolve_permission_prompt(tmux: str, pane: str, allow: list[str] | None = No
                 "why": decision["why"], "matched": decision["matched"]}
 
     if menu:
-        # Меню бывает двух видов. Горизонтальное (`⇆ select`) — Enter жмёт
-        # выделенный пункт, там первым стоит Allow once, и это работало.
-        # Нумерованное (`1) Allow once`) — Enter жмёт ДЕФОЛТ, а им может быть
-        # Deny: тогда разрешённая операция молча отклонялась. Цифру шлём,
-        # только когда пункт явно разрешающий и вердикт уже allow — см.
-        # menu_allow_key. Нет цифры — прежнее поведение, без угадывания.
+        # Menus run two kinds. Horizontal (`⇆ select`): Enter presses the selected item,
+        # with Allow once first, and that worked. Numbered (`1) Allow once`): Enter presses
+        # the DEFAULT, possibly Deny: then an allowed op silently refused. The digit sends
+        # only when the item explicitly allows and the verdict is allow already — see
+        # menu_allow_key. No digit means the old behaviour, no guessing.
+        # menu_allow_key. Without a digit the old behaviour holds, no guessing.
         key = menu_allow_key(lines)
         keys = [key, "Enter"] if key else ["Enter"]
         for key in keys:
@@ -1350,31 +1336,31 @@ def resolve_permission_prompt(tmux: str, pane: str, allow: list[str] | None = No
 
 
 def deliver(pane: str, text: str, wait_for_empty: float = 0.0, submit: bool = True) -> dict:
-    """Доставить текст в композер соседа. Возвращает отчёт, что реально вышло.
+    """Deliver text into the neighbour composer. Returns a report of what happened.
 
-    Бросает ComposerBusy, если композер занят — вбивать поверх чужого текста
-    нельзя, это потеряет то, что человек печатает.
+    Raises ComposerBusy when the composer is busy — typing over another text is
+    banned: it loses what the human types.
     """
     tmux = _tmux()
     if not pane_alive(tmux, pane):
-        raise ComposerBusy("панель мертва или отсутствует")
+        raise ComposerBusy("pane dead or missing")
 
     deadline = time.monotonic() + max(0.0, wait_for_empty)
     while True:
         line = composer_line(capture(tmux, pane))
-        # None — композер не виден вовсе. Это не «свободно»: печатать некуда,
-        # и отправлять клавиши мимо композера нельзя.
+        # None means no composer visible at all. Not "free": nowhere to type, and keys
+        # past the composer never send.
         if line is not None and is_composer_empty(line):
             break
         if time.monotonic() >= deadline:
-            seen = line.strip()[-60:] if line else "композер не виден"
-            raise ComposerBusy("композер занят: " + (seen or "?"))
+            seen = line.strip()[-60:] if line else "no composer visible"
+            raise ComposerBusy("composer busy: " + (seen or "?"))
         time.sleep(0.5)
 
     body = " ".join(text.split())
     type_text(tmux, pane, body)
 
-    # Проверка вставки несколькими чтениями, а не одним.
+    # The paste check over several reads, not one.
     landed = False
     for attempt in range(VERIFY_ATTEMPTS):
         if tail_present(capture(tmux, pane), body):
@@ -1383,9 +1369,9 @@ def deliver(pane: str, text: str, wait_for_empty: float = 0.0, submit: bool = Tr
         if attempt + 1 < VERIFY_ATTEMPTS:
             time.sleep(VERIFY_PAUSE)
     if composer_overflowed(capture(tmux, pane)):
-        # Текст на экране, просто хвост свёрнут. Объявлять «не доставил» здесь
-        # нельзя: это и есть двойной след — сообщение в ящике И текст в композере
-        # одновременно, и именно это путает человека.
+        # Text on screen, just the tail collapsed. Calling it "undelivered" here is banned:
+        # the double trace — a mailbox message AND composer text at once — is exactly what
+        # confuses the human.
         result = {"delivered": True, "chars": len(body),
                   "chunks": len(chunks(body)), "pane": pane, "submitted": submit,
                   "tail_hidden": True}
@@ -1394,19 +1380,19 @@ def deliver(pane: str, text: str, wait_for_empty: float = 0.0, submit: bool = Tr
                            capture_output=True, text=True, timeout=5)
         return result
     if not landed:
-        # Не подтверждено — значит НЕИЗВЕСТНО, дошёл ли текст, а не «не дошёл».
-        # Стирать вслепую нельзя: erase(len(body)) не знает, чей это ввод, и
-        # съедает текст соседа или человека, печатавшего в этой же панели. Прежний
-        # откат на одном устаревшем кадре именно это и делал — и рапортовал
-        # «откатил» при тексте, который лежал на экране.
+        # Unconfirmed means UNKNOWN whether the text landed, not "it never did".
+        # Blind erasing is banned: erase(len(body)) never knows whose input it is, eating
+        # the neighbour or human text typed in the same pane. The old rollback on one stale
+        # frame did exactly that — reporting "rolled back" over text lying on screen.
+        # frame did exactly that — reporting rolled-back over text lying on screen.
         #
-        # Цена ошибки несимметрична: лишнее сообщение в ящике стоит одного взгляда,
-        # стёртый ввод соседа — его работы. Поэтому сомнение передаётся дальше, и
-        # вызывающий уходит в ящик, где сообщение точно будет прочитано.
+        # The error price runs asymmetric: an extra mailbox message costs one glance, while
+        # a wiped neighbour input costs its work. So doubt travels on, and the caller leaves
+        # for the mailbox, where the message is surely read.
         return {"delivered": False, "unverified": True, "chars": len(body),
                 "pane": pane, "submitted": submit,
-                "why": "вставка не подтвердилась на экране; композер мог остаться с текстом, "
-                       "откат вслепую не делаю — забери сообщение из ящика"}
+                "why": "the paste never confirmed on screen; the composer may keep text, "
+                       "never rolling back blind — take the message from the mailbox"}
 
     result = {"delivered": True, "chars": len(body), "chunks": len(chunks(body)),
               "pane": pane, "submitted": submit}

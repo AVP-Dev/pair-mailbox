@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# verify-changed: static + только затронутые сюиты (5.5 мин → секунды).
-# Использование: ./scripts/verify-changed.sh [--base REF] [--all]
-#   --base REF  diff против REF (по умолчанию — незакоммиченное + HEAD)
-#   --all       показать выбор без запуска
+# verify-changed: static plus only the touched suites (5.5 min down to seconds).
+# Usage: ./scripts/verify-changed.sh [--base REF] [--all]
+#   --base REF  diff against REF (default — uncommitted + HEAD)
+#   --all       show the selection with no launch
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 ROOT="$(dirname "$SCRIPT_DIR")"
@@ -22,33 +22,40 @@ if [ -n "$BASE" ]; then
 else
   files=$( (git diff --name-only -- . ':!node_modules'; git ls-files --others --exclude-standard) | sort -u)
 fi
-[ -n "$files" ] || { echo "verify-changed: нечего проверять, дерево чистое"; exit 0; }
+[ -n "$files" ] || { echo "verify-changed: nothing to check, the tree is clean"; exit 0; }
 suites=""
 while IFS= read -r f; do
   [ -n "$f" ] || continue
   suite=$(awk -F'\t' -v f="$f" '$f == $1 || index($f, $1"/") == 1 {print $2; found=1} END {if (!found) print "UNKNOWN"}' "$MAP" | head -1)
-  # Точное совпадение бьёт префикс: awk выше отдаёт первое совпавшее —
-  # файл scripts/x.sh совпадёт и с scripts/, и со своей строкой; точное ищем сами.
+  # An exact match beats the prefix: the awk above gives the first match — a
+  # scripts/x.sh file matches both scripts/ and its own line; the exact one we find.
   exact=$(awk -F'\t' -v f="$f" '$1 == f {print $2}' "$MAP" | head -1)
   [ -n "$exact" ] && suite="$exact"
   case ";$suites;" in *";$suite;"*) ;; *) suites="$suites;$suite" ;; esac
+  # Cross-suite pins: test_protocol asserts output of modules mapped elsewhere
+  # (STOP seq 1187: 7 failures hid in green slices). follow:<file> rows in the
+  # map add the integration suite on top of the file's own.
+  follow=$(awk -F'\t' -v f="follow:$f" '$1 == f {print $2}' "$MAP" | head -1)
+  if [ -n "$follow" ]; then
+    case ";$suites;" in *";$follow;"*) ;; *) suites="$suites;$follow" ;; esac
+  fi
 done <<< "$files"
 suites="${suites#;}"
-echo "verify-changed: файлы: $(echo "$files" | tr '\n' ' ')"
-echo "verify-changed: сюиты: $suites"
+echo "verify-changed: files: $(echo "$files" | tr '\n' ' ')"
+echo "verify-changed: suites: $suites"
 [ "$DRY" -eq 1 ] && exit 0
-# static всегда: file-size-gate и comment-lint ловят то, что не видит ни одна сюита.
+# static always: file-size-gate and comment-lint catch what no suite sees.
 "$SCRIPT_DIR/verify-project.sh" --only static || exit $?
 fail=0
 for s in $(echo "$suites" | tr ';' ' '); do
   case "$s" in
-    UNKNOWN) echo "verify-changed: UNKNOWN — маппинга нет, гоню весь positive" >&2
+    UNKNOWN) echo "verify-changed: UNKNOWN — no mapping, running the whole positive" >&2
       "$SCRIPT_DIR/verify-project.sh" --only positive || fail=1; break ;;
     installer-subset) echo "verify-changed: [installer-subset] PAIR_INSTALL_FAST=1 python3 install_test.py"
       PAIR_INSTALL_FAST=1 python3 install_test.py || { echo "verify-changed: installer-subset FAILED" >&2; fail=1; } ;;
-    *-check|docs-check) echo "verify-changed: $s — отдельной сюиты нет, покрыто static" ;;
+    *-check|docs-check) echo "verify-changed: $s — no separate suite, covered by static" ;;
     *) cmd=$(awk -F'\t' -v s="$s" '$1 == s {print $4; exit}' "$SCRIPT_DIR/verification-profile.tsv")
-      if [ -z "$cmd" ]; then echo "verify-changed: сюита $s не найдена в профиле" >&2; fail=1; continue; fi
+      if [ -z "$cmd" ]; then echo "verify-changed: suite $s missing from the profile" >&2; fail=1; continue; fi
       echo "verify-changed: [$s] $cmd"
       bash -c "$cmd" || { echo "verify-changed: $s FAILED" >&2; fail=1; } ;;
   esac

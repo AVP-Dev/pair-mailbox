@@ -44,7 +44,7 @@ def binary(name):
 
 
 def present(profile):
-    """CLI считается установленным, если его бинарь или каталог конфига есть."""
+    "A CLI counts as installed when its binary or config dir stands."
     spec = profile["mcp"]
     names = {"opencode": "opencode", "agy": "agy", "codex": "codex", "claude": "claude",
              "pi": "pi", "omp": "omp"}
@@ -57,7 +57,7 @@ def present(profile):
 
 
 def argv_from_toml(text):
-    """Минимум, который нужен из блока [mcp_servers.pair]: command и args."""
+    "The minimum needed from the [mcp_servers.pair] block: command and args."
     cmd, args, inside = None, [], False
     for line in text.splitlines():
         s = line.strip()
@@ -78,12 +78,11 @@ def argv_from_toml(text):
 
 
 def strip_jsonc(text):
-    """Убрать комментарии и висячие запятые, не трогая строковые литералы.
+    """Strip comments and trailing commas, never touching string literals.
 
-    .jsonc — это JSON с комментариями, а открывающая скобка и косая черта внутри
-    строки обязаны остаться строкой. Регулярка без разбора кавычек режет URL
-    вида "https://..." пополам, поэтому здесь маленький конечный автомат, а не
-    замена по регулярному выражению.
+    .jsonc is JSON with comments, while a brace or slash inside a string must stay
+    a string. A regex with no quote parsing cuts "https://..." URLs in half, so a
+    small state machine stands here, not a regex replace.
     """
     out, i, n = [], 0, len(text)
     while i < n:
@@ -114,8 +113,8 @@ def strip_jsonc(text):
 
 
 def parse_jsonc(text):
-    """Разобрать .jsonc: сначала попытка как обычный JSON, потом со снятием
-    комментариев. Второй путь нужен для файлов, где комментарии есть."""
+    """Parse .jsonc: first trying plain JSON, then stripping comments. The second path
+    serves files that hold comments."""
     try:
         return json.loads(text)
     except json.JSONDecodeError:
@@ -124,8 +123,8 @@ def parse_jsonc(text):
     return json.loads(cleaned)
 
 def _json_skip_value(text, i):
-    """Конец JSON-значения с позиции i: строки, комментарии и висячие
-    запятые учитываются, иначе замена блока режет URL или // в строке."""
+    """A JSON value end from position i: strings, comments and trailing commas count,
+    or the block replace cuts a URL or a // inside a string."""
     n = len(text)
     while i < n and text[i] in " \t\r\n":
         i += 1
@@ -180,8 +179,8 @@ def _json_skip_value(text, i):
 
 
 def _json_find_key(text, start, end, key):
-    """Диапазон значения ключа в объекте [start, end): позиция ключа вне
-    строк и комментариев плюс конец его значения. Нет ключа — None."""
+    """A key value range inside an object [start, end): the key position outside
+    strings and comments plus its value end. No key means None."""
     i = start
     while i < end:
         if text[i] == '"':
@@ -215,19 +214,19 @@ def _json_find_key(text, start, end, key):
 
 
 def splice_json_block(text, root_key, server_key, entry_json):
-    """Вставить entry в сырой текст конфига, не трогая остальное.
+    """Insert the entry into the raw config text, touching nothing else.
 
-    json.dumps переписывал бы файл целиком и стирал комментарии человека,
-    поэтому правится только диапазон значения mcp.<server>: замена при
-    наличии, вставка перед закрывающей скобкой объекта при отсутствии.
-    Возвращает (новый_текст, действие): replaced|inserted|created."""
+    json.dumps would rewrite the file whole wiping human comments, so only the
+    mcp.<server> value range patches: replacing when present, inserting before the
+    object closing brace when missing. Returns (new_text, action):
+    replaced|inserted|created."""
     stripped = text.strip()
     if not stripped:
         return ('{\n  "%s": {\n    "%s": %s\n  }\n}\n' % (root_key, server_key, entry_json), "created")
     found = _json_find_key(text, 0, len(text), root_key)
     if found is None:
-        # Вставка перед закрывающей скобкой корня в сырой текст: висячая
-        # запятая перед ней снимается, иначе получится ",," и битый JSON.
+        # Inserting before the root closing brace in raw text: a trailing comma before it
+        # drops, or ",," results with broken JSON.
         close = text.rfind("}")
         inner = text[:close].rstrip()
         if inner.endswith(","):
@@ -242,7 +241,7 @@ def splice_json_block(text, root_key, server_key, entry_json):
     if pair is not None:
         return (text[:pair[0]] + '"%s": %s' % (server_key, entry_json) + text[pair[1]:], "replaced")
     before = text[inner_start + 1:inner_end]
-    # Висячая запятая перед } снимается, иначе вставка даёт ",," и битый JSON.
+    # A trailing comma before } drops, or inserting gives ",," with broken JSON.
     head = text[:inner_end].rstrip()
     if head.endswith(","):
         head = head[:-1]
@@ -253,9 +252,9 @@ def write_mcp(profile, role):
     spec = profile["mcp"]
     path = expand(spec["path"])
     path.parent.mkdir(parents=True, exist_ok=True)
-    # Без --state by design: в общие конфиги (~/.config) абсолютный pin
-    # проекта нельзя — все проекты делили бы одно состояние. Резолв на
-    # рантайме: walk-up до .pair/state.json в serve.sh и extract_state.
+    # No --state by design: pinning an absolute project path into shared configs
+    # (~/.config) is banned — all projects would share one state. Resolving at
+    # runtime: walk-up to .pair/state.json in serve.sh and extract_state.
     argv = ["sh", str(SERVER), role]
     path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -291,8 +290,8 @@ def write_mcp(profile, role):
     else:
         entry["command"], entry["args"] = argv[0], argv[1:]
     entry_json = json.dumps(entry, indent=2, ensure_ascii=False)
-    # Правка по месту, а не json.dumps всего файла: иначе комментарии
-    # и форматирование человека стираются при каждой установке.
+    # Editing in place, never a whole-file json.dumps: or human comments and
+    # formatting wipe on every install.
     backup = path.with_suffix(path.suffix + ".bak")
     if raw.strip():
         backup.write_text(raw, encoding="utf-8")
@@ -313,12 +312,12 @@ def write_skills(profile):
 
 
 def replace_owned_block(text, body):
-    """Заменить ТОЛЬКО наш блок, всё после маркера сохранить.
+    """Replace ONLY our block, keeping all past the marker.
 
-    Прежний код делал `text.split(MARK)[0]`, то есть удалял всё, что человек
-    написал после маркера, молча и на каждом запуске. Удаление содержимого
-    чужого файла — ровно то, PROTOCOL §12 требует спросить, поэтому здесь
-    хвост остаётся, а перед перезаписью ещё и снимается копия.
+    The old code ran `text.split(MARK)[0]`, deleting all the human wrote past the
+    marker — silent, every launch. Deleting foreign-file content is exactly what
+    PROTOCOL §12 demands asking for, so the tail stays, plus a copy snapshots
+    before overwriting.
     """
     head, _, tail = text.partition(MARK)
     kept = tail[len(NOTE):] if tail.startswith(NOTE) else tail
@@ -332,14 +331,14 @@ def write_instructions(profile):
     if MARK in text:
         updated = replace_owned_block(text, NOTE)
     else:
-        # Тот же join, что и в replace_owned_block, иначе первая установка даёт
-        # пустую строку перед маркером, а вторая её убирает — и файл меняется
-        # при каждом запуске, обещая идемпотентность в шапке.
+        # The same join as replace_owned_block, or the first install gives an empty line
+        # before the marker, the second drops it — the file changing every launch while
+        # promising idempotence in the header.
         head = text if not text.strip() else text.rstrip()
         updated = head + ("\n" if head else "") + MARK + NOTE
     if updated == text:
         return "unchanged"
-    # Копия перед перезаписью: файл принадлежит человеку, а не нам.
+    # A copy before overwriting: the file belongs to the human, not us.
     try:
         path.with_suffix(path.suffix + ".bak").write_text(text, encoding="utf-8")
     except OSError as error:
@@ -350,31 +349,30 @@ def write_instructions(profile):
 
 
 def verify(argv):
-    """Поднимаем сервер ровно так, как это сделает CLI, и жмём руку.
+    """Raising the server exactly as the CLI will, shaking hands.
 
-    Проверка изолирована от настоящего ростера, и это не аккуратность, а
-    требование. Найдено вживую: `verify` поднимал `serve.sh <role>` с
-    унаследованным окружением и без явного состояния, то есть писал в НАСТОЯЩИЙ
-    `.pair/state.json` того проекта, из которого запущен install.sh, и наследовал
-    `TMUX_PANE` запускающего процесса.
+    The check isolates from the real roster — no tidiness but a demand. Found live:
+    `verify` raised `serve.sh <role>` with an inherited env and no explicit state,
+    writing into the REAL `.pair/state.json` of the project install.sh launched
+    from, inheriting the launching-process `TMUX_PANE`.
 
-    Дальше это ударило дважды. Панель `opencode` перезаписалась адресом панели
-    `agy` — прогон тестов шёл из его окна, — и после перехода на адреса сессий
-    перезапись стала ещё и канонической: роль получала чужую панель не на один
-    запуск, а прочно. Плюс в ростер попадал pid проверочного процесса, который
-    сразу умирает, то есть роль выглядела «мёртвой при живом окне».
+    Past that it hit twice. The `opencode` pane rewrote to the `agy` pane address —
+    the test run went from his window — and past the session-address move the
+    rewrite turned canonical too: the role took a foreign pane firmly, not for one
+    run. Plus the roster took the check-process pid, dying at once, so the role
+    read "dead at a live window".
 
-    Проверка транспорта не имеет права менять состояние. Поэтому состояние
-    временное, а из окружения вычищено всё, что делает процесс агентом.
+    A transport check holds no right to change state. So state is temporary, with
+    all agent-making env cleaned out.
     """
     req = json.dumps({
         "jsonrpc": "2.0", "id": 1, "method": "initialize",
         "params": {"protocolVersion": "2024-11-05", "clientInfo": {"name": "pair-install"}},
     }) + "\n"
     scratch = tempfile.mkdtemp(prefix="pair-verify-")
-    # --state в argv (явный pin проекта) побеждает PAIR_STATE, поэтому для
-    # проверки он переписывается на временный: иначе handshake пишет в живой
-    # ростер (регрессия pin, ловит TestVerifyDoesNotTouchTheRoster).
+    # --state in argv (the explicit project pin) beats PAIR_STATE, so for the check it
+    # rewrites to a temp one: or the handshake writes into the live roster (the pin
+    # regression, caught by TestVerifyDoesNotTouchTheRoster).
     clean = []
     skip_next = False
     for a in argv:
@@ -392,9 +390,9 @@ def verify(argv):
         env = {k: v for k, v in os.environ.items()
                if k not in ("PAIR_STATE", "PAIR_ROLE", "PAIR_DISABLE_RING")}
         env["PAIR_STATE"] = scratch
-        # TMUX_PANE — это «кто я», и проверке знать о ней незачем: без неё сервер
-        # честно не считает себя живущим в панели. TMUX убираем вместе с ней,
-        # иначе сервер решит, что он внутри tmux, по одним переменным окружения.
+        # TMUX_PANE means "who I am", and the check needs none of it: with no it the
+        # server honestly never counts itself living in a pane. TMUX leaves with it, or
+        # the server would decide it sits inside tmux by env vars alone.
         for name in ("TMUX_PANE", "TMUX"):
             env.pop(name, None)
         proc = subprocess.run(argv, input=req, capture_output=True, text=True,
@@ -418,11 +416,11 @@ def verify(argv):
 
 
 def write_native_permissions(name):
-    """Нативный permission-слой CLI: allow-list вместо прокликивания человеком.
+    """The CLI native permission layer: an allow-list instead of human clicking.
 
-    codex/pi/omp: нативных allow/deny списков нет (проверено раундом 54:
-    codex — только approval_policy, pi — доверие файлам), поэтому установщик
-    их не трогает: они остаются на пилоте (§13b). Это решение, а не недоделка.
+    codex/pi/omp own no native allow/deny lists (checked in round 54: codex owns only
+    approval_policy, pi trusts files), so the installer never touches them: they stay
+    on the pilot (section 13b). A decision, not an undone bit.
     """
     if name not in ("opencode", "agy", "claude"):
         return None
@@ -430,16 +428,16 @@ def write_native_permissions(name):
     try:
         import autoperms
         return autoperms.write_native_perms(name, ROOT, Path.home())
-    except Exception as exc:  # noqa: BLE001 - установка не должна падать из-за прав
+    except Exception as exc:  # noqa: BLE001 - install must never fall over rights
         print("    permissions: NOT WRITTEN (" + str(exc) + ") — the agent will ask")
         return None
 
 
 def main():
 
-    # Версия Python проверяется ДО установки, а не пачкой тестов в конце.
-    # Установка на macOS давала 210 ошибок импорта, и ни одна из них не
-    # говорила, что системный python3 там 3.9, а код написан под 3.8+.
+    # The Python version checks BEFORE install, not as a test batch at the end.
+    # Install on macOS gave 210 import errors, none of them saying the system
+    # python3 there is 3.9 while the code targets 3.8+.
     if sys.version_info < (3, 8):
         print("need python3 3.8 or newer, but running " + sys.version.split()[0])
         print("install newer and retry: brew install python   (check: python3 -V)")
@@ -511,18 +509,18 @@ def main():
         if not ok:
             failed.append(name)
 
-    # Вложенная сюита (~3 мин) в тестах установщика пропускается через
-    # PAIR_INSTALL_SKIP_SUITE: её гоняет verify-слой отдельно, а каждый
-    # тестовый install нёс бы её заново (698с на install_test.py целиком).
+    # The nested suite (~3 min) skips in installer tests over PAIR_INSTALL_SKIP_SUITE:
+    # the verify layer runs it separately, while every test install would carry it
+    # anew (698s on install_test.py whole).
     if not os.environ.get("PAIR_INSTALL_SKIP_SUITE"):
         print("\nserver tests")
         print("  checking core and protocol...", end="", flush=True)
         env = dict(os.environ, PAIR_DISABLE_RING="1")
-        # Сюита едет в подменённом HOME (install-тесты изолируются), а PyNaCl
-        # живёт в user-site настоящего HOME. Без наследования 2 evidence-теста
-        # раунда 42 падают с ModuleNotFoundError: nacl — не кодом, окружением.
-        # _site внутри этого процесса тоже видит подменённый HOME, поэтому
-        # настоящий user-site вычисляем через pwd, а не через site.
+        # The suite rides in a swapped HOME (install tests isolate), while PyNaCl lives
+        # in the real-HOME user-site. With no inheriting 2 round-42 evidence tests fall
+        # with ModuleNotFoundError: nacl — by env, not code.
+        # _site inside this process also sees the swapped HOME, so the real user-site
+        # computes over pwd, never over site.
         import site as _site
         import pwd as _pwd
         real_home = _pwd.getpwuid(os.getuid()).pw_dir

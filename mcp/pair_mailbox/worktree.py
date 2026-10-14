@@ -1,11 +1,11 @@
-"""Git Worktrees (S5): изоляция файловой системы для параллельных пар.
+"""Git Worktrees (S5): filesystem isolation for parallel pairs.
 
-Функции:
+Functions:
 - list_worktrees(repo_dir: Path) -> list[dict[str, Any]]
 - setup_worktree(repo_dir: Path, branch: str, target_dir: Path | None = None) -> dict[str, Any]
 - remove_worktree(repo_dir: Path, worktree_dir: Path, force: bool = False) -> bool
 - prune_worktrees(repo_dir: Path) -> bool
-- cmd_worktree(store, args) -> int (интеграция в pairctl)
+- cmd_worktree(store, args) -> int (pairctl integration)
 """
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ from typing import Any
 
 
 def run_git(cmd: list[str], cwd: Path) -> tuple[int, str, str]:
-    """Запустить git команду безопасно с перехватом stdout/stderr."""
+    "Run a git command safely capturing stdout/stderr."
     try:
         proc = subprocess.run(
             ["git"] + cmd,
@@ -34,7 +34,7 @@ def run_git(cmd: list[str], cwd: Path) -> tuple[int, str, str]:
 
 
 def list_worktrees(repo_dir: Path) -> list[dict[str, Any]]:
-    """Получить список существующих git worktrees."""
+    "List the existing git worktrees."
     code, out, _ = run_git(["worktree", "list", "--porcelain"], repo_dir)
     if code != 0 or not out:
         return []
@@ -75,9 +75,9 @@ def setup_worktree(
     branch: str,
     target_dir: Path | None = None,
 ) -> dict[str, Any]:
-    """Создать или настроить worktree для указанной ветки.
+    """Create or set up a worktree for the given branch.
 
-    Если target_dir не указан, размещается в repo_dir / ".worktrees" / branch.
+    With no target_dir given, lands in repo_dir / ".worktrees" / branch.
     """
     repo_dir = Path(repo_dir).resolve()
     if target_dir is None:
@@ -87,7 +87,7 @@ def setup_worktree(
 
     target_dir.parent.mkdir(parents=True, exist_ok=True)
 
-    # Проверим, не существует ли уже worktree по этому пути
+    # Checking whether a worktree already stands at this path
     existing = list_worktrees(repo_dir)
     for wt in existing:
         if Path(wt.get("worktree", "")).resolve() == target_dir:
@@ -99,7 +99,7 @@ def setup_worktree(
                 "message": "worktree already exists",
             }
 
-    # Проверим, существует ли локальная ветка
+    # Checking whether the local branch exists
     code, _, _ = run_git(["rev-parse", "--verify", f"refs/heads/{branch}"], repo_dir)
     branch_exists = (code == 0)
 
@@ -129,7 +129,7 @@ def setup_worktree(
 
 
 def remove_worktree(repo_dir: Path, worktree_dir: Path, force: bool = False) -> bool:
-    """Удалить worktree через git worktree remove."""
+    "Remove a worktree over git worktree remove."
     cmd = ["worktree", "remove", str(worktree_dir)]
     if force:
         cmd.append("--force")
@@ -138,18 +138,18 @@ def remove_worktree(repo_dir: Path, worktree_dir: Path, force: bool = False) -> 
 
 
 def prune_worktrees(repo_dir: Path) -> bool:
-    """Очистить устаревшие записи worktree."""
+    "Prune stale worktree records."
     code, _, _ = run_git(["worktree", "prune"], repo_dir)
     return code == 0
 
 
 def cmd_worktree(store: Any, args: argparse.Namespace) -> int:
-    """Обработчик подкоманды `pairctl worktree`."""
+    "The `pairctl worktree` subcommand handler."
     subaction = getattr(args, "worktree_action", None) or "list"
     state_dir = Path(store.root).resolve()
     repo_dir = state_dir.parent
 
-    # Проверяем, находимся ли мы в git репозитории
+    # Checking whether we stand inside a git repo
     code, top, _ = run_git(["rev-parse", "--show-toplevel"], repo_dir)
     if code == 0 and top:
         repo_dir = Path(top).resolve()
@@ -198,7 +198,7 @@ def cmd_worktree(store: Any, args: argparse.Namespace) -> int:
             return 2
         target_path = Path(target)
         if not target_path.is_absolute():
-            # Попробуем найти среди существующих
+            # Trying to find among the existing ones
             for wt in list_worktrees(repo_dir):
                 if wt.get("branch") == target or wt.get("branch") == f"refs/heads/{target}":
                     target_path = Path(wt["worktree"])

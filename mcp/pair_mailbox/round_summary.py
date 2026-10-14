@@ -1,9 +1,9 @@
-"""Round summary: машиночитаемая выжимка раунда для verify-ground-truth.
+"""Round summary: the machine-readable round digest for verify-ground-truth.
 
-Зачем: саммари исполнителя сверяется с физическими фактами, а не с
-памятью исполнителя (урок R81). Экстрактор только компонует готовые
-структуры — facts.json, записи ledger.jsonl, вердикт anti-mock — и не
-выдумывает ничего сверх них. Библиотека (build/render) + тонкий CLI.
+Why: the performer summary reconciles against physical facts, not performer
+memory (lesson R81). The extractor only composes ready structures — facts.json,
+ledger.jsonl records, the anti-mock verdict — and invents nothing past them.
+Library (build/render) + thin CLI.
 """
 
 from __future__ import annotations
@@ -24,7 +24,7 @@ SUMMARY_VERSION = 1
 
 def build(facts: dict[str, Any], records: list[dict[str, Any]],
           verdict: dict[str, Any]) -> dict[str, Any]:
-    """Собрать summary: только агрегация входов, без новых утверждений."""
+    """Build the summary: input aggregation only, no new claims."""
     slices: dict[str, list[Any]] = {name: [] for name in ledger.SLICES}
     for record in records:
         for name in ledger.SLICES:
@@ -34,8 +34,8 @@ def build(facts: dict[str, Any], records: list[dict[str, Any]],
     blockers = verdict.get("blockers", [])
     warnings = verdict.get("warnings", [])
     test_runs = facts.get("test_runs", [])
-    # Совместимость с verify-ground-truth.py: он читает files/tests.
-    # Без них гейт молча пропускает проверку (finding agy S5 R83).
+    # Compatible with verify-ground-truth.py: it reads files/tests.
+    # Without them the gate silently skips the check (agy finding S5 R83).
     compat_files = sorted(set(facts.get("touched", []))
                           | set(facts.get("untracked", [])))
     compat_tests = [{"command": r.get("command"), "exit": r.get("exit", 0)}
@@ -60,7 +60,7 @@ def build(facts: dict[str, Any], records: list[dict[str, Any]],
 
 
 def render(summary: dict[str, Any]) -> str:
-    """Человекочитаемый отчёт: числа и списки из summary, без прозы."""
+    """Human-readable report: numbers and lists from the summary, no prose."""
     lines = [
         "round-summary: head %s dirty %s"
         % (summary.get("head", "")[:12], summary.get("dirty_hash", "")),
@@ -82,12 +82,12 @@ def render(summary: dict[str, Any]) -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """CLI: facts.json + ledger раунда -> summary.json на stdout/файл."""
-    parser = argparse.ArgumentParser(description="Выжимка раунда")
-    parser.add_argument("--facts", required=True, help="путь к facts.json")
-    parser.add_argument("--state-dir", required=True, help="каталог .pair")
-    parser.add_argument("--round", required=True, type=int, help="номер раунда")
-    parser.add_argument("--out", default="", help="файл summary.json")
+    """CLI: round facts.json + ledger -> summary.json on stdout/file."""
+    parser = argparse.ArgumentParser(description="Round digest")
+    parser.add_argument("--facts", required=True, help="path to facts.json")
+    parser.add_argument("--state-dir", required=True, help="the .pair directory")
+    parser.add_argument("--round", required=True, type=int, help="round number")
+    parser.add_argument("--out", default="", help="summary.json file")
     args = parser.parse_args(argv)
     try:
         facts = session_facts.load_facts(args.facts)

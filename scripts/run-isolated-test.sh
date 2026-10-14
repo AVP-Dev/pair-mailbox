@@ -1,29 +1,29 @@
 #!/bin/sh
-# Запуск команд в контейнере без сети и без доступа к $HOME (P0, раунд 75).
+# Running commands in a container with no network and no $HOME access (P0, round 75).
 #
-# Проблема: агентские тесты выполняются на хосте от прав оператора — любой
-# `pytest` в промпте это произвольный код (THREAT_MODEL.md: нарушитель №1,
-# confused deputy). Скрипт даёт изолированную альтернативу: та же команда,
-# но в контейнере с --network none, примонтированным только проектом.
+# Problem: agent tests run on the host with operator rights — any `pytest` in the
+# prompt is arbitrary code (THREAT_MODEL.md: violator #1, confused deputy). The
+# script gives an isolated alternative: the same command but in a container with
+# --network none, mounting only the project.
 #
-# Fallback: рантайма нет — скрипт НЕ выполняет команду, а возвращает 2
-# и требует человека. Молча запускать на хосте хуже, чем остановиться.
+# Fallback: no runtime — the script NEVER runs the command, returning 2, demanding
+# the human. Silently launching on host reads worse than stopping.
 #
-# Использование: scripts/run-isolated-test.sh [--image IMG] -- <команда...>
+# Usage: scripts/run-isolated-test.sh [--image IMG] -- <command...>
 #   scripts/run-isolated-test.sh -- pytest -q
 #   scripts/run-isolated-test.sh --image python:3.10-slim -- pytest -q
 set -eu
 
 IMAGE="python:3.10-slim"
 if [ "${1:-}" = "--image" ]; then
-    IMAGE="${2:?нужен образ после --image}"
+    IMAGE="${2:?an image is needed past --image}"
     shift 2
 fi
 if [ "${1:-}" = "--" ]; then
     shift
 fi
 if [ "$#" -eq 0 ]; then
-    echo "использование: $0 [--image IMG] -- <команда...>" >&2
+    echo "usage: $0 [--image IMG] -- <command...>" >&2
     exit 2
 fi
 
@@ -34,8 +34,8 @@ elif command -v podman >/dev/null 2>&1; then
     RUNTIME="podman"
 fi
 if [ -z "$RUNTIME" ]; then
-    echo "нет контейнерного рантайма (docker/podman): выполняю на хосте " >&2
-    echo "только с подтверждения человека; автоподтверждение запрещено (P0)" >&2
+    echo "no container runtime (docker/podman): running on host " >&2
+    echo "only with human confirm; self-confirm banned (P0)" >&2
     exit 2
 fi
 

@@ -1,16 +1,16 @@
-"""Отпечаток состояния для кэша `pair_state`.
+"""A state fingerprint for the `pair_state` cache.
 
-Полный ответ `pair_state` стоит ~939 токенов, а агенты зовут его несколько раз за
-раунд, хотя состояние между зовами обычно не меняется. Кэш отвечает короткой
-заглушкой — но только если отпечаток действительно изменился.
+A full `pair_state` answer costs ~939 tokens, while agents call it several times a
+round with state usually unchanged between calls. The cache answers with a short
+stub — but only when the fingerprint truly moved.
 
-Модуль вынесен из `server.py` отдельно оттого, что зависит только от того, что
-чи��ает ответ, а не от того, как ответ собирается. `server.py` импортирует его
-по той же причине, что `wake.py` и `review.py`: показывать, что он остаётся
-единственным местом, где живёт сессия.
+The module moved out of `server.py` because it depends only on what the answer
+reads, not how the answer assembles. `server.py` imports it for the same reason as
+`wake.py` and `review.py`: showing it stays the single place where the session
+lives.
 
-Направление зависимости то же, что у остальных модулей: `server.py` зависит от
-этого файла, не наоборот.
+The dependency runs the same way as the other modules: `server.py` depends on this
+file, never the reverse.
 """
 from __future__ import annotations
 
@@ -18,24 +18,24 @@ import hashlib
 import json
 from typing import Any, Callable
 
-# Поля, которые меняются при каждом обращении к состоянию сами по себе и потому
-# не должны ронять кэш: их отсутствие в отпечатке — не потеря информации о том,
-# что агент способен увидеть, иначе кэш не срабатывал бы никогда.
+# Fields that move on every state call alone, hence never dropping the cache:
+# their absence from the fingerprint loses no information about what the agent
+# can see — or the cache would never fire.
 VOLATILE_STATE_KEYS = ("updated_at", "roles")
 VOLATILE_ROLE_KEYS = ("last_seen",)
 
 CACHE_DISABLED_ENV = "PAIR_DISABLE_STATE_CACHE"
 UNCHANGED_NOTE = (
-    "Состояние не изменилось с прошлого вызова. Читай pair_digest для ориентации."
+    "State unchanged since the last call. Read pair_digest for orientation."
 )
 
 
 def cache_disabled(environ: dict[str, str] | None = None) -> bool:
-    """Выключатель кэша.
+    """The cache switch.
 
-    Обещан комментарием и подключён здесь: тесты, которым нужен живой ответ на
-    каждый вызов, ставят переменную, иначе проверка закрывающего факта читала бы
-    заглушку и проходила, ничего не проверяя.
+    Promised by a comment, wired here: tests needing a live answer per call set the
+    variable, or the closing-fact check would read the stub passing, checking
+    nothing.
     """
     env = environ if environ is not None else __import__("os").environ
     return bool(env.get(CACHE_DISABLED_ENV))
@@ -50,30 +50,27 @@ def fingerprint(
     git_snapshot: Callable[[], Any] | None = None,
     alive: dict[str, bool | None] | None = None,
 ) -> str:
-    """Короткий отпечаток всего, что читает полный ответ `pair_state`.
+    """A short fingerprint of all the full `pair_state` answer reads.
 
-    Поля вручную не перечисляем: ответ зависит от evidence, human_ok, verdicts,
-    patches, roles, seen и от файлов обязательств — они живут на диске и в
-    `state.json` не попадают. Промах по любому из них возвращал заглушку без
-    `obligations` и `evidence_this_round`, то есть без ровно тех полей, ради
-    которых агент звал `pair_state`.
+    Fields never list by hand: the answer follows evidence, human_ok, verdicts,
+    patches, roles, seen plus the obligation files — living on disk, never in
+    `state.json`. A miss on any returned a stub with no `obligations` and no
+    `evidence_this_round` — exactly the fields the agent called `pair_state` for.
 
-    Исключены только `updated_at` и `last_seen`: они меняются при каждом
-    регистрировании наравне с чтением и не несут для агента ничего, чего не
-    видно из остального состояния.
+    Only `updated_at` and `last_seen` exclude: they move on every registration
+    beside reading, carrying the agent nothing beyond the rest of state.
 
-    Имена файлов обязательств и входящих передаются списками, а не читаются
-    здесь: модуль не должен знать, где они лежат, — этим владеет сессия.
-    То же с `alive`: `peers.alive` читается живым `os.kill(pid, 0)`, а не
-    номером в state — процесс умирает снаружи, state не меняется, и без
-    этого снимка заглушка врала бы, что мёртвый сосед слушает. Сессия
-    снимает живость сама и передаёт готовую — тогда модуль не знает
-    про процессы вовсе.
+    Obligation and inbox file names pass as lists, never read here: the module must
+    never know where they lie — the session owns that. Same with `alive`:
+    `peers.alive` reads a live `os.kill(pid, 0)`, not the state number — the
+    process dies outside, state never moves, and with no this snapshot the stub
+    would lie that a dead neighbour listens. The session snapshots liveness itself,
+    passing it ready — then the module never knows processes at all.
 
-    `git_snapshot` вызывается только когда есть вердикты: `_done_blockers`
-    читает снимок HEAD+dirty для проверки stale, и отпечаток обязан это видеть.
-    Вызывающий сам решает, готов ли снимок, и передаёт готовый — тогда модуль не
-    знает про git вовсе.
+    `git_snapshot` calls only when verdicts stand: `_done_blockers` reads the
+    HEAD+dirty snapshot checking stale, and the fingerprint must see it. The caller
+    decides itself whether the snapshot stands ready, passing it ready — then the
+    module never knows git at all.
     """
     roles = {
         name: {k: v for k, v in info.items() if k not in VOLATILE_ROLE_KEYS}
@@ -96,5 +93,5 @@ def fingerprint(
 
 
 def unchanged_answer(state_hash: str) -> dict[str, Any]:
-    """Короткий ответ на неизменившееся состояние."""
+    "A short answer for unchanged state."
     return {"unchanged": True, "hash": state_hash, "note": UNCHANGED_NOTE}

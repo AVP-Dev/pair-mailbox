@@ -1,6 +1,6 @@
-"""Тесты для receipt.py Ground Truth (R82 S1): секция фактов + fail-closed.
+"""Tests for receipt.py Ground Truth (R82 S1): the facts section + fail-closed.
 
-Один тест-файл на один исходник: `receipt.py` -> `test_receipt.py`.
+One test file per source: `receipt.py` -> `test_receipt.py`.
 """
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ def git(repo: Path, *args: str) -> str:
 
 
 class TempRepo:
-    """Пустой git-репозиторий с каталогом состояния .pair."""
+    """An empty git repo with a .pair state dir."""
 
     def __init__(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()

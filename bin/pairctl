@@ -12,8 +12,8 @@
 #   bin/pairctl assign opencode          # opencode becomes the writer
 #   bin/pairctl release                  # nobody holds authority
 #   bin/pairctl pane --role opencode mail:0.0   # bind a role to a pane by hand
-#   bin/pairctl pane opencode mail:0.0          # то же, позиционно из карточки
-#   bin/pairctl pane opencode                    # взять живую $TMUX_PANE
+#   bin/pairctl pane opencode mail:0.0          # same, positional from the card
+#   bin/pairctl pane opencode                    # take the live $TMUX_PANE
 #   bin/pairctl pane --role opencode --clear    # back to what tmux reports
 #   bin/pairctl inbox agy                # read what is waiting for a role
 #   bin/pairctl notes                    # shared plan/decision/finding notes

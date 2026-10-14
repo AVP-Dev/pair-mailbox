@@ -1,12 +1,11 @@
-"""Живость и готовность соседа читать сообщения.
+"""Neighbour liveness and readiness to read messages.
 
-`_peer_status` отвечал на вопрос, который задают себе оба агента в каждом раунде:
-сосед ещё здесь, и прочитает ли он то, что я сейчас напишу. Ответ нужен читателю
-состояния, а не тому, кто состояние меняет, поэтому он и живёт здесь.
+`_peer_status` answers the question both agents ask themselves every round:
+is the neighbour still here, and will it read what I write now. The answer
+serves the state reader, not the state changer — hence it lives here.
 
-Модуль ничего не знает про `PairSession`: на входе состояние и собственная роль,
-на выходе — словарь по ролям. Именно поэтому его можно вызывать и из теста, не
-поднимая сервер.
+The module knows nothing of `PairSession`: state and own role in, a dict by
+role out. Exactly why tests can call it without raising the server.
 """
 from __future__ import annotations
 
@@ -17,20 +16,20 @@ from typing import Any
 
 
 def pid_alive(pid: Any) -> bool:
-    """Жив ли процесс с таким pid.
+    """Whether the process with this pid is alive.
 
-    Отдельная функция, а не обращение к серверу: тест живости соседа не должен
-    ради проверки одной строки поднимать MCP-сервер целиком.
+    A separate function, not a server call: the neighbour-liveness test must
+    not raise the whole MCP server to check one line.
 
-    Два случая неочевидны и оба перенесены из прежнего `server.is_pid_alive`
-    буквально, потому что теряются при переписывании:
+    Two cases are unobvious and both moved verbatim from the old
+    `server.is_pid_alive`, because rewrites lose them:
 
-    - pid меньше единицы и не-целое число неprocess. `os.kill(-1, 0)` на Linux
-      успешно «проверяет» все процессы разом и вернул бы alive, то есть соседа
-      с испорченной записью объявили бы живым;
-    - EPERM значит «процесс есть, но не мой». Это alive, а не мёртв: сосед может
-      быть запущен от другого пользователя, и объявлять его мёртвым — значит
-      не ждать ответа, который придёт.
+    - a sub-one or non-integer pid is not a process. `os.kill(-1, 0)` on Linux
+      happily "checks" all processes at once and would return alive — a neighbour
+      with a corrupt record declared living;
+    - EPERM means "the process exists, but not mine". That is alive, not dead:
+      the neighbour may run as another user, and declaring it dead means never
+      waiting for the answer that arrives.
     """
     if not isinstance(pid, int) or pid <= 0:
         return False
@@ -49,18 +48,18 @@ def peer_status(
     alive_check=pid_alive,
     unread: dict[str, int] | None = None,
 ) -> dict[str, Any]:
-    """Что делает каждый другой участник и услышит ли он новое.
+    """What every other party does and whether it hears the new.
 
-    Писатель раньше закрывал раунд, не имея понятия, ушёл ли сосед, и тогда
-    находка приезжала в закрытый раунд. Сказать об этом вслух дешевле, чем
-    складывать письмо в никуда.
+    The writer used to close the round with no idea whether the neighbour left,
+    and then the finding landed in a closed round. Saying it aloud costs less
+    than stacking a letter into nowhere.
 
-    `alive_check` подменяется в тестах: проверка «сосед мёртв» не должна зависеть
-    от того, жив лиPID в момент прогона набора.
+    `alive_check` is stubbed in tests: the "neighbour dead" check must never
+    depend on whether a PID lives at suite-run time.
 
-    `unread` — непрочитанные по ролям (role → count), считает вызыватель:
-    сам модуль mailbox не видит. Нет подсчёта — нет полей, а не нули:
-    ноль означал бы «прочитано всё», а отсутствие данных — неизвестно.
+    `unread` is unread counts by role (role → count), counted by the caller:
+    the module never sees the mailbox. No count means no fields, not zeroes:
+    zero would read "all read" while missing data means unknown.
     """
     SILENT_AGENT_GRACE = 30 * 60
     phase = state.get("phase", "scoping")
@@ -78,10 +77,10 @@ def peer_status(
         closed = phase == "done"
         pid = info.get("pid")
         alive = alive_check(pid) if pid else None
-        # Сервер роли жив, а агента за ним нет: pid в ростере — pid сервера,
-        # и свежий last_seen пишет сам сервер при старте/обслуживании чужих
-        # вызовов. Роль, ни разу не отправившая ничего за grace после
-        # регистрации, — немая: письмо ей не прочитает никто (R85, pi).
+        # The role server lives but no agent stands behind it: the roster pid is the
+        # server pid, and the server itself writes a fresh last_seen at start and while
+        # serving foreign calls. A role that never sent anything for grace after
+        # registration is mute: nobody reads a letter to it (R85, pi).
         mute = False
         try:
             born = info.get("first_seen")

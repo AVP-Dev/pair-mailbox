@@ -1,11 +1,11 @@
-"""Тесты живости соседа: прочитает ли он новое сообщение.
+"""Neighbour-liveness tests: will he read a new message.
 
-Один тест-файл на один исходник: `liveness.py` отвечает за одно — что видно
-каждому участнику про остальных, — и проверяется здесь.
+One test file per source: `liveness.py` owns one thing — what every party sees
+about the rest — checking here.
 
-Проверка `alive_check` подменяется везде, где речь о смерти процесса: тест не
-должен зависеть от того, жив ли PID в момент прогона. Один тест на реальный
-вызов оставлен намеренно — иначе подмена прятала бы опечатку в самой проверке.
+The `alive_check` check stubs everywhere process death speaks: the test must never
+depend on whether the PID lives at run time. One real-call test stays on purpose —
+or the stub would hide a typo in the check itself.
 """
 from __future__ import annotations
 
@@ -36,7 +36,7 @@ def alive(_pid) -> bool:
 
 class TestPidAlive(unittest.TestCase):
     def test_own_pid_is_alive(self) -> None:
-        """Единственный тест на настоящий вызов: подмена прятала бы опечатку."""
+        "A single test on the real call: a stub would hide a typo."
         self.assertTrue(liveness.pid_alive(os.getpid()))
 
     def test_missing_pid_is_not_alive(self) -> None:
@@ -52,30 +52,29 @@ class TestPidAlive(unittest.TestCase):
         self.assertFalse(liveness.pid_alive(99999999))
 
     def test_garbage_pid_does_not_raise(self) -> None:
-        """Роль в ростере может прийти с чем угодно вместо pid.
+        """A roster role may arrive with anything instead of a pid.
 
-        Исключение здесь уронило бы `pair_state` целиком — то есть агент не
-        узнал бы ничего ни о ком, из-за чужой испорченной записи.
+        An exception here would drop `pair_state` whole — the agent learning nothing
+        about nobody over a foreign broken record.
         """
-        for bad in ("не число", "", object(), 3.5):
+        for bad in ("not a number", "", object(), 3.5):
             self.assertFalse(liveness.pid_alive(bad), bad)
 
     def test_bool_is_an_int_in_python_and_survives_as_alive(self) -> None:
-        """`True` проходит проверку `isinstance(pid, int)` — так было и раньше.
+        """`True` passes the `isinstance(pid, int)` check — as before.
 
-        Зафиксировано, а не исправлено: это поведение `server.is_pid_alive`,
-        перенесённое дословно, и менять его здесь — значит менять протокол мимо
-        задачи. Значение в ростере не может быть `True`: там pid или число, или
-        ничего. Тест назван прямо, чтобы правка когда-нибудь не выглядела
-        случайной.
+        Pinned, not fixed: this is `server.is_pid_alive` behaviour carried verbatim,
+        and changing it here means changing the protocol past the task. A roster value
+        can never be `True`: a pid or a number stands there, or nothing. The test
+        names it straight so a fix never reads accidental one day.
         """
         self.assertTrue(liveness.pid_alive(True))
 
     def test_eperm_means_alive_not_dead(self) -> None:
-        """Процесс чужой — значит живой, просто не наш.
+        """A foreign process means living, merely not ours.
 
-        Сосед может быть запущен от другого пользователя. Объявить его мёртвым —
-        значит не ждать ответа, который придёт, и писать следующий раунд в пустоту.
+        The neighbour may launch as another user. Declaring him dead means never
+        awaiting an answer that arrives, writing the next round into the void.
         """
         import errno as _errno
         import unittest.mock as _mock
@@ -95,7 +94,7 @@ class TestPidAlive(unittest.TestCase):
 
 class TestPeerStatusShape(unittest.TestCase):
     def test_self_is_absent(self) -> None:
-        """Свою роль в списке соседей видеть нечего: это не сосед."""
+        "Seeing our own role in the neighbour list is nothing: no neighbour."
         status = liveness.peer_status(
             state_with(roles={"opencode": {"pid": 1}, "pi": {"pid": 2}}),
             role="opencode", writer="opencode", alive_check=alive,
@@ -103,7 +102,7 @@ class TestPeerStatusShape(unittest.TestCase):
         self.assertEqual(list(status), ["pi"])
 
     def test_roles_are_labelled_against_the_writer(self) -> None:
-        """Кто писатель, задаёт раскладку, а не факт регистрации в ростере."""
+        "Who writes sets the layout, not the roster registration fact."
         status = liveness.peer_status(
             state_with(roles={"pi": {"pid": 2}, "agy": {"pid": 3}}),
             role="opencode", writer="pi", alive_check=alive,
@@ -128,9 +127,9 @@ class TestWillReadNewMessages(unittest.TestCase):
         self.assertEqual(peer["hint"], "Listening.")
 
     def test_dead_peer_does_not_read_and_is_named(self) -> None:
-        """Молчание соседа должно быть сказано вслух, с его pid.
+        """Neighbour silence must speak aloud, with his pid.
 
-        Иначе письмо уходит в закрытый раунд, и находка не приходит никогда.
+        Or the letter leaves for a closed round, and the finding never arrives.
         """
         status = liveness.peer_status(
             state_with(roles={"pi": {"pid": 4242}}), role="opencode",
@@ -142,10 +141,10 @@ class TestWillReadNewMessages(unittest.TestCase):
         self.assertIn("4242", peer["hint"])
 
     def test_closed_round_beats_a_live_process(self) -> None:
-        """Процесс жив, но раунд закрыт — новое он не прочитает.
+        """The process lives, but the round closed — nothing new reads.
 
-        Обратный порядок проверок врал бы в другую сторону: живой pid выглядел
-        бы как готовый сосед, и письмо ушло бы в никуда без единого слова.
+        The reverse check order would lie the other way: a live pid would read as a
+        ready neighbour, and the letter would leave nowhere with not a word.
         """
         status = liveness.peer_status(
             state_with(phase="done", roles={"pi": {"pid": 2}}),
@@ -157,7 +156,7 @@ class TestWillReadNewMessages(unittest.TestCase):
         self.assertIn("closed", peer["hint"].lower())
 
     def test_hint_names_the_way_back(self) -> None:
-        """Подсказка обязана называть поступок, а не только констатировать факт."""
+        "A hint must name the deed, not only state the fact."
         status = liveness.peer_status(
             state_with(phase="done", roles={"pi": {"pid": 2}}),
             role="opencode", writer="opencode", alive_check=alive,
@@ -166,7 +165,7 @@ class TestWillReadNewMessages(unittest.TestCase):
 
 
 class TestMuteAgent(unittest.TestCase):
-    """Сервер жив, агента нет: pid в ростере — серверный (R85, pi)."""
+    "The server lives, no agent: the roster pid is the server one (R85, pi)."
 
     def test_never_spoke_does_not_read(self) -> None:
         status = liveness.peer_status(
@@ -218,9 +217,9 @@ class TestSilentSeconds(unittest.TestCase):
         self.assertIsNone(status["pi"]["silent_seconds"])
 
     def test_unparseable_last_seen_is_none_not_a_crash(self) -> None:
-        """Испорченный timestamp — повод не считать возраст, а не уронить ответ."""
+        "A broken timestamp never counts age, never drops the answer."
         status = liveness.peer_status(
-            state_with(roles={"pi": {"pid": 2, "last_seen": "вчера"}}),
+            state_with(roles={"pi": {"pid": 2, "last_seen": "yesterday"}}),
             role="opencode", writer="opencode", alive_check=alive,
         )
         self.assertIsNone(status["pi"]["silent_seconds"])
@@ -228,7 +227,7 @@ class TestSilentSeconds(unittest.TestCase):
 
 
 class TestUnreadCounters(unittest.TestCase):
-    """P1: затык виден за секунды. Счётчик unread по ролям — в peers."""
+    "P1: a stuck one shows in seconds. The per-role unread count lives in peers."
 
     def test_unread_arrives_with_the_count(self) -> None:
         status = liveness.peer_status(
@@ -238,7 +237,7 @@ class TestUnreadCounters(unittest.TestCase):
         self.assertEqual(3, status["pi"]["unread"])
 
     def test_no_count_means_no_field_not_zero(self) -> None:
-        """Ноль означал бы «прочитано всё», а отсутствие данных — неизвестно."""
+        "Zero would mean \"all read\", while missing data means unknown."
         status = liveness.peer_status(
             state_with(roles={"pi": {"pid": 2}}), role="opencode",
             writer="opencode", alive_check=alive,

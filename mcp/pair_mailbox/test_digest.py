@@ -1,13 +1,13 @@
-"""Тесты дайджеста: срез состояния пары в жёстком потолке токенов.
+"""Digest tests: a pair-state slice under a hard token ceiling.
 
-Один тест-файл на один исходник: `digest.py` отвечает за одну обязанность —
-уложить состояние в бюджет, — и проверяется здесь, а не вперемешку с протоколом.
+One test file per source: `digest.py` owns one duty — fitting state into budget —
+and checks here, never mixed with protocol.
 
-Три свойства проверяются, а не декларируются:
-- потолок держится на любом состоянии, включая специально раздутое;
-- порядок разделов решает всё: перестановка делает дороже при том же составе;
-- вердикт цитируется, а не пересказывается, потому что пересказ чужого решения
-  своими словами — это способ соврать о том, чего не читали.
+Three properties check, never declare:
+- the ceiling holds on any state, including a deliberately bloated one;
+- section order decides all: a permutation costs more at the same content;
+- the verdict quotes, never retells, because retelling a foreign decision in own
+  words is a way to lie about what was never read.
 """
 from __future__ import annotations
 
@@ -28,17 +28,17 @@ import digest  # noqa: E402
 
 
 class TestDigest(PairTestCase):
-    """Дайджест: срез состояния в жёстком бюджете токенов (пункт 5).
+    """The digest: a state slice in a hard token budget (item 5).
 
-    Зачем он, измерено до того, как он написан: ориентация в паре стоит
-    `pair_state` 939 + `pair_task list` 1051 + `pair_transcript` 1734 = 3724 токена.
-    Дайджест обязан быть заметно дешевле, иначе он не нужен.
+    Why it stands, measured before writing it: orienting in the pair costs
+    `pair_state` 939 + `pair_task list` 1051 + `pair_transcript` 1734 = 3724 tokens.
+    The digest must run notably cheaper, or it is unneeded.
 
-    Три свойства, которые проверяются здесь, а не декларируются:
-    - **потолок держится** на любом состоянии, включая специально раздутое;
-    - **порядок разделов решает всё**: перестановка делает дороже при том же составе;
-    - **вердикт цитируется, а не пересказывается**, потому что пересказ чужого
-      решения своими словами — это способ соврать о том, чего не читали.
+    Three properties checking here, never declared:
+    - **the ceiling holds** on any state, including a deliberately bloated one;
+    - **section order decides all**: a permutation costs more at the same content;
+    - **the verdict quotes, never retells**, because retelling a foreign decision in
+      own words is a way to lie about what was never read.
     """
 
     def setUp(self) -> None:
@@ -57,244 +57,242 @@ class TestDigest(PairTestCase):
 
     def many_tasks(self, count: int, status: str = "open") -> None:
         self.store.mutate(lambda st: st.setdefault("tasks", []).extend(
-            {"id": 100 + i, "text": f"задача номер {i} " + "хвост " * 12,
+            {"id": 100 + i, "text": f"task number {i} " + "tail " * 12,
              "status": status, "added_at": "then", "added_by": "human", "round": 14}
             for i in range(count)))
 
-    # ------------------------------------------------------------------ потолок
+    # ------------------------------------------------------------- ceiling
 
     def test_the_digest_fits_the_budget(self) -> None:
-        """Потолок — свойство, а не пожелание.
+        """The ceiling is a property, not a wish.
 
-        Дайджест, который перестал помещаться, хуже отсутствующего: агент будет
-        планировать контекст по потолку, который уже не действует.
+        A digest that stopped fitting reads worse than a missing one: the agent
+        will plan context on a ceiling that no longer holds.
         """
-        self.with_state(task="автоматизация парной работы: пилот-сверхвизор, роли, режимы",
+        self.with_state(task="automation of pair work: the pilot supervisor, roles, modes",
                         writer="opencode", mode="fix", phase="implement", round=14)
         self.many_tasks(6)
         text = self.digest()
         self.assertLessEqual(self.server.estimate_tokens(text), 500,
-                             "дайджест обязан помещаться в потолок")
+                             "the digest must fit the ceiling")
 
     def test_the_budget_holds_on_a_deliberately_bloated_state(self) -> None:
-        """Потолок держится на состоянии, специально раздутом.
+        """The ceiling holds on a deliberately bloated state.
 
-        Проверка дешёвого дайджеста на нормальном состоянии ничего не доказывает:
-        он и так поместится. Ломается он на том, чего не ждёшь, — двадцать
-        открытых задач с длинными текстами и отсутствие git.
+        Checking a cheap digest on a normal state proves nothing: it fits anyway.
+        It breaks on the unexpected — twenty open tasks with long texts and no git.
         """
-        self.with_state(task="задача " * 400, writer="agy", mode="fix",
+        self.with_state(task="task " * 400, writer="agy", mode="fix",
                         phase="verify", round=99)
         self.many_tasks(20, status="open")
         text = self.digest()
         self.assertLessEqual(self.server.estimate_tokens(text), 500)
 
     def test_a_tiny_budget_is_still_honoured(self) -> None:
-        """Потолок маленький — он тоже потолок, а не ориентир.
+        """A small ceiling is a ceiling too, not a landmark.
 
-        Если бы урезание не работало, агент на ограниченном контексте получил бы
-        полный текст и узнал об этом по факту, когда упёрся в лимит.
+        Had trimming failed, an agent on a bounded context would take the full text
+        learning it by fact, hitting the limit.
         """
-        self.with_state(task="задача " * 200, writer="agy")
+        self.with_state(task="task " * 200, writer="agy")
         self.many_tasks(8)
         text = self.digest(budget=80)
         self.assertLessEqual(self.server.estimate_tokens(text), 80)
 
     def test_what_did_not_fit_is_said(self) -> None:
-        """Обрезание обязано быть объявлено.
+        """Trimming must declare itself.
 
-        Молча сокращённый дайджест хуже длинного: агент решит, что вердикта не
-        было, и начнёт искать его там, где его нет.
+        A silently shortened digest reads worse than a long one: the agent decides no
+        verdict stood, starting to search it where it never was.
         """
-        self.with_state(task="задача " * 400, writer="agy")
+        self.with_state(task="task " * 400, writer="agy")
         self.many_tasks(20)
         text = self.digest(budget=120)
-        self.assertIn("обрезано", text)
+        self.assertIn("truncated", text)
 
-    # ------------------------------------------------------------------ состав
+    # ----------------------------------------------------------- content
 
     def test_the_reserve_covers_the_marker(self) -> None:
-        """Резерв обязан быть не меньше самой пометки.
+        """The reserve must at least cover the mark itself.
 
-        Найдено на себе: резерв стоял круглым числом 20, пометка выходила 22, и на
-        тексте, подогнанном точно под потолок, дайджест давал 501 токен при потолке
-        500 — то есть либо нарушал обещание, либо вычищал строку, ради которой он
-        собирался. Оба варианта плохи, и оба выглядят как «почти работает».
+        Found on self: the reserve stood at a round 20, the mark ran 22, and on text
+        fit exactly to the ceiling the digest gave 501 tokens at ceiling 500 — meaning
+        it either broke the promise or cleaned the line it gathered for. Both read
+        bad, both read as "nearly works".
         """
         self.assertGreaterEqual(self.server._digest_marker_reserve(),
                                 self.server.estimate_tokens(self.server.DIGEST_MARKER),
-                                "резерв меньше пометки: дайджест выдаст пометку ценой "
-                                "вычищенной полезной строки")
+                                "a reserve below the mark: the digest pays the mark at the price of "
+                                "a cleaned useful line")
 
     def test_an_oversized_line_is_cut_rather_than_dropped(self) -> None:
-        """Обрезанная первая строка полезнее, чем её отсутствие.
+        """A cut first line beats its absence.
 
-        Здесь видна разница между двумя способами держать потолок, и она не
-        косметическая. Отбросить строку целиком — бюджет выдержан, но агент не
-        видит задачи вообще и вынужден звать `pair_state`. Обрезать её — агент
-        видит начало задачи и понимает, о чём раунд.
+        Here the two ways of holding the ceiling differ, and not cosmetically.
+        Dropping the line whole keeps budget, but the agent never sees the task,
+        forced to call `pair_state`. Cutting it, the agent sees the task start,
+        understanding what the round is about.
 
-        Проверено мутацией: если убрать только обрезание строки, потолок всё равно
-        держится (его держат `take` и финальная чистка), и набор остаётся зелёным.
-        То есть без этой проверки обрезание было бы мёртвым кодом.
+        Mutation-checked: dropping only the line cut, the ceiling still holds (take
+        and the final cleanup hold it), the suite staying green. So with no this
+        check the cut would stand dead code.
         """
-        self.with_state(task="ЗАДАЧА-ОЧЕНЬ-ДЛИННАЯ " + "подробности " * 400)
+        self.with_state(task="TASK-VERY-LONG " + "details " * 400)
         text = self.digest(budget=200)
         self.assertLessEqual(self.server.estimate_tokens(text), 200)
-        self.assertIn("ЗАДАЧА-ОЧЕНЬ-ДЛИННАЯ", text,
-                      "начало задачи обязано быть видно, иначе агент не знает, о чём раунд")
-        self.assertIn("…", text, "обрезание обязано быть помечено")
+        self.assertIn("TASK-VERY-LONG", text,
+                      "the task start must show, or the agent never knows what the round is about")
+        self.assertIn("…", text, "trimming must mark itself")
 
     def test_the_digest_states_what_cannot_be_guessed(self) -> None:
-        """Задача, режим, фаза и писатель — то, без чего работа идёт неверно.
+        """Task, mode, phase and writer — what work goes wrong without.
 
-        Отсутствие задачи тоже факт, а не пустота: пустая строка выглядит как
-        «задача есть, но пустая», и это разные вещи.
+        A missing task is a fact too, not blank: an empty line reads as "a task
+        stands, but empty", and those differ.
         """
         text = self.digest()
-        self.assertIn("РАУНД", text)
-        self.assertIn("задача", text)
-        self.assertIn("режим", text)
-        self.assertIn("фаза", text)
-        self.assertIn("пишет", text)
+        self.assertIn("ROUND", text)
+        self.assertIn("task:", text)
+        self.assertIn("mode:", text)
+        self.assertIn("phase:", text)
+        self.assertIn("writes:", text)
 
     def test_closed_tasks_do_not_take_space(self) -> None:
-        """Закрытые задачи не несут смысла для следующего шага.
+        """Closed tasks carry no meaning for the next step.
 
-        Восемь закрытых задач стоили около 800 токенов в `pair_task list` и не
-        сказали ничего, чего агент не знает.
+        Eight closed tasks cost near 800 tokens in `pair_task list`, saying nothing
+        the agent never knows.
         """
         self.many_tasks(6, status="done")
         text = self.digest()
-        self.assertIn("ОТКРЫТЫЕ ЗАДАЧИ: 0", text)
-        self.assertNotIn("задача номер", text)
+        self.assertIn("OPEN TASKS: 0", text)
+        self.assertNotIn("task number", text)
 
     def test_missing_obligations_are_stated(self) -> None:
-        """Отсутствие обязательств — факт, а не пустое место в тексте."""
+        """No obligations is a fact, not a blank in the text."""
         text = self.digest()
-        self.assertIn("ОБЯЗАТЕЛЬСТВА: 0", text)
-        self.assertIn("никто никого не ждёт", text)
+        self.assertIn("OBLIGATIONS: 0", text)
+        self.assertIn("nobody waits on anyone", text)
 
     def test_an_open_obligation_is_named(self) -> None:
-        """Кто кого ждёт — это то, ради чего агент и смотрит дайджест."""
+        """Who awaits whom is what the agent reads the digest for."""
         self.store.mutate(lambda st: None)
         path = self.store.obligations_root
         path.mkdir(parents=True, exist_ok=True)
         (path / "o1.json").write_text(json.dumps(
-            {"from": "opencode", "to": "agy", "subject": "пункт 5"}, ensure_ascii=False),
+            {"from": "opencode", "to": "agy", "subject": "item 5"}, ensure_ascii=False),
             encoding="utf-8")
         text = self.digest()
-        self.assertIn("opencode ждёт agy", text)
+        self.assertIn("opencode waits agy", text)
 
     def test_the_last_commit_is_read_from_git_not_from_the_log(self) -> None:
-        """Фактическое состояние дерева, а не пересказ журнала.
+        """The live tree state, not a journal retelling.
 
-        Журнал не знает, что закоммичено. Агент, читающий дайджест, должен увидеть
-        правду о дереве, иначе он планирует работу по устаревшему представлению.
+        The journal never knows what stands committed. An agent reading the digest
+        must see the tree truth, or it plans work on a stale view.
         """
         text = self.digest()
-        self.assertIn("ПОСЛЕДНИЙ КОММИТ", text)
+        self.assertIn("LAST COMMIT", text)
 
     def test_no_git_is_said_out_loud(self) -> None:
-        """Отсутствие git объявляется, а не выглядит как «коммитов нет».
+        """Missing git declares itself, never reads as "no commits".
 
-        Это разные факты с разными последствиями: первый означает «следи сам», второй
-        — «дерево чистое, делать нечего».
+        Different facts with different consequences: the first means "watch it
+        yourself", the second "the tree is clean, nothing to do".
         """
-        with mock.patch("subprocess.run", side_effect=OSError("нет git")):
+        with mock.patch("subprocess.run", side_effect=OSError("no git")):
             text = self.digest()
-        self.assertIn("git недоступен", text)
+        self.assertIn("git unreachable", text)
 
-    # ----------------------------------------------------------------- вердикт
+    # -------------------------------------------------------------- verdict
 
     def _note_in_journal(self, slug: str, role: str = "agy") -> None:
-        """Заметка, зарегистрированная в журнале так же, как её пишет `pair_note`."""
+        """A note registered in the journal the same way `pair_note` writes it."""
         self.store.append_transcript("note", role, note_kind=slug, chars=10)
         path = self.store.notes_root / f"{slug}.md"
         path.parent.mkdir(parents=True, exist_ok=True)
-        # Заметка длиннее хвоста: если бы дайджест брал начало, в него попало бы
-        # «ПОСТАНОВКА ПРОШЛОГО РАУНДА» вместо решения.
-        body = [f"строка {i} постановки" for i in range(12)]
-        path.write_text("\n".join(body + ["ВЕРДИКТ: принято."]) + "\n", encoding="utf-8")
+        # A note longer than the tail: had the digest taken the head, the "PAST ROUND
+        # SETUP" would land in it instead of the decision.
+        body = [f"line {i} of the setup" for i in range(12)]
+        path.write_text("\n".join(body + ["VERDICT: accepted."]) + "\n", encoding="utf-8")
 
     def test_the_last_verdict_is_quoted_not_summarised(self) -> None:
-        """Цитата, а не пересказ.
+        """A quote, not a retelling.
 
-        Дайджест пересказывает чужое решение своими словами — он умеет соврать о
-        том, чего не читал. Поэтому в него попадает дословный хвост заметки, и
-        видно, чей это вердикт.
+        The digest retelling a foreign decision in own words can lie about what it never
+        read. So the note literal tail lands in it, showing whose verdict it is.
         """
-        self._note_in_journal("verdict-прошлое")
-        self._note_in_journal("verdict-свежее")
+        self._note_in_journal("verdict-past")
+        self._note_in_journal("verdict-fresh")
         text = self.digest()
-        self.assertIn("ВЕРДИКТ: принято.", text)
-        self.assertIn("verdict-свежее", text)
-        self.assertNotIn("строка 0 постановки", text,
-                         "дайджест берёт хвост заметки, а не её начало")
+        self.assertIn("VERDICT: accepted.", text)
+        self.assertIn("verdict-fresh", text)
+        self.assertNotIn("line 0 of the setup", text,
+                         "the digest takes the note tail, not its head")
 
     def test_the_newest_verdict_wins_regardless_of_name(self) -> None:
-        """Порядок вердиктов берётся из журнала, а не из имени файла.
+        """Verdict order comes from the journal, not the file name.
 
-        Имена не упорядочены по времени: `verdict.md`, `verdict-agy.md`,
-        `verdict-pairctl-pane.md` — какой из них последний, по имени не видно.
-        Заметок девяносто две, и читать их содержимое, чтобы найти последний, — это
-        ровно та стоимость, которую дайджест обещает не платить.
+        Names never order by time: `verdict.md`, `verdict-agy.md`,
+        `verdict-pairctl-pane.md` — which runs last never shows by name. Ninety-two
+        notes, and reading their content to find the last is exactly the cost the
+        digest promises never to pay.
         """
-        # Сначала в журнале один, потом другой: порядок задаёт журнал.
+        # First one in the journal, then the other: the journal sets the order.
         self._note_in_journal("verdict-aaa")
         self._note_in_journal("verdict-zzz")
         text = self.digest()
         self.assertIn("verdict-zzz", text)
 
     def test_no_verdict_is_stated_as_no_verdict(self) -> None:
-        """Отсутствие вердикта говорится прямо.
+        """A missing verdict says so directly.
 
-        Иначе пустой раздел выглядит как «вердикт есть, но не влез».
+        Or a blank section reads as "a verdict stands, but never fit".
         """
         text = self.digest()
-        self.assertIn("ПОСЛЕДНИЙ ВЕРДИКТ", text)
-        self.assertIn("вердиктов не было", text)
+        self.assertIn("LAST VERDICT", text)
+        self.assertIn("no verdicts yet", text)
 
-    # --------------------------------------------------------------- поверхности
+    # ------------------------------------------------------------- surfaces
 
     def test_the_tool_and_the_command_return_the_same_thing(self) -> None:
-        """Одна реализация на человека и агента.
+        """One implementation for the human and the agent.
 
-        Две реализации дайджеста разъедутся, и человек увидит не то, что видит
-        агент, — а расхождение в такой штуке обнаруживается только при разборе
-        инцидента.
+        Two digest implementations would drift, and the human would see what the
+        agent never sees — a drift in such a thing surfacing only at an incident autopsy.
+        incident.
         """
-        self.with_state(task="одна и та же задача", writer="opencode")
+        self.with_state(task="one and the same task", writer="opencode")
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
             self.assertEqual(0, self.ctl("digest", "--budget", "400"))
         self.assertEqual(self.server.build_digest(self.store, "", 400), out.getvalue())
 
     def test_the_command_fails_loudly_when_the_budget_is_broken(self) -> None:
-        """Потолок, который не выдержали, — это поломка, а не повод сделать вид.
+        """A ceiling never held is breakage, not a cause to pretend.
 
-        Молчаливый выход с кодом 0 дал бы человеку текст, который он принял за
-        дайджест, и он бы на него опирался.
+        A silent exit with code 0 would hand the human text taken for a digest,
+        leaning on it.
         """
-        # Подменяется модуль-потребитель: `cmd_digest` живёт в `pairctl_read` и
-        # берёт `build_digest` оттуда, а не из `server`. Подмена `server` после
-        # разбора ничего бы не изменила, и тест проверял бы не тот код.
-        with mock.patch("pairctl_read.build_digest", return_value="х" * 4000):
+        # Stubbing the consumer module: `cmd_digest` lives in `pairctl_read`, taking
+        # `build_digest` from there, not from `server`. Stubbing `server` past parsing
+        # would change nothing, testing the wrong code.
+        with mock.patch("pairctl_read.build_digest", return_value="x" * 4000):
             err = io.StringIO()
             with contextlib.redirect_stderr(err):
                 code = self.ctl("digest", "--budget", "100")
         self.assertEqual(1, code)
-        self.assertIn("потолке", err.getvalue())
+        self.assertIn("ceiling", err.getvalue())
 
     def test_the_digest_names_the_role_that_writes(self) -> None:
-        """При переданной роли дайджест говорит «ты пишешь».
+        """With a passed role the digest says "you write".
 
-        Это избавляет агента от второго вызова, и смысл тут не в красоте, а в том,
-        что весь смысл дайджеста — убрать лишний заход в состояние.
+        It spares the agent a second call, and the meaning is no beauty but that the
+        whole digest meaning is dropping the extra state round-trip.
         """
         self.with_state(writer="opencode")
-        self.assertIn("(ты)", self.digest(role="opencode"))
-        self.assertNotIn("(ты)", self.digest(role="agy"))
+        self.assertIn("(you)", self.digest(role="opencode"))
+        self.assertNotIn("(you)", self.digest(role="agy"))
 
 
 if __name__ == "__main__":

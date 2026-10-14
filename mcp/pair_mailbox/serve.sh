@@ -30,11 +30,11 @@ while [ "$#" -gt 0 ]; do
 done
 state="${state:-${PAIR_STATE:-}}"
 if [ -z "$state" ]; then
-    # Тот же walk-up, что у плагина и extract_state: запуск из подкаталога
-    # не создаёт второе состояние. Общие конфиги pin не несут by design.
-    # Вне git-репозитория walk-up не идёт вовсе: иначе probe из $HOME
-    # поднимает сервер на мусорном ~/.pair и угоняет роль
-    # (измерено 2026-10-07: дубль --role opencode на ~/.pair).
+    # The same walk-up as the plugin and extract_state: launching from a subdir
+    # creates no second state. Shared configs carry no pin by design.
+    # Outside a git repo no walk-up runs at all: or a probe from $HOME would
+    # raise the server on junk ~/.pair stealing the role (measured 2026-10-07:
+    # a --role opencode double on ~/.pair).
     top="$(git rev-parse --show-toplevel 2>/dev/null || true)"
     if [ -n "$top" ]; then
         dir="$(pwd)"
@@ -47,10 +47,10 @@ if [ -z "$state" ]; then
         done
     fi
 fi
-# Пустой state — до любых предупреждений: иначе `dirname -- ""` даёт `.`
-# и в лог летит мусор `state из ,`. Отказ создавать stray state — честный
-# (probe из $HOME не должен поднимать сервер на мусоре), но сообщение обязано
-# различать "нет git" и "нет .pair" и говорить что делать дальше (pairup).
+# An empty state comes before any warnings: or `dirname -- ""` gives `.`, junk
+# `state from ,` flying into the log. Refusing a stray state reads honest (a probe
+# from $HOME must never raise the server on junk), but the message must tell "no
+# git" from "no .pair" apart, saying what to do next (pairup).
 if [ -z "$state" ]; then
     if git rev-parse --show-toplevel >/dev/null 2>&1; then
         echo "pair-mailbox: refusing: no .pair/state.json in $(pwd) or above (git root $(git rev-parse --show-toplevel 2>/dev/null)) — create it: cd <project> && pairup [--writer <role>] [--duo <cli>]" >&2
@@ -60,10 +60,10 @@ if [ -z "$state" ]; then
     exit 4
 fi
 case "$state" in -*) echo "pair-mailbox: refusing flag-like state $state (a flag was taken for a path)" >&2; exit 2;; esac
-# Видимость, не запрет: запуск из чужой папки — главный источник путаницы
-# панелей между проектами. Легитимные запуски из подкаталогов не ломаем.
-# Стоит ПОСЛЕ резолва, чтобы ловить и walk-up, и явный --state/PAIR_STATE.
-proj_root="$(dirname -- "$state")"; case "$(pwd)/" in "$proj_root"/*) ;; *) echo "pair-mailbox: внимание: state из $state, а cwd $(pwd) — панель будет выглядеть чужой" >&2;; esac
+# Visibility, not a ban: launching from a foreign dir is the main source of pane
+# confusion across projects. Legit subdir launches never break.
+# Stands PAST resolving, catching both walk-up and explicit --state/PAIR_STATE.
+proj_root="$(dirname -- "$state")"; case "$(pwd)/" in "$proj_root"/*) ;; *) echo "pair-mailbox: NOTE: state from $state, but cwd $(pwd) — the pane will read foreign" >&2;; esac
 if [ -n "${PAIR_ROLE:-}" ] && [ "${PAIR_ROLE}" != "$role" ]; then
   echo "pair-mailbox: refusing: PAIR_ROLE=${PAIR_ROLE} != argv role $role (role comes from config, never from env)" >&2
   exit 3
@@ -78,13 +78,13 @@ if [ -z "$python" ]; then
   echo "pair-mailbox: python3 not found on PATH" >&2
   exit 127
 fi
-# Проверка версии ДО запуска: без неё человек на старом Python получает
-# 200+ ошибок импорта вместо одной строки о версии. Именно так выглядела
-# установка на macOS, где системный python3 — 3.9, а аннотации вида `str | None`
-# требуют 3.10. Сообщение обязано называть, что делать, а не только что не так.
+# Version checking BEFORE launch: with no it the human on old Python takes 200+
+# import errors instead of one version line. Exactly how install on macOS read,
+# where system python3 is 3.9 while `str | None`-style annotations demand 3.10. The
+# message must name what to do, not only what fails.
 if ! "$python" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 8) else 1)' 2>/dev/null; then
-  echo "pair-mailbox: нужен python3 3.8 или новее, а найден $("$python" -c 'import platform; print(platform.python_version())' 2>/dev/null || echo '?')" >&2
-  echo "pair-mailbox: поставь новее (brew install python) и проверь, какой python3 в PATH: command -v python3" >&2
+  echo "pair-mailbox: need python3 3.8 or newer, found $("$python" -c 'import platform; print(platform.python_version())' 2>/dev/null || echo '?')" >&2
+  echo "pair-mailbox: install newer (brew install python), checking which python3 sits in PATH: command -v python3" >&2
   exit 6
 fi
 

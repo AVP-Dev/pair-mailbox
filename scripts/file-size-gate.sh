@@ -38,8 +38,8 @@
 set -euo pipefail
 
 usage() {
-  printf '%s\n' "Использование: $0 [--baseline PATH]" \
-    "  --baseline PATH  baseline относительно корня проекта (по умолчанию scripts/file-size-baseline.tsv)"
+  printf '%s\n' "Usage: $0 [--baseline PATH]" \
+    "  --baseline PATH  baseline relative to the project root (default scripts/file-size-baseline.tsv)"
 }
 
 fail() {
@@ -54,7 +54,7 @@ BASELINE="scripts/file-size-baseline.tsv"
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --baseline)
-      [ "$#" -ge 2 ] || fail "--baseline требует путь"
+      [ "$#" -ge 2 ] || fail "--baseline needs a path"
       BASELINE="$2"
       shift 2
       ;;
@@ -63,7 +63,7 @@ while [ "$#" -gt 0 ]; do
       exit 0
       ;;
     *)
-      printf 'Неизвестная опция: %s\n' "$1" >&2
+      printf 'Unknown option: %s\n' "$1" >&2
       usage >&2
       exit 2
       ;;
@@ -81,10 +81,10 @@ HARD_MAX=800
 cd "$PROJECT_ROOT"
 
 if [ ! -f "$BASELINE_FILE" ]; then
-  fail "baseline не найден: $BASELINE_FILE"
+  fail "baseline not found: $BASELINE_FILE"
 fi
 if [ ! -r "$BASELINE_FILE" ]; then
-  fail "baseline недоступен для чтения: $BASELINE_FILE"
+  fail "baseline not readable: $BASELINE_FILE"
 fi
 
 # A file counts as source if it has a measured extension, or if it has no
@@ -108,7 +108,7 @@ is_source_file() {
 line_count() {
   local path="$1"
   if [ ! -r "$path" ]; then
-    fail "файл недоступен для чтения: $path"
+    fail "file not readable: $path"
   fi
   wc -l <"$path" | tr -d '[:space:]'
 }
@@ -121,7 +121,7 @@ else
   candidates="$(find . \( -type d \( -name .git -o -name node_modules -o -name vendor -o -name .venv -o -name venv -o -name dist -o -name build -o -name __pycache__ \) -prune \) -o -type f -print | sed 's|^\./||')"
 fi
 
-[ -n "$candidates" ] || fail "не найдено ни одного файла для проверки"
+[ -n "$candidates" ] || fail "no files found to check"
 
 # --- baseline: parse, validate, index ---------------------------------------
 
@@ -141,20 +141,20 @@ while IFS=$'\t' read -r path max_lines reason extra || [ -n "${path:-}${max_line
     ''|'#'*) continue ;;
     \#*) continue ;;
   esac
-  # Незакомментированная строка заголовка принимается как заголовок. Иначе автор,
-  # скопировавший формат из примера и забывший `#`, получает невнятное
-  # «max_lines должен быть целым числом, получено 'max_lines'» вместо того,
-  # чтобы сразу увидеть, что строка не данные.
+  # A bare header line counts as the header. Or an author copying the format from the
+  # example, forgetting `#`, takes a confusing
+  # "max_lines must be an integer, got 'max_lines'" instead of at once seeing the
+  # line is no data.
   if [ "$path" = "path" ] && [ "$max_lines" = "max_lines" ] && [ "$reason" = "reason" ]; then
     continue
   fi
 
-  [ -z "$extra" ] || fail "строка $line_number: лишние поля после reason"
-  [ -n "$reason" ] || fail "строка $line_number: reason обязателен, исключение без причины не считается зафиксированным"
-  [[ "$max_lines" =~ ^[0-9]+$ ]] || fail "строка $line_number: max_lines должен быть целым числом, получено '$max_lines'"
-  [ "$max_lines" -gt 0 ] || fail "строка $line_number: max_lines должен быть положительным"
+  [ -z "$extra" ] || fail "line $line_number: extra fields past reason"
+  [ -n "$reason" ] || fail "line $line_number: reason is mandatory, a reasonless exception never counts as pinned"
+  [[ "$max_lines" =~ ^[0-9]+$ ]] || fail "line $line_number: max_lines must be an integer, got '$max_lines'"
+  [ "$max_lines" -gt 0 ] || fail "line $line_number: max_lines must be positive"
   case ";${allowed_max_keys:-};" in
-    *";$path;"*) fail "строка $line_number: повторяющийся путь '$path'" ;;
+    *";$path;"*) fail "line $line_number: duplicate path '$path'" ;;
   esac
   allowed_max_keys="${allowed_max_keys:-};$path"
   allowed_max["$path"]="$max_lines"
@@ -162,7 +162,7 @@ while IFS=$'\t' read -r path max_lines reason extra || [ -n "${path:-}${max_line
   baseline_entries=$((baseline_entries + 1))
 done <"$BASELINE_FILE"
 
-[ "$baseline_entries" -gt 0 ] || fail "baseline не содержит ни одной записи"
+[ "$baseline_entries" -gt 0 ] || fail "baseline holds no records"
 
 # --- measure every source file ----------------------------------------------
 
@@ -183,7 +183,7 @@ while IFS= read -r file; do
   if [ -n "$cap" ]; then
     if [ "$lines" -gt "$cap" ]; then
       violations=$((violations + 1))
-      report+=("VIOLATION	$file	$lines строк, заморожено на $cap: рост запрещён (${allowed_reason["$file"]})")
+      report+=("VIOLATION	$file	$lines lines, frozen at $cap: growth banned (${allowed_reason["$file"]})")
     else
       frozen=$((frozen + 1))
     fi
@@ -192,10 +192,10 @@ while IFS= read -r file; do
 
   if [ "$lines" -gt "$HARD_MAX" ]; then
     violations=$((violations + 1))
-    report+=("VIOLATION	$file	$lines строк, жёсткий порог $HARD_MAX: нужен зафиксированный exception в $BASELINE")
+    report+=("VIOLATION	$file	$lines lines, hard cap $HARD_MAX: needs a pinned exception in $BASELINE")
   elif [ "$lines" -gt "$TARGET_MAX" ]; then
     reviews=$((reviews + 1))
-    report+=("REVIEW	$file	$lines строк, целевой размер $TARGET_MAX: границы подлежат ревью")
+    report+=("REVIEW	$file	$lines lines, target size $TARGET_MAX: bounds need review")
   else
     clean=$((clean + 1))
   fi
@@ -209,19 +209,19 @@ while IFS= read -r file; do
   [ -n "$cap" ] || continue
   if [ ! -f "$file" ]; then
     violations=$((violations + 1))
-    report+=("VIOLATION	$file	baseline ссылается на отсутствующий файл, запись протухла")
+    report+=("VIOLATION	$file	baseline points at a missing file, the record went stale")
     continue
   fi
   lines="$(line_count "$file")"
-  # Исключение протухает только тогда, когда файл ПЕРЕСТАЛ нуждаться в нём.
-  # Cap — это потолок, а не точное значение, поэтому требовать его опустить при
-  # любом изменении файла нельзя: тогда любая правка server.py требовала бы
-  # правки baseline, и гейт стал бы обязательным препятствием вместо рэтчета.
-  # Протухание — это ровно одно состояние: файл ушёл под жёсткий порог, а запись
-  # по-прежнему его оправдывает.
+  # An exception goes stale only when the file STOPPED needing it.
+  # Cap is a ceiling, not an exact value, so demanding it drop on any file change
+  # is banned: then any server.py edit would demand a baseline edit, turning the gate
+  # into a mandatory obstacle instead of a ratchet.
+  # Staleness is exactly one state: the file dropped under the hard cap while the
+  # record still excuses it.
   if [ "$lines" -le "$HARD_MAX" ] && [ "$cap" -gt "$HARD_MAX" ]; then
     violations=$((violations + 1))
-    report+=("VIOLATION	$file	$lines строк, уже не превышает жёсткий порог $HARD_MAX: запись протухла, опусти cap до $lines или удали строку")
+    report+=("VIOLATION	$file	$lines lines, no longer past the hard cap $HARD_MAX: the record went stale, drop cap to $lines or delete the line")
   fi
 done <<<"$(printf '%s\n' "${!allowed_max[@]}" | sort)"
 
@@ -232,10 +232,10 @@ for entry in "${report[@]+"${report[@]}"}"; do
 done
 
 if [ "$violations" -gt 0 ]; then
-  printf 'file-size-gate: %s violation(s), %s file(s) на ревью, %s заморожено, %s в норме\n' \
+  printf 'file-size-gate: %s violation(s), %s file(s) for review, %s frozen, %s fine\n' \
     "$violations" "$reviews" "$frozen" "$clean" >&2
   exit 1
 fi
 
-printf 'file-size-gate: clean (%s заморожено, %s на ревью, %s в норме, порог %s)\n' \
+printf 'file-size-gate: clean (%s frozen, %s for review, %s fine, cap %s)\n' \
   "$frozen" "$reviews" "$clean" "$HARD_MAX"
