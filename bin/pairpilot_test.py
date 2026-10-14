@@ -756,6 +756,34 @@ class TestOutboxStaleness(PilotCase):
                                       seen={"agy": 1})
         self.assertFalse(p.nudge_still_true(read_state, "agy", produced),
                          "producer text must die with its condition, or the queue never drops it")
+    def test_reminder_producer_text_still_matches_consumer_matcher(self) -> None:
+        """Round-trip on the obligation-reminder producer (critic seq 1219).
+
+        The request-370 test pins a HAND-WRITTEN literal: it proves the matcher
+        takes English, never that the PRODUCER wording is what the matcher takes.
+        If pending_answers rewords again (query/item), the literal stays green while
+        prod stops matching. So this takes the REAL queued text: with the obligation
+        file open the producer wording must hold the condition, with it closed the
+        same text must drop.
+        """
+        p = self.pilot()
+        p.reply_grace = 0
+        root = self.state_dir / "obligations"
+        root.mkdir(parents=True, exist_ok=True)
+        (root / "000370-q.json").write_text(json.dumps({
+            "seq": 370, "from": "omp", "to": "agy",
+            "opened_at": ago(120), "subject": "the linter question",
+        }), encoding="utf-8")
+        state = self.write_state(roles={"agy": {"pane": "%1", "pid": os.getpid()}})
+        p.tick()
+        produced = p.pending("agy")
+        self.assertIn("370", produced,
+                      "the producer must queue a reminder naming the request")
+        self.assertTrue(p.nudge_still_true(state, "agy", produced),
+                        "producer wording must hold while the obligation is open")
+        (root / "000370-q.json").unlink()
+        self.assertFalse(p.nudge_still_true(state, "agy", produced),
+                         "the same producer text must drop past the close")
 
     def test_foreign_pane_blocks_delivery_not_heal(self) -> None:
         """F7 (round 87): delivery checks pane ownership against the project.
