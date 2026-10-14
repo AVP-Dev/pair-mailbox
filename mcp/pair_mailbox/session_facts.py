@@ -1,10 +1,9 @@
-"""Ground-truth facts: детерминированный снимок состояния репозитория.
+"""Ground-truth facts: a deterministic snapshot of the repo state.
 
-Зачем: заявления агента сверяются с физическим состоянием дерева, а не с
-памятью агента. Прецедент — инцидент R81: зелёные unit-тесты засчитали за
-подключённый UI, хотя в браузере осталась статическая коллекция, а кнопки
-слали хардкодные id. Сбор только читает (git status/diff + чтение файлов),
-рантайм — stdlib + git CLI.
+Why: agent claims check against the physical tree state, not agent memory.
+Precedent - the R81 incident: green unit tests counted for a wired UI while the
+browser kept a static collection, with buttons sending hardcoded ids. Collecting
+only reads (git status/diff plus file reads), runtime is stdlib + git CLI.
 """
 from __future__ import annotations
 
@@ -23,7 +22,7 @@ FACTS_FILE = "facts.json"
 
 
 class FactsError(Exception):
-    """Факты собрать нельзя: отказ с причиной, а не пустой отчёт."""
+    "Facts never collect: a refusal with a reason, never a blank report."
 
 
 def _git(repo: Path, *args: str) -> str:
@@ -31,7 +30,7 @@ def _git(repo: Path, *args: str) -> str:
         proc = subprocess.run(
             ["git", *args], cwd=repo, capture_output=True, text=True, timeout=30)
     except (OSError, subprocess.SubprocessError) as exc:
-        raise FactsError(f"git не запустился: {exc}")
+        raise FactsError(f"git never launched: {exc}")
     if proc.returncode != 0:
         detail = proc.stderr.strip().splitlines()
         raise FactsError(
@@ -46,33 +45,33 @@ def _unquote(path: str) -> str:
         return path[1:-1]
     return path
 
-# mock-usage ловит только кодовое использование (вызов/импорт/атрибут), а не
-# упоминание слова в комментарии: иначе детектор флагает собственные исходники
-# и имена сюит вроде anti-mock (живой пруф R81). (?<![-\w]) вместо \b: дефис
-# не граница слова, и без lookbehind anti-mock давал mock ( + совпадение.
+# mock-usage catches only code usage (call/import/attribute), never a word mentioned
+# in a comment: or the detector flags its own sources and suite names like anti-mock
+# (the live R81 proof). (?<![-\w]) instead of \b: a dash is no word edge, and with no
+# lookbehind anti-mock gave mock (+ a match.
 MOCK_PATTERNS: tuple[tuple[str, "re.Pattern[str]", str], ...] = (
     ("mock-usage",
      re.compile(r"(?<![-\w])(mock\s*\.\s*\w+|Mock\s*\(|mock\s*\(|stub\s*\(|"
                 r"Stub\s*\(|fake\s*\(|Fake\s*\(|(from|import)\s+mock\b)"),
-     "использование мок-объекта в боевом пути"),
+     "mock-object usage on the live path"),
     ("initial-static",
      re.compile(r"\bINITIAL_[A-Z0-9_]+\b"),
-     "статическая INITIAL_-коллекция в изменённом пути"),
+     "a static INITIAL_ collection on the changed path"),
     ("mock-id",
      re.compile(r"['\"]mock-[A-Za-z0-9_-]+['\"]"),
-     "захардкоженный mock-id вместо выбранного значения"),
+     "a hardcoded mock-id instead of the chosen value"),
     ("includes-len",
      re.compile(r"includes\(\s*['\"]"),
-     "подстрочная проверка includes('...') вместо реального предиката"),
+     "a substring includes-check instead of a real predicate"),
     ("local-state",
      re.compile(r"\buseState\s*\("),
-     "локальный useState без видимого транспорта — решает критик"),
+     "a local useState with no visible transport - the critic decides"),
 )
 CONFIG_NAME = "anti-mock.json"
 
 
 def _find_config(start: Path | str) -> Path | None:
-    """Искать anti-mock.json вверх от start до корня репозитория."""
+    "Search anti-mock.json up from start to the repo root."
     current = Path(start).resolve()
     for _ in range(32):
         candidate = current / CONFIG_NAME
@@ -85,7 +84,7 @@ def _find_config(start: Path | str) -> Path | None:
 
 
 def load_config(repo_root=None):
-    """Весь anti-mock.json; без/битый — пустой dict (все детекторы вкл)."""
+    "The whole anti-mock.json; missing/broken means an empty dict (all detectors on)."
     found = _find_config(repo_root) if repo_root is not None else None
     if found is None:
         return {}
@@ -97,7 +96,7 @@ def load_config(repo_root=None):
 
 
 def stubs_enabled(repo_root=None, config=None) -> bool:
-    """Детектор заглушек вкл, пока конфиг явно не выключил (detect_stubs)."""
+    "The stub detector is on till the config explicitly switches off (detect_stubs)."
     cfg = config if config is not None else load_config(repo_root)
     return cfg.get("detect_stubs", True) is not False
 
@@ -105,7 +104,7 @@ def stubs_enabled(repo_root=None, config=None) -> bool:
 def load_patterns(
     repo_root: Path | str | None = None,
 ) -> tuple[tuple[str, "re.Pattern[str]", str], ...]:
-    """Паттерны из версионируемого anti-mock.json; без/битый — дефолт."""
+    "Patterns from the versioned anti-mock.json; missing/broken means the default."
     found = _find_config(repo_root) if repo_root is not None else None
     if found is None:
         return MOCK_PATTERNS
@@ -126,8 +125,8 @@ def load_patterns(
 TEST_HINTS = ("test_", "_test", "tests/", "__tests__",
               ".test.", ".spec.", "spec/", "conftest")
 
-# Пути самого сканера и конфиги проверок: они описывают проверку, а не
-# мок-логику приложения (находка agy seq 1065: гейт блокировал сам себя).
+# The scanner own paths and check configs: they describe the check, never the app
+# mock logic (the agy seq-1065 finding: the gate blocked itself).
 GATE_EXEMPT_SUFFIXES = (
     "mcp/pair_mailbox/session_facts.py",
     "mcp/pair_mailbox/anti_mock_gate.py",
@@ -137,19 +136,19 @@ GATE_EXEMPT_EXTENSIONS = (".tsv",)
 
 
 def is_gate_exempt(path: str) -> bool:
-    """Пути самой проверки: exempt из вердикта, не предупреждение."""
+    "Check-own paths: exempt from the verdict, never a warning."
     norm = path.replace("\\", "/")
     return norm.endswith(GATE_EXEMPT_SUFFIXES) or norm.endswith(GATE_EXEMPT_EXTENSIONS)
 
 
 def is_test_path(path: str) -> bool:
-    """Эвристика боевого пути: совпадение с тестовым хинтом — не боевой."""
+    "A live-path heuristic: a test-hint match is no live path."
     low = path.replace("\\", "/").lower()
     return any(hint in low for hint in TEST_HINTS)
 
 
 def parse_status(porcelain: str) -> tuple[list[str], list[str]]:
-    """Разобрать status --porcelain: (изменённые, неотслеживаемые)."""
+    "Parse status --porcelain: (changed, untracked)."
     touched: list[str] = []
     untracked: list[str] = []
     for line in porcelain.splitlines():
@@ -166,7 +165,7 @@ def parse_status(porcelain: str) -> tuple[list[str], list[str]]:
 
 
 def _parse_added(diff_text: str) -> list[tuple[str, int, str]]:
-    """Добавленные строки diff -U0 с номерами строк нового файла."""
+    "Added diff -U0 lines with new-file line numbers."
     found: list[tuple[str, int, str]] = []
     current: str | None = None
     new_line = 0
@@ -195,7 +194,7 @@ ABSTRACT_DECORATORS = ("abstractmethod",)
 
 
 def _is_stub_body(node) -> bool:
-    """Тело-заглушка: только pass / ... / raise NotImplementedError."""
+    "A stub body: only pass / ... / raise NotImplementedError."
     body = [st for st in node.body
             if not (isinstance(st, ast.Expr)
                     and isinstance(st.value, ast.Constant)
@@ -222,7 +221,7 @@ def _is_stub_body(node) -> bool:
 
 
 def _is_abstract(node) -> bool:
-    """Абстрактный метод — контракт, а не заглушка."""
+    "An abstract method is a contract, not a stub."
     for dec in node.decorator_list:
         name = dec.id if isinstance(dec, ast.Name) else (
             dec.attr if isinstance(dec, ast.Attribute) else "")
@@ -232,7 +231,7 @@ def _is_abstract(node) -> bool:
 
 
 def scan_stubs(path, source) -> list:
-    """AST-поиск функций-заглушек; не-Python и битый синтаксис — пусто."""
+    "AST-searching stub functions; non-Python and broken syntax mean empty."
     if is_gate_exempt(path) or not path.endswith(".py"):
         return []
     try:
@@ -250,7 +249,7 @@ def scan_stubs(path, source) -> list:
             "line": node.lineno,
             "pattern": "stub-body",
             "match": "def %s(...): ..." % node.name,
-            "reason": "пустое тело функции — заглушка вместо реализации",
+            "reason": "an empty function body is a stub, not an implementation",
             "test_path": is_test_path(path),
         })
     return flags
@@ -283,8 +282,8 @@ def collect_facts(repo_root, test_runs=None, patterns=None):
     repo = Path(repo_root)
     active = patterns if patterns is not None else load_patterns(repo)
     head = _git(repo, "rev-parse", "HEAD").strip()
-    # -uall: неотслеживаемые каталоги раскрывать пофайлово, иначе untracked
-    # "tests/" читается как директория и молча пропускается (урок R81).
+    # -uall: expand untracked dirs per file, or untracked "tests/" reads as a dir and
+    # silently skips (the R81 lesson).
     porcelain = _git(repo, "status", "--porcelain", "-uall")
     touched, untracked = parse_status(porcelain)
     dirty_hash = hashlib.sha256(porcelain.encode()).hexdigest()[:16]
@@ -326,7 +325,7 @@ def collect_facts(repo_root, test_runs=None, patterns=None):
 
 
 def save_facts(state_dir: Path | str, facts: dict[str, Any]) -> Path:
-    """Записать facts.json в каталог состояния, вернуть путь."""
+    "Write facts.json into the state dir, returning the path."
     target = Path(state_dir) / FACTS_FILE
     target.write_text(json.dumps(facts, indent=2, ensure_ascii=False)
                       + "\n", encoding="utf-8")
@@ -334,19 +333,19 @@ def save_facts(state_dir: Path | str, facts: dict[str, Any]) -> Path:
 
 
 def load_facts(path: Path | str) -> dict[str, Any]:
-    """Прочитать facts.json; битый файл — FactsError, а не пустота."""
+    "Read facts.json; a broken file means FactsError, never blank."
     try:
         data = json.loads(Path(path).read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
-        raise FactsError(f"facts.json не читается: {exc}")
+        raise FactsError(f"facts.json never reads: {exc}")
     if not isinstance(data, dict) or data.get("version") != FACTS_VERSION:
-        raise FactsError("facts.json чужой версии или не словарь")
+        raise FactsError("a foreign-version facts.json, or not a dict")
     return data
 
 
 def record_test_run(facts_path: Path | str, command: str,
                     exit_code: int, output: str = "") -> dict[str, Any]:
-    """Добавить прогон в facts.json: команда, exit, хвост вывода."""
+    "Append a run into facts.json: command, exit, output tail."
     facts = load_facts(facts_path)
     facts.setdefault("test_runs", []).append({
         "command": command,
@@ -360,11 +359,11 @@ def record_test_run(facts_path: Path | str, command: str,
 
 
 def main(argv: list[str] | None = None) -> int:
-    """CLI: собрать факты дерева и записать facts.json."""
-    parser = argparse.ArgumentParser(description="Собрать facts.json дерева")
-    parser.add_argument("--root", default=".", help="корень репозитория")
+    "CLI: collect the tree facts writing facts.json."
+    parser = argparse.ArgumentParser(description="Collect the tree facts.json")
+    parser.add_argument("--root", default=".", help="the repo root")
     parser.add_argument("--out", default=".pair/facts.json",
-                        help="куда записать facts.json")
+                        help="where to write facts.json")
     args = parser.parse_args(argv)
     try:
         facts = collect_facts(args.root)
