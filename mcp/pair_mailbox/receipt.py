@@ -62,11 +62,15 @@ def generate_receipt(state_dir: Path, state: dict[str, Any], head_commit: str = 
     ground_lines = _ground_truth_lines(state_dir, round_number)
     now_iso = datetime.now(timezone.utc).isoformat()
 
+    # Round subject from the round's own closed tasks, never the legacy
+    # single-string state['task'] (round 94 D1: it named round 88's task).
+    done_here = [x for x in round_tasks if x.get("status") == "done"]
+    subject = done_here[0].get("text", "—") if done_here else "(no tasks closed — see Tasks Closed)"
     lines = [
         f"# Task Receipt — Round {round_number}",
         "",
         f"- **Closed at**: {now_iso}",
-        f"- **Task**: {state.get('task', '—')}",
+        f"- **Task**: {subject}",
         f"- **Writer**: {writer}",
         f"- **Peers**: {', '.join(peers) or '—'}",
         f"- **Mode**: {state.get('mode', 'fix')}",
