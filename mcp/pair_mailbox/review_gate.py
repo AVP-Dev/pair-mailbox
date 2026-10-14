@@ -65,9 +65,14 @@ def check_pr_merge(store: Any, repo_dir: Path) -> tuple[bool, str]:
     if writer and author == writer:
         return False, f"self-approval forbidden: verdict author {author!r} is current writer"
 
+    # The house style pins every verdict-* slug with the slug as the kind
+    # (server.py:3423: kind == "verdict" or kind.startswith("verdict-")),
+    # so the gate accepts the family, not one literal — or fifteen merges
+    # bypass it with nobody noticing (round 91: 0 pr_merge events, and the
+    # only verdicts the project produces are verdict-roundNN-critic).
     v_rev = last_verdict.get("rev") or {}
     v_kind = last_verdict.get("kind")
-    if v_kind != "verdict":
+    if v_kind != "verdict" and not str(v_kind or "").startswith("verdict-"):
         return False, f"last review note is not a verdict (kind={v_kind!r})"
 
     # The verdict must bind to a revision (head)
@@ -75,28 +80,42 @@ def check_pr_merge(store: Any, repo_dir: Path) -> tuple[bool, str]:
     if not v_head:
         return False, "verdict has no revision binding (rev.head is empty)"
 
-    # Check the last verdict text from notes/verdict.md (fail-closed: the file must exist)
+    # Check the last verdict text from its own note file (fail-closed: the
+    # file must exist). The verdict record carries its kind as the filename:
+    # notes/verdict-<slug>.md, falling back to notes/verdict.md for the old
+    # single-file style. Reading only verdict.md would judge every verdict-*
+    # note against round 86's text (round 91: the live refusal quoted
+    # verdict.md's tail while the verdict was verdict-round91-refresh).
     notes_dir = store.notes_root
-    verdict_file = notes_dir / "verdict.md"
+    verdict_file = notes_dir / f"{v_kind}.md" if v_kind != "verdict" else notes_dir / "verdict.md"
     if not verdict_file.is_file():
-        return False, "notes/verdict.md does not exist: approval text cannot be verified"
+        verdict_file = notes_dir / "verdict.md"
+    if not verdict_file.is_file():
+        return False, f"notes/{verdict_file.name} does not exist: approval text cannot be verified"
 
     import re
     try:
         content = verdict_file.read_text(encoding="utf-8")
         blocks = [b for b in content.split("\n## ") if b.strip()]
         if not blocks:
-            return False, "notes/verdict.md is empty: no verdict text found"
+            return False, f"notes/{verdict_file.name} is empty: no verdict text found"
         last_block = blocks[-1]
-        # D1: Machine approve channel — strictly the verdict-approve <head|round> marker, no prose false fires
+        # D1: Machine approve channel — the structured 'verdict-approve
+        # <head|round>' marker, or the house verdict heading (**APPROVED** /
+        # **NEEDS WORK** — round 91 proved the gate must read what the project
+        # actually writes, not one fixture's marker). The heading decides:
+        # APPROVED passes here, NEEDS WORK refuses via the reject branch
+        # below. No prose false fires: bare "approved"/"looks good" never
+        # counts — only the bold verdict heading or the structured line.
         VERDICT_APPROVE_RE = re.compile(
-            r"^\s*verdict-approve\s+(?:round\s+(\d+)|([0-9a-f]{7,40}))\b",
+            r"^\s*verdict-approve\s+(?:round\s+(\d+)|([0-9a-f]{7,40}))\b"
+            r"|^\*\*(APPROVED)(\*\*)?",
             re.IGNORECASE | re.MULTILINE,
         )
         # The refuse branch tolerates prose (a false refusal is safe)
         VERDICT_REJECT_RE = re.compile(
-            r"(?:\bverdict-reject\b|ВЕРДИКТ\b[^\n]*\b(?:ОТКАЗ|REJECT|CHANGES REQUESTED)\b|\bне\s+одобрен[оаы]?\b)",
-            re.IGNORECASE,
+            r"(?:\bverdict-reject\b|^\*\*(NEEDS WORK)(\*\*)?|ВЕРДИКТ\b[^\n]*\b(?:ОТКАЗ|REJECT|CHANGES REQUESTED)\b|\bне\s+одобрен[оаы]?\b)",
+            re.IGNORECASE | re.MULTILINE,
         )
         if VERDICT_REJECT_RE.search(last_block):
             return False, "last verdict rejected the changes (REFUSE / REJECT / NOT APPROVED)"
@@ -105,8 +124,12 @@ def check_pr_merge(store: Any, repo_dir: Path) -> tuple[bool, str]:
         if not approve_match:
             return False, "last verdict is not approved (no structured 'verdict-approve <head|round>' marker)"
 
-        # D2: Reconcile the marker value with the verdict (v_head) or the current HEAD / current round
-        m_round, m_head = approve_match.groups()
+        # D2: Reconcile the marker value with the verdict (v_head) or the current HEAD / current round.
+        # A bare **APPROVED** carries no head/round: then the pin is the
+        # verdict record itself — rev.head must equal HEAD and be fresh
+        # (is_stale below), or the marker means nothing.
+        groups = approve_match.groups()
+        m_round, m_head = (groups[0], groups[1]) if len(groups) >= 2 else (None, None)
         if m_round:
             cur_round = str(state.get("round", ""))
             if str(m_round) != cur_round:
@@ -119,6 +142,10 @@ def check_pr_merge(store: Any, repo_dir: Path) -> tuple[bool, str]:
             matches_v_head = v_head_lower.startswith(m_head_lower) or m_head_lower.startswith(v_head_lower)
             if not (matches_head or matches_v_head):
                 return False, f"marker head '{m_head}' does not match current HEAD '{head}'"
+        else:
+            # Bare **APPROVED**: the verdict pin must be HEAD itself.
+            if v_head.lower() != head.lower():
+                return False, f"verdict pins {v_head[:12]} but HEAD is {head[:12]}: re-review before merge"
     except OSError as err:
         return False, f"failed to read notes/verdict.md: {err}"
 

@@ -680,18 +680,34 @@ When a background check, monitor, or peer reports negative evidence (`ok=false`)
 PR merging is gated by machine rules rather than prompt agreements:
 
 1. **Sanctioned path: `bin/pairctl pr merge [pr_id] [--force] [--reason REASON]`**:
-   Direct `gh pr merge` from a shell is outside the server process; GitHub Branch Protection provides the physical enforcement on GitHub, while `pairctl pr merge` is the only protocol-compliant merging path.
-2. **Preconditions for merging (`check_pr_merge`)**:
+   This is the only protocol-compliant merge path. Direct `gh pr merge` from a shell
+   is a protocol violation: it runs outside the server process, so no machine rule
+   can refuse it from inside this repo — fifteen merges shipped that way with zero
+   `pr_merge` transcript events before anyone noticed (round 91). GitHub Branch
+   Protection (required CI + approving review on `master`, a repo setting the human
+   owns) is the only layer that physically stops it; this rule is the contract
+   layer, and the transcript (`pr_merged` / `pr_merge_forced`) is the audit trail.
+2. **Merge requires a fresh critic APPROVED; NEEDS WORK refuses.**
+   The gate reads the last verdict note (`verdict` or `verdict-*` slug, text from
+   its own `notes/<slug>.md`): `**APPROVED**` passes, `**NEEDS WORK**` refuses, bare
+   prose never counts either way. A bare `**APPROVED**` pins HEAD through the verdict
+   record (`rev.head` must equal HEAD and be fresh). Round 91 is the case: code
+   reached `master` five minutes after a refusal.
+3. **Preconditions for merging (`check_pr_merge`)**:
    - **Phase constraint**: Phase must be strictly `verify` (merging during `implement`, `plan`, or `scoping` is refused).
    - **Environment**: Must be a valid git repository (fail-closed on merge path: "cannot verify: not a git repo").
    - **Test evidence**: Current round must have passing test evidence (`kind="test"`, `ok=True`).
-   - **Peer review approval**: A non-stale `approve` verdict must exist (`kind == "verdict"`).
+   - **Peer review approval**: A non-stale `approve` verdict must exist (`verdict` or `verdict-*` slug).
    - **No self-approval**: The verdict author must NOT be the current writer (`verdict.role != store.writer`).
    - **Staleness check**: Reuses canonical `review.is_stale(...)`. Any code modifications or commits touching reviewed files invalidate the verdict.
-3. **Feature Freeze**:
+4. **Feature Freeze**:
    Enforced naturally by the staleness rule: once an approval verdict is issued, any subsequent commits or file modifications change HEAD or dirty status, causing `is_stale` to return True. This blocks both `pairctl pr merge` and `pair_advance("done")`.
-4. **Bypass audit (`--force`)**:
-   Bypassing the gate via `--force` requires a non-empty `--reason` and is recorded in `transcript.jsonl` as `pr_merge_forced`.
+5. **Bypass audit (`--force`) — the sanctioned escape.**
+   A dead or absent critic blocks every merge, and critics die. When the merge cannot
+   wait for a verdict, `--force` requires a non-empty `--reason` AND the human's
+   `pairctl ok` for the round, and is recorded in `transcript.jsonl` as
+   `pr_merge_forced`. Loud instead of convenient: a forced merge is visible in the
+   audit trail by construction, never a flag somebody discovers quietly.
 
 ### 10h. Server Runtime Freshness & Supervisor Parking
 

@@ -395,14 +395,40 @@ class TestDeliveryGaps(PairTestCase):
         self.assertIn("merge first", detail)
 
     def test_audit_exempt_from_ceiling_b6(self) -> None:
-        """B6: mode=audit never reaches the ceiling — findings, not a diff."""
-        self.store.mutate(lambda s: s.__setitem__("mode", "audit"))
-        self.writer.tool_pair_claim(reason="writer")
-        self.advance_phases()
-        self.peer.tool_pair_evidence(kind="manual", value="28 findings", ok=True)
-        blockers = [b for b in self.writer._done_blockers(self.store.read())
-                    if "shipped" in b or "delivered" in b]
-        self.assertEqual(blockers, [])
+        """B6: mode=audit never reaches the ceiling — findings, not a diff.
+
+        Both directions, or Mutation 2 (floor append removed) passes it
+        vacuously: audit shows no delivery/ship blocker AND fix on the same
+        undelivered tree does. One direction alone distinguishes nothing.
+        """
+        import server as _server
+        git(Path(self._tmp.name), "init", "-q", "--bare", "b6-origin.git")
+        git(Path(self._tmp.name), "clone", "-q",
+            str(Path(self._tmp.name) / "b6-origin.git"), "b6")
+        work = Path(self._tmp.name) / "b6"
+        git(work, "config", "user.email", "t@t.t")
+        git(work, "config", "user.name", "t")
+        (work / "f.txt").write_text("x\n", encoding="utf-8")
+        git(work, "add", "f.txt")
+        git(work, "commit", "-qm", "init")
+        git(work, "push", "-q", "origin", "master")
+        (work / "f.txt").write_text("y\n", encoding="utf-8")
+        git(work, "add", "f.txt")
+        git(work, "commit", "-qm", "advance")
+        for mode, wants_blocker in (("audit", False), ("fix", True)):
+            store = _server.Store(work / f".pair-{mode}")
+            writer = _server.PairSession("writer-agent", store)
+            store.mutate(lambda s, m=mode: (
+                s.__setitem__("writer", "writer-agent"),
+                s.__setitem__("mode", m)))
+            blockers = [b for b in writer._done_blockers(store.read())
+                        if "shipped" in b or "not delivered" in b]
+            if wants_blocker:
+                self.assertTrue(any("not delivered" in b for b in blockers),
+                                f"fix must carry the floor blocker: {blockers}")
+            else:
+                self.assertEqual(blockers, [],
+                                 f"audit must carry no delivery blocker: {blockers}")
 
     def test_state_carries_advisory_not_ceiling_b7(self) -> None:
         """B7: pair_state carries the advisory line, never the ceiling verdict."""
@@ -412,36 +438,101 @@ class TestDeliveryGaps(PairTestCase):
         self.assertIn("ceiling", state["delivery"])
 
     def test_push_then_state_never_stale_a7(self) -> None:
-        """A7 sequence: push between two pair_state calls must not answer
-        unchanged:true over a stale blocker — the fingerprint sees delivery."""
+        """A7 sequence: a real push between two pair_state calls moves the
+        answer — the stale \"not delivered\" blocker must not survive behind
+        unchanged:true.
+
+        Full sequence, not a mechanism probe: the session is re-homed into a
+        real repo with a bare local origin (no daemon; push updates
+        refs/remotes/* as part of itself, which is what the floor reads).
+        Pre-push the floor blocks; post-push the same pair_state must answer
+        full, never the stub. Mutation-proof: with needs_delivery removed
+        from statecache's gate both calls fingerprint identically and the
+        second answers unchanged:true — failing here, not green. (The
+        mechanism half — snapshot fires in fix without verdicts — is pinned
+        separately by test_snapshot_runs_without_verdicts_in_fix.)
+        """
         import os
         import statecache
+        import server as _server
+        git(Path(self._tmp.name), "init", "-q", "--bare", "origin.git")
+        git(Path(self._tmp.name), "clone", "-q",
+            str(Path(self._tmp.name) / "origin.git"), "work")
+        work = Path(self._tmp.name) / "work"
+        git(work, "config", "user.email", "t@t.t")
+        git(work, "config", "user.name", "t")
+        (work / "f.txt").write_text("x\n", encoding="utf-8")
+        git(work, "add", "f.txt")
+        git(work, "commit", "-qm", "init")
+        git(work, "push", "-q", "origin", "master")
+        (work / "f.txt").write_text("y\n", encoding="utf-8")
+        git(work, "add", "f.txt")
+        git(work, "commit", "-qm", "advance")
+        # Re-home: Store(root) treats root as the project and root/.pair as
+        # state (project_root property) — so the floor reads this repo.
+        store = _server.Store(work / ".pair")
+        writer = _server.PairSession("writer-agent", store)
+        store.mutate(lambda s: s.__setitem__("writer", "writer-agent"))
         os.environ.pop(statecache.CACHE_DISABLED_ENV, None)
         try:
-            self.writer.tool_pair_claim(reason="writer")
-            self.advance_phases()
-            first = self.writer.tool_pair_state()
+            first = writer.tool_pair_state()
             self.assertNotIn("unchanged", first)
-            second = self.writer.tool_pair_state()
-            # Same tree, no push: stub allowed — but it must carry no stale
-            # delivery blocker beyond what the first answer already showed.
-            if second.get("unchanged"):
-                self.assertEqual(
-                    sorted(first["closing_blocked_by"]),
-                    sorted(self.writer.tool_pair_state.__self__.store.read()
-                           and first["closing_blocked_by"]),
-                )
+            self.assertTrue(
+                any("not delivered" in b for b in first["closing_blocked_by"]),
+                f"pre-push the floor must block: {first['closing_blocked_by']}")
+            git(work, "push", "-q", "origin", "master")
+            second = writer.tool_pair_state()
+            # Full answer required twice: the verdict's Mutation 1 (snapshot
+            # gate back to verdicts-only) makes the second call answer the
+            # stub, because nothing else in state moved across the push.
+            self.assertNotIn(
+                "unchanged", second,
+                "post-push pair_state answered the stub over a moved floor: "
+                "the fingerprint never saw the push (Trap 2)")
+            self.assertFalse(
+                any("not delivered" in b for b in second["closing_blocked_by"]),
+                f"post-push the floor blocker must be gone: "
+                f"{second['closing_blocked_by']}")
+            # The two full answers must differ in the floor blocker itself:
+            # guards against a future cache that returns full-but-stale.
+            self.assertNotEqual(
+                sorted(first["closing_blocked_by"]),
+                sorted(second["closing_blocked_by"]))
         finally:
             os.environ[statecache.CACHE_DISABLED_ENV] = "1"
 
     def test_observe_floor_blocks(self) -> None:
-        """Observe counts, not commands (PROTOCOL §10b): unpushed HEAD blocks."""
-        self.set_autonomy("observe")
-        blockers = self.writer._done_blockers(self.store.read())
-        self.assertTrue(any("delivered" in b or "delivery" in b.lower()
-                            or "cannot be checked" in b.lower()
-                            for b in blockers) or True,
-                        f"observe floor posture visible: {blockers}")
+        """Observe counts, not commands (PROTOCOL §10b): an undelivered HEAD
+        blocks at observe with the same push message as A3.
+
+        No `or True` — that literal made Mutation 2 pass green. Real repo
+        with a bare local origin, one commit, no push: the floor answers
+        undelivered and _done_blockers carries it at observe exactly as at
+        auto. Fails if the floor is ever level-gated or the message rots.
+        """
+        import server as _server
+        git(Path(self._tmp.name), "init", "-q", "--bare", "obs-origin.git")
+        git(Path(self._tmp.name), "clone", "-q",
+            str(Path(self._tmp.name) / "obs-origin.git"), "obs")
+        work = Path(self._tmp.name) / "obs"
+        git(work, "config", "user.email", "t@t.t")
+        git(work, "config", "user.name", "t")
+        (work / "f.txt").write_text("x\n", encoding="utf-8")
+        git(work, "add", "f.txt")
+        git(work, "commit", "-qm", "init")
+        git(work, "push", "-q", "origin", "master")
+        (work / "f.txt").write_text("y\n", encoding="utf-8")
+        git(work, "add", "f.txt")
+        git(work, "commit", "-qm", "advance")
+        store = _server.Store(work / ".pair")
+        writer = _server.PairSession("writer-agent", store)
+        store.mutate(lambda s: (s.__setitem__("writer", "writer-agent"),
+                                s.__setitem__("autonomy", "observe")))
+        blockers = writer._done_blockers(store.read())
+        hits = [b for b in blockers if "not delivered" in b]
+        self.assertEqual(len(hits), 1,
+                         f"observe must carry the undelivered blocker: {blockers}")
+        self.assertIn("git push", hits[0])
 
 class TestReviewServer(PairTestCase):
     def fixed_snapshot(self, head: str = "h" * 40, files: list | None = None):
