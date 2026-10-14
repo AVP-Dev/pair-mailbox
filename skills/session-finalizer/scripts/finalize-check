@@ -212,9 +212,9 @@ for name in slots if isinstance(slots, list) and slots else ("test", "lint", "bu
 def fnprotected(br):
     pats = cfg.get("protected_patterns", []) + cfg.get("protected_branches", [])
     return any(fnmatch.fnmatch(br, p) for p in pats)
-# [R82] Ground Truth: факты живьём + вердикт anti-mock. Путь к модулям —
-# от каталога скилла к корню umputum (SKILL/../..). Нет модулей или не git —
-# UNKNOWN (PRESERVE), боевые моки — блок. Read-only: только status/diff.
+# [R82] Ground Truth: live facts + the anti-mock verdict. The module path runs
+# from the skill dir to the umputum root (SKILL/../..). No modules or no git means
+# UNKNOWN (PRESERVE), live mocks block. Read-only: status/diff only.
 ground_truth = {"status": "UNKNOWN", "blockers": [], "warnings": 0,
                  "dirty_hash": "", "reason": "not evaluated"}
 try:
@@ -235,7 +235,7 @@ try:
         "warnings": len(_verdict["warnings"]),
         "dirty_hash": _facts.get("dirty_hash", ""),
         "reason": ("ok" if _verdict["ok"] else
-                   "%d боев. мок-флаг(ов)" % len(_verdict["blockers"])),
+                   "%d live mock flag(s)" % len(_verdict["blockers"])),
     }
 except Exception as e:
     ground_truth = {"status": "UNKNOWN", "blockers": [], "warnings": 0,

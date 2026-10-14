@@ -1,23 +1,23 @@
 #!/usr/bin/env python3
-"""Одна команда: поставить, проверить, поднять пару и сверхвизора.
+"""One command: install, verify, raise the pair and the supervisor.
 
-Порядок здесь не произвольный. Каждый шаг зависит от предыдущего, и пропуск
-любого даёт ровно ту поломку, которую эта система чинит:
+The order here is no accident. Every step follows the prior one, and skipping any
+gives exactly the breakage this system fixes:
 
-  1. тесты до установки. Установщик трогает ваши конфиги; если в репозитории
-     красный тест, сначала чиним код, потом трогаем машину.
-  2. установка. Кладёт mcp.pair в конфиги, навыки и блок парной работы.
-  3. сверхвизор сначала, агенты потом. Иначе первые минуты пары он не видит.
-  4. агенты в свежих окнах tmux. Старый процесс держит в памяти прежний код:
-     правка файла на диске не действует, пока процесс жив.
-  5. сверхвизор перечитывает состояние и проверяет, что у каждой роли есть
-     живая панель. Нет панели — доставка невозможна, и это надо сказать сразу.
+  1. tests before install. The installer touches your configs; with a red test in
+     the repo, fix code first, then touch the machine.
+  2. install. Lays mcp.pair into configs, skills and the pair-work block.
+  3. supervisor first, agents after. Or it never sees the pair first minutes.
+  4. agents in fresh tmux windows. An old process holds the prior code in memory:
+     a file edit on disk never acts while the process lives.
+  5. the supervisor rereads state checking every role owns a live pane. No pane
+     means no delivery, and that must say at once.
 
-Запуск:
+Run:
 
-    ./finish.sh                 # всё
-    ./finish.sh --no-pair       # поставить и проверить, агентов не поднимать
-    ./finish.sh --task "текст"  # поднять сразу с задачей
+    ./finish.sh                 # all
+    ./finish.sh --no-pair       # install and verify, raising no agents
+    ./finish.sh --task "text"   # raise at once with a task
 """
 import argparse
 import os
@@ -49,11 +49,11 @@ def python_ok(argv: list[str]) -> bool:
 
 
 def launch_command_for(role: str) -> str | None:
-    """Команда запуска роли из cli-profiles.json.
+    """A role launch command from cli-profiles.json.
 
-    Роль и имя CLI совпадают (opencode, agy, claude, codex), поэтому профиль
-    ищем по имени роли. Неизвестная роль — это не повод падать: показываем, что
-    не нашли, и оставляем человека разбираться.
+    The role and the CLI name match (opencode, agy, claude, codex), so the profile
+    looks up by role name. An unknown role is no cause to fall: show what missed,
+    leaving the human to sort it.
     """
     try:
         import json as _json
@@ -69,11 +69,11 @@ def launch_command_for(role: str) -> str | None:
 
 
 def launch_standing_pair(args) -> None:
-    """Постоянная расстановка: писатель и критик из policy, каждый своим CLI.
+    """The standing assignment: writer and critic from policy, each on its CLI.
 
-    Право записи здесь не трогаем. Оно уже у того, кого назначил человек, и
-    скрипт, который его двигает, нарушает PROTOCOL.md §2 — раньше именно это и
-    происходило, молча, при каждом запуске.
+    Write authority stays untouched here. It already belongs to whom the human
+    named, and a script moving it breaks PROTOCOL.md section 2 — exactly what used
+    to happen, silent, on every launch.
     """
     import json as _json
 
@@ -164,8 +164,8 @@ def main() -> int:
 
     step("3. standing roles")
     if args.roles and "," in args.roles:
-        # Старая форма writer,critic: критик проигнорирован (writer-pin),
-        # пишется только писатель — старые вызовы не падают.
+        # The old writer,critic form: the critic ignored (writer-pin), only the writer
+        # writes — old calls never fall.
         writer = args.roles.split(",", 1)[0].strip()
         run([sys.executable, ROOT / "mcp/pair_mailbox/server.py",
              "--state", args.state, "roles", "--writer", writer])
@@ -197,21 +197,21 @@ def main() -> int:
     step("6. agents in fresh windows")
     if args.task:
         run([ROOT / "bin" / "pairctl", "--state", args.state, "task", args.task])
-    # Ростер чистим до запуска, иначе свежие агенты Registerятся поверх записей
-    # прошлых сессий и получают чужие панели.
+    # The roster clears before launch, or fresh agents register over past-session
+    # records taking foreign panes.
     if not args.no_prune:
         run([ROOT / "bin" / "pairctl", "--state", args.state, "roster", "--prune"])
     if args.duo:
-        # Явный выбор человека. bin/pair-duo назначает писателем <cli>-writer, и
-        # раньше это происходило молча при любом запуске — то есть скрипт двигал
-        # право записи без спроса, а это запрещено PROTOCOL.md §2.
+        # An explicit human choice. bin/pair-duo names <cli>-writer the writer, while
+        # before it happened silent on every launch — the script moving write authority
+        # with no asking, banned by PROTOCOL.md section 2.
         print(f"duo-mode: two copies of {args.cli}, writer will be {args.cli}-writer")
         run([ROOT / "bin" / "pair-duo", args.cli] + ([args.task] if args.task else []))
     else:
         launch_standing_pair(args)
 
     step("7. result")
-    time.sleep(8)  # агентам нужно время на регистрацию в MCP
+    time.sleep(8)  # agents need time to register in MCP
     from server import Store, is_pid_alive, pane_exists  # noqa: E402
 
     state = Store(ROOT / args.state).read()
