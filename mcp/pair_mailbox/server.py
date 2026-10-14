@@ -4170,7 +4170,11 @@ def main(argv: list[str] | None = None) -> int:
         print("error: --role is required when running as an MCP server", file=sys.stderr)
         return 2
     store = Store(state_dir)
-    _role_handle = store.acquire_role_lock(args.role)
+    try:
+        _role_handle = store.acquire_role_lock(args.role)
+    except ProtocolError as exc:  # remedy in hint, else an actionless traceback
+        print(exc.message + (f"\n{exc.hint}" if exc.hint else ""), file=sys.stderr)
+        return 1
     MCPServer(PairSession(args.role, store, pane=explicit_pane)).run()
     return 0
 

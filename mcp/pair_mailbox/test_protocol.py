@@ -2640,6 +2640,19 @@ class TestSingleLiveProcessPerRole(PairTestCase):
         omp.close() if hasattr(omp, "close") else None
         agy.close() if hasattr(agy, "close") else None
 
+    def test_startup_refusal_prints_the_remedy(self) -> None:
+        """The lock refusal on startup prints its own remedy (round 92 C4).
+        The hint ('kill the double and restart') lived in args[1] while the
+        human saw only an actionless traceback. main() must print both."""
+        first = self.store.acquire_role_lock("agy")
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            code = main(["--role", "agy", "--state", str(self.root)])
+        self.assertEqual(code, 1)
+        self.assertIn("already held", err.getvalue())
+        self.assertIn("kill the double", err.getvalue())
+        first.close() if hasattr(first, "close") else None
+
     def test_second_live_process_on_another_pane_is_refused(self) -> None:
         """A double: a live pid, a live held pane, another comer — refusal."""
         self.register("agy", "%20", 999999)
