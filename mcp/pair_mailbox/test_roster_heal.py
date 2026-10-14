@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Самозалечивание ростера: перепроверка панелей и TTL мёртвых записей (#19.1, #19.3).
+"""Roster self-healing: pane rechecks plus dead-record TTL (#19.1, #19.3).
 
-19.1: записанная панель соседа перепроверяется при каждом вызове, а не только
-при регистрации и не только когда своей панели нет. Протухшая/чужая/занятая
-панель при мёртвом pid снимается сама, с записью в транскрипт.
-19.3: запись без панели и с мёртвым pid удаляется после TTL молчания
-(last_seen старше ROLE_TTL_SECONDS). Держатель права и записи без last_seen
-не трогаются никогда (fail-closed).
+19.1: the recorded neighbour pane rechecks on every call, not only at registering
+and not only when our own pane misses. A rotten/foreign/busy pane at a dead pid
+drops alone, with a transcript record.
+19.3: a paneless record with a dead pid expires past the silence TTL (last_seen
+older than ROLE_TTL_SECONDS). The authority holder and records with no last_seen
+never drop by timer.
 """
 from __future__ import annotations
 
@@ -32,7 +32,7 @@ def fresh_seen() -> str:
 
 
 class RecheckPeersCase(unittest.TestCase):
-    """Чистые решения recheck_peers: без сервера, на подставных проверках."""
+    "Clean recheck_peers decisions: with no server, on stubbed checks."
 
     def heal(self, roles, self_role="me", **kw):
         import roster_heal
@@ -51,7 +51,7 @@ class RecheckPeersCase(unittest.TestCase):
         self.assertEqual([e["kind"] for e in events], ["pane_stale_dropped"])
 
     def test_live_pane_of_dead_peer_is_kept(self) -> None:
-        """Панель жива и своя — запись ждёт возвращения процесса, не снимаем."""
+        "A pane alive and ours means the record awaits the process return, never dropping."
         roles = {"me": {"pane": "%1", "pid": 111},
                  "away": {"pane": "%2", "pid": 999999}}
         events = self.heal(roles)
@@ -69,12 +69,12 @@ class RecheckPeersCase(unittest.TestCase):
         roles = {"me": {"pane": "%1", "pid": 111},
                  "alien": {"pane": "%7", "pid": 999999}}
         events = self.heal(
-            roles, belongs_to_project=lambda pane, root: (False, "чужой"))
+            roles, belongs_to_project=lambda pane, root: (False, "foreign"))
         self.assertNotIn("pane", roles["alien"])
         self.assertEqual([e["kind"] for e in events], ["pane_foreign_dropped"])
 
     def test_pinned_pane_is_never_touched(self) -> None:
-        """Закрепление человека выигрывает у любой автоматики."""
+        "A human pin beats any automation."
         roles = {"me": {"pane": "%1", "pid": 111},
                  "held": {"pane": "%9", "pid": 999999, "pane_pin": "%9"}}
         events = self.heal(roles, pane_exists=lambda pane: False)
@@ -91,9 +91,9 @@ class RecheckPeersCase(unittest.TestCase):
         self.assertEqual([e["kind"] for e in events], ["pane_stale_dropped"])
 
     def test_uncheckable_pane_survives(self) -> None:
-        """Проверка бросила — fail-closed, запись остаётся (урок #10)."""
+        "A thrown check means fail-closed, the record stays (lesson #10)."
         def boom(pane):
-            raise OSError("tmux пропал")
+            raise OSError("tmux went missing")
         roles = {"me": {"pane": "%1", "pid": 111},
                  "ghost": {"pane": "%9", "pid": 999999}}
         events = self.heal(roles, pane_exists=boom,
@@ -129,14 +129,14 @@ class ExpireDeadRolesCase(unittest.TestCase):
         self.assertEqual(events, [])
 
     def test_writer_never_expires(self) -> None:
-        """Право записи не испаряется по таймеру (как в prune)."""
+        "Write authority never evaporates by timer (as in prune)."
         roles = {"boss": {"pid": 999999, "last_seen": old_seen(days=30)}}
         events = self.expire(roles, writer="boss")
         self.assertIn("boss", roles)
         self.assertEqual(events, [])
 
     def test_role_without_last_seen_survives(self) -> None:
-        """Возраст неизмерим — fail-closed, не удаляем."""
+        "Age unmeasurable means fail-closed, never deleting."
         roles = {"legacy": {"pid": 999999}}
         events = self.expire(roles)
         self.assertIn("legacy", roles)
@@ -150,10 +150,10 @@ class ExpireDeadRolesCase(unittest.TestCase):
 
 
 class HealThroughRegisterCase(PairTestCase):
-    """Сквозной путь: _register вызывает heal при каждом инструменте."""
+    "The end-to-end path: _register calls heal on every tool."
 
     def test_stale_peer_pane_is_healed_on_unrelated_call(self) -> None:
-        """19.1: свой вызов с валидной панелью лечит протухшего соседа."""
+        "19.1: our own call with a valid pane heals a rotten neighbour."
         import server
         self.allow_panes()
         self.store.mutate(lambda s: s["roles"].update({
@@ -169,7 +169,7 @@ class HealThroughRegisterCase(PairTestCase):
         self.assertIn("pane_stale_dropped", kinds)
 
     def test_expired_peer_is_removed_on_unrelated_call(self) -> None:
-        """19.3: мёртвая запись без панели истекает при чужом вызове."""
+        "19.3: a paneless dead record expires on a foreign call."
         import roster_heal
         import server
         self.allow_panes()
