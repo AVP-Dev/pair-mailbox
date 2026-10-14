@@ -37,6 +37,12 @@
 
 set -euo pipefail
 
+# Associative arrays below need bash 4+; macOS ships 3.2 (round 92 C8).
+if [ -z "${BASH_VERSINFO:-}" ] || [ "${BASH_VERSINFO[0]}" -lt 4 ]; then
+  echo "file-size-gate: need bash 4 or newer (macOS: brew install bash)" >&2
+  exit 2
+fi
+
 usage() {
   printf '%s\n' "Usage: $0 [--baseline PATH]" \
     "  --baseline PATH  baseline relative to the project root (default scripts/file-size-baseline.tsv)"
