@@ -67,10 +67,14 @@ def fingerprint(
     would lie that a dead neighbour listens. The session snapshots liveness itself,
     passing it ready — then the module never knows processes at all.
 
-    `git_snapshot` calls only when verdicts stand: `_done_blockers` reads the
-    HEAD+dirty snapshot checking stale, and the fingerprint must see it. The caller
-    decides itself whether the snapshot stands ready, passing it ready — then the
-    module never knows git at all.
+    `git_snapshot` calls when verdicts stand OR the round needs delivery: both
+    `_done_blockers` (verdict stale) and the delivery floor read git, and the
+    fingerprint must see either. Delivery needs it in mode=fix with no verdicts
+    yet — exactly the working round where the writer pushes and the next
+    `pair_state` must not answer `unchanged:true` over a stale blocker (A7).
+    In mode=audit delivery never applies, so verdicts alone gate the call. The
+    caller decides itself whether the snapshot stands ready, passing it ready —
+    then the module never knows git at all.
     """
     roles = {
         name: {k: v for k, v in info.items() if k not in VOLATILE_ROLE_KEYS}
@@ -78,7 +82,8 @@ def fingerprint(
         if isinstance(info, dict)
     }
     git_fp = None
-    if state.get("verdicts") and git_snapshot is not None:
+    needs_delivery = state.get("mode", "fix") != "audit"
+    if (state.get("verdicts") or needs_delivery) and git_snapshot is not None:
         git_fp = git_snapshot()
     cache_key = {
         "state": {k: v for k, v in state.items() if k not in VOLATILE_STATE_KEYS},

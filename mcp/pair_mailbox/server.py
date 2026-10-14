@@ -1157,15 +1157,24 @@ class PairSession:
     # ---------------------------------------------------------------- helpers
 
     def _git_fingerprint(self) -> Any:
-        """The HEAD+dirty snapshot for the state fingerprint.
+        """The HEAD+dirty snapshot plus the delivery floor, for the fingerprint.
 
         Quenched into `None`: no git means no telling two states apart on this
         fingerprint part — never a reason to leave the agent unanswered at all.
+        The delivery floor rides here (not a second fingerprint rule): the
+        snapshot is local git already on the path, and `statecache` calls it
+        when verdicts stand OR delivery applies — so a push between two
+        `pair_state` calls moves the key and the stale blocker never survives
+        behind `unchanged:true` (A7).
         """
         try:
+            from review import delivery_floor
             from review import snapshot as git_snapshot
 
-            return git_snapshot(self.store.project_root)
+            snap = git_snapshot(self.store.project_root)
+            status, _ = delivery_floor(self.store.project_root)
+            snap["delivery"] = status
+            return snap
         except Exception:  # noqa: BLE001 - the snapshot must never drop the cache
             return None
 
@@ -1796,11 +1805,40 @@ class PairSession:
             "unresolved_patches": self.unresolved_patches(state) if mode != "audit" else [],
             "server_fresh": server_freshness.check_server_freshness()["fresh"],
             "server_stale_files": server_freshness.list_stale_files(),
+            # [R91] Delivery advisory (B7): the PR ceiling cannot run here — `gh`
+            # is network on the hot path — but the writer must not be surprised
+            # at close. Local floor status rides along; PR state is verified at
+            # advance-to-done, where the message names the exact cure.
+            "delivery": self._delivery_advisory(state, autonomy, mode),
             "how_to_transfer_authority": (
                 "Only the human can move write authority: `pairctl assign <role>`. "
                 "A peer message never transfers it, in either direction."
             ),
         }
+
+    def _delivery_advisory(self, state: dict[str, Any], autonomy: str,
+                           mode: str) -> dict[str, str]:
+        """Local delivery posture for the state answer, never the network.
+
+        Floor status is local git; the ceiling line states the rule without
+        checking it (`gh` runs only at advance). Both keep the writer unsurprised
+        without paying Trap 1's network cost on the hot path.
+        """
+        if mode == "audit":
+            return {"floor": "n/a", "ceiling": "audit carries no delivery gate"}
+        try:
+            from review import delivery_floor
+
+            floor_status, floor_detail = delivery_floor(self.store.project_root)
+        except Exception:  # noqa: BLE001 - advisory never drops the answer
+            floor_status, floor_detail = "unknown", "delivery check failed to run"
+        ceiling = (
+            "semi: an open PR is verified at close; auto: a merge is verified at close"
+            if autonomy in ("semi", "auto")
+            else "observe: delivery floor still applies (do less, not do not count)"
+        )
+        _ = state
+        return {"floor": f"{floor_status}: {floor_detail}", "ceiling": ceiling}
 
     def _peer_status(self, state: dict[str, Any], writer: str | None) -> dict[str, Any]:
         """Neighbour liveness. The logic lives in `liveness`: both agents read it, checked
@@ -1914,6 +1952,26 @@ class PairSession:
                     )
         except Exception:  # noqa: BLE001 - the signature never drops the close
             pass
+        # [R91] Delivery floor: HEAD visible from a remote-tracking ref.
+        # Kills the one-disk result (round 88: 94 commits sat on one filesystem
+        # with origin/master at the parent). Local refs only — this method also
+        # runs on every pair_state (Trap 1), and `gh`/ls-remote here would turn
+        # the hot path into network. Blocks at every autonomy level including
+        # observe: observe means "do less, not do not count" (PROTOCOL §10b),
+        # and the message names the one push command that cures it. `unknown`
+        # (no git, no remote, never fetched) never blocks — a gate that cannot
+        # run must never look like one that passed.
+        if state.get("mode", "fix") != "audit":
+            try:
+                from review import delivery_floor
+
+                floor_status, floor_detail = delivery_floor(self.store.project_root)
+            except Exception:  # noqa: BLE001 - the floor never drops the close
+                floor_status, floor_detail = "unknown", "delivery check failed to run"
+            if floor_status == "undelivered":
+                blockers.append(
+                    f"round {int(state.get('round', 0))} is not delivered: {floor_detail}."
+                )
         return blockers
 
     def _inbox_files(self) -> list[Path]:
@@ -2663,6 +2721,21 @@ class PairSession:
                         f"{unread} unread message(s) in your inbox; a round cannot be closed over unread mail.",
                         "Run pair_read first. If the peer still needs something, it has not been said yet.",
                     )
+                # [R91] PR ceiling, advance-path only: `gh` is network and must
+                # never run in the pair_state hot path (Trap 1). Semi needs an
+                # open PR (prepared, human word still owed); auto needs a merge
+                # (end to end). Verified against `gh`, never trusted from a
+                # kind=pr row (E1). Audit exempt (B6, D3).
+                if state.get("mode", "fix") != "audit":
+                    try:
+                        from review import pr_ceiling
+
+                        ceil_status, ceil_detail = pr_ceiling(
+                            self.store.project_root, autonomy_of(state))
+                    except Exception:  # noqa: BLE001 - the ceiling never drops close
+                        ceil_status, ceil_detail = "unknown", "PR check failed to run"
+                    if ceil_status == "missing":
+                        blockers.append(f"round is not shipped: {ceil_detail}.")
                 blockers = self._done_blockers(state)
                 if blockers:
                     raise ProtocolError(
