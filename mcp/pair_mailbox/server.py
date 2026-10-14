@@ -2851,6 +2851,8 @@ class PairSession:
             match["reason"] = str(reason or "").strip()
             match["closed_at"] = utcnow()
             match["closed_by"] = self.role
+            # Round 94 D2: bind by close-round, not add-round.
+            match["closed_round"] = int(st.get("round", 0))
             return match
 
         item = self.store.mutate(close)

@@ -70,6 +70,25 @@ class TestReceiptRoundBinding(unittest.TestCase):
         self.assertIn("real round-94 work", text)
         self.assertNotIn("STALE legacy string", text)
 
+    def test_tasks_bound_by_close_round(self) -> None:
+        """D2: added in N, closed in N+1 — appears in RECEIPT-(N+1)."""
+        st = self._state()
+        st["tasks"] = [{"id": 101, "text": "added in 93, closed in 94",
+                        "status": "done", "round": 93, "closed_round": 94,
+                        "reason": "", "closed_at": "t", "closed_by": "omp"}]
+        text = receipt.generate_receipt(self.repo.state, st).read_text(encoding="utf-8")
+        self.assertIn("#101", text)
+        self.assertNotIn("no tasks bound", text)
+
+    def test_old_tasks_fall_back_to_add_round(self) -> None:
+        """Pre-D2 records carry no closed_round: honest fallback, not invention."""
+        st = self._state()
+        st["tasks"] = [{"id": 99, "text": "closed before D2", "status": "done",
+                        "round": 94, "reason": "", "closed_at": "t", "closed_by": "omp"}]
+        text = receipt.generate_receipt(self.repo.state, st).read_text(encoding="utf-8")
+        self.assertIn("#99", text)
+
+
 class TestReceiptGroundTruth(unittest.TestCase):
     def setUp(self) -> None:
         self.repo = TempRepo()

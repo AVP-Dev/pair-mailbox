@@ -35,9 +35,11 @@ def generate_receipt(state_dir: Path, state: dict[str, Any], head_commit: str = 
     roles = state.get("roles", {})
     peers = [r for r in roles if r != writer]
 
-    # Round task gathering
+    # Round task gathering: bound by CLOSE-round (round 94 D2). Tasks closed
+    # before D2 carry no closed_round — they fall back to the add-round.
     tasks = state.get("tasks", [])
-    round_tasks = [t for t in tasks if t.get("round") == round_number]
+    round_tasks = [t for t in tasks
+                   if int(t.get("closed_round", t.get("round", -1)) or -1) == round_number]
 
     # Round evidence gathering
     evidences = state.get("evidence", [])
