@@ -80,6 +80,54 @@ class TestCrossCheck(unittest.TestCase):
         self.assertTrue(gaps)
 
 
+class TestNegativeAndMethod(unittest.TestCase):
+    def test_negative_aggregates_markers(self) -> None:
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            sd = Path(tmp)
+            (sd / "notes").mkdir()
+            (sd / "notes" / "verdict-a.md").write_text(
+                "## h\n\nAll good.\n\nWhat this does NOT cover: the merge.\n",
+                encoding="utf-8")
+            st = _state()
+            m = derive_manifest(sd, st)
+        self.assertTrue(any("verdict-a.md" in n["where"] for n in m["negative"]))
+
+    def test_method_unstated_without_markers(self) -> None:
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            sd = Path(tmp)
+            st = _state(evidence=[{"kind": "test", "ok": True, "value": "all good",
+                                   "role": "omp", "round": 94}])
+            m = derive_manifest(sd, st)
+        self.assertEqual(m["evidence"][0]["method"], ["unstated"])
+
+    def test_method_derived_from_markers(self) -> None:
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            sd = Path(tmp)
+            st = _state(evidence=[{"kind": "test", "ok": True,
+                                   "value": "full gate green, mutation-red",
+                                   "role": "omp", "round": 94}])
+            m = derive_manifest(sd, st)
+        self.assertIn("mutation", m["evidence"][0]["method"])
+
+    def test_transcript_tasks_gap_refuses(self) -> None:
+        """task_closed in journal, manifest claims none: gap (round-94 live case)."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            sd = Path(tmp)
+            (sd / "transcript.jsonl").write_text(
+                '{"ts": "2026-10-14T21:01:45+00:00", "kind": "task_closed",'
+                ' "task_id": 107, "status": "done"}\n', encoding="utf-8")
+            st = _state()
+            m = derive_manifest(sd, st)
+            m["tasks_closed"] = []
+            with mock.patch.object(manifest, "_git_commits", return_value=[]):
+                gaps = cross_check(m, st, sd)
+        self.assertTrue(any("#107" in g for g in gaps))
+
+
 class TestRecheckDelta(unittest.TestCase):
     """Round 94 C10: delta-zero is the only pass."""
 

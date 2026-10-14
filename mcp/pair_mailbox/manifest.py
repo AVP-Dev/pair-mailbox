@@ -118,11 +118,8 @@ def derive_manifest(state_dir: Path, state: dict[str, Any]) -> dict[str, Any]:
         "verdicts": [{"role": v.get("role"), "kind": v.get("kind"), "at": v.get("at"),
                       "note": _note_for_kind(verdict_notes, str(v.get("kind", "")))}
                      for v in verdicts],
-        "negative": "NOT-covered sections live in the verdict notes above — "
-                    "read the note behind each kind; no separate structure exists",
-        "evidence": [{"kind": e.get("kind"), "ok": e.get("ok"),
-                      "value": (e.get("value") or "")[:200], "role": e.get("role")}
-                     for e in evidences],
+        "negative": _negative_lines(state_dir, [str(v.get("kind", "")) for v in verdicts]),
+        "evidence": [_evidence_row(e) for e in evidences],
         "transcript_kinds": _count_kinds(rows),
     }
 
@@ -142,11 +139,73 @@ def _verdict_note_hashes(state_dir: Path) -> list[dict[str, str]]:
     return out
 
 
+_METHOD_MARKERS = ("re-run", "rerun", "mutation", "dry-run", "live run",
+                     "full gate", "read", "independent", "green")
+
+
+def _evidence_row(item: dict[str, Any]) -> dict[str, Any]:
+    """Claim + method + result. The method is derived from markers in the
+    recorded value/note — "reviewed" with no marker reads unstated, never assumed."""
+    text = ((item.get("value") or "") + " " + (item.get("note") or "")).lower()
+    methods = [m for m in _METHOD_MARKERS if m in text]
+    return {"kind": item.get("kind"), "ok": item.get("ok"),
+            "value": (item.get("value") or "")[:200], "role": item.get("role"),
+            "method": methods or ["unstated"]}
+
+
+def _in_round_window(state_dir: Path, row: dict[str, Any]) -> bool:
+    """Whether a transcript row falls in the current round's window.
+
+    Window start: the last advance to done (previous round's close), else the
+    last reopen-advance, else the beginning of time. A shortcut claim writes
+    no reopen, so done is the reliable anchor.
+    """
+    try:
+        rows = _transcript_rows(state_dir)
+        dones = [r.get("ts", "") for r in rows
+                 if r.get("kind") == "advance" and r.get("phase") == "done"]
+        if dones:
+            return str(row.get("ts", "")) >= max(dones)
+        reopens = [r.get("ts", "") for r in rows
+                   if r.get("kind") == "advance" and r.get("reopened")]
+        if not reopens:
+            return True
+        return str(row.get("ts", "")) >= max(reopens)
+    except Exception:
+        return True
+
+
 def _note_for_kind(notes: list[dict[str, str]], kind: str) -> str:
     for note in notes:
         if note["kind"] == kind:
             return note["path"]
     return ""
+
+
+_NEGATIVE_MARKERS = ("NOT cover", "NOT prove", "does NOT", "not covered",
+                     "out of scope", "leaves out", "stays quiet", "remains before")
+
+
+def _negative_lines(state_dir: Path, kinds: list[str]) -> list[dict[str, str]]:
+    """Aggregate NOT-covered lines from verdict notes: kind + file:line + text.
+
+    The human's omissions question answered as pointers, not prose-hunting.
+    """
+    out = []
+    notes = state_dir / "notes"
+    if not notes.is_dir():
+        return out
+    for path in sorted(notes.glob("verdict*.md")):
+        try:
+            lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            continue
+        for number, line in enumerate(lines, 1):
+            if any(marker in line for marker in _NEGATIVE_MARKERS):
+                out.append({"kind": path.stem,
+                            "where": f".pair/notes/{path.name}:{number}",
+                            "text": line.strip()[:160]})
+    return out
 
 
 def _count_kinds(rows: list[dict[str, Any]]) -> dict[str, int]:
@@ -172,6 +231,18 @@ def cross_check(manifest: dict[str, Any], state: dict[str, Any],
                      or r.get("kind") == "note" and str(r.get("note_kind", "")).startswith("verdict")]
     if manifest.get("verdicts") == [] and verdict_notes:
         gaps.append("verdict notes in journal but manifest lists none")
+    # Tasks from the TRANSCRIPT, not from state's list: the binding is what is
+    # in question, so a check sourced from the list shares its blindness
+    # (round 94: four task_closed since the claim, manifest would claim []).
+    # Window: last reopen-advance → now.
+    closed_ids = {int(r.get("task_id", 0)) for r in _transcript_rows(state_dir)
+                  if r.get("kind") == "task_closed" and _in_round_window(state_dir, r)}
+    claimed_ids = {int(x.get("id", 0)) for x in (manifest.get("tasks_closed") or [])
+                   if isinstance(x, dict)}
+    if closed_ids - claimed_ids:
+        gaps.append("journal closes tasks "
+                    + ",".join(f"#{i}" for i in sorted(closed_ids - claimed_ids))
+                    + " but manifest claims none of them")
     state_evidences = [e for e in (state.get("evidence") or []) if int(e.get("round", -1)) == round_number]
     if manifest.get("evidence") == [] and state_evidences:
         gaps.append("evidence rows in state but manifest lists none")
