@@ -445,6 +445,78 @@ class TestReviewGate(PairTestCase):
             pr_id="123",
         )
 
+    def _repo_with_commit(self, tmp: Path) -> str:
+        subprocess.run(["git", "init"], cwd=str(tmp), check=True, capture_output=True)
+        subprocess.run(["git", "config", "user.email", "pair@test.local"], cwd=str(tmp), check=True, capture_output=True)
+        subprocess.run(["git", "config", "user.name", "Pair Test"], cwd=str(tmp), check=True, capture_output=True)
+        (tmp / "file.txt").write_text("hello", encoding="utf-8")
+        subprocess.run(["git", "add", "file.txt"], cwd=str(tmp), check=True, capture_output=True)
+        subprocess.run(["git", "commit", "-m", "init"], cwd=str(tmp), check=True, capture_output=True)
+        return subprocess.run(["git", "rev-parse", "HEAD"], cwd=str(tmp), capture_output=True, text=True).stdout.strip()
+
+    def _state(self, head: str, kind: str = "verdict-round91-critic") -> dict:
+        return {
+            "phase": "verify",
+            "round": 91,
+            "writer": "omp",
+            "evidence": [{"round": 91, "kind": "test", "ok": True}],
+            "verdicts": [{
+                "role": "opencode",
+                "kind": kind,
+                "rev": {"head": head, "dirty": "", "files": []},
+            }],
+        }
+
+    def test_house_slug_kind_passes(self) -> None:
+        """Round 91: the project writes verdict-* slugs — the gate reads them."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            head = self._repo_with_commit(tmp_path)
+            store = MagicMock()
+            store.read.return_value = self._state(head)
+            store.notes_root = tmp_path / "notes"
+            store.notes_root.mkdir()
+            (store.notes_root / "verdict-round91-critic.md").write_text(
+                f"## t — opencode\n\n**APPROVED** on {head[:12]}\n", encoding="utf-8")
+            ok, reason = review_gate.check_pr_merge(store, tmp_path)
+            self.assertTrue(ok, reason)
+
+    def test_house_needs_work_refuses(self) -> None:
+        """**NEEDS WORK** refuses; bare prose never counts either way."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            head = self._repo_with_commit(tmp_path)
+            store = MagicMock()
+            store.read.return_value = self._state(head)
+            store.notes_root = tmp_path / "notes"
+            store.notes_root.mkdir()
+            (store.notes_root / "verdict-round91-critic.md").write_text(
+                "## t — opencode\n\n**NEEDS WORK.** nope\n", encoding="utf-8")
+            ok, reason = review_gate.check_pr_merge(store, tmp_path)
+            self.assertFalse(ok)
+            self.assertIn("rejected", reason)
+            (store.notes_root / "verdict-round91-critic.md").write_text(
+                "## t — opencode\n\nlooks good to me\n", encoding="utf-8")
+            ok, _ = review_gate.check_pr_merge(store, tmp_path)
+            self.assertFalse(ok)
+
+    def test_slug_file_missing_falls_back(self) -> None:
+        """No verdict-<slug>.md: the old verdict.md still judges (no crash)."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            head = self._repo_with_commit(tmp_path)
+            store = MagicMock()
+            store.read.return_value = self._state(head)
+            store.notes_root = tmp_path / "notes"
+            store.notes_root.mkdir()
+            (store.notes_root / "verdict.md").write_text(
+                f"## t — opencode\n\nverdict-approve {head[:12]}\n", encoding="utf-8")
+            ok, reason = review_gate.check_pr_merge(store, tmp_path)
+            self.assertTrue(ok, reason)
+
 
 if __name__ == "__main__":
     unittest.main()

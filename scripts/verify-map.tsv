@@ -43,6 +43,8 @@ mcp/pair_mailbox/test_wake.py	wake
 mcp/pair_mailbox/wake.py	wake
 mcp/pair_mailbox/test_review.py	review
 mcp/pair_mailbox/review.py	review
+mcp/pair_mailbox/test_review_gate.py	review-gate
+mcp/pair_mailbox/review_gate.py	review-gate
 mcp/pair_mailbox/test_digest.py	digest
 mcp/pair_mailbox/digest.py	digest
 mcp/pair_mailbox/test_board_hosts.py	board-hosts
