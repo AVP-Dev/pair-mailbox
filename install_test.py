@@ -301,10 +301,14 @@ class TestMcpRegistration(InstallCase):
         """Invariant 5: install.sh lays every public skill into skills_dir."""
         run_install(self.home, "opencode")
         skills_dir = self.home / ".config" / "opencode" / "skills"
+        # The full source set, not two names: the next added skill must not
+        # vanish silently the way pair-chat did (round 92 C2).
+        want = {p.name for p in (ROOT / "skills").iterdir() if p.is_dir()}
+        have = {p.name for p in skills_dir.iterdir() if p.is_dir()}
+        self.assertEqual(want - have, set(),
+                         "skills missing from the target skills_dir: " + str(want - have))
         self.assertTrue((skills_dir / "pair-chat" / "SKILL.md").exists(),
                         "the pair-chat skill must stand in the target skills_dir")
-        self.assertTrue((skills_dir / "pair-work" / "SKILL.md").exists(),
-                        "the pair-work skill must stand in the target skills_dir")
 
 
 class TestVerifyDoesNotTouchTheRoster(InstallCase):
