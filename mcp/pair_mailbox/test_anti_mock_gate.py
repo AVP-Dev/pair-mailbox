@@ -43,7 +43,7 @@ class TestJudge(unittest.TestCase):
             [{"file": "web/app.js", "line": 7, "pattern": "local-state",
               "match": "useState(", "reason": "локальный", "test_path": False}]))
         self.assertFalse(verdict["ok"])
-        self.assertIn("критик", verdict["blockers"][0]["reason"])
+        self.assertIn("critic", verdict["blockers"][0]["reason"])
 
     def test_render_points_at_file_line(self) -> None:
         verdict = anti_mock_gate.judge(facts_with(

@@ -1,9 +1,9 @@
-"""Anti-mock gate: вердикт по mock-флагам facts.json.
+"""Anti-mock gate: the verdict over the facts.json mock flags.
 
-Зачем: сбор фактов находит подозрительные строки, но решение «блокировать
-или пропустить» — отдельная ответственность. Тестовые пути — предупреждение,
-а не блок: фикстуры в тестах законны. Боевые пути — блок: мок вместо wiring
-(урок R81) не проходит молча. Рантайм — stdlib, входа только facts.json.
+Why: fact collecting finds suspicious lines, but the "block or pass" decision is a
+separate responsibility. Test paths warn, never block: fixtures in tests are lawful.
+Live paths block: a mock instead of wiring (the R81 lesson) never passes silent.
+Runtime is stdlib, the only input facts.json.
 """
 from __future__ import annotations
 
@@ -17,14 +17,14 @@ import session_facts
 
 
 def judge(facts: dict[str, Any]) -> dict[str, Any]:
-    """Разделить mock-флаги: боевые — блок, тестовые — предупреждение."""
+    "Splitting mock flags: live ones block, test ones warn."
     blockers: list[dict[str, Any]] = []
     warnings: list[dict[str, Any]] = []
     for flag in facts.get("mock_flags", []):
         (blockers if not flag.get("test_path") else warnings).append(flag)
     local_state = [f for f in blockers if f.get("pattern") == "local-state"]
     for flag in local_state:
-        flag["reason"] += " — решает критик (S5): транспорт или изоляция?"
+        flag["reason"] += " - the critic decides (S5): transport or isolation?"
     return {
         "ok": not blockers,
         "blockers": blockers,
@@ -35,24 +35,24 @@ def judge(facts: dict[str, Any]) -> dict[str, Any]:
 
 
 def render(verdict: dict[str, Any]) -> str:
-    """Человекочитаемый отчёт: file:line + причина по каждому флагу."""
+    "A human-readable report: file:line plus a reason per flag."
     lines = [f"anti-mock: {'PASS' if verdict['ok'] else 'BLOCKED'} "
              f"({len(verdict['blockers'])} blockers, "
              f"{len(verdict['warnings'])} warnings)"]
     for flag in verdict["blockers"]:
         lines.append(f"BLOCK {flag['file']}:{flag['line']} "
                      f"[{flag['pattern']}] {flag['reason']} "
-                     f"(совпало: {flag['match']})")
+                     f"(matched: {flag['match']})")
     for flag in verdict["warnings"]:
         lines.append(f"warn {flag['file']}:{flag['line']} "
-                     f"[{flag['pattern']}] тестовый путь")
+                     f"[{flag['pattern']}] test path")
     return "\n".join(lines)
 
 
 def main(argv: list[str] | None = None) -> int:
-    """CLI: проверить facts.json, exit 1 при боевых моках."""
-    parser = argparse.ArgumentParser(description="Проверить facts.json на моки")
-    parser.add_argument("facts", help="путь к facts.json")
+    "CLI: check facts.json, exit 1 on live mocks."
+    parser = argparse.ArgumentParser(description="Check facts.json for mocks")
+    parser.add_argument("facts", help="the facts.json path")
     args = parser.parse_args(argv)
     try:
         facts = session_facts.load_facts(args.facts)

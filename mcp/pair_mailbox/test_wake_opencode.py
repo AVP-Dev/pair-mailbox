@@ -18,7 +18,7 @@ class WakeFailClosed(unittest.TestCase):
                 mock.patch("wake_opencode.candidate_sessions", return_value=[]):
             result = wake_opencode.wake("/x", "указатель")
             self.assertFalse(result["woken"])
-            self.assertIn("нет свежих", result["why"])
+            self.assertIn("no fresh", result["why"])
 
     def test_ambiguous_candidates_are_a_refuse(self) -> None:
         two = ["ses_a", "ses_b"]
@@ -26,7 +26,7 @@ class WakeFailClosed(unittest.TestCase):
                 mock.patch("wake_opencode.candidate_sessions", return_value=two):
             result = wake_opencode.wake("/x", "указатель")
             self.assertFalse(result["woken"])
-            self.assertIn("двусмысленно", result["why"])
+            self.assertIn("ambiguous", result["why"])
 
     def test_single_candidate_is_steered(self) -> None:
         ok = '{"data":{"type":"user","payload":{"text":"привет"}}}'
