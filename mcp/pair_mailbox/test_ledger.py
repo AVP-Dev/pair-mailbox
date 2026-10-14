@@ -1,6 +1,6 @@
-"""Тесты для ledger.py: 5 срезов, пустые поля пустые, хвост по раунду.
+"""Tests for ledger.py: 5 slices, empty fields stay empty, tail by round.
 
-Один тест-файл на один исходник: `ledger.py` -> `test_ledger.py`
+One test file per source: `ledger.py` -> `test_ledger.py`
 """
 from __future__ import annotations
 
@@ -21,17 +21,17 @@ class TestLedger(unittest.TestCase):
 
     def test_append_keeps_five_slices(self) -> None:
         record = ledger.append(self.state_dir, 81, "omp",
-                               {"decisions": ["s1 через mcp/"],
+                               {"decisions": ["s1 over mcp/"],
                                 "evidence": ["9 passed, exit 0"]})
         for name in ledger.SLICES:
             self.assertIn(name, record)
-        self.assertEqual(record["decisions"], ["s1 через mcp/"])
+        self.assertEqual(record["decisions"], ["s1 over mcp/"])
         self.assertEqual(record["touchpoints"], [])
 
     def test_unknown_keys_dropped(self) -> None:
         record = ledger.append(self.state_dir, 81, "omp",
-                               {"decisions": [], "выдумка": ["x"]})
-        self.assertNotIn("выдумка", record)
+                               {"decisions": [], "invention": ["x"]})
+        self.assertNotIn("invention", record)
 
     def test_read_round_filters(self) -> None:
         ledger.append(self.state_dir, 80, "omp", {"decisions": ["old"]})
