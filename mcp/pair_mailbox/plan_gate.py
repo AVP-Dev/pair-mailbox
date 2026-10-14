@@ -73,7 +73,7 @@ def parse_plan(path: Path) -> dict[str, Any]:
                f"`round: N` (N — the current round number)")
     elif missing:
         why = (f"in .pair/{PLAN_FILE} misses sections: {', '.join(missing)} "
-               f"(need Goal/Инварианты/Acceptance headers)")
+               f"(need Goal/Invariants/Acceptance headers)")
     return {"ok": round_number is not None and not missing,
             "why": why, "round": round_number, "missing": missing}
 

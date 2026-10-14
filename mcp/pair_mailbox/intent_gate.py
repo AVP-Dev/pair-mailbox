@@ -1,11 +1,11 @@
-"""Machine gate scoping → plan: intent pinned in .pair/intent.md.
+"""Machine gate scoping -> plan: intent pinned in .pair/intent.md.
 
 Why: moving to plan with no stated problem and no task bounds drifts focus
 and commits early. The gate demands a `.pair/intent.md` artefact with the
 current-round marker `round: N` and mandatory sections:
-- problem (проблема/problem)
-- scope (границы/scope)
-- outcome (ожидаемый результат/outcome/acceptance)
+- problem (problem)
+- scope (scope)
+- outcome (outcome/acceptance)
 
 In `audit` mode the gate also demands the artefact (problem research).
 Steps back and repeated moves (reopen) stay out of the block.
@@ -66,7 +66,7 @@ def parse_intent(path: Path) -> dict[str, Any]:
     elif missing:
         why = (
             f"in .pair/{INTENT_FILE} misses sections: {', '.join(missing)} "
-            f"(need Проблема/Problem, Границы/Scope, Ожидаемый результат/Outcome headers)"
+            f"(need Problem, Scope, Outcome headers)"
         )
 
     return {
