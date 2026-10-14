@@ -1,11 +1,11 @@
-/* Оформление дашборда пары. Контракт токенов — docs/theme-tokens.md.
+/* Pair-dashboard styling. Token contract — docs/theme-tokens.md.
  *
- * Инвариант: Zero Hardcoded Colors. Ни одного #hex/rgb()/hsl() вне блоков токенов.
- * Всё остальное — hsl(var(--x) / a).
+ * Invariant: Zero Hardcoded Colors. No #hex/rgb()/hsl() outside token blocks.
+ * Everything else — hsl(var(--x) / a).
  */
 
 :root {
-  /* Светлая тема — значения контракта, §1 docs/theme-tokens.md. */
+  /* Light theme — contract values, §1 docs/theme-tokens.md. */
   --background: 0 0% 100%;
   --foreground: 240 10% 3.9%;
   --card: 0 0% 100%;
@@ -74,7 +74,7 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
-/* Шапка */
+/* Header */
 .bar {
   display: flex;
   align-items: center;
@@ -158,7 +158,7 @@ main {
   font-weight: 700;
 }
 
-/* Лейаут: сетка сводки и 2-колоночный рабочий дашборд */
+/* Layout: summary grid plus the 2-column work dashboard */
 .grid {
   display: grid;
   gap: var(--gap);
@@ -190,7 +190,7 @@ main {
   gap: 1.25rem;
 }
 
-/* Дорожка фаз раунда */
+/* Round-phase track */
 .phases {
   display: flex;
   gap: 0.35rem;
@@ -243,7 +243,7 @@ main {
   font-family: ui-monospace, monospace;
 }
 
-/* Карточки агентов */
+/* Agent cards */
 .role {
   display: flex;
   flex-wrap: wrap;
@@ -313,7 +313,7 @@ main {
   color: hsl(var(--muted-foreground));
 }
 
-/* Лента событий */
+/* Event tape */
 .events {
   display: flex;
   flex-direction: column;
@@ -364,7 +364,7 @@ main {
   border: 1px solid hsl(var(--bad) / 0.3);
 }
 
-/* Задачи */
+/* Tasks */
 .task {
   padding: 0.6rem 0.75rem;
   border: 1px solid hsl(var(--border));
@@ -405,7 +405,7 @@ main {
   font-size: 13px;
 }
 
-/* Выделение цели раунда в верхней карточке */
+/* Round-goal highlight in the top card */
 .hero-goal {
   background: hsl(var(--secondary));
   border: 1px solid hsl(var(--border));
@@ -433,7 +433,7 @@ main {
   color: hsl(var(--foreground));
 }
 
-/* Архив выполненных задач */
+/* Done-task archive */
 .tasks-clean {
   margin: 0.35rem 0 0.65rem;
   color: hsl(var(--muted-foreground));
@@ -455,7 +455,7 @@ main {
   margin-bottom: 0.4rem;
 }
 
-/* Сообщения диалога пары */
+/* Pair-dialog messages */
 .event.chat-msg {
   background: hsl(var(--accent) / 0.4);
   border-left: 2px solid hsl(var(--ring));
