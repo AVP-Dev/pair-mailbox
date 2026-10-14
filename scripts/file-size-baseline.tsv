@@ -19,94 +19,94 @@
 # and file-gate edits grew exactly these files, not new ones. The ratchet fired stopping
 # the commit on a red gate — that is its job, and repeating it means moving the change
 # out, never raising the cap.
-# Раунд 14: потолки server.py и test_protocol.py подняты во второй раз. Причина
-# не в том, что правило обходится: правки Раунда 14 относятся именно к этим
-# файлам, потому что дефект привязки панели живёт в server.py, а тест — в
-# test_protocol.py. Куда-то ещё их деть было нельзя.
+# Round 14: the server.py and test_protocol.py caps rise a second time. The reason
+# is no rule bypass: the Round-14 edits belong exactly to these files, because the
+# pane-binding defect lives in server.py, the test in test_protocol.py. Nowhere else
+# could take them.
 #
-# Раунд 14, третий раз: адресация панелей по имени сессии. Здесь потолки подняты
-# не впервые и не потому, что правило обходится: сначала было сделано то, что
-# записи в baseline предписывают, — разбор. Вся логика адресации (session_address,
-# pane_ref_format, same_pane, pane_key) вынесена из server.py в composer.py рядом с
-# pane_identity, где ей и место, а server.py получил две короткие обёртки. Потолок
-# server.py вырос на 20 строк, и почти все они — комментарии о том, почему
-# нельзя было уйти на один вызов tmux вместо сверки адреса.
+# Round 14, third time: pane addressing by session name. Here the caps rise neither
+# first nor bypassing: first came what the baseline records prescribe — analysis. All
+# addressing logic (session_address, pane_ref_format, same_pane, pane_key) moved out of
+# server.py into composer.py beside pane_identity, where it belongs, leaving server.py
+# two short wrappers. The server.py cap grew 20 lines, nearly all comments on why no
+# single tmux call could replace the address check.
 #
-# Что осталось невынесенным и почему это записано здесь, а не стёрто: план
-# разделения server.py из записи ниже («первым выносится pairctl») НЕ выполнен и в
-# этом раунде не мог быть: разбиение на 400 строк запрещено делать попутно с
-# задачей (docs/project-structure.md §9), а задача была не про pairctl. Третий
-# подряд подъём потолка означает, что разделение server.py обязано состояться в
-# СЛЕДУЮЩЕЙ задаче, которая к нему относится, — иначе правило перестанет работать
-# и перестанет чего-либо защищать.
 #
-# Раунд 14, четвёртый и пятый раз. Первый — `pairctl pane`, переопределение
-# привязки панели рукой человека: pin_verdict и ветка в run_ctl, 147 строк в
-# server.py. Второй — та же работа по тестам, 204 строки в test_protocol.py.
+# What stayed unmoved and why it records here, never wiped: the server.py split plan
+# from the record below ("pairctl moves first") stands UNDONE, impossible this round:
+# a 400-line split never runs beside a task (docs/project-structure.md §9), while the
+# task was no pairctl one. The third straight cap rise means splitting server.py must
+# happen in the NEXT task touching it — or the rule stops working, guarding nothing.
 #
-# Что здесь важно и почему это записано, а не подтёрто. Обе правки ЧИТАЮТ и
-# проверяют состояние панели, но не меняют способ, которым панель находится:
-# поиск адреса, сверку с запросом и разбор permission-меню по-прежнему живут в
-# server.py. Уменьшить файл ими нельзя, а вынести нечего — переносить можно
-# только целиком, а это разбиение, которое запрещено делать попутно с задачей.
 #
-# Итог раунда честно такой: правило перестало быть защитой. Оно теперь ОПИСЫВАЕТ
-# размер и фиксирует, что следующая задача обязана быть про разбиение server.py
-# на файлы. Дальнейший подъём этих двух потолков без вынесения считать не
-# «сделанной работой по правилу», а его отменой.
 #
-# Разбор сделан до записи, как требует начало этого файла, и вот что он дал:
-# planctl действительно можно вынести целиком — он не импортирует MCP-слой, —
-# и это первым идёт в следующую задачу. Вторым кандидатом назван сверхвизор:
-# bin/pairpilot держит уже 1167 строк и плана разделения не имеет вовсе.
+# Round 14, fourth and fifth time. First — `pairctl pane`, overriding the pane bind by
+# human hand: pin_verdict plus the run_ctl branch, 147 lines in server.py. Second — the
+# same work on tests, 204 lines in test_protocol.py.
 #
-# Раунд 14, седьмой раз: скользящее окно транскрипта и чтение хвоста с конца
-# файла. Здесь потолки подняты по той же причине и по тому же правилу, но с
-# оговоркой, которая важнее самого подъёма.
+# What matters here and why it records, never wiped. Both edits READ and check the
+# pane state, never changing how the pane finds: address search, query check and
+# permission-menu parsing still live in server.py. The file cannot shrink by them,
+# nothing to move — moving means whole, and that is a split banned beside a task.
 #
-# Оговорка: этот пункт начали с неверной цифры. «46 тысяч токенов» — это размер
-# файла (196 КБ), делённый на четыре. В контекст агента эти токены не попадали
-# никогда: `pair_transcript` по умолчанию берёт 40 записей, то есть ~2k. Ротация
-# потому и не «снимет 46k», как написано было в плане, и цифра исправлена в
-# plan-task4.md. Что она чинит на самом деле — измерено: чтение хвоста перестало
-# разбирать весь файл (67.5 мс -> 0.4 мс на файле в 2 МБ, ускорение 169x, хвост
-# побайтово тот же), а `pairctl log` без `--limit` перестал вливать в терминал
-# пол-мегабайта.
 #
-# Объём прироста: server.py +159, test_protocol.py +183. Из них в server.py
-# примерно треть — комментарии, объясняющие, почему чтение идёт с конца и почему
-# дефолтный лимит лучше «всего».
+# The round honest total: the rule stopped guarding. It now DESCRIBES the size, pinning
+# that the next task must split server.py into files. Further raising these two caps
+# with no moving counts not as "rule work done" but as its repeal.
 #
-# Направление после этого подъёма: новых функций в server.py не добавлять без
-# вынесения. Файл перевалил за 3900 строк, и следующий пункт (дайджест) должен
-# либо уместиться, либо потребовать разбиения раньше, чем писать.
 #
-# Раунд 15: раздел состоялся, и обе записи, которые четыре раза подряд требовали
-# подъёма, опущены. Это и было предписано предыдущими абзацами: «разбор сделан
-# до записи», «следующая задача обязана быть про разбиение server.py». Задача
-# была именно такой, и вот что из неё вышло.
+# Analysis ran before the record, as this file head demands, giving this: pairctl
+# truly moves whole — it never imports the MCP layer — first into the next task. Second
+# candidate names the supervisor: bin/pairpilot already holds 1167 lines with no split
+# plan at all.
 #
-# Что вынесено и почему так, а не одним файлом на 725 строк. `pairctl` разделён
-# по владению состоянием, и границы видны по побочному эффекту:
+# Round 14, seventh time: the transcript sliding window and tail reading from the file
+# end. Here the caps rise for the same reason under the same rule, but with a caveat
+# outweighing the rise itself.
 #
-# - `pairctl_authority.py` — только запись в состояние раунда;
-# - `pairctl_panes.py` — адреса панелей и трёхсостояйная проверка `pin_verdict`;
-# - `pairctl_read.py` — только чтение, плюс обзор проектов для человека;
-# - `pairctl_cli.py` — грамматика команд и маршрутизация, 227 строк.
+# Caveat: this item started from a wrong figure. "46 thousand tokens" is the file size
+# (196 KB) divided by four. Those tokens never entered agent context: `pair_transcript`
+# by default takes 40 records, near 2k. So rotation never drops 46k as the plan wrote,
+# the figure fixed in plan-task4.md. What it truly fixes measured: tail reading stopped
+# parsing the whole file (67.5 ms -> 0.4 ms on a 2 MB file, 169x faster, the tail byte
+# same), while `pairctl log` with no `--limit` stopped pouring half a megabyte into
+# the terminal.
 #
-# Один файл `pairctl_cli.py` на 725 строк был бы не разбиением, а переносом
-# монолита в соседний файл: те же 19 команд, тот же `run_ctl` на пол-экрана, и
-# ни одна граница не проходит по тому, что важно. Порядок команд разбирается
-# словарём имён, поэтому добавление команды не требует править длинный `if`.
 #
-# Направление зависимости выбрано одно: CLI зависит от сервера, а не наоборот.
-# Обратное было бы возможно только если бы `Store` и `PairSession` выехали в
-# общий слой — это отдельная задача, и она названа первой в плане ниже.
+# Growth volume: server.py +159, test_protocol.py +183. Of server.py near a third is
+# comments explaining why reading runs from the end, why a default limit beats all.
 #
-# Тесты поехали за исходниками сразу, а не отдельным заходом: четыре набора
-# запускаются каждый отдельно в `scripts/verification-profile.tsv`, потому что
-# молчаливо исключённый набор выглядит как зелёный. Общая фикстура — в
-# `pair_test_base.py`, и это приспособление, а не третий тест-файл на исходник.
+#
+# Past this rise: no new server.py functions with no moving out. The file passed 3900
+# lines, and the next item (the digest) must either fit or demand splitting before
+# writing.
+#
+# Round 15: the split happened, and both records that demanded rises four straight
+# times dropped. Exactly what the paragraphs above prescribed: "analysis before the
+# record", "the next task must split server.py". The task was exactly that, giving
+# this.
+#
+# What moved and why so, not one 725-line file. `pairctl` splits by state ownership,
+# edges visible by side effect:
+#
+# - `pairctl_authority.py` — only writing the round state;
+# - `pairctl_panes.py` — pane addresses plus the three-state `pin_verdict` check;
+# - `pairctl_read.py` — reading only, plus the human project overview;
+# - `pairctl_cli.py` — command grammar and routing, 227 lines.
+#
+# One 725-line `pairctl_cli.py` would move the monolith next door, not split it: the
+# same 19 commands, the same half-screen `run_ctl`, no edge over what matters. Commands
+# resolve by a name dict, so adding a command never edits a long `if`.
+#
+#
+# The dependency runs one way: the CLI depends on the server, never reversed. The
+# reverse could only stand had `Store` and `PairSession` moved into a shared layer — a
+# separate task, named first in the plan below.
+#
+# Tests followed sources at once, never a separate pass: four suites each launch alone
+# in `scripts/verification-profile.tsv`, because a silently excluded suite reads as green.
+# The shared fixture lives in `pair_test_base.py` — a fixture, not a third test file per
+# source.
 mcp/pair_mailbox/server.py	4119	Round 82 (+16): kind=ground-truth gate in done_blockers + GroundTruthBlocked from receipt into the close refusal. Round 75 (+13): P2 exact_command/argv in unblock/unblock_refused events + last_permit from the journal tail. Round 65 (+4): server_freshness wiring into tool_pair_state and tool_pair_advance. Round 63 (+31): explicit --pane/PAIR_PANE channel priority + pane-busy deadlock removal.
 mcp/pair_mailbox/test_protocol.py	4381	Round 82 (+8): ground-truth gate in done_blockers + signature compaction. Round 75 (+30): P0 isolated-runner tests + yes/no prompt tests. Round 63 (+37): explicit-channel and deadlock pane tests closing pane-channel-explicit-not-env.
 bin/pairpilot	1882	Round 88 (+3): mark_wake reports pilot_wake_damaged on broken-file overwrite (R2 seq 1157). Verdict-87 follow-up (+2): check_failed flag. Verdict-87 (+13): foreign vs unproven split. Round 87 (+20): F6 unread branch in nudge_still_true; F7 belongs check in flush_outbox. Round 66 (+24): done-phase supervisor parking.
