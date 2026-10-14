@@ -92,8 +92,11 @@ def recheck(state_dir: Path, round_number: int) -> int:
     except (OSError, ValueError) as exc:
         print(f"pairreport: cannot read state: {exc}", file=sys.stderr)
         return 2
+    from manifest import cross_check
     current = derive_manifest(state_dir, state)
     delta = _diff_manifests(claimed, current)
+    for gap in cross_check(current, state, state_dir):
+        delta.append("cross-check: " + gap)
     if not delta:
         print(f"pairreport round {round_number}: DELTA ZERO — the claim holds")
         return 0
