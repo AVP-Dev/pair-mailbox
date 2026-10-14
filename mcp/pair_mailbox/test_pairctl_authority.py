@@ -44,7 +44,7 @@ class TestGlobalRoles(PairTestCase):
         self.writer.tool_pair_state()  # both roles must appear in the roster
         self.peer.tool_pair_state()
         standing = self.peer.tool_pair_state()["my_standing"]
-        self.assertIn("критик", standing)
+        self.assertIn("critic", standing)
         self.assertIn("writer-agent", standing)
 
     def test_global_policy_is_ignored_when_its_roles_never_show_up(self) -> None:
@@ -68,7 +68,7 @@ class TestGlobalRoles(PairTestCase):
 
     def test_missing_or_broken_global_file_leaves_the_race(self) -> None:
         self.assertIn("race", self.writer.tool_pair_state()["my_standing"])
-        self._roles_file.write_text("{не json", encoding="utf-8")
+        self._roles_file.write_text("{not json", encoding="utf-8")
         self.assertIn("race", self.writer.tool_pair_state()["my_standing"])
 
     def test_global_file_without_a_writer_is_ignored(self) -> None:

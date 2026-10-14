@@ -1,7 +1,7 @@
-"""Тесты verify-ground-truth.py: честное саммари проходит, лживое блокируется.
+"""Tests for verify-ground-truth.py: an honest summary passes, a lying one blocks.
 
-Скрипт лежит в scripts/, сюитного файла рядом нет — покрытие живёт здесь же
-по правилу «один тест-файл на исходник», вызов идёт через subprocess.
+The script lives in scripts/, no suite file beside it - coverage lives right here by the
+"one test file per source" rule, calling over subprocess.
 """
 from __future__ import annotations
 
