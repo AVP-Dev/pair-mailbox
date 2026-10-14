@@ -1,14 +1,14 @@
-"""Общая база для наборов тестов pair-mailbox.
+"""The shared base for the pair-mailbox test suites.
 
-Это НЕ тест-файл, а приспособление: его нет соответствия исходнику, и называть его
-третьим тест-файлом было бы неверно. Живёт отдельно от `test_protocol.py` потому,
-что после разбора `server.py` наборов стало несколько, а база у них одна: поднятое
-состояние пары в временном каталоге, две роли поверх него и несколько помощников,
-которые повторялись бы в каждом файле построчно.
+This is NO test file but a fixture: it maps to no source, and calling it a third
+test file would read wrong. It lives apart from `test_protocol.py` because past
+splitting `server.py` the suites grew many sharing one base: a raised pair state
+in a temp dir, two roles over it, plus helpers that would repeat per file line by
+line.
 
-Правило «один тест-файл на один исходник» здесь не нарушено: база не проверяет
-поведение, она только готовит почву. Проверки живут в файлах, названных по
-исходникам, которые они проверяют.
+The "one test file per source" rule never breaks here: the base checks no
+behaviour, only readying the ground. Checks live in files named after the sources
+they check.
 """
 from __future__ import annotations
 
@@ -26,16 +26,16 @@ PAIRCHAT = REPO_ROOT / "bin" / "pairchat"
 
 class PairTestCase(unittest.TestCase):
     def allow_panes(self) -> None:
-        """Считать любую панель своей, на время теста.
+        """Count any pane ours, for the test run.
 
-        Нужно тестам, которые проверяют доставку, а не адресацию: там
-        `_register` не должен отвергать панель по недоказанности, иначе тест
-        падает раньше, чем дойдёт до своего предмета.
+        Tests checking delivery, not addressing, need it: there `_register` must
+        never refuse the pane as unproven, or the test falls before reaching its
+        subject.
 
-        Подменяются оба вопроса — «своя ли панель» и «не чужой ли проект»,
-        потому что `_register` спрашивает второй, а `pair_deliver` первый.
-        Подменить один значит проверять не ту ветку: так и случилось, когда
-        появилась вторая проверка, а подмена осталась только на первой.
+        Both questions stub — "is the pane ours" and "is the project foreign" —
+        because `_register` asks the second, `pair_deliver` the first. Stubbing one
+        means checking the wrong branch: exactly what happened when the second
+        check appeared with the stub still on the first.
         """
         import composer
 
@@ -53,27 +53,27 @@ class PairTestCase(unittest.TestCase):
         self.writer = PairSession("writer-agent", self.store)
         self.peer = PairSession("reviewer-agent", self.store)
         self._orig_tmux_pane = os.environ.pop("TMUX_PANE", None)
-        # Запоминаем ДО того, как среда очищена: тесты ниже проверяют pane_exists
-        # против настоящей панели, а setUp убирает переменную, чтобы роли в наборе
-        # не слали спам в окно оператора (F-08). Без этого запоминания такая
-        # проверка пропускалась бы всегда, то есть никогда.
+        # Remembered BEFORE the env clears: the tests below check pane_exists against the
+        # real pane, while setUp drops the variable so suite roles never spam the operator
+        # window (F-08). With no this remembering such a check would always skip — never run.
+        # check would always skip — it would never run.
         self._pane_at_startup = self._orig_tmux_pane
         self._orig_disable_ring = os.environ.get("PAIR_DISABLE_RING")
         os.environ["PAIR_DISABLE_RING"] = "1"
-        # Кэш состояния в tool_pair_state возвращает заглушку без obligations и
-        # evidence_this_round на второй подряд вызов. Тесты проверяют контракт
-        # «каждый зов возвращает полное состояние», поэтому кэш здесь выключен
-        # (сервер читает PAIR_DISABLE_STATE_CACHE — см. tool_pair_state).
+        # The state cache in tool_pair_state returns a stub with no obligations and no
+        # evidence_this_round on the second straight call. Tests check the "every call returns
+        # full state" contract, so the cache switches off here (the server reads
+        # PAIR_DISABLE_STATE_CACHE — see tool_pair_state).
         self._orig_disable_state_cache = os.environ.get("PAIR_DISABLE_STATE_CACHE")
         os.environ["PAIR_DISABLE_STATE_CACHE"] = "1"
-        # Адресация по ancestry выключена ДО регистрации: лишние записи self-address
-        # не должны попадать в fill (287ff1d).
+        # ancestry addressing switches off BEFORE registering: extra self-address records
+        # must never land in fill (287ff1d).
         os.environ["PAIR_DISABLE_ANCESTRY_PANE"] = "1"
-        # Регистрация ДО писем идёт mutate-merge, а не tool_pair_state: последний
-        # перезаписывает запись целиком и сносит поля, выставленные тестом позже.
+        # Registering BEFORE mail runs mutate-merge, not tool_pair_state: the latter
+        # rewrites the record whole dropping fields the test sets later.
         self.store.mutate(lambda s: s.setdefault("roles", {}).setdefault(
             "reviewer-agent", {}))
-        # Дефолтный intent для существующих наборов тестов
+        # The default intent for the existing test suites
         self.write_intent(1)
 
     def tearDown(self) -> None:
@@ -104,12 +104,12 @@ class PairTestCase(unittest.TestCase):
         """Record what a closing round needs: a machine-produced fact for THIS round."""
         self.writer.tool_pair_evidence(kind="test", value=value, ok=ok, task=task)
         if ok:
-            # [R82] Настоящая пара перед закрытием гоняет и гейты: без
-            # writer-ground-truth done_blockers держит раунд (инцидент R81).
+            # [R82] A real pair runs the gates too before closing: with no
+            # writer-ground-truth done_blockers holds the round (the R81 incident).
             self.record_ground_truth()
 
     def record_ground_truth(self, value: str = "PASS anti-mock 0 blockers", ok: bool = True) -> None:
-        """[R82] Живой прогон гейтов: настоящая пара пишет его перед закрытием."""
+        "[R82] A live gate run: a real pair writes it before closing."
         self.writer.tool_pair_evidence(kind="ground-truth", value=value, ok=ok)
 
 
@@ -126,33 +126,33 @@ class PairTestCase(unittest.TestCase):
         return self.writer.tool_pair_advance(phase="done")
 
     def write_intent(self, round_number: int) -> None:
-        """Артефакт намерения для гейта scoping → plan (раунд 57)."""
+        "An intent artifact for the scoping → plan gate (round 57)."
         import intent_gate
         body = [f"round: {round_number}", "",
-                "## Problem", "тестовая проблема", "",
-                "## Scope", "границы теста", "",
-                "## Outcome", "ожидаемый результат теста", ""]
+                "## Problem", "test bounds", "",
+                "## Scope", "the test expected result", "",
+                "## Outcome", "the test expected result", ""]
         (self.store.root / intent_gate.INTENT_FILE).write_text("\n".join(body), encoding="utf-8")
 
     def write_plan(self, round_number: int) -> None:
-        """Артефакт плана для машинного гейта plan → implement (манифест 53).
+        """A plan artifact for the machine plan → implement gate (manifest 53).
 
-        Фикстура пишет план ТЕКУЩЕГО раунда: гейт сверяет маркер `round: N`
-        с номером раунда, и план прошлого раунда был бы отказом — ровно та
-        защита от устаревшего артефакта, которую гейт и добавляет.
+        The fixture writes the CURRENT round plan: the gate matches the `round: N`
+        marker against the round number, and a past-round plan would refuse —
+        exactly the stale-artifact guard the gate adds.
         """
         import plan_gate
         body = [f"round: {round_number}", "",
-                "## Goal", "тест", "",
-                "## Invariants", "тест", "",
-                "## Acceptance", "тест", ""]
+                "## Goal", "test", "",
+                "## Invariants", "test", "",
+                "## Acceptance", "test", ""]
         (self.store.root / plan_gate.PLAN_FILE).write_text("\n".join(body), encoding="utf-8")
 
     def ack_plan(self, round_number: int) -> None:
-        """Виза критика: заметка verdict со строкой plan-ack round N.
+        """The critic visa: a verdict note with a plan-ack round N line.
 
-        mtime заметки двигается вперёд относительно плана: гейт требует, чтобы
-        виза была не раньше плана (заметка из прошлого раунда не считается).
+        The note mtime moves past the plan: the gate demands the visa no earlier
+        than the plan (a past-round note never counts).
         """
         import os
         import time
@@ -166,17 +166,17 @@ class PairTestCase(unittest.TestCase):
         os.utime(note, (stamp, stamp))
 
     def advance_phases(self, phases: tuple = ("plan", "implement", "verify")) -> None:
-        """Пройти фазы так, как их проходит настоящая пара: с планом и визой.
+        """Walk the phases as a real pair walks them: with a plan and a visa.
 
-        До гейта план→implement проход был свободным, и фикстуры просто шли по
-        фазам. Теперь переход требует артефакта — помощник пишет его от имени
-        пары, чтобы тесты проверяли свой предмет, а не гейт.
+        Before the plan→implement gate the walk ran free, and fixtures merely
+        walked phases. Now the move needs an artifact — the helper writes it for
+        the pair, so tests check their subject, not the gate.
 
-        Гейт свежести сервера здесь приглушён намеренно: он сравнивает mtime
-        исходников со стартом процесса, и любая правка файлов во время прогона
-        (или свежий checkout) роняет фазовое движение с ProtocolError — флак
-        seq 1207, ~1 из 3 прогонов. Сам гейт живо покрыт в test_server_freshness
-        (refusal paths), здесь проверяется предмет тестов, а не свежесть.
+        The server freshness gate mutes here on purpose: it compares source mtimes
+        against the process start, and any file edit during the run (or a fresh
+        checkout) drops phase movement with ProtocolError — the seq-1207 flake,
+        ~1 in 3 runs. The gate itself stays live-covered in test_server_freshness
+        (refusal paths); here the test subject checks, not freshness.
         """
         import server_freshness
         orig = server_freshness.assert_server_fresh
@@ -194,10 +194,10 @@ class PairTestCase(unittest.TestCase):
             server_freshness.assert_server_fresh = orig
 
     def set_autonomy(self, level: str) -> None:
-        """Объявить уровень явно.
+        """Declare the level explicit.
 
-        Жил этот помощник внутри одного класса, и шесть тестов в других полагались на
-        дефолт молча — то есть контракт уровней не был закреплён ни одним из них, и
-        смена дефолта ломала тесты, к дефолту отношения не имеющие.
+        This helper lived inside one class, with six tests elsewhere silently
+        leaning on the default — the level contract pinned by none of them, so a
+        default change broke tests unrelated to the default.
         """
         self.store.mutate(lambda state: state.__setitem__("autonomy", level))
