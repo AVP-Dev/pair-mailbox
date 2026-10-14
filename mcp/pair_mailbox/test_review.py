@@ -134,6 +134,219 @@ class TestReviewPure(unittest.TestCase):
         self.assertFalse(stale, "a tracked edit of a foreign file must never invalidate the verdict")
 
 
+class TestDeliveryFloor(unittest.TestCase):
+    """Round 91 floor: HEAD visible from a local remote-tracking ref.
+
+    Local git only — A8: the predicate must never invoke ls-remote, fetch, or
+    gh. C3: the round-88 shape (N commits ahead, no remote branch) blocks; the
+    numbers reproduce the real failure (94 ahead) rather than an invented N=1.
+    """
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.repo = Path(self._tmp.name)
+        # A bare "origin" plus a clone: pushes update refs/remotes/* locally,
+        # no network, exactly the writer-pushes case the floor must see.
+        self.origin = self.repo / "origin.git"
+        self.origin.mkdir()
+        git(self.origin, "init", "--bare", "-q")
+        self.work = self.repo / "work"
+        git(self.repo, "clone", "-q", str(self.origin), str(self.work))
+        git(self.work, "config", "user.email", "t@t.t")
+        git(self.work, "config", "user.name", "t")
+        (self.work / "a.py").write_text("x=1\n", encoding="utf-8")
+        git(self.work, "add", "a.py")
+        git(self.work, "commit", "-qm", "init")
+        git(self.work, "push", "-q", "origin", "master")
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def test_pushed_head_is_delivered_a1(self) -> None:
+        import review
+        status, _ = review.delivery_floor(self.work)
+        self.assertEqual(status, "delivered")
+
+    def test_ahead_by_94_with_no_remote_branch_blocks_c3(self) -> None:
+        """Round 88's shape: 94 commits, no remote branch carrying HEAD."""
+        import review
+        for i in range(94):
+            (self.work / "a.py").write_text(f"x={i}\n", encoding="utf-8")
+            git(self.work, "add", "a.py")
+            git(self.work, "commit", "-qm", f"c{i}")
+        status, detail = review.delivery_floor(self.work)
+        self.assertEqual(status, "undelivered", detail)
+        self.assertIn("git push", detail)
+
+    def test_pushed_feature_branch_resolves_a2(self) -> None:
+        """Round-89 shape: pushed, unmerged — the floor must never block."""
+        import review
+        git(self.work, "checkout", "-qb", "feature")
+        (self.work / "a.py").write_text("x=2\n", encoding="utf-8")
+        git(self.work, "add", "a.py")
+        git(self.work, "commit", "-qm", "feat")
+        git(self.work, "push", "-q", "origin", "feature")
+        status, _ = review.delivery_floor(self.work)
+        self.assertEqual(status, "delivered")
+
+    def test_no_remote_is_unknown_not_undelivered_a4(self) -> None:
+        """Cannot-check is loud, never a hard block, never scored as a pass."""
+        import review
+        git(self.work, "remote", "remove", "origin")
+        status, _ = review.delivery_floor(self.work)
+        self.assertEqual(status, "unknown")
+
+    def test_never_fetched_remote_is_unknown_a5(self) -> None:
+        """Zero refs/remotes/* must not read as 'nothing was pushed'."""
+        import review
+        fresh = self.repo / "fresh"
+        git(self.repo, "clone", "-q", "--no-checkout", str(self.origin), str(fresh))
+        proc = subprocess.run(
+            ["git", "for-each-ref", "--format=%(refname)", "refs/remotes/"],
+            cwd=str(fresh), capture_output=True, text=True, timeout=10)
+        # Clone normally fetches; deleting the refs simulates never-fetched.
+        for line in proc.stdout.splitlines():
+            if line.strip():
+                git(fresh, "update-ref", "-d", line.strip())
+        status, detail = review.delivery_floor(fresh)
+        self.assertEqual(status, "unknown", detail)
+        self.assertNotIn("push first", detail)
+
+    def test_not_a_repo_is_unknown_a6(self) -> None:
+        import review
+        with tempfile.TemporaryDirectory() as tmp:
+            status, _ = review.delivery_floor(Path(tmp))
+            self.assertEqual(status, "unknown")
+
+    def test_no_network_command_on_the_floor_path_a8(self) -> None:
+        """The floor path must never invoke ls-remote, fetch, or gh."""
+        import review
+        seen: list[list[str]] = []
+        real_run = subprocess.run
+
+        def spy(*args: object, **kwargs: object) -> object:
+            cmd = list(args[0]) if args else []
+            seen.append([str(c) for c in cmd])
+            return real_run(*args, **kwargs)
+
+        with mock.patch.object(review.subprocess, "run", spy):
+            review.delivery_floor(self.work)
+        joined = " ".join(" ".join(c) for c in seen)
+        self.assertNotIn("ls-remote", joined)
+        self.assertNotIn("fetch", joined)
+        for cmd in seen:
+            self.assertNotEqual(cmd[:1], ["gh"])
+
+
+class TestPrCeiling(unittest.TestCase):
+    """Round 91 ceiling: verified PR state per autonomy, advance-path only."""
+
+    def test_semi_open_resolves_b1(self) -> None:
+        import review
+        head = "a" * 40
+        opens = [{"number": 7, "headRefOid": head, "headRefName": "feat"}]
+        with mock.patch.object(review, "git_head", return_value=head), \
+                mock.patch("subprocess.run") as run:
+            run.return_value.returncode = 0
+            run.return_value.stdout = __import__("json").dumps(opens)
+            status, _ = review.pr_ceiling(Path("."), "semi")
+        self.assertEqual(status, "resolved")
+
+    def test_broken_probe_is_unknown_not_undelivered(self) -> None:
+        """Finding 1: a merge-base timeout/lock/damage after good rev-parse
+        must read cannot-check, never \"you never pushed\"."""
+        import review
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            git(repo, "init", "-q")
+            git(repo, "config", "user.email", "t@t.t")
+            git(repo, "config", "user.name", "t")
+            (repo / "a.py").write_text("x=1\n", encoding="utf-8")
+            git(repo, "add", "a.py")
+            git(repo, "commit", "-qm", "init")
+            git(repo, "remote", "add", "origin", "https://example.com/o/r.git")
+            git(repo, "update-ref", "refs/remotes/origin/master", "HEAD")
+            with mock.patch.object(review.subprocess, "run",
+                                   side_effect=OSError("locked")):
+                status, detail = review.delivery_floor(repo)
+            # git_head itself also breaks under the mock, so the floor reports
+            # unknown either way — but never undelivered, which would block
+            # with a push command on a repo it could not even read.
+            self.assertEqual(status, "unknown", detail)
+            self.assertNotIn("push first", detail)
+
+
+    def test_semi_merged_resolves_b2(self) -> None:
+        """Merged is stronger than open, not a failure."""
+        import review
+        head = "b" * 40
+        assoc = [{"number": 8, "merged_at": "2026-10-14T08:46:22Z"}]
+        with mock.patch.object(review, "git_head", return_value=head), \
+                mock.patch.object(review, "_repo_slug", return_value="o/r"), \
+                mock.patch("subprocess.run") as run:
+            def side_effect(cmd: object, **kwargs: object) -> object:
+                out = mock.Mock()
+                out.returncode = 0
+                args = [str(a) for a in list(cmd)]  # type: ignore[arg-type]
+                if "api" in args:
+                    out.stdout = __import__("json").dumps(assoc)
+                else:
+                    out.stdout = "[]"
+                return out
+            run.side_effect = side_effect
+            status, _ = review.pr_ceiling(Path("."), "semi")
+        self.assertEqual(status, "resolved")
+
+    def test_semi_no_pr_blocks_b3(self) -> None:
+        import review
+        with mock.patch.object(review, "git_head", return_value="c" * 40), \
+                mock.patch("subprocess.run") as run:
+            run.return_value.returncode = 0
+            run.return_value.stdout = "[]"
+            status, detail = review.pr_ceiling(Path("."), "semi")
+        self.assertEqual(status, "missing")
+        self.assertIn("gh pr create", detail)
+
+    def test_auto_merged_resolves_b4(self) -> None:
+        import review
+        head = "d" * 40
+        assoc = [{"number": 9, "merged_at": "2026-10-14T08:46:22Z"}]
+        with mock.patch.object(review, "git_head", return_value=head), \
+                mock.patch.object(review, "_repo_slug", return_value="o/r"), \
+                mock.patch("subprocess.run") as run:
+            def side_effect(cmd: object, **kwargs: object) -> object:
+                out = mock.Mock()
+                out.returncode = 0
+                args = [str(a) for a in list(cmd)]  # type: ignore[arg-type]
+                if "api" in args:
+                    out.stdout = __import__("json").dumps(assoc)
+                else:
+                    out.stdout = "[]"
+                return out
+            run.side_effect = side_effect
+            status, _ = review.pr_ceiling(Path("."), "auto")
+        self.assertEqual(status, "resolved")
+
+    def test_auto_open_unmerged_blocks_b5(self) -> None:
+        import review
+        head = "e" * 40
+        opens = [{"number": 10, "headRefOid": head, "headRefName": "feat"}]
+        with mock.patch.object(review, "git_head", return_value=head), \
+                mock.patch("subprocess.run") as run:
+            run.return_value.returncode = 0
+            run.return_value.stdout = __import__("json").dumps(opens)
+            status, detail = review.pr_ceiling(Path("."), "auto")
+        self.assertEqual(status, "missing")
+        self.assertIn("end to end", detail)
+
+    def test_gh_missing_is_unknown_b8(self) -> None:
+        import review
+        with mock.patch.object(review, "git_head", return_value="f" * 40), \
+                mock.patch("subprocess.run", side_effect=OSError("no gh")):
+            status, detail = review.pr_ceiling(Path("."), "auto")
+        self.assertEqual(status, "unknown")
+        self.assertIn("not scored as a pass", detail)
+
 class TestReviewServer(PairTestCase):
     def fixed_snapshot(self, head: str = "h" * 40, files: list | None = None):
         return {"head": head, "dirty": "d123", "files": files if files is not None else ["a.py"]}

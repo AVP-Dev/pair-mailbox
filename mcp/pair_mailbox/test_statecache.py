@@ -149,13 +149,16 @@ class TestFingerprintSeesEverythingTheAnswerReads(unittest.TestCase):
 
 
 class TestGitSnapshotOnlyMattersWithVerdicts(unittest.TestCase):
-    def test_snapshot_ignored_without_verdicts(self) -> None:
-        """With no verdicts no git snapshot reads, entering no fingerprint.
+    def test_snapshot_ignored_without_verdicts_in_audit(self) -> None:
+        """Audit carries no delivery gate: with no verdicts no snapshot reads.
 
-        Or an agent that published no verdict would pay a git call on every
-        `pair_state` in vain.
+        In mode=fix the snapshot now also feeds the delivery floor (round 91,
+        Trap 2: a push between two pair_state calls must move the key, or the
+        stale \"nothing was pushed\" blocker survives behind unchanged:true).
+        So the old \"no verdicts means no call\" holds only where delivery
+        never applies — audit. In fix the call fires and the key must move.
         """
-        state = {"evidence": []}
+        state = {"evidence": [], "mode": "audit"}
         calls = []
 
         def snapshot():
@@ -164,6 +167,25 @@ class TestGitSnapshotOnlyMattersWithVerdicts(unittest.TestCase):
 
         statecache.fingerprint(state, git_snapshot=snapshot)
         self.assertEqual(calls, [])
+
+    def test_snapshot_runs_without_verdicts_in_fix(self) -> None:
+        """Trap 2 regression: the working round (fix, no verdicts yet) still
+        feeds the delivery floor into the fingerprint."""
+        state = {"evidence": [], "mode": "fix"}
+        calls = []
+
+        def snapshot():
+            calls.append(1)
+            return "head-abc"
+
+        before = statecache.fingerprint(state, git_snapshot=snapshot)
+        self.assertEqual(calls, [1])
+
+        def moved():
+            return "head-xyz"
+
+        after = statecache.fingerprint(state, git_snapshot=moved)
+        self.assertNotEqual(before, after)
 
     def test_snapshot_included_when_verdicts_exist(self) -> None:
         """A verdict stands — its stale follows HEAD, and the fingerprint must see it."""

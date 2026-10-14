@@ -71,6 +71,7 @@ def generate_receipt(state_dir: Path, state: dict[str, Any], head_commit: str = 
         f"- **Peers**: {', '.join(peers) or '—'}",
         f"- **Mode**: {state.get('mode', 'fix')}",
         f"- **Autonomy**: {state.get('autonomy', 'auto')}",
+        f"- **Delivery**: {_delivery_line(state_dir, state)}",
         f"- **Head Commit**: {head_commit or '—'}",
         "",
         "## Tasks Closed in Round",
@@ -141,4 +142,37 @@ def _ground_truth_lines(state_dir: Path, round_number: int) -> list[str]:
         f"{len(verdict['warnings'])} warnings)",
         f"- ledger: {ledger_ref}",
     ]
+
+
+def _delivery_line(state_dir: Path, state: dict[str, Any]) -> str:
+    """One auditable line: which level closed the round and what it did.
+
+    C1/C2: the closing record states the autonomy in force and whether the
+    round prepared the PR (semi) or merged (auto). Local facts only — the floor
+    from `review.delivery_floor`; the ceiling action follows from the level,
+    since reaching the receipt means the advance-path ceiling passed. Audit
+    carries no delivery gate.
+    """
+    import sys
+
+    autonomy = str(state.get("autonomy", "auto"))
+    if state.get("mode", "fix") == "audit":
+        return f"{autonomy}: n/a (audit carries no delivery gate)"
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    try:
+        import review
+
+        repo = Path(state_dir).resolve()
+        while not (repo / ".git").is_dir() and repo.parent != repo:
+            repo = repo.parent
+        status, detail = review.delivery_floor(repo)
+    except Exception:  # noqa: BLE001 - the receipt must still write
+        status, detail = "unknown", "delivery check failed to run"
+    action = (
+        "merged (auto means end to end)" if autonomy == "auto"
+        else "PR prepared, human word owed (semi stops at prepared)"
+        if autonomy == "semi"
+        else "floor applies, human at the wheel (observe counts, not commands)"
+    )
+    return f"{autonomy}: {action}; floor {status} ({detail})"
 

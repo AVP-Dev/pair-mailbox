@@ -95,6 +95,198 @@ def changed_between(root: Path, old: str, new: str) -> list[str]:
     return sorted({ln.strip() for ln in out.splitlines() if ln.strip()})
 
 
+def remote_tracking_refs(root: Path) -> list[str] | None:
+    """Local remote-tracking refs (`refs/remotes/*`), or None when unknown.
+
+    Local only, never the network: `ls-remote`/`fetch`/`gh` have no place in the
+    `pair_state` hot path (`server.py:1789` runs on every state read, and auth
+    prompts plus offline machines would hang the pair's most frequent call).
+    When the writer pushes, git updates `refs/remotes/origin/<branch>` as part of
+    the push, so the writer's own delivery is visible here immediately.
+
+    Honest caveat, not hidden: these refs are a cache. A push made by someone
+    else, or on another machine, stays invisible until a `fetch`. `None` means
+    "cannot check" (no git at all, or no remote configured, or zero refs after
+    a never-fetched remote) — never "nothing was pushed". Collapsing those two
+    is exactly the failure A5 guards against.
+    """
+    remotes = _run_git(root, "remote")
+    if remotes is None:
+        return None
+    if not remotes.strip():
+        return None
+    out = _run_git(root, "for-each-ref", "--format=%(refname)", "refs/remotes/")
+    if out is None:
+        return None
+    return sorted({ln.strip() for ln in out.splitlines() if ln.strip()})
+
+
+def head_reachable_from(root: Path, ref: str, head: str = "") -> bool | None:
+    """Whether `head` (default HEAD) is an ancestor of `ref`, asked locally.
+
+    Three-valued: True/False on a clean answer, None when git itself broke
+    (timeout, lock, damage). `_run_git` quenches exit-1 and exceptions into one
+    None, so this re-runs the probe raw: exit 0 means ancestor, exit 1 means
+    not-ancestor, anything else (timeout, signal, no git) means cannot-check.
+    Collapsing broken-git into False would score a cannot-check as
+    \"undelivered\" — the mirror of the failure this round exists to close.
+    """
+    import subprocess
+
+    head = head or git_head(root)
+    if not head or not ref:
+        return False
+    try:
+        proc = subprocess.run(
+            ["git", "merge-base", "--is-ancestor", head, ref], cwd=str(root),
+            capture_output=True, text=True, timeout=5,
+        )
+    except Exception:  # noqa: BLE001 - broken git is unknown, never undelivered
+        return None
+    if proc.returncode == 0:
+        return True
+    if proc.returncode == 1:
+        return False
+    return None
+
+
+def delivery_floor(root: Path) -> tuple[str, str]:
+    """The reachability floor: is HEAD visible from any remote-tracking ref?
+
+    Returns `(status, detail)` with status one of:
+    - `"delivered"`: HEAD is an ancestor of some `refs/remotes/*` (A1, A2);
+    - `"undelivered"`: git works but no remote ref reaches HEAD (A3) —
+      detail names the push command to run;
+    - `"unknown"`: cannot check — no git, no remote, a never-fetched remote
+      with zero refs (A4, A5, A6), or a broken probe mid-way (timeout, lock,
+      damage after the earlier git calls succeeded). Loud, never a pass,
+      never a hard block.
+    """
+    head = git_head(root)
+    if not head:
+        return "unknown", "not a git repository: delivery cannot be checked"
+    refs = remote_tracking_refs(root)
+    if refs is None:
+        return "unknown", "no remote configured: delivery cannot be checked"
+    if not refs:
+        return "unknown", "remote configured but no refs/remotes/* yet (never fetched): delivery cannot be checked"
+    broken = False
+    for ref in refs:
+        answer = head_reachable_from(root, ref, head)
+        if answer is True:
+            return "delivered", ref
+        if answer is None:
+            broken = True
+    if broken:
+        return "unknown", "reachability probe failed mid-check (timeout, lock, or damage): delivery cannot be checked"
+    return "undelivered", "HEAD is reachable from no refs/remotes/*: push first (`git push -u origin <branch>`)"
+
+def _repo_slug(root: Path) -> str:
+    """`owner/repo` from the origin URL, or empty when unknowable.
+
+    Parses `git remote get-url origin` for the GitHub path, accepting SSH
+    (`git@github.com:owner/repo.git`) and HTTPS forms. Empty on any failure:
+    the ceiling then skips the merged lookup and falls through honestly,
+    never blocking on a slug it could not read.
+    """
+    import re
+
+    out = _run_git(root, "remote", "get-url", "origin")
+    if not out:
+        return ""
+    url = out.strip()
+    match = re.search(r"github\.com[:/]([^/]+/[^/]+?)(?:\.git)?/?$", url)
+    return match.group(1) if match else ""
+
+
+def pr_ceiling(root: Path, autonomy: str) -> tuple[str, str]:
+    """The PR ceiling: does a verified PR state match the autonomy level?
+
+    Advance-path only, never the `pair_state` hot path: `gh` is network, and a
+    network call inside every state read repeats Trap 1 the floor was built to
+    avoid. Callers in the state path carry an advisory line instead (B7).
+
+    Never trusts a `kind=pr` evidence row: the value is a string a role wrote,
+    and \"a record indistinguishable from a run is exactly what the gate must
+    never close on\" (`server.py:451-460`). Verification runs against `gh`,
+    and E1/E3 follow from that: a row naming a missing PR blocks because `gh`
+    never heard of it.
+
+    Returns `(status, detail)`:
+    - `\"resolved\"`: semi+open (B1), semi+merged (B2, merged is stronger, not a
+      failure), auto+merged (B4);
+    - `\"missing\"`: semi+no-PR (B3), auto+open-unmerged (B5), evidence row for a
+      PR that does not exist (E3) — blocks, detail names what to do;
+    - `\"unknown\"`: `gh` absent or unauthenticated (B8) — loud, no hard block,
+      never scored as a pass.
+    `mode=audit` never calls here (B6, D3): the caller exempts audit first.
+    """
+    import json
+    import subprocess
+
+    def run_gh(*args: str) -> tuple[int, str]:
+        try:
+            proc = subprocess.run(
+                ["gh", *args], cwd=str(root),
+                capture_output=True, text=True, timeout=30,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return 1, ""
+        return proc.returncode, (proc.stdout or "").strip()
+
+    head = git_head(root)
+    if not head:
+        return "unknown", "not a git repository: PR state cannot be checked"
+    code, out = run_gh("pr", "list", "--state", "open",
+                        "--json", "number,headRefOid,headRefName")
+    if code != 0:
+        return "unknown", "gh unavailable or unauthenticated: PR state cannot be checked, not scored as a pass"
+    try:
+        open_prs = json.loads(out or "[]")
+    except ValueError:
+        return "unknown", "gh returned unreadable PR state: cannot be checked, not scored as a pass"
+    if not isinstance(open_prs, list):
+        return "unknown", "gh returned unreadable PR state: cannot be checked, not scored as a pass"
+    open_for_head = [pr for pr in open_prs
+                     if isinstance(pr, dict) and pr.get("headRefOid") == head]
+    # Merged lookup, no page ceiling: `gh api .../commits/<oid>/pulls` asks
+    # which PRs the commit itself is associated with, instead of paging closed
+    # history (Finding 2: --limit 50 goes silently stale past 50 closed PRs).
+    # Verified live: the merge commit 506bcf4 returns PR 36, the pre-merge base
+    # 9387d74 returns []. One targeted call, no pagination, no branch-name
+    # guessing (merge-branch parents are local oids, not ref names).
+    merged = False
+    slug = _repo_slug(root)
+    if slug and head:
+        code, assoc_out = run_gh("api", f"repos/{slug}/commits/{head}/pulls")
+        if code == 0:
+            try:
+                assoc = json.loads(assoc_out or "[]")
+            except ValueError:
+                assoc = []
+            if isinstance(assoc, list):
+                merged = any(
+                    isinstance(pr, dict) and pr.get("merged_at") is not None
+                    for pr in assoc
+                )
+    if open_for_head:
+        if autonomy == "auto":
+            numbers = ", ".join(f"#{pr['number']}" for pr in open_for_head)
+            return ("missing",
+                    f"PR {numbers} open but unmerged: autonomy is auto, "
+                    f"which means end to end — merge it, or set semi to stop at prepared")
+        names = ", ".join(f"#{pr['number']}" for pr in open_for_head)
+        return "resolved", f"PR {names} open at semi"
+    if merged:
+        return "resolved", "HEAD merged to master"
+    if autonomy == "semi":
+        return ("missing",
+                "no open PR for HEAD: prepare one (`gh pr create`), "
+                "the human word (`bin/pairctl ok`) is still owed")
+    return ("missing",
+            "HEAD merged by no PR and carried by no open PR: "
+            "merge first — autonomy is auto, which means end to end")
+
 def snapshot(root: Path) -> dict[str, Any]:
     """A revision snapshot binding a request/verdict.
 
