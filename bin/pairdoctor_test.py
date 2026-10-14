@@ -30,6 +30,7 @@ def _load_fn(name):
 
 
 unittest_tail = _load_fn("unittest_tail")
+pilot_lines = _load_fn("pilot_lines")
 freshness_lines = _load_fn("freshness_lines")
 
 
@@ -59,6 +60,57 @@ class TestDeliverySection(unittest.TestCase):
         text = (ROOT / "bin" / "pairdoctor").read_text(encoding="utf-8")
         self.assertIn("[7] git", text)
 
+
+class TestPilotSection(unittest.TestCase):
+    def test_section_present(self) -> None:
+        text = (ROOT / "bin" / "pairdoctor").read_text(encoding="utf-8")
+        self.assertIn("[8] pilot", text)
+        self.assertIn("pilot_lines", text)
+
+    def test_dead_pilot_warns(self) -> None:
+        """No pid file, no matching process: the section must warn (round 92 C5)."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            lines = pilot_lines([Path(tmp) / ".pair"])
+            self.assertTrue(lines)
+            self.assertTrue(all(level == "warn" for level, _ in lines))
+            self.assertIn("supervisor dead", lines[0][1])
+
+    def test_live_pid_file_reports_ok(self) -> None:
+        """Own pid alive: ok. Uses our own pid — no process to spawn."""
+        import os
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            sd = Path(tmp) / ".pair"
+            sd.mkdir()
+            (sd / "pilot.pid").write_text(str(os.getpid()), encoding="utf-8")
+            lines = pilot_lines([sd])
+            self.assertEqual([level for level, _ in lines], ["ok"])
+
+    def test_foreign_pilot_does_not_count(self) -> None:
+        """A live pairpilot for ANOTHER state dir must not read as ours.
+        Measured: nyx-system pid 2293899 alive while umputum pilot dead.
+        The pgrep output carries a foreign --state: the match must be on
+        OUR dir string, so this stays warn. Would go ok if the code ever
+        matched on the bare 'pairpilot' name."""
+        import subprocess
+        import tempfile
+        real_run = subprocess.run
+
+        def fake_run(cmd, **kwargs):
+            class Out:
+                stdout = "2293899 python3 /home/alexios/work/nyx-system/bin/pairpilot --state /home/alexios/work/nyx-system/.pair\n"
+            return Out()
+
+        subprocess.run = fake_run
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                sd = Path(tmp) / ".pair"
+                sd.mkdir()
+                lines = pilot_lines([sd])
+        finally:
+            subprocess.run = real_run
+        self.assertEqual([level for level, _ in lines], ["warn"])
 
 class TestRound86Fixes(unittest.TestCase):
     def test_server_key_from_profile(self) -> None:

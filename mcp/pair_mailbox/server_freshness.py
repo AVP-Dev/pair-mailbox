@@ -33,6 +33,14 @@ def get_process_start_time() -> float:
     return _PROCESS_START_TIME
 
 
+def proc_available() -> bool:
+    "Whether /proc exists: absent on macOS, where every /proc reader degrades."
+    try:
+        return Path("/proc").is_dir()
+    except OSError:
+        return False
+
+
 def server_code_dir() -> Path:
     "The mcp/pair_mailbox server source dir."
     return Path(__file__).resolve().parent

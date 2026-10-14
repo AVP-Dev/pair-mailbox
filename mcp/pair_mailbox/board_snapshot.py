@@ -272,9 +272,15 @@ def build_snapshot(state_dir: Path, *, limit: int = DEFAULT_EVENTS,
 
     tasks = _task_rows(state)
     event_age = _age(entries[-1].get("ts")) if entries else None
+    try:
+        from server_freshness import proc_available as _proc_available
+        no_proc = not _proc_available()
+    except Exception:
+        no_proc = False
     return {
         "generated_at": utcnow(),
         "project": state_dir.parent.name or str(state_dir),
+        "platform_no_proc": no_proc,
         "state_dir": str(state_dir),
         "read_error": read_error,
         "stale_after": int(stale_after),

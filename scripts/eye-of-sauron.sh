@@ -117,7 +117,7 @@ try:
         budget_str = " BUDGET_EXCEEDED"
 except Exception:
     pass
-is_alarm = alarm or budget_alarm
+is_alarm = alarm or budget_alarm or (deadlock != "")
 print(("ALARM " if is_alarm else "ok ") + line + deadlock + budget_str)
 EOF
 exit 0

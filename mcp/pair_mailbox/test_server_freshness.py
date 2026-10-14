@@ -19,6 +19,11 @@ class TestServerFreshness(unittest.TestCase):
         start_ts = server_freshness.get_process_start_time()
         self.assertGreater(start_ts, 0.0)
 
+    def test_proc_available_matches_platform(self) -> None:
+        """Round 92 C7: the helper reports /proc presence, not a guess."""
+        self.assertEqual(server_freshness.proc_available(),
+                         Path("/proc").is_dir())
+
     def test_fresh_when_start_time_after_files(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)

@@ -134,6 +134,7 @@ graph TD
 
 - **Python 3.8+** (standard library only — 0 external runtime pip dependencies).
 - **tmux** (`sudo apt install tmux` on Debian/Ubuntu or `brew install tmux` on macOS) — required for split sessions, active `pair_deliver` delivery, and `pair_unblock` permission handling.
+- **bash 4+** (macOS ships 3.2: `brew install bash` — the file-size gate uses associative arrays) — required for split sessions, active `pair_deliver` delivery, and `pair_unblock` permission handling.
 - **Any two AI CLI agents** from supported profiles (or your own custom CLI registered in `cli-profiles.json`).
 
 ### 1. Installation

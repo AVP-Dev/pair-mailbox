@@ -109,6 +109,49 @@ def freshness_lines(targets, code_dir=None):
     return [("ok", "server code fresh: no .py newer than server start")]
 
 
+def pilot_lines(targets):
+    """Section [8] pilot lines as (level, text): 'ok'/'warn'.
+
+    The supervisor dies undetected (round 92 C5): nothing re-raises it
+    between rounds except pairup/finish.sh, and no check signalled.
+    Match is on --state of OUR dir: a foreign project's live pilot
+    (measured: nyx-system pid 2293899) must never read as ours.
+    """
+    import subprocess as _sp
+    lines = []
+    for _sd in targets:
+        _sd = _sd.resolve()
+        _alive = False
+        try:
+            _pid_text = (_sd / "pilot.pid").read_text(encoding="utf-8").strip()
+            if _pid_text.isdigit():
+                _os = __import__("os")
+                try:
+                    _os.kill(int(_pid_text), 0)
+                    _alive = True
+                except (OSError, ValueError):
+                    _alive = False
+        except OSError:
+            pass
+        if not _alive:
+            try:
+                _out = _sp.run(["pgrep", "-af", "pairpilot"],
+                               capture_output=True, text=True, timeout=5).stdout or ""
+                for _ln in _out.splitlines():
+                    if str(_sd) in _ln:
+                        _alive = True
+                        break
+            except Exception:
+                pass
+        if _alive:
+            lines.append(("ok", "supervisor alive on " + str(_sd)))
+        else:
+            lines.append(("warn", "supervisor dead on " + str(_sd) +
+                          " — raise it: python3 bin/pairpilot --state " + str(_sd) +
+                          " (or bin/pairup / finish.sh)"))
+    return lines
+
+
 print("\n[1] server")
 srv = ROOT / "mcp/pair_mailbox/server.py"
 tests = ROOT / "mcp/pair_mailbox/test_protocol.py"
@@ -278,6 +321,8 @@ print("\n[6] freshness")
 try:
     for _level, _msg in freshness_lines(targets):
         (ok if _level == "ok" else warn)(_msg)
+    if not _fresh.proc_available():
+        warn("no /proc on this platform (macOS): pane discovery, descendants and freshness degrade — see card proc-macos-degradation")
 except Exception as _exc:
     warn("freshness check skipped — " + str(_exc)[:100])
 
@@ -292,6 +337,13 @@ if (ROOT / ".git").exists():
         warn("uncommitted files: " + str(len(r3.stdout.strip().splitlines())))
 else:
     warn("not a git repo — git init to deploy on another machine")
+
+print("\n[8] pilot")
+try:
+    for _level, _msg in pilot_lines(targets):
+        (ok if _level == "ok" else warn)(_msg)
+except Exception as _exc:
+    warn("pilot check skipped — " + str(_exc)[:100])
 
 print("\nsummary: " + str(ok_n) + " ok, " + str(bad_n) + " errors, " + str(warn_n) + " warnings")
 sys.exit(1 if bad_n else 0)

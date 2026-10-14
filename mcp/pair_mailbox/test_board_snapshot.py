@@ -47,6 +47,11 @@ class SnapshotFactsTest(PairTestCase):
         self.assertEqual(snap["round"]["writer_reason"], "assigned by human")
         self.assertFalse(snap["round"]["closed"])
 
+    def test_platform_signal_present(self):
+        snap = build_snapshot(self.root, limit=5)
+        self.assertIn("platform_no_proc", snap)
+        self.assertIsInstance(snap["platform_no_proc"], bool)
+
     def test_done_phase_is_closed(self):
         self.store.mutate(lambda state: state.__setitem__("phase", "done"))
         self.assertTrue(build_snapshot(self.root)["round"]["closed"])

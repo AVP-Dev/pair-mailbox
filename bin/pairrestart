@@ -1,0 +1,280 @@
+#!/usr/bin/env python3
+"""pairrestart — one command: show what is stale, confirm, do it.
+
+The MCP server holds modules in memory: a file on disk does nothing while the
+process lives. Two kinds of process go stale, and they fail differently:
+a stale pilot mis-types and mis-gates, a stale role server lies to its own
+agent about state.
+
+    pairrestart [--state DIR] [--dry-run] [--yes]
+
+Diagnose (pid/start/code-freshness per role and pilot) -> print the plan with
+the cost named -> one explicit `yes` -> kill only the stale -> relaunch the
+pilot -> verify. A role's server is only KILLED, never relaunched: the owning
+session reconnects its MCP for fresh code to load. Never touches a fresh
+server, never force-pushes/merges (§12 untouched).
+"""
+from __future__ import annotations
+
+import argparse
+import os
+import signal
+import subprocess
+import sys
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+
+
+def resolve_state(explicit: str | None) -> Path:
+    if explicit:
+        return Path(explicit).expanduser().resolve()
+    env = os.environ.get("PAIR_STATE")
+    if env:
+        return Path(env).expanduser().resolve()
+    top = subprocess.run(["git", "rev-parse", "--show-toplevel"],
+                         capture_output=True, text=True).stdout.strip()
+    if top:
+        d = Path.cwd().resolve()
+        for _ in range(12):
+            if (d / ".pair" / "state.json").exists():
+                return d / ".pair"
+            if str(d) == top:
+                break
+            if d.parent == d:
+                break
+            d = d.parent
+    return Path.cwd().resolve() / ".pair"
+
+
+def newest_source_mtime(paths: list[Path]) -> float | None:
+    newest = None
+    for path in paths:
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:
+            continue
+        if newest is None or mtime > newest:
+            newest = mtime
+    return newest
+
+
+def server_code_mtime() -> float | None:
+    return newest_source_mtime(list((ROOT / "mcp" / "pair_mailbox").glob("*.py")))
+
+
+def pilot_code_mtime() -> float | None:
+    try:
+        return (ROOT / "bin" / "pairpilot").stat().st_mtime
+    except OSError:
+        return None
+
+
+def fmt_ts(ts: float | None) -> str:
+    if ts is None:
+        return "unknown"
+    return datetime.fromtimestamp(ts).astimezone().strftime("%m-%d %H:%M")
+
+
+def live_servers() -> list[dict]:
+    """Every pair server process: pid, role, start time. ps-sourced, no imports."""
+    out = subprocess.run(["ps", "-eo", "pid,lstart,etimes,args"],
+                         capture_output=True, text=True).stdout or ""
+    found = []
+    for line in out.splitlines():
+        if "server.py" not in line or "--role" not in line:
+            continue
+        parts = line.split()
+        if len(parts) < 7:
+            continue
+        try:
+            pid = int(parts[0])
+        except ValueError:
+            continue
+        try:
+            role = parts[parts.index("--role") + 1]
+        except (ValueError, IndexError):
+            continue
+        start = " ".join(parts[1:6])
+        found.append({"pid": pid, "role": role, "start": start})
+    return found
+
+
+def pilot_procs(state_dir: Path) -> list[dict]:
+    out = subprocess.run(["ps", "-eo", "pid,lstart,args"],
+                         capture_output=True, text=True).stdout or ""
+    found = []
+    for line in out.splitlines():
+        if "pairpilot" not in line or str(state_dir) not in line:
+            continue
+        parts = line.split()
+        if len(parts) < 7:
+            continue
+        try:
+            pid = int(parts[0])
+        except ValueError:
+            continue
+        found.append({"pid": pid, "start": " ".join(parts[1:6])})
+    return found
+
+
+def proc_start_ts(pid: int) -> float | None:
+    try:
+        return Path(f"/proc/{pid}").stat().st_mtime
+    except (OSError, ValueError):
+        return None
+
+
+def diagnose(state_dir: Path) -> list[dict]:
+    """One row per checked thing: kind, name, pid, started, code, verdict."""
+    rows: list[dict] = []
+    code_server = server_code_mtime()
+    code_pilot = pilot_code_mtime()
+    servers = {s["role"]: s for s in live_servers()}
+    try:
+        import json as _json
+        state = _json.loads((state_dir / "state.json").read_text(encoding="utf-8"))
+        roles = [r for r in (state.get("roles") or {}) if r in ("omp", "opencode", "agy", "claude", "pi", "codex")]
+    except Exception:
+        roles = ["omp", "opencode"]
+    for role in roles:
+        srv = servers.get(role)
+        if srv is None:
+            rows.append({"kind": "role", "name": role, "pid": None,
+                         "verdict": "ABSENT",
+                         "detail": "no live server — reconnect its MCP when done"})
+            continue
+        started = proc_start_ts(srv["pid"]) or time.time()
+        stale = code_server is not None and code_server > started
+        rows.append({"kind": "role", "name": role, "pid": srv["pid"],
+                     "started": fmt_ts(started), "code": fmt_ts(code_server),
+                     "verdict": "STALE" if stale else "FRESH",
+                     "detail": "kill, session reconnects" if stale else "leave alone"})
+    pilots = pilot_procs(state_dir)
+    if not pilots:
+        rows.append({"kind": "pilot", "name": "pilot", "pid": None,
+                     "verdict": "ABSENT", "detail": "relaunch via pairup"})
+    else:
+        for proc in pilots:
+            started = proc_start_ts(proc["pid"]) or time.time()
+            stale = code_pilot is not None and code_pilot > started
+            rows.append({"kind": "pilot", "name": "pilot", "pid": proc["pid"],
+                         "started": fmt_ts(started), "code": fmt_ts(code_pilot),
+                         "verdict": "STALE" if stale else "FRESH",
+                         "detail": "kill, then relaunch" if stale else "leave alone"})
+    return rows
+
+
+def print_plan(rows: list[dict]) -> int:
+    stale = [r for r in rows if r["verdict"] == "STALE" and r["pid"]]
+    print(f"pairrestart — {len(rows)} things checked")
+    print()
+    for row in rows:
+        pid = str(row["pid"]) if row["pid"] else "—"
+        extra = f"started {row.get('started')} code {row.get('code')}" if row.get("started") else ""
+        print(f"[{row['verdict']:<6}] {row['kind']:<5} {row['name']:<8} pid {pid:<7} {extra} → {row['detail']}")
+    print()
+    if not stale:
+        print("Nothing stale. Changes nothing.")
+        return 0
+    doomed_roles = [r["name"] for r in stale if r["kind"] == "role"]
+    if doomed_roles:
+        print("Note: killing a role's server drops that session's pair tools until it")
+        print("reconnects its MCP (/mcp, or restart the CLI).")
+        print(f"Killing {', '.join(doomed_roles)}'s server is in this plan — confirm it is yours to disturb.")
+    print(f"Will kill {len(stale)} process(es). Fresh servers are NOT in this plan.")
+    return len(stale)
+
+
+def ask(explicit_yes: bool) -> bool:
+    if explicit_yes:
+        return True
+    try:
+        answer = input("Type 'yes' to continue [y/N]: ").strip()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return False
+    return answer == "yes"
+
+
+def act(rows: list[dict], state_dir: Path) -> None:
+    for row in [r for r in rows if r["verdict"] == "STALE" and r["pid"]]:
+        pid = row["pid"]
+        try:
+            os.kill(pid, signal.SIGTERM)
+            print(f"killed {row['kind']} {row['name']} pid {pid} (SIGTERM)")
+        except (OSError, ProcessLookupError) as exc:
+            print(f"could not kill pid {pid}: {exc}")
+    waited = 0.0
+    while waited < 5.0:
+        alive = [r for r in [row for row in rows if row["verdict"] == "STALE" and row["pid"]]
+                 if _pid_alive(r["pid"])]
+        if not alive:
+            break
+        time.sleep(0.5)
+        waited += 0.5
+    if any(r["kind"] == "pilot" for r in rows if r["verdict"] == "STALE"):
+        log = state_dir / "pairpilot.log"
+        try:
+            with open(log, "a") as handle:
+                proc = subprocess.Popen([sys.executable, str(ROOT / "bin" / "pairpilot"),
+                                         "--state", str(state_dir)],
+                                        stdout=handle, stderr=subprocess.STDOUT,
+                                        start_new_session=True, cwd=str(ROOT))
+            (state_dir / "pilot.pid").write_text(str(proc.pid), encoding="utf-8")
+            print(f"pilot relaunched, pid {proc.pid}, log {log}")
+        except OSError as exc:
+            print(f"pilot relaunch failed: {exc}")
+
+
+def _pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+        return True
+    except (OSError, ProcessLookupError):
+        return False
+
+
+def verify(state_dir: Path) -> int:
+    print()
+    print("— verify —")
+    doctor = ROOT / "bin" / "pairdoctor"
+    result = subprocess.run([sys.executable, str(doctor), "--project"],
+                            capture_output=True, text=True, cwd=str(ROOT))
+    tail = (result.stdout or "").strip().splitlines()[-3:]
+    print("\n".join(tail) if tail else "(no doctor output)")
+    absent = [r["name"] for r in diagnose(state_dir)
+              if r["kind"] == "role" and r["verdict"] == "ABSENT"]
+    for role in absent:
+        print(f"role {role} has no live server — reconnect its MCP (/mcp, or restart the CLI).")
+    return result.returncode
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--state", default=None, help="explicit state dir")
+    parser.add_argument("--dry-run", action="store_true", help="plan only, change nothing")
+    parser.add_argument("--yes", action="store_true", help="skip the question (unattended)")
+    args = parser.parse_args(argv)
+    state_dir = resolve_state(args.state)
+    if not (state_dir / "state.json").exists():
+        print(f"pairrestart: no state.json in {state_dir} — cd into a project first", file=sys.stderr)
+        return 2
+    rows = diagnose(state_dir)
+    killable = print_plan(rows)
+    if args.dry_run:
+        print("(dry-run: changed nothing)")
+        return 0
+    if killable == 0:
+        return 0
+    if not ask(args.yes):
+        print("Aborted. Changed nothing.")
+        return 0
+    act(rows, state_dir)
+    return verify(state_dir)
+
+
+if __name__ == "__main__":
+    sys.exit(main())
