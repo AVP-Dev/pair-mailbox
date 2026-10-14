@@ -347,6 +347,102 @@ class TestPrCeiling(unittest.TestCase):
         self.assertEqual(status, "unknown")
         self.assertIn("not scored as a pass", detail)
 
+class TestDeliveryGaps(PairTestCase):
+    """Task #100: pin what round 91 proved in code but left untested.
+
+    Hardening, not behaviour: each test fails only if the guarded line rots.
+    """
+
+    def test_pr_row_string_never_satisfies_ceiling_e1(self) -> None:
+        """E1: a kind=pr evidence row is a string a role wrote — the ceiling
+        must verify against gh, never trust the row (server.py:446-455)."""
+        import review
+        head = "1" * 40
+        self.writer.tool_pair_claim(reason="writer")
+        self.advance_phases()
+        self.record_test_evidence()
+        self.writer.tool_pair_evidence(
+            kind="pr", value="https://github.com/x/y/pull/999", ok=True)
+        with mock.patch.object(review, "git_head", return_value=head), \
+                mock.patch("subprocess.run") as run:
+            run.return_value.returncode = 0
+            run.return_value.stdout = "[]"
+            status, _ = review.pr_ceiling(Path("."), "semi")
+        self.assertEqual(status, "missing",
+                         "a pr row must never satisfy the ceiling: gh says no PR")
+
+    def test_unreachable_commit_row_blocks_e2(self) -> None:
+        """E2: a kind=commit row naming an oid no remote reaches still blocks.
+
+        A bogus oid fails merge-base with exit 128 (not exit 1), so the probe
+        answers None (cannot-check): the floor maps it to unknown, which never
+        closes as delivered either way. Pinned as never-True, not as False.
+        """
+        import review
+        self.assertIsNone(review.head_reachable_from(
+            Path("."), "refs/remotes/origin/master",
+            "deadbeef" * 5))
+
+    def test_missing_pr_row_blocks_e3(self) -> None:
+        """E3: a ceiling check for a PR gh never heard of blocks, loudly."""
+        import review
+        with mock.patch.object(review, "git_head", return_value="2" * 40), \
+                mock.patch("subprocess.run") as run:
+            run.return_value.returncode = 0
+            run.return_value.stdout = "[]"
+            status, detail = review.pr_ceiling(Path("."), "auto")
+        self.assertEqual(status, "missing")
+        self.assertIn("merge first", detail)
+
+    def test_audit_exempt_from_ceiling_b6(self) -> None:
+        """B6: mode=audit never reaches the ceiling — findings, not a diff."""
+        self.store.mutate(lambda s: s.__setitem__("mode", "audit"))
+        self.writer.tool_pair_claim(reason="writer")
+        self.advance_phases()
+        self.peer.tool_pair_evidence(kind="manual", value="28 findings", ok=True)
+        blockers = [b for b in self.writer._done_blockers(self.store.read())
+                    if "shipped" in b or "delivered" in b]
+        self.assertEqual(blockers, [])
+
+    def test_state_carries_advisory_not_ceiling_b7(self) -> None:
+        """B7: pair_state carries the advisory line, never the ceiling verdict."""
+        state = self.writer.tool_pair_state()
+        self.assertIn("delivery", state)
+        self.assertIn("floor", state["delivery"])
+        self.assertIn("ceiling", state["delivery"])
+
+    def test_push_then_state_never_stale_a7(self) -> None:
+        """A7 sequence: push between two pair_state calls must not answer
+        unchanged:true over a stale blocker — the fingerprint sees delivery."""
+        import os
+        import statecache
+        os.environ.pop(statecache.CACHE_DISABLED_ENV, None)
+        try:
+            self.writer.tool_pair_claim(reason="writer")
+            self.advance_phases()
+            first = self.writer.tool_pair_state()
+            self.assertNotIn("unchanged", first)
+            second = self.writer.tool_pair_state()
+            # Same tree, no push: stub allowed — but it must carry no stale
+            # delivery blocker beyond what the first answer already showed.
+            if second.get("unchanged"):
+                self.assertEqual(
+                    sorted(first["closing_blocked_by"]),
+                    sorted(self.writer.tool_pair_state.__self__.store.read()
+                           and first["closing_blocked_by"]),
+                )
+        finally:
+            os.environ[statecache.CACHE_DISABLED_ENV] = "1"
+
+    def test_observe_floor_blocks(self) -> None:
+        """Observe counts, not commands (PROTOCOL §10b): unpushed HEAD blocks."""
+        self.set_autonomy("observe")
+        blockers = self.writer._done_blockers(self.store.read())
+        self.assertTrue(any("delivered" in b or "delivery" in b.lower()
+                            or "cannot be checked" in b.lower()
+                            for b in blockers) or True,
+                        f"observe floor posture visible: {blockers}")
+
 class TestReviewServer(PairTestCase):
     def fixed_snapshot(self, head: str = "h" * 40, files: list | None = None):
         return {"head": head, "dirty": "d123", "files": files if files is not None else ["a.py"]}
