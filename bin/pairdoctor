@@ -321,6 +321,8 @@ print("\n[6] freshness")
 try:
     for _level, _msg in freshness_lines(targets):
         (ok if _level == "ok" else warn)(_msg)
+    if not _fresh.proc_available():
+        warn("no /proc on this platform (macOS): pane discovery, descendants and freshness degrade — see card proc-macos-degradation")
 except Exception as _exc:
     warn("freshness check skipped — " + str(_exc)[:100])
 
