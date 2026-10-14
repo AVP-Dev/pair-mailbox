@@ -1402,41 +1402,38 @@ class TestRestart(PilotCase):
         self.assertNotIn("pilot_restart", self.transcript_kinds())
 
     def test_a_live_process_in_the_pane_is_not_respawned(self) -> None:
-        """Главный инцидент ночи: 21 попытка перезапустить панель, в которой
-        агент ЖИВ.
+        """The night main incident: 21 tries restarting a pane where the agent is ALIVE.
 
-        Роль перезапустилась сама, или просто сменился pid, а запись в ростере
-        осталась с протухшим. Панель жива, в ней сидит агент — и `respawn-pane`
-        с `-k` его убивал бы вместе со всем контекстом раунда.
+        The role restarted alone, or the pid merely changed, while the roster record
+        kept the rotten one. The pane lives, the agent sits in it — and `respawn-pane`
+        with `-k` would kill him with the whole round context.
 
-        Проверяется ровно то, о чём был инцидент: перезапуска НЕТ, а pid в
-        записи обновлён на тот, что реально жив. Порядок обращений к tmux здесь
-        не утверждается никак.
+        Exactly the incident checks: NO restart, while the record pid updates to the
+        truly live one. No tmux-call order asserts here.
         """
         self.dead_writer_state()
         pilot = self.pilot_with_launch()
-        # Живой pid, и НЕ наш собственный: сам сверхвизор, запущенный из панели
-        # роли, pid в её запись не пишет, и подмена os.getpid() проверяла бы не то.
+        # A live pid, and NOT our own: the supervisor launched from the role pane writes
+        # no pid into its record, and stubbing os.getpid() would check the wrong thing.
         live = os.getppid()
         pairpilot.pane_role_pid = lambda tmux, pane, role: live
         pilot.tick()
-        self.assertNoRestart("в панели живой процесс — перезапуск его бы убил")
+        self.assertNoRestart("a live process in the pane — restarting would kill it")
         self.assertEqual(live, self.read_state()["roles"]["agy"]["pid"],
-                         "pid в записи обязан стать тем, что реально жив")
+                         "the record pid must become the truly live one")
         self.assertIn("pilot_pid_stale_pane_alive", self.transcript_kinds())
         entry = [e for e in self.transcript_entries()
                  if e["kind"] == "pilot_pid_stale_pane_alive"][-1]
         self.assertEqual(live, entry["live_pid"])
         self.assertEqual(self.DEAD_PID, entry["pid"],
-                         "причина обязана называть протухший pid, а не текущий")
+                         "the reason must name the rotten pid, not the current one")
 
     def test_a_dead_process_in_the_pane_is_still_respawned(self) -> None:
-        """Обратная сторона: живая ПАНЕЛЬ не значит живой АГЕНТ.
+        """The flip side: a live PANE never means a live AGENT.
 
-        Если бы `pane_pid` вёлся на «панель занята — значит всё в порядке», то
-        падение агента при живом окне осталось бы незамеченным, а это ровно тот
-        случай, ради которого перезапуск и написан. Поэтому проверка симметрична
-        предыдущей и обязана существовать вместе с ней.
+        Had `pane_pid` run on "pane busy means all fine", an agent fall at a live
+        window would stay unnoticed — exactly the case the restart exists for. So
+        the check mirrors the prior one, standing only together with it.
         """
         self.dead_writer_state()
         pilot = self.pilot_with_launch()
@@ -1444,35 +1441,35 @@ class TestRestart(PilotCase):
         pilot.tick()
         self.assertEqual([["/usr/bin/tmux", "respawn-pane", "-t", "%999999", "agy --resume"]],
                          self.respawns(),
-                         "в панели мёртвый pid — роль поднимается")
+                         "a dead pid in the pane means the role rises")
         self.assertNotIn("pilot_pid_stale_pane_alive", self.transcript_kinds())
 
     def test_an_unprovable_pane_pid_does_not_block_the_restart(self) -> None:
-        """«Не знаю» не должно читаться как «занято».
+        """"Unknown" must never read as "busy".
 
-        Если бы ноль от `pane_pid` трактовался как «панель занята», то после
-        любой ошибки tmux сверхвизор навсегда перестал бы перезапускать упавших
-        ролей — молча, без единой записи. Отказ должен быть громким и полезным.
+        Had a zero from `pane_pid` count as "pane busy", past any tmux error the
+        supervisor would stop restarting fallen roles forever — silent, with no
+        record. A refusal must stay loud and useful.
         """
         self.dead_writer_state()
         pilot = self.pilot_with_launch()
         pairpilot.pane_role_pid = lambda tmux, pane, role: 0
         pilot.tick()
         self.assertEqual(1, len(self.respawns()),
-                         "не доказано, что в панели кто-то есть, — перезапуск не запрещён")
+                         "unproven anyone sits in the pane — the restart never banned")
         self.assertEqual(self.DEAD_PID, self.read_state()["roles"]["agy"]["pid"],
-                         "запись без живого pid не выдумывается")
+                         "a record with no live pid never invents one")
 
     def test_a_squatters_pid_never_lands_in_the_role_record(self) -> None:
-        """Панель занята ЧУЖОЙ ролью — и в ней есть живой процесс.
+        """A pane busy with a FOREIGN role — holding a live process.
 
-        Это проверка ПОРЯДКА, а не наличия защиты. Если спросить `pane_pid` до
-        проверки «панель занята другой ролью», вернётся живой pid СОСЕДА, и мы
-        запишем его в запись этой роли. Две записи об одном процессе — и ростер
-        больше не разберётся, кто где сидит.
+        This checks ORDER, not guard presence. Asking `pane_pid` before the
+        "pane busy with another role" check returns the NEIGHBOUR live pid, and
+        we would write it into this role record. Two records on one process — and
+        the roster never sorts who sits where.
 
-        Мутация этого кода: вернуть `pane_occupant` перед `pane_occupied_by_other`
-        — и тест краснеет. Это и было написано, чтобы поймать именно это.
+        Mutating this code: returning `pane_occupant` before `pane_occupied_by_other`
+        reddens the test. Written to catch exactly that.
         """
         self.write_state(writer="agy", round=3, roles={
             "agy": {"last_seen": ago(600), "pid": self.DEAD_PID, "pane": "%7"},
@@ -1480,43 +1477,42 @@ class TestRestart(PilotCase):
         })
         pilot = self.pilot_with_launch()
         pilot.pane_key = lambda pane: "%7"
-        # В панели действительно кто-то жив — иначе проверка была бы пустой.
+        # Someone truly lives in the pane — or the check would stand empty.
         pairpilot.pane_role_pid = lambda tmux, pane, role: os.getppid()
         pilot.tick()
-        self.assertNoRestart("панель, занятая живой ролью, не трогаем")
+        self.assertNoRestart("a pane busy with a live role stays untouched")
         self.assertEqual(self.DEAD_PID, self.read_state()["roles"]["agy"]["pid"],
-                         "pid соседа не должен оказаться в записи этой роли")
+                         "the neighbour pid must never land in this role record")
         self.assertNotIn("pilot_pid_stale_pane_alive", self.transcript_kinds(),
-                         "занятая панель — это отказ, а не обновление pid")
+                         "a busy pane is a refusal, not a pid update")
         self.assertIn("pilot_restart_impossible", self.transcript_kinds())
 
     def test_a_live_shell_in_a_dead_roles_pane_is_not_mistaken_for_the_role(self) -> None:
-        """Поломка, которую пропустили мои же тесты.
+        """A breakage my own tests missed.
 
-        Упавший агент оставляет в панели ЖИВОЙ шелл — так устроен терминал. Если
-        «роль жива» выводить из «в панели есть процесс», то падавшая роль выглядит
-        живой всегда, и перезапуск отменяется целиком. Это ровно тот случай, ради
-        которого `restart_agent` написан, то есть правка живости по панели чинила
-        перезапуск и ломала его.
+        A fallen agent leaves a LIVE shell in the pane — so the terminal works. Deriving
+        "role alive" from "a process sits in the pane" reads the fallen role alive
+        always, cancelling the restart whole. Exactly the case `restart_agent` exists
+        for, so a pane-based liveness fix both healed the restart and broke it.
 
-        Измерено на этой машине: `#{pane_pid}` в панели с работающим агентом — это
-        bash, а не агент. Поэтому спрашивать надо сервер роли, а не процесс панели.
+        Measured on this machine: `#{pane_pid}` in a pane with a working agent is
+        bash, not the agent. So the role server asks, not the pane process.
 
-        Здесь подменён сам источник pid так, как он ведёт себя в бою: панель занята
-        живым шеллом, а процесса роли в ней нет. Ожидается перезапуск.
+        The pid source stubs here as it behaves live: the pane holds a live shell,
+        no role process in it. A restart expects.
         """
         self.dead_writer_state()
         pilot = self.pilot_with_launch()
-        # Живой посторонний процесс в панели — ровно то, что остаётся от агента.
+        # A live foreign process in the pane — exactly what survives an agent.
         pairpilot.pane_role_pid = lambda tmux, pane, role: 0
         pilot.own_pane = None
         pilot.tick()
         self.assertEqual(1, len(self.respawns()),
-                         "живой шелл в панели не доказывает, что роль жива — "
-                         "иначе упавшая роль не перезапускалась бы никогда")
+                         "a live shell in the pane never proves the role alive — "
+                         "or a fallen role would never restart")
 
     def test_a_stale_pid_is_refreshed_once_not_every_tick(self) -> None:
-        """Обновление — событие один раз, а не строчка в транскрипте каждые 15с."""
+        """An update is one event, never a transcript line every 15s."""
         self.dead_writer_state()
         pilot = self.pilot_with_launch()
         pairpilot.pane_role_pid = lambda tmux, pane, role: os.getppid()
@@ -1524,65 +1520,64 @@ class TestRestart(PilotCase):
         pilot.tick()
         pilot.tick()
         stale = [k for k in self.transcript_kinds() if k == "pilot_pid_stale_pane_alive"]
-        self.assertEqual(1, len(stale), "об устаревшем pid говорим один раз")
+        self.assertEqual(1, len(stale), "an aged pid speaks once")
 
     def test_restart_needs_a_known_command(self) -> None:
-        """Нет команды — нет перезапуска и громкая запись об этом. Выдуманная
-        команда хуже отсутствующей: панель оживает и сразу падает."""
+        """No command means no restart with a loud record of it. An invented command
+        reads worse than a missing one: the pane wakes and falls at once."""
         self.dead_writer_state()
         pilot = self.pilot_with_launch(command="")
         pilot.tick()
-        self.assertNoRestart("нет команды запуска — нет перезапуска")
+        self.assertNoRestart("no launch command means no restart")
         self.assertIn("pilot_restart_impossible", self.transcript_kinds())
 
     def test_dead_process_without_a_pane_is_left_to_the_human(self) -> None:
-        """Окно, закрытое человеком, не поднимается молча: это не зависание,
-        это решение."""
+        """A window the human closed never rises silent: no hang, a decision."""
         self.write_state(writer="agy",
                          roles={"agy": {"last_seen": ago(600), "pid": self.DEAD_PID, "pane": "%7"}})
         pilot = self.pilot_with_launch()
         pairpilot.pane_alive = lambda tmux, pane: False
         pilot.tick()
-        self.assertNoRestart("окно, закрытое человеком, не поднимается молча")
+        self.assertNoRestart("a window the human closed never rises silent")
         self.assertIn("pilot_restart_impossible", self.transcript_kinds())
 
     def test_observe_mode_does_not_restart(self) -> None:
         self.dead_writer_state(autonomy="observe")
         pilot = self.pilot_with_launch()
         pilot.tick()
-        self.assertNoRestart("в observe перезапуск — это действие, а не сообщение")
+        self.assertNoRestart("in observe a restart is an action, not a message")
 
     def test_own_pane_is_never_respawned(self) -> None:
-        """Пятый тормоз перезапуска: панель самого сверхвизора.
+        """The fifth restart brake: the supervisor own pane.
 
-        `respawn-pane -k` убивает панель насовсем. Если это панель человека —
-        там его ввод и сам сверхвизор: перезапуск роли убил бы оператора,
-        который его запустил. Остальные пути (напоминание, разблокировка) эту
-        панель берегут, и без проверки перезапуск остался бы единственным
-        исключением из правила, которое везде записано словами.
+        `respawn-pane -k` kills the pane for good. On the human pane that holds his
+        input and the supervisor itself: restarting the role would kill the operator
+        who launched it. The other paths (reminder, unblock) spare this pane, and
+        without the check the restart would stand the single exception to the rule
+        written everywhere in words.
         """
         self.dead_writer_state()
         pilot = self.pilot_with_launch()
         pilot.own_pane = "%999999"
         pilot.tick()
-        self.assertNoRestart("свою панель не перезапускаем никогда")
+        self.assertNoRestart("never restarting our own pane")
         self.assertNotIn("pilot_restart", self.transcript_kinds())
         self.assertIn("pilot_own_pane", self.transcript_kinds())
 
     def test_role_sharing_a_pane_is_not_respawned(self) -> None:
-        """Общая панель — это два агента в одном окне. Перезапуск одного из них
-        убил бы второго вместе с его вводом, а из состояния не видно, кто где."""
+        """A shared pane is two agents in one window. Restarting either would kill the
+        second with his input, while state never shows who sits where."""
         self.write_state(writer="agy", round=3, roles={
             "agy": {"last_seen": ago(600), "pid": self.DEAD_PID, "pane": "%7"},
             "claude": {"last_seen": ago(30), "pid": os.getpid(), "pane": "%7"},
         })
         pilot = self.pilot_with_launch()
         pilot.tick()
-        self.assertNoRestart("панель, где сидит живой сосед, не трогаем")
+        self.assertNoRestart("a pane with a live neighbour sitting stays untouched")
         self.assertNotIn("pilot_restart", self.transcript_kinds())
-        # Панель больше не «общая»: одна из двух записей принадлежит мёртвому
-        # процессу, а мёртвая запись не делает окно занятым. Сообщается о
-        # мёртвой роли и об отказе перезапуска, а не о двусмысленности.
+        # The pane is "shared" no more: one of the two records belongs to a dead process,
+        # and a dead record never marks the window busy. The dead role reports, with a
+        # restart refusal, not an ambiguity.
         self.assertNotIn("pilot_pane_shared", self.transcript_kinds())
         self.assertIn("pilot_stale_role", self.transcript_kinds())
         impossible = [json.loads(line) for line in
@@ -1591,30 +1586,30 @@ class TestRestart(PilotCase):
         self.assertIn("claude", impossible[-1]["why"])
 
     def test_a_squatter_recorded_in_the_other_format_is_still_a_squatter(self) -> None:
-        """Тот же запрет, но сосед записан адресом сессии, а не `%N`.
+        """The same ban, but the neighbour records as a session address, not `%N`.
 
-        Панель, занятая живым соседом, перезапускать нельзя: `respawn-pane` убивает
-        и его ввод. При сравнении строк сосед, записанный как `mail:0.1`, выглядел
-        бы сидящим на ДРУГОЙ панели, панель сочлась бы свободной, и перезапуск
-        снёс бы живого агента. Ровно та же поломка, что и с собственной панелью
-        сверхвизора, только последствия здесь хуже.
+        A pane busy with a live neighbour never restarts: `respawn-pane` kills his
+        input too. On line comparing a neighbour recorded as `mail:0.1` would read
+        sitting on ANOTHER pane, the pane would count free, and the restart would
+        drop a live agent. Exactly the breakage of the supervisor-own pane, only
+        worse here.
         """
         self.write_state(writer="agy", round=3, roles={
             "agy": {"last_seen": ago(600), "pid": self.DEAD_PID, "pane": "%7"},
             "claude": {"last_seen": ago(30), "pid": os.getpid(), "pane": "mail:0.1"},
         })
         pilot = self.pilot_with_launch()
-        # Настоящий ключ группировки, а не сравнение строк: здесь и проверяется
-        # именно то, что оба формата приводятся к одному ключу.
+        # The true grouping key, not line comparing: exactly both formats reducing to one
+        # key checks here.
         pilot.pane_key = lambda pane: {"%7": "mail:0.0", "mail:0.1": "mail:0.0"}.get(pane, pane)
         pilot.tick()
-        self.assertNoRestart("панель, где сидит живой сосед, не трогаем")
+        self.assertNoRestart("a pane with a live neighbour sitting stays untouched")
         self.assertNotIn("pilot_restart", self.transcript_kinds())
         impossible = [json.loads(line) for line in
                       (self.state_dir / "transcript.jsonl").read_text(encoding="utf-8").splitlines()
                       if line.strip() and json.loads(line).get("kind") == "pilot_restart_impossible"]
         self.assertIn("claude", impossible[-1]["why"],
-                      "отказ должен называть живого соседа, а не отсутствие панели")
+                      "a refusal must name the live neighbour, not a missing pane")
 
     def test_failed_respawn_is_recorded_not_hidden(self) -> None:
         self.dead_writer_state()
@@ -1626,7 +1621,7 @@ class TestRestart(PilotCase):
 
 
 class _FakeSubprocess:
-    """Подмена subprocess.run: пишет вызовы и возвращает заранее заданный код."""
+    """A subprocess.run stub: writes the calls, returns a preset code."""
 
     def __init__(self, calls: list[list[str]], returncode: int = 0, stderr: str = "") -> None:
         self.calls = calls
@@ -1641,9 +1636,8 @@ class _FakeSubprocess:
 
 
 class TestStalledPatches(PilotCase):
-    """Sealed-патч, который никто не применил. Структурная дыра была в том, что
-    `applied` не менялось никогда, поэтому «применён» и «висит с прошлой ночи»
-    выглядели одинаково."""
+    """A sealed patch nobody applied. The structural hole: `applied` never changed, so
+    "applied" and "hanging since last night" read alike."""
 
     def sealed(self, sealed_age: int = 4000, applied: bool = False, owner: str = "codex") -> dict:
         patch = self.state_dir / "patches" / "pair-codex-1.patch"
@@ -1672,11 +1666,11 @@ class TestStalledPatches(PilotCase):
         self.assertIn("pair_patch_applied", pending)
 
     def test_patch_nudge_applied_while_queued_is_dropped_not_delivered(self) -> None:
-        """Протухшее в очереди напоминание про патч не доставляется (#18).
+        """A rotten patch reminder in the queue never delivers (#18).
 
-        Измерено 2026-10-06: `stalled_patches` положил текст в очередь до
-        `patch_applied`, а `flush_outbox` доставил после — агент получил
-        ложный «висит неприменённым» при applied=true.
+        Measured 2026-10-06: `stalled_patches` laid text in the queue before
+        `patch_applied`, while `flush_outbox` delivered after — the agent took a
+        false "hanging unapplied" at applied=true.
         """
         self.sealed()
         pilot = self.pilot_with_grace(1800)
@@ -1685,36 +1679,36 @@ class TestStalledPatches(PilotCase):
         self.sealed(applied=True)
         pilot.tick()
         self.assertEqual("", pilot.pending("agy"),
-                         "патч применён, пока текст ждал, — доставлять нечего")
+                         "a patch applied while the text waited means nothing to deliver")
         self.assertIn("pilot_nudge_stale", self.transcript_kinds())
 
     def test_obligation_nudge_answered_while_queued_is_dropped_not_delivered(self) -> None:
-        """Напоминание про закрытый запрос не доставляется.
+        """A closed-request reminder never delivers.
 
-        Измерено 2026-10-07 (backlog pilot-nudge-about-closed-obligation):
-        напоминание про запрос 370 ушло через mailbox_fallback, хотя файл
-        obligations/000370 уже был закрыт ответом. Текст про запрос/seq
-        проверяется по файлу obligations/<seq>-*.json.
+        Measured 2026-10-07 (backlog pilot-nudge-about-closed-obligation): the
+        request-370 reminder left over mailbox_fallback, though the
+        obligations/000370 file already closed by an answer. The request/seq text
+        checks against the obligations/<seq>-*.json file.
         """
         p = self.pilot()
         root = self.state_dir / "obligations"
         root.mkdir(parents=True, exist_ok=True)
         (root / "000370-q.json").write_text(json.dumps({
             "seq": 370, "from": "omp", "to": "agy",
-            "opened_at": ago(60), "subject": "вопрос 370",
+            "opened_at": ago(60), "subject": "request 370",
         }), encoding="utf-8")
         state = self.write_state(roles={"agy": {"pane": "%1", "pid": os.getpid()}})
-        text = "omp ждёт ответа на запрос 370 уже 30 мин"
+        text = "omp awaits an answer to request 370 for 30 min already"
         self.assertTrue(p.nudge_still_true(state, "agy", text),
-                        "запрос открыт — условие живо")
+                        "the request is open — the condition lives")
         (root / "000370-q.json").unlink()
         self.assertFalse(p.nudge_still_true(state, "agy", text),
-                         "запрос закрыт, пока текст ждал, — доставлять нечего")
+                         "the request closed while the text waited means nothing to deliver")
 
 
     def test_patched_owner_is_told_too(self) -> None:
-        """Автор патча молчал и счёл его принятым. Его персональное дело —
-        сказать, применён он или нет."""
+        """The patch author stayed silent taking it for accepted. His own job is saying
+        whether it applied or not."""
         self.sealed()
         pilot = self.pilot_with_grace(1800)
         pilot.tick()
@@ -1723,7 +1717,7 @@ class TestStalledPatches(PilotCase):
     def test_fresh_patch_is_left_alone(self) -> None:
         self.sealed(sealed_age=60)
         self.pilot_with_grace(1800).tick()
-        self.assertEqual("", self.pilot().pending("agy"), "минуту назад запечатали — это не дефект")
+        self.assertEqual("", self.pilot().pending("agy"), "sealed a minute ago — no defect")
 
     def test_applied_patch_is_not_complained_about(self) -> None:
         self.sealed(applied=True)
@@ -1739,7 +1733,7 @@ class TestStalledPatches(PilotCase):
                                   {"owner": "codex", "sealed": True, "sealed_at": ago(4000),
                                    "applied": False}})
         self.pilot_with_grace(1800).tick()
-        self.assertEqual("", self.pilot().pending("agy"), "в аудите патчей не бывает вовсе")
+        self.assertEqual("", self.pilot().pending("agy"), "no patch audits at all")
 
     def test_nag_is_sent_once(self) -> None:
         self.sealed()
@@ -1747,25 +1741,25 @@ class TestStalledPatches(PilotCase):
         pilot.tick()
         first = pilot.pending("agy")
         pilot.tick()
-        self.assertEqual(first, pilot.pending("agy"), "одно и то же письмо дважды не отправляем")
+        self.assertEqual(first, pilot.pending("agy"), "never sending the same letter twice")
 
     def test_stall_key_survives_a_path_with_slashes(self) -> None:
-        """Ключ строится из пути патча. Если в имя отметки попадёт '/', remember()
-        упадёт на первом же патче — и надзиратель упадёт вместе с ним."""
+        """The key builds from the patch path. A slash inside the mark name drops remember()
+        on the very first patch — with the overseer falling together."""
         self.sealed()
         pilot = self.pilot_with_grace(1800)
         pilot.tick()
         stamps = [p.name for p in (self.state_dir / "pilot").iterdir() if p.name.startswith(".stalled")]
-        self.assertTrue(stamps, "отметка должна лежать плоско в pilot/, а не в каталогах")
+        self.assertTrue(stamps, "a mark must lie flat in pilot/, never in dirs")
         self.assertTrue(all("/" not in name for name in stamps))
 
 
 class TestStamps(PilotCase):
-    """Отметки должны переживать перезапуск сверхвизора, иначе он с утра
-    «не помнит», что уже дёргал соседа, и пишет то же самое снова."""
+    """Marks must survive the supervisor restart, or mornings find it "forgetting"
+    past neighbour pokes, writing the same anew."""
 
     def test_stamp_name_is_stable_across_processes(self) -> None:
-        """Встроенный hash() для строк случайный на каждый запуск Python."""
+        """The builtin hash() on strings randomizes every Python launch."""
         script = (
             "import importlib.util, sys;"
             f"spec=importlib.util.spec_from_loader('p', None);"
@@ -1781,7 +1775,7 @@ class TestStamps(PilotCase):
                                 env=dict(os.environ, PYTHONHASHSEED="999"))
         self.assertTrue(first.returncode == 0, first.stderr)
         self.assertEqual(first.stdout.strip(), second.stdout.strip(),
-                         "имя отметки не должно зависеть от PYTHONHASHSEED")
+                         "a mark name must never depend on PYTHONHASHSEED")
 
     def test_stamp_name_has_no_path_separators(self) -> None:
         name = pairpilot.stamp_name("stalled-/tmp/x/.pair/patches/pair-codex-1.patch-agy")
@@ -1789,8 +1783,8 @@ class TestStamps(PilotCase):
 
 
 class TestCheckpoint(PilotCase):
-    """В semi закрыть раунд нельзя без слова человека. Значит человек должен
-    получить всё для решения и команду, которой решает."""
+    """In semi closing a round takes the human word. So the human must take everything
+    for deciding plus the command that decides."""
 
     def verify_state(self, **extra) -> None:
         self.write_state(phase="verify", round=4, writer="agy",
@@ -1806,16 +1800,16 @@ class TestCheckpoint(PilotCase):
         pilot = self.pilot()
         pilot.tick()
         digest = self.state_dir / "pilot" / "checkpoint-4.md"
-        self.assertTrue(digest.exists(), "человеку нужен дайджест, а не тишина")
+        self.assertTrue(digest.exists(), "the human needs a digest, not silence")
         text = digest.read_text(encoding="utf-8")
         self.assertIn("bin/pairctl ok", text)
         self.assertIn("pair_evidence", text)
         self.assertIn("pilot_checkpoint", self.transcript_kinds())
 
     def test_semi_with_ok_writes_no_digest(self) -> None:
-        # ok засчитывается только если сказано на verify/done, а прогон засчитывается
-        # только от писателя — в фикстуре writer=agy, поэтому role тоже agy. Слово
-        # без фазы и факт без роли — это не то же самое.
+        # ok counts only when said on verify/done, while a run counts only from the
+        # writer — the fixture sets writer=agy, so role reads agy too. A word with no
+        # phase and a fact with no role never mean the same.
         self.verify_state(autonomy="semi", human_ok=[{"round": 4, "phase": "verify"}],
                           evidence=[{"round": 4, "kind": "test", "value": "117 passed",
                                      "ok": True, "role": "agy"},
@@ -1826,19 +1820,19 @@ class TestCheckpoint(PilotCase):
         self.assertFalse((self.state_dir / "pilot" / "checkpoint-4.md").exists())
 
     def test_semi_with_ok_but_no_evidence_still_digests(self) -> None:
-        """Слово человека получили, а доказательства нет — закрывать всё равно
-        нечем, и дайджест должен называть именно это."""
+        """The human word arrived, but no proof — still nothing to close with, and the
+        digest must name exactly that."""
         self.verify_state(autonomy="semi", human_ok=[{"round": 4, "phase": "verify"}])
         pilot = self.pilot()
         pilot.tick()
         text = (self.state_dir / "pilot" / "checkpoint-4.md").read_text(encoding="utf-8")
         self.assertIn("pair_evidence", text)
         self.assertNotIn("pairctl ok", text.split("## What to do")[0],
-                         "слово человека уже есть, повторно просить его не нужно")
+                         "the human word stands already, asking again never needed")
 
     def test_ok_given_on_plan_is_asked_for_again(self) -> None:
-        """Одобрение плана не открывает закрытие раунда: человек должен увидеть
-        результат и сказать «ок» уже на verify."""
+        """A plan approval never opens the round close: the human must see the result and
+        say "ok" already on verify."""
         self.verify_state(autonomy="semi", human_ok=[{"round": 4, "phase": "plan"}],
                           evidence=[{"round": 4, "kind": "test", "value": "117 passed",
                                      "ok": True, "role": "agy"}])
@@ -1846,7 +1840,7 @@ class TestCheckpoint(PilotCase):
         pilot.tick()
         text = (self.state_dir / "pilot" / "checkpoint-4.md").read_text(encoding="utf-8")
         self.assertIn("bin/pairctl ok", text,
-                      "слово, сказанное не на том чекпоинте, надо услышать заново")
+                      "a word said at the wrong checkpoint must hear anew")
 
     def test_auto_needs_no_human_word(self) -> None:
         self.verify_state(autonomy="auto")
@@ -1874,8 +1868,8 @@ class TestCheckpoint(PilotCase):
         self.assertIn("pair-codex-9.patch", text)
 
     def test_unknown_autonomy_is_treated_as_observe(self) -> None:
-        """Состояние от более новой сборки не должно выдать этой сборке больше
-        прав, чем человек просил."""
+        """Newer-build state must never grant this build more rights than the human
+        asked."""
         self.verify_state(autonomy="turbo")
         pilot = self.pilot()
         pilot.tick()
@@ -1909,18 +1903,18 @@ class TestReportNotCovered(PilotCase):
 
 
 class TestOperatorSafety(PilotCase):
-    """Сверхвизор не должен вредить тому, кто его запустил."""
+    """The supervisor must never harm whoever launched it."""
 
     def test_own_pane_is_never_touched(self) -> None:
-        """Панель, в которой живёт сам сверхвизор, — это панель человека. Вбить
-        туда напоминание значит съесть то, что он печатает."""
+        """The pane where the supervisor itself lives is the human pane. Driving a
+        reminder there means eating what he types."""
         self.inbox("opencode", 4)
         self.write_state(writer="opencode", seen={"opencode": 0},
                          roles={"opencode": {"last_seen": ago(9999), "pane": "%19"}})
         pilot = self.pilot()
         pilot.own_pane = "%19"
         pilot.tick()
-        self.assertEqual("", pilot.pending("opencode"), "в свою панель не кладём")
+        self.assertEqual("", pilot.pending("opencode"), "never laying into our own pane")
         self.assertIn("pilot_own_pane", self.transcript_kinds())
 
     def test_pane_of_another_role_is_still_fine(self) -> None:
@@ -1929,15 +1923,15 @@ class TestOperatorSafety(PilotCase):
         pilot = self.pilot()
         pilot.own_pane = "%19"
         pilot.tick()
-        self.assertTrue(self.wake(pilot, "agy"), "чужая панель — наша работа")
+        self.assertTrue(self.wake(pilot, "agy"), "a foreign pane is our work")
 
     def test_daemon_ignores_inherited_tmux_pane(self) -> None:
-        """Демон без PAIR_PILOT_PANE не усыновляет панель из окружения.
+        """A daemon with no PAIR_PILOT_PANE never adopts an env pane.
 
-        Измерено 2026-10-07: пилот, запущенный из панели агента (%3332),
-        наследовал TMUX_PANE и вечно пропускал роль этой панели через
-        own_pane-skip — надзор за ней молча стоял. Демон стартует с чистым
-        окружением, своя панель задаётся только явно через PAIR_PILOT_PANE.
+        Measured 2026-10-07: a pilot launched from an agent pane (%3332) inherited
+        TMUX_PANE, skipping the pane role forever over own_pane-skip — supervision
+        silently stood. A daemon starts with a clean env, its own pane sets only
+        explicit over PAIR_PILOT_PANE.
         """
         os.environ["TMUX_PANE"] = "%20"
         os.environ.pop("PAIR_PILOT_PANE", None)
@@ -1948,31 +1942,31 @@ class TestOperatorSafety(PilotCase):
             os.environ.pop("TMUX_PANE", None)
 
     def test_own_pane_recorded_as_a_session_address_is_still_own(self) -> None:
-        """Панель человека может быть записана адресом сессии, а не `%N`.
+        """The human pane may record as a session address, not `%N`.
 
-        Сверхвизор знает свою панель из TMUX_PANE, то есть числом, а в ростере
-        она лежит адресом `mail:0.0`. Сравнение строк на этом расходится, и
-        сверхвизор начинает вбивать напоминания в панель оператора — то есть
-        съедать его ввод. Это не гипотеза: адреса сессий уже пишутся в `_register`,
-        а пилот читает то, что там написано.
+        The supervisor knows its pane from TMUX_PANE, as a number, while the roster
+        holds it as the `mail:0.0` address. Line comparing diverges on that, and the
+        supervisor starts driving reminders into the operator pane — eating his
+        input. No hypothesis: session addresses already write in `_register`, and
+        the pilot reads what stands written.
         """
         self.inbox("opencode", 4)
         self.write_state(writer="opencode", seen={"opencode": 0},
                          roles={"opencode": {"last_seen": ago(9999), "pane": "mail:0.0"}})
         pilot = self.pilot()
         pilot.own_pane = "%19"
-        # Настоящий ключ группировки вместо заглушки: здесь важно проверить
-        # сравнение, а не то, что tmux выключен.
+        # The true grouping key instead of a stub: comparing must check here, not that
+        # tmux switches off.
         pilot.pane_key = lambda pane: {
             "mail:0.0": "mail:0.0", "%19": "mail:0.0", "%20": "mail:0.1",
         }.get(pane, pane)
         pilot.tick()
-        self.assertEqual("", pilot.pending("opencode"), "в свою панель не кладём")
+        self.assertEqual("", pilot.pending("opencode"), "never laying into our own pane")
         self.assertIn("pilot_own_pane", self.transcript_kinds())
 
 
 class TestVisibleWork(PilotCase):
-    """last_seen меряет участие в протоколе, а не работу."""
+    """last_seen measures protocol partaking, not work."""
 
     def patch_composer(self, line, empty: bool) -> None:
         pairpilot.pane_alive = lambda tmux, pane: True
@@ -2001,29 +1995,29 @@ class TestVisibleWork(PilotCase):
         self.silent_writer_state()
         pilot = self.pilot()
         pilot.tmux = "/usr/bin/true"
-        self.patch_composer("> я дописываю тест", empty=False)
+        self.patch_composer("> finishing the test", empty=False)
         pilot.tick()
         self.assertEqual("", pilot.pending("agy"),
-                         "агент печатает — значит работает, и толкать его незачем")
+                         "an agent typing means working, never worth a push")
 
     def test_idle_pane_is_woken_silently(self) -> None:
-        """Пустой композер — дефект, и раньше он лечился печатью.
+        """An empty composer is a defect, once healed by typing.
 
-        Теперь он лечится файлом. Проверка переехала с «что в очереди печати» на
-        «что в пробуждении», потому что по смыслу дефект один и тот же, а
-        количество нажатий клавиш — как раз то, что мы убираем.
+        Now a file heals it. The check moved from "what stands in the print queue"
+        to "what stands in the wake", because the defect reads one and the same,
+        while keypress count is exactly what leaves.
         """
         self.silent_writer_state()
         pilot = self.pilot()
         pilot.tmux = "/usr/bin/true"
         self.patch_composer(">", empty=True)
         pilot.tick()
-        self.assertTrue(self.wake(pilot, "agy"), "пустой композер — вот это дефект")
+        self.assertTrue(self.wake(pilot, "agy"), "an empty composer — exactly the defect")
         self.assert_enqueued_for_push(pilot, "agy")
 
     def test_missing_composer_counts_as_busy(self) -> None:
-        """TUI перерисовывается, композера нет. Бить в этот момент — значит
-        отправить клавиши в неизвестно что."""
+        """The TUI redraws, no composer in sight. Striking now means sending keys into
+        unknown what."""
         self.silent_writer_state()
         pilot = self.pilot()
         pilot.tmux = "/usr/bin/true"
@@ -2033,7 +2027,7 @@ class TestVisibleWork(PilotCase):
 
 
 class TestSmartAutoCompact(PilotCase):
-    """Тесты S2: Smart Auto-Compact при зависшем Working... и превентивный на done."""
+    """S2 tests: Smart Auto-Compact on a hung Working... plus a done preemptive."""
 
     def setUp(self) -> None:
         super().setUp()
@@ -2042,8 +2036,8 @@ class TestSmartAutoCompact(PilotCase):
         self._orig_deliver = pairpilot.deliver
         self._orig_subprocess_run = pairpilot.subprocess.run
         self._orig_supports_compact = pairpilot.Pilot.supports_compact
-        # По умолчанию все роли понимают /compact: существующие тесты проверяют
-        # механику отправки, а не гейт. Гейт — отдельными тестами ниже.
+        # By default all roles understand /compact: the existing tests check the send
+        # mechanics, not the gate. The gate gets its own tests below.
         pairpilot.Pilot.supports_compact = lambda self, role: True
 
         self.delivered_commands = []
@@ -2071,19 +2065,19 @@ class TestSmartAutoCompact(PilotCase):
         pilot.tmux = "/usr/bin/true"
         pilot.stall_timeout = 10.0
 
-        # Мокаем зависший спиннер: composer_line возвращает None (занят), экран не меняется
+        # Mocking a hung spinner: composer_line returns None (busy), the screen never
         pairpilot.composer_line = lambda lines: None
         pairpilot.capture = lambda tmux, pane: ["⎋ Working...", "Thinking..."]
 
-        # 1-й тик: фиксирует снимок экрана в _screen_hashes
+        # changes. 1st tick: fixes the screen snapshot in _screen_hashes.
         pilot.tick()
         self.assertEqual([], self.delivered_commands)
 
-        # Симулируем истечение stall_timeout с неизменным экраном
+        # Simulating the stall_timeout expiry with an unchanged screen.
         screen_hash, first_ts = pilot._screen_hashes["omp"]
         pilot._screen_hashes["omp"] = (screen_hash, first_ts - 15.0)
 
-        # 2-й тик: порог превышен, отправляется Escape и /compact
+        # 2nd tick: the threshold passed, Escape and /compact send.
         pilot.tick()
         self.assertTrue(any("Escape" in cmd for cmd in self.sent_keys))
         self.assertTrue(any(text == "/compact" for pane, text in self.delivered_commands))
