@@ -183,7 +183,9 @@ def _note_for_kind(notes: list[dict[str, str]], kind: str) -> str:
 
 
 _NEGATIVE_MARKERS = ("NOT cover", "NOT prove", "does NOT", "not covered",
-                     "out of scope", "leaves out", "stays quiet", "remains before")
+                     "out of scope", "leaves out", "stays quiet", "remains before",
+                     "не покрывает", "не проверен", "не проверяе", "вне скоупа",
+                     "упущен", "осталось", "не сделано")
 
 
 def _negative_lines(state_dir: Path, kinds: list[str]) -> list[dict[str, str]]:

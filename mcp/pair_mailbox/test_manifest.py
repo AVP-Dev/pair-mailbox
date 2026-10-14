@@ -128,6 +128,19 @@ class TestNegativeAndMethod(unittest.TestCase):
         self.assertTrue(any("#107" in g for g in gaps))
 
 
+class TestNegativeRuMarkers(unittest.TestCase):
+    def test_russian_markers_found(self) -> None:
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            sd = Path(tmp)
+            (sd / "notes").mkdir()
+            (sd / "notes" / "verdict-ru.md").write_text(
+                "## h\n\nЧего не покрывает: слияние.\n", encoding="utf-8")
+            st = _state()
+            m = derive_manifest(sd, st)
+        self.assertTrue(any("verdict-ru.md" in n["where"] for n in m["negative"]))
+
+
 class TestRecheckDelta(unittest.TestCase):
     """Round 94 C10: delta-zero is the only pass."""
 

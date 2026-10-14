@@ -74,8 +74,18 @@ def render_text(manifest: dict) -> str:
             mark = "OK" if item.get("ok") else "FAIL"
             lines.append(f"- [{mark}] {item.get('kind')} ({item.get('role')}) {item.get('value')}")
     lines.append("")
-    lines.append("## NOT covered (read the verdict notes)")
-    lines.append(f"- {manifest.get('negative', '—')}")
+    lines.append("## NOT covered")
+    negative = manifest.get("negative") or []
+    if isinstance(negative, str):
+        lines.append(f"- {negative}")
+    elif negative:
+        for entry in negative[-10:]:
+            if isinstance(entry, str):
+                lines.append(f"- {entry}")
+            else:
+                lines.append(f"- {entry.get('where', '?')} — {entry.get('text', '')}")
+    else:
+        lines.append("- (no NOT-covered markers found in verdict notes)")
     return "\n".join(lines)
 
 
@@ -139,9 +149,16 @@ def main(argv: list[str] | None = None) -> int:
         return recheck(state_dir, args.round)
     manifest = _load_manifest(state_dir, args.round)
     if manifest is None:
-        print(f"pairreport: no manifest for round {args.round} yet — it writes at close",
+        try:
+            state = json.loads((state_dir / "state.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            print(f"pairreport: cannot read state: {exc}", file=sys.stderr)
+            return 2
+        from manifest import derive_manifest
+        manifest = derive_manifest(state_dir, state)
+        manifest["_derived"] = True
+        print("(derived live from the current tree — not the close-written claim)",
               file=sys.stderr)
-        return 2
     if args.json:
         print(json.dumps(manifest, ensure_ascii=False, indent=1))
     else:
