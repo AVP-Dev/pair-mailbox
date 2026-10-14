@@ -2097,11 +2097,11 @@ class TestSmartAutoCompact(PilotCase):
         pilot.tick()
         screen_hash, first_ts = pilot._screen_hashes["omp"]
 
-        # Экран изменился (агент реально генерирует вывод)
+        # The screen changed (the agent truly generates output)
         captured_lines = ["⎋ Working... token 2"]
         pilot._screen_hashes["omp"] = (screen_hash, first_ts - 15.0)
 
-        # 2-й тик: хэш изменился -> сброс таймера, компакта нет
+        # 2nd tick: the hash changed -> the timer resets, no compact
         pilot.tick()
         self.assertEqual([], self.delivered_commands)
 
@@ -2111,7 +2111,7 @@ class TestSmartAutoCompact(PilotCase):
         pilot = self.pilot()
         pilot.tmux = "/usr/bin/true"
 
-        # Композер свободен
+        # The composer is free
         pairpilot.composer_line = lambda lines: ">"
         pairpilot.is_composer_empty = lambda line: True
         pairpilot.capture = lambda tmux, pane: [">"]
@@ -2120,7 +2120,7 @@ class TestSmartAutoCompact(PilotCase):
         self.assertTrue(any(text == "/compact" for pane, text in self.delivered_commands))
 
     def test_stalled_busy_without_compact_support_sends_only_escape(self) -> None:
-        """CLI без /compact: зависший агент получает Escape, но не /compact."""
+        """A CLI with no /compact: a hung agent takes Escape, but no /compact."""
         self.write_state(writer="omp", roles={"omp": {"pane": "%3", "last_seen": ago(100)}})
         pilot = self.pilot()
         pilot.tmux = "/usr/bin/true"
@@ -2140,7 +2140,7 @@ class TestSmartAutoCompact(PilotCase):
         self.assertNotIn("pilot_auto_compact", self.transcript_kinds())
 
     def test_preventive_compact_skipped_without_support(self) -> None:
-        """Превентивный /compact на done: роль без поддержки пропускается."""
+        """A preemptive /compact on done: an unsupported role skips."""
         self.write_state(phase="done", closed_at=now_iso(),
                          writer="agy", roles={"omp": {"pane": "%3", "last_seen": ago(10)}})
         pilot = self.pilot()
@@ -2155,7 +2155,7 @@ class TestSmartAutoCompact(PilotCase):
         self.assertFalse(any(text == "/compact" for pane, text in self.delivered_commands))
 
     def test_supports_compact_reads_profiles_hermetically(self) -> None:
-        """Гейт читает cli-profiles.json: True только у явного флага."""
+        """The gate reads cli-profiles.json: True only at an explicit flag."""
         import json
         profiles = {
             "pi": {"launch": "pi", "supports_compact": True},
@@ -2169,7 +2169,7 @@ class TestSmartAutoCompact(PilotCase):
             json.dumps(profiles), encoding="utf-8")
         pilot = self.pilot()
         saved = pairpilot.ROOT
-        # setUp ставит заглушку True на класс — для этого теста нужен настоящий метод.
+        # setUp stubs True on the class — this test needs the real method.
         real = self._orig_supports_compact
         try:
             pairpilot.ROOT = self.state_dir
@@ -2193,7 +2193,7 @@ class TestSmartAutoCompact(PilotCase):
                 "stale_files": ["server.py"],
                 "newest_code_file": "server.py",
                 "lag_seconds": 120.0,
-                "why": "код изменен после старта",
+                "why": "code changed past start",
             }
             self.write_state(writer="agy", roles={"agy": {"pane": "%1", "last_seen": ago(10)}})
             pilot = self.pilot()
@@ -2202,7 +2202,7 @@ class TestSmartAutoCompact(PilotCase):
         finally:
             server_freshness.check_server_freshness = orig
     def test_stale_server_warns_even_when_parked(self) -> None:
-        """Stale-check осознанно живёт в парковке: замороженные фазы надо чинить."""
+        """The stale check knowingly lives in parking: frozen phases need fixing."""
         import server_freshness
         orig = server_freshness.check_server_freshness
         try:
@@ -2211,28 +2211,27 @@ class TestSmartAutoCompact(PilotCase):
                 "stale_files": ["server.py"],
                 "newest_code_file": "server.py",
                 "lag_seconds": 60.0,
-                "why": "код изменен после старта",
+                "why": "code changed past start",
             }
             st = self.write_state(writer="agy", phase="done",
                                   roles={"agy": {"pane": "%1", "last_seen": ago(10)}})
             pilot = self.pilot()
             pilot.tick()
             self.assertTrue(pilot.is_done_parked(st),
-                            "прекондиция: раунд в done без задач припаркован")
+                            "precondition: a done round with no tasks stays parked")
             self.assertIn("pilot_server_stale", self.transcript_kinds())
         finally:
             server_freshness.check_server_freshness = orig
 
 class TestObligations(PilotCase):
-    """Запрос, на который не ответили, обязан быть виден. Иначе он тихо умирает
-    в ящике, а пара выглядит спокойно."""
+    """An unanswered request must show. Or it dies silent in the box while the pair reads calm."""
 
     def obligation(self, seq: int, sender: str, receiver: str, age: int) -> None:
         root = self.state_dir / "obligations"
         root.mkdir(parents=True, exist_ok=True)
         (root / f"{seq:06d}-x.json").write_text(json.dumps({
             "seq": seq, "from": sender, "to": receiver,
-            "opened_at": ago(age), "subject": f"вопрос {seq}",
+            "opened_at": ago(age), "subject": f"request {seq}",
         }), encoding="utf-8")
 
     def test_fresh_obligation_is_left_alone(self) -> None:
@@ -2240,15 +2239,15 @@ class TestObligations(PilotCase):
         self.write_state(roles={"agy": {"last_seen": ago(30), "pane": "%20"}})
         pilot = self.pilot()
         pilot.tick()
-        self.assertEqual("", pilot.pending("agy"), "только что спросили — ждём")
+        self.assertEqual("", pilot.pending("agy"), "just asked — awaiting")
 
     def test_recipient_poked_within_five_minutes(self) -> None:
-        """P1: затык будится за <5 мин. Граница 180с: 60с — молчим, 200с — будим."""
+        """P1: a stuck one wakes inside <5 min. The 180s edge: 60s means silent, 200s means waking."""
         self.obligation(8, "opencode", "agy", age=60)
         self.write_state(roles={"agy": {"last_seen": ago(30), "pane": "%20"}})
         pilot = self.pilot()
         pilot.tick()
-        self.assertEqual("", pilot.pending("agy"), "минута — ещё ждём")
+        self.assertEqual("", pilot.pending("agy"), "a minute means awaiting still")
         self.obligation(9, "opencode", "agy", age=200)
         pilot.tick()
         self.assertIn("mailbox holds no answer", pilot.pending("agy"))
@@ -2259,7 +2258,7 @@ class TestObligations(PilotCase):
         pilot = self.pilot()
         pilot.tick()
         self.assertIn("mailbox holds no answer", pilot.pending("agy"))
-        self.assertEqual("", pilot.pending("opencode"), "автор пока не в курсе, рано")
+        self.assertEqual("", pilot.pending("opencode"), "the author never learned yet, too early")
 
     def test_author_is_told_when_the_wait_stretches(self) -> None:
         self.obligation(7, "opencode", "agy", age=3000)
@@ -2281,11 +2280,11 @@ class TestObligations(PilotCase):
     def test_broken_obligation_file_is_cleaned_not_crashed_on(self) -> None:
         root = self.state_dir / "obligations"
         root.mkdir(parents=True, exist_ok=True)
-        (root / "000001-bad.json").write_text("{не json", encoding="utf-8")
+        (root / "000001-bad.json").write_text("{not json", encoding="utf-8")
         self.write_state(roles={"agy": {"last_seen": ago(30), "pane": "%20"}})
         pilot = self.pilot()
         pilot.tick()
-        self.assertEqual([], list(root.glob("*.json")), "битое обязательство убираем")
+        self.assertEqual([], list(root.glob("*.json")), "a broken obligation drops")
 
     def test_skipped_role_gets_no_obligation_nag(self) -> None:
         self.obligation(7, "codex", "agy", age=3000)
@@ -2293,22 +2292,22 @@ class TestObligations(PilotCase):
                                 "codex": {"last_seen": ago(30), "pane": "%20"}})
         pilot = self.pilot()
         pilot.tick()
-        self.assertEqual("", pilot.pending("agy"), "общая панель — не тыкаем")
+        self.assertEqual("", pilot.pending("agy"), "a shared pane means no poking")
 
 
 class TestDoneParking(PilotCase):
-    """Тесты парковки пилота в фазе done для защиты токенов от холостого хода."""
+    """Pilot-parking tests in the done phase, guarding tokens from idle burn."""
 
     def obligation(self, seq: int, sender: str, receiver: str, age: int) -> None:
         root = self.state_dir / "obligations"
         root.mkdir(parents=True, exist_ok=True)
         (root / f"{seq:06d}-x.json").write_text(json.dumps({
             "seq": seq, "from": sender, "to": receiver,
-            "opened_at": ago(age), "subject": f"вопрос {seq}",
+            "opened_at": ago(age), "subject": f"request {seq}",
         }), encoding="utf-8")
 
     def test_done_without_obligations_or_tasks_is_parked(self) -> None:
-        # Фаза done, во входящих 2 сообщения, но задач и обязательств нет
+        # The done phase, 2 messages incoming, but no tasks and no obligations
         self.inbox("agy", 2)
         self.write_state(phase="done", round_num=65, writer="agy",
                          roles={"agy": {"last_seen": ago(1200), "pane": "%1"},
@@ -2316,15 +2315,15 @@ class TestDoneParking(PilotCase):
         pilot = self.pilot()
         self.assertTrue(pilot.is_done_parked(pilot.state()))
         pilot.tick()
-        # Ни писателя, ни критика не спамим толчками в композер
+        # Neither writer nor critic takes composer pushes as spam
         self.assertEqual("", pilot.pending("agy"))
         self.assertEqual("", pilot.pending("omp"))
-        # Проверяем запись события pilot_parked в транскрипт
+        # Checking the pilot_parked event record in the transcript
         transcript = self.state_dir / "transcript.jsonl"
         self.assertIn("pilot_parked", transcript.read_text(encoding="utf-8"))
 
     def test_done_with_active_obligations_is_not_parked_and_alerts(self) -> None:
-        # Фаза done, но есть зависшее обязательство
+        # The done phase, but a hanging obligation stands
         self.obligation(10, "omp", "agy", age=3000)
         self.write_state(phase="done", round_num=65, writer="agy",
                          roles={"agy": {"last_seen": ago(1200), "pane": "%1"},
@@ -2335,7 +2334,7 @@ class TestDoneParking(PilotCase):
         self.assertIn("mailbox holds no answer", pilot.pending("agy"))
 
     def test_active_phase_is_not_parked(self) -> None:
-        # Активная фаза implement — обычный unread nudge работает
+        # The live implement phase — the plain unread nudge works
         self.inbox("agy", 1)
         self.write_state(phase="implement", round_num=66, writer="agy",
                          roles={"agy": {"last_seen": ago(30), "pane": "%1"},
