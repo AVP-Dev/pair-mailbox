@@ -1,13 +1,13 @@
-"""Проверка свежести рантайма MCP-сервера относительно кода на диске.
+"""Checking the MCP-server runtime freshness against the on-disk code.
 
-Зачем: серверы pair-mailbox долгоживущие (запускаются при старте tmux-сессии).
-Если файлы `mcp/pair_mailbox/*.py` или другие ключевые модули обновлены в репозитории
-(например, добавлены новые гейты plan_gate / intent_gate / review_gate),
-процесс сервера продолжает исполнять старый байт-код из памяти. В результате
-все раунды после коммита проходят мимо машинных гейтов (инцидент раунда 63, notes/finding.md).
+Why: pair-mailbox servers live long (launching at tmux-session start). When
+`mcp/pair_mailbox/*.py` files or other key modules update in the repo (say new
+plan_gate / intent_gate / review_gate gates land), the server process keeps running
+the old bytecode from memory. Past the commit every round then walks by the machine
+gates (the round-63 incident, notes/finding.md).
 
-Модуль вынесен из `server.py` по правилу размера: монолит заморожен
-(scripts/file-size-baseline.tsv), и логика свежести изолирована в отдельный компонент.
+The module moved out of `server.py` by the size rule: the monolith stands frozen
+(scripts/file-size-baseline.tsv), with freshness logic isolated in its own component.
 """
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-# Время старта текущего процесса Python: инициализируется при загрузке модуля
+# The current Python process start time: set at module load
 _PROCESS_START_TIME: float = time.time()
 try:
     _proc_stat = Path(f"/proc/{os.getpid()}")
@@ -29,19 +29,19 @@ except (OSError, ValueError):
 
 
 def get_process_start_time() -> float:
-    """Вернуть метку времени (epoch seconds) старта текущего процесса."""
+    "Return the current-process start timestamp (epoch seconds)."
     return _PROCESS_START_TIME
 
 
 def server_code_dir() -> Path:
-    """Каталог исходников сервера mcp/pair_mailbox."""
+    "The mcp/pair_mailbox server source dir."
     return Path(__file__).resolve().parent
 
 
 def latest_code_mtime(code_dir: Path | None = None) -> tuple[float, str]:
-    """Найти максимальный mtime среди файлов исходников *.py в каталоге сервера.
+    """Find the max mtime across the server-dir *.py source files.
 
-    Возвращает (max_mtime, path_of_newest_file).
+    Returns (max_mtime, path_of_newest_file).
     """
     target_dir = code_dir if code_dir is not None else server_code_dir()
     newest_mtime = 0.0
@@ -63,7 +63,7 @@ def latest_code_mtime(code_dir: Path | None = None) -> tuple[float, str]:
 def list_stale_files(code_dir: Path | None = None,
                      process_start_ts: float | None = None,
                      tolerance: float = 2.0) -> list[str]:
-    """Вернуть список имен *.py файлов, чей mtime новее старта процесса с учетом допуска."""
+    "Return the *.py file names with mtime past the process start, tolerance in."
     start_ts = process_start_ts if process_start_ts is not None else get_process_start_time()
     target_dir = code_dir if code_dir is not None else server_code_dir()
     cutoff = start_ts + tolerance
@@ -82,16 +82,16 @@ def list_stale_files(code_dir: Path | None = None,
 
 def check_server_freshness(code_dir: Path | None = None,
                            process_start_ts: float | None = None) -> dict[str, Any]:
-    """Проверить, свеж ли исполняемый сервер относительно файлов на диске.
+    """Check whether the running server stands fresh against on-disk files.
 
-    Если mtime файлов исходников новее старта процесса с запасом толерантности
-    (например, > 2 секунд), сервер считается устаревшим (stale).
+    When the source-file mtime runs past the process start by the tolerance margin
+    (say > 2 seconds), the server counts stale.
     """
     start_ts = process_start_ts if process_start_ts is not None else get_process_start_time()
     newest_mtime, newest_file = latest_code_mtime(code_dir)
     stale_files = list_stale_files(code_dir, start_ts)
     
-    # Допуск 2.0 секунды на рассинхрон файловой системы при одновременном старте
+    # A 2.0-second tolerance for filesystem skew at concurrent launch
     is_fresh = len(stale_files) == 0
     lag_seconds = max(0.0, newest_mtime - start_ts) if not is_fresh else 0.0
 
@@ -108,19 +108,18 @@ def check_server_freshness(code_dir: Path | None = None,
         "newest_code_ts": newest_mtime,
         "lag_seconds": lag_seconds,
         "stale_files": stale_files,
-        "why": ("сервер свеж" if is_fresh else
-                f"код {newest_file} изменён {lag_seconds:.1f}с после старта сервера ({start_iso}) — "
-                f"в памяти исполняется старая версия. Требуется перезапуск MCP-сервера.")
+        "why": ("the server is fresh" if is_fresh else
+                f"code {newest_file} changed {lag_seconds:.1f}s past the server start ({start_iso}) — "
+                f"an old version runs in memory. Restart the MCP server.")
     }
 
 
 def assert_server_fresh(reopening: bool = False, backward: bool = False) -> None:
-    """Гейт свежести сервера для tool_pair_advance.
+    """The server-freshness gate for tool_pair_advance.
 
-    Откаты назад (backward) разрешены всегда для аварийного спасения,
-    за исключением reopening (done -> implement), где запуск нового раунда
-    на устаревшем сервере запрещен.
-    Любые движения вперед блокируются при stale сервере.
+    Backward steps stay always allowed for emergency rescue, except reopening
+    (done -> implement), where launching a new round on a stale server refuses.
+    Any forward move blocks on a stale server.
     """
     if backward and not reopening:
         return
@@ -128,8 +127,8 @@ def assert_server_fresh(reopening: bool = False, backward: bool = False) -> None
     if not status["fresh"]:
         from server import ProtocolError
         files = ", ".join(status["stale_files"]) or status["newest_code_file"]
-        action = "переоткрытием раунда" if reopening else "переводом фазы"
+        action = "by reopening the round" if reopening else "by moving the phase"
         raise ProtocolError(
-            f"сервер устарел: {status['why']}",
-            f"Файлы с изменениями: {files}. Перезапустите MCP-сервер перед {action}."
+            f"the server went stale: {status['why']}",
+            f"Changed files: {files}. Restart the MCP server before {action}."
         )

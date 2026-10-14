@@ -33,7 +33,7 @@ class TestServerFreshness(unittest.TestCase):
             self.assertTrue(verdict["fresh"])
             self.assertEqual("foo.py", verdict["newest_code_file"])
             self.assertEqual([], verdict["stale_files"])
-            self.assertIn("свеж", verdict["why"])
+            self.assertIn("fresh", verdict["why"])
 
     def test_stale_when_files_newer_than_start(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -49,7 +49,7 @@ class TestServerFreshness(unittest.TestCase):
             self.assertFalse(verdict["fresh"])
             self.assertEqual("bar.py", verdict["newest_code_file"])
             self.assertEqual(["bar.py"], verdict["stale_files"])
-            self.assertIn("Требуется перезапуск", verdict["why"])
+            self.assertIn("Restart the MCP server", verdict["why"])
             self.assertGreater(verdict["lag_seconds"], 90.0)
 
     def test_tolerance_window_considers_nearly_simultaneous_fresh(self) -> None:
@@ -91,7 +91,7 @@ class TestServerFreshnessWiring(PairTestCase):
             # Попытка движения вперед (например scoping -> plan) должна быть отклонена
             with self.assertRaises(ProtocolError) as ctx:
                 self.writer.tool_pair_advance("plan")
-            self.assertIn("сервер устарел", str(ctx.exception))
+            self.assertIn("server went stale", str(ctx.exception))
             self.assertIn("server.py", str(ctx.exception.hint))
         finally:
             server_freshness.check_server_freshness = orig
@@ -134,7 +134,7 @@ class TestServerFreshnessWiring(PairTestCase):
             # Reopening (done -> implement) блокируется при stale
             with self.assertRaises(ProtocolError) as ctx:
                 self.writer.tool_pair_advance("implement")
-            self.assertIn("сервер устарел", str(ctx.exception))
+            self.assertIn("server went stale", str(ctx.exception))
         finally:
             server_freshness.check_server_freshness = orig
 
