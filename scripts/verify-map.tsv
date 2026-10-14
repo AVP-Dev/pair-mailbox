@@ -1,9 +1,9 @@
-# file<TAB>suite — какая проверка покрывает файл. Точное совпадение или префикс каталога.
-# Использует scripts/verify-changed.sh: после правки гоняет static + только
-# затронутые сюиты вместо всего слоя (5.5 мин → секунды).
-# Формат имён сюит — из scripts/verification-profile.tsv.
-# Суффикс -check (scripts-check, docs-check, pairchat-check): отдельной сюиты
-# нет, покрыто static (verify-changed.sh: static гоняется всегда).
+# file<TAB>suite — which check covers the file. An exact match or a dir prefix.
+# Used by scripts/verify-changed.sh: past an edit runs static plus only the touched
+# suites instead of the whole layer (5.5 min down to seconds).
+# Suite names use scripts/verification-profile.tsv.
+# The -check suffix (scripts-check, docs-check, pairchat-check): no separate suite,
+# covered by static (verify-changed.sh: static always runs).
 mcp/pair_mailbox/composer.py	composer
 mcp/pair_mailbox/test_composer.py	composer
 mcp/pair_mailbox/test_allowlist_bypass.py	composer-bypass

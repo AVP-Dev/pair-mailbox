@@ -1,30 +1,30 @@
-# Project-local verification profile для pair-mailbox.
+# Project-local verification profile for pair-mailbox.
 #
-# Формат: name<TAB>layer<TAB>required<TAB>command
+# Format: name<TAB>layer<TAB>required<TAB>command
 # dispatcher: ./scripts/verify-project.sh [--list|--dry-run|--only layers]
 #
-# Здесь только команды, которые уже подтверждены и реально прогоняются в этом
-# репозитории. Выдуманной успешной проверки быть не должно: отсутствующая
-# проверка фиксируется как blocked, а не записывается строкой, которая всегда
-# зелёная.
+# Only commands already confirmed, truly running in this repo, stand here. No
+# invented passing check may stand: a missing check records as blocked, never as
+# a line that always stays green.
 #
-# Слои static и positive дают быстрый цикл (около 30 секунд), слой integration
-# добавляет инсталлер и занимает около шести минут. Полный гейт запускается
-# перед финализацией раунда, быстрый — после каждой правки.
 #
-# Секретов здесь быть не должно: команда, способная раскрыть секрет, не
-# попадает в гейт.
+# The static and positive layers give a fast cycle (near 30 seconds), integration
+# adds the installer taking near six minutes. The full gate launches before round
+# finalization, the fast one past every edit.
+#
+# No secrets may stand here: a command able to leak one never enters the gate.
+#
 
-# --- static: быстрые проверки перед каждой правкой ---
+# --- static: fast checks before every edit ---
 shell-syntax	static	1	bash -n scripts/verify-project.sh scripts/security-scan.sh scripts/file-size-gate.sh scripts/comment-lint.sh scripts/comment-lint_test.sh scripts/eye-of-sauron.sh scripts/eye-of-sauron_test.sh bin/pair-duo bin/pairup bin/pairctl mcp/pair_mailbox/serve.sh
 file-size	static	1	./scripts/file-size-gate.sh
 comment-lint	static	1	bash scripts/comment-lint.sh
 
-# --- positive: поведение, которое обязано работать ---
-# Наборов стало пять после выноса obligations из `server.py`: по одному тест-файлу на
-# исходник. Каждый запускается отдельно, потому что `python3 test_protocol.py`
-# больше не выполняет тесты соседних модулей, а молчаливо исключённый набор
-# выглядел бы как зелёный.
+# --- positive: behaviour that must work ---
+# Five suites past moving obligations out of `server.py`: one test file per source.
+# Each launches alone, because `python3 test_protocol.py` no longer runs neighbour
+# module tests, and a silently excluded suite would read as green.
+#
 protocol	positive	1	python3 mcp/pair_mailbox/test_protocol.py	serial
 task-banner	positive	1	python3 mcp/pair_mailbox/test_task_banner.py
 autoperms	positive	1	python3 mcp/pair_mailbox/test_autoperms.py
@@ -66,9 +66,9 @@ file-size-gate-tests	positive	1	bash scripts/file-size-gate_test.sh
 eye-deadlock	positive	1	bash scripts/eye-of-sauron_test.sh
 i18n-selftest	positive	1	python3 scripts/i18n_self_test.py
 
-# --- integration: медленное, но обязательное перед финализацией ---
+# --- integration: slow but mandatory before finalization ---
 installer	integration	1	python3 install_test.py	serial
 
-# --- security: базовая линия без внешних зависимостей ---
+# --- security: the baseline with no outside deps ---
 secret-baseline	security	1	./scripts/security-scan.sh
 wake-api	positive	1	python3 mcp/pair_mailbox/test_wake_opencode.py
