@@ -141,6 +141,33 @@ class TestNegativeRuMarkers(unittest.TestCase):
         self.assertTrue(any("verdict-ru.md" in n["where"] for n in m["negative"]))
 
 
+class TestLabeledBinding(unittest.TestCase):
+    def test_closed_round_wins(self) -> None:
+        from manifest import tasks_closed_in_round
+        tasks = [{"id": 1, "status": "done", "round": 93, "closed_round": 94}]
+        rows = tasks_closed_in_round(tasks, 94, set())
+        self.assertEqual(rows[0]["bound_by"], "closed_round")
+
+    def test_pre_d2_fallback_labeled(self) -> None:
+        from manifest import tasks_closed_in_round
+        tasks = [{"id": 1, "status": "done", "round": 94}]
+        rows = tasks_closed_in_round(tasks, 94, set())
+        self.assertIn("pre-D2", rows[0]["bound_by"])
+
+    def test_stale_server_close_via_transcript(self) -> None:
+        """The round-94 live case: no closed_round, journal has the close."""
+        from manifest import tasks_closed_in_round
+        tasks = [{"id": 107, "status": "done", "round": 93}]
+        rows = tasks_closed_in_round(tasks, 94, {107})
+        self.assertEqual(len(rows), 1)
+        self.assertIn("stale-server", rows[0]["bound_by"])
+
+    def test_unrelated_task_excluded(self) -> None:
+        from manifest import tasks_closed_in_round
+        tasks = [{"id": 5, "status": "done", "round": 91, "closed_round": 92}]
+        self.assertEqual(tasks_closed_in_round(tasks, 94, {5}), [])
+
+
 class TestRecheckDelta(unittest.TestCase):
     """Round 94 C10: delta-zero is the only pass."""
 

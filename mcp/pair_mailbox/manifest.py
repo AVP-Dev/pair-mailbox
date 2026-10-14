@@ -82,8 +82,8 @@ def derive_manifest(state_dir: Path, state: dict[str, Any]) -> dict[str, Any]:
     state_dir = Path(state_dir)
     round_number = int(state.get("round", 0))
     tasks = state.get("tasks", [])
-    closed_here = [t for t in tasks
-                   if int(t.get("closed_round", t.get("round", -1)) or -1) == round_number]
+    closed_here = tasks_closed_in_round(tasks, round_number,
+                                        transcript_closed_ids(state_dir))
     evidences = [e for e in (state.get("evidence") or [])
                  if int(e.get("round", -1)) == round_number]
     verdicts = state.get("verdicts", []) or []
@@ -110,11 +110,10 @@ def derive_manifest(state_dir: Path, state: dict[str, Any]) -> dict[str, Any]:
         "plan": {"path": ".pair/plan.md", "sha": plan_sha},
         "commits": commits,
         "tasks_closed": [{"id": t.get("id"), "text": (t.get("text") or "")[:120],
-                          "status": t.get("status")} for t in closed_here],
+                          "status": t.get("status"),
+                          "bound_by": t.get("bound_by", "")} for t in closed_here],
         "tasks_dropped": [{"id": t.get("id"), "reason": (t.get("reason") or "")[:120]}
-                          for t in tasks
-                          if int(t.get("closed_round", t.get("round", -1)) or -1) == round_number
-                          and t.get("status") == "dropped"],
+                          for t in closed_here if t.get("status") == "dropped"],
         "verdicts": [{"role": v.get("role"), "kind": v.get("kind"), "at": v.get("at"),
                       "note": _note_for_kind(verdict_notes, str(v.get("kind", "")))}
                      for v in verdicts],
@@ -151,6 +150,40 @@ def _evidence_row(item: dict[str, Any]) -> dict[str, Any]:
     return {"kind": item.get("kind"), "ok": item.get("ok"),
             "value": (item.get("value") or "")[:200], "role": item.get("role"),
             "method": methods or ["unstated"]}
+
+
+def tasks_closed_in_round(tasks: list[dict[str, Any]], round_number: int,
+                          transcript_ids: set[int] | None = None) -> list[dict[str, Any]]:
+    """Bind tasks to a round with the rule labeled on each task.
+
+    closed_round (post-D2) → add-round fallback (pre-D2, labeled) →
+    transcript window (stale-server closes, labeled). The label rides in
+    BOTH the manifest and the receipt so the pages agree.
+    """
+    out = []
+    for task in tasks:
+        bound_by = ""
+        if task.get("closed_round") is not None:
+            if int(task["closed_round"]) == round_number:
+                bound_by = "closed_round"
+            else:
+                continue
+        elif int(task.get("round", -1)) == round_number:
+            bound_by = "add-round (pre-D2)"
+        elif transcript_ids is not None and int(task.get("id", 0)) in transcript_ids:
+            bound_by = "transcript (stale-server close)"
+        else:
+            continue
+        row = dict(task)
+        row["bound_by"] = bound_by
+        out.append(row)
+    return out
+
+
+def transcript_closed_ids(state_dir: Path) -> set[int]:
+    """Task ids with task_closed in the current round window."""
+    return {int(r.get("task_id", 0)) for r in _transcript_rows(state_dir)
+            if r.get("kind") == "task_closed" and _in_round_window(state_dir, r)}
 
 
 def _in_round_window(state_dir: Path, row: dict[str, Any]) -> bool:

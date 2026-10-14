@@ -35,11 +35,15 @@ def generate_receipt(state_dir: Path, state: dict[str, Any], head_commit: str = 
     roles = state.get("roles", {})
     peers = [r for r in roles if r != writer]
 
-    # Round task gathering: bound by CLOSE-round (round 94 D2). Tasks closed
-    # before D2 carry no closed_round — they fall back to the add-round.
+    # Round task gathering: shared labeled binding (round 94 follow-up).
+    # closed_round → add-round (pre-D2) → transcript window (stale-server).
+    from manifest import tasks_closed_in_round, transcript_closed_ids
     tasks = state.get("tasks", [])
-    round_tasks = [t for t in tasks
-                   if int(t.get("closed_round", t.get("round", -1)) or -1) == round_number]
+    try:
+        _ids = transcript_closed_ids(state_dir)
+    except Exception:
+        _ids = None
+    round_tasks = tasks_closed_in_round(tasks, round_number, _ids)
 
     # Round evidence gathering
     evidences = state.get("evidence", [])
@@ -86,7 +90,8 @@ def generate_receipt(state_dir: Path, state: dict[str, Any], head_commit: str = 
     if round_tasks:
         for t in round_tasks:
             status_mark = "x" if t.get("status") == "done" else " "
-            lines.append(f"- [{status_mark}] #{t.get('id')}: {t.get('text')} ({t.get('status')})")
+            label = f" [{t.get('bound_by')}]" if t.get("bound_by") else ""
+            lines.append(f"- [{status_mark}] #{t.get('id')}: {t.get('text')} ({t.get('status')}{label})")
     else:
         lines.append("*(no tasks bound to the round)*")
 
