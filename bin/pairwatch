@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Следит за парой и замечает зависшего агента. Сам не убивает, если не --kill."""
+"""Watches the pair, noticing a hung agent. Never kills unless --kill."""
 import json, os, sys, time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -8,16 +8,16 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "mcp" / "pair_mailbox"))
 try:
     from composer import _tmux, load_allow_patterns, resolve_permission_prompt
-    # Store живёт в server.py, а не в storage.py: модуля storage не существует,
-    # импорт падал молча, и --unblock не писал в транскрипт.
+    # Store lives in server.py, not storage.py: no storage module exists,
+    # the import fell silent, and --unblock never wrote into the transcript.
     from server import Store, load_allowlist
-except Exception as error:  # noqa: BLE001 - причина должна быть видна
+except Exception as error:  # noqa: BLE001 - the reason must show
     print(f"pairwatch: {error}", file=sys.stderr)
     resolve_permission_prompt = None
     Store = None
 
 state_dir = Path(os.environ.get("PAIR_STATE") or ".pair").resolve()
-# root у Store — это сам каталог состояния (.pair), а не его родитель.
+# The Store root is the state dir itself (.pair), not its parent.
 store = Store(state_dir) if Store else None
 limit = 300
 if "--limit" in sys.argv:
@@ -57,7 +57,7 @@ def alive(pid):
     except Exception:
         return False
 
-print(f"смотрю {state_dir}, порог {limit // 60} мин, Ctrl-C выход")
+print(f"watching {state_dir}, threshold {limit // 60} min, Ctrl-C exits")
 try:
     while True:
         st = load()
@@ -71,46 +71,46 @@ try:
                     try:
                         tmux = _tmux()
                         result = resolve_permission_prompt(tmux, pane, allow=allow or None)
-                        # Раньше здесь стояло `if matched:`, а функция возвращала
-                        # строку. Теперь она возвращает вердикт, и любая непустая
-                        # структура прошла бы как «подтвердили» — то есть рапорт
-                        # о разблокировке печатался бы каждые 30 секунд на пустом
-                        # месте, а на деле никто ничего не нажимал.
+                        # It used to stand `if matched:` with the function returning a line. Now it
+                        # returns a verdict, and any non-empty structure would pass as confirmed — the
+                        # unblock report printing every 30 seconds on empty ground, while truly nobody
+                        # pressed anything.
+                        #
                         prompt = result.get("prompt") or ""
                         if result.get("approved"):
                             last_unblock[pane] = now
                             if store:
                                 store.append_transcript("unblock", "pairwatch", target=name,
                                                         pane=pane, prompt=prompt)
-                            print(f"\n\033[32m[авторазблокировка]\033[0m подтверждён запрос разрешения для {name} в панели {pane}: {prompt}")
+                            print(f"\n\033[32m[auto-unblock]\033[0m permission request confirmed for {name} in pane {pane}: {prompt}")
                         elif result.get("verdict") == "refuse":
                             last_unblock[pane] = now
                             if store:
                                 store.append_transcript("unblock_refused", "pairwatch", target=name,
                                                         pane=pane, prompt=prompt,
                                                         why=result.get("why"))
-                            print(f"\n\033[33m[отказ]\033[0m {name} в панели {pane} ждёт человека: "
+                            print(f"\n\033[33m[refused]\033[0m {name} in pane {pane} awaits the human: "
                                   f"{result.get('why')} — {prompt}")
                     except Exception:
                         pass
         t_last, ev = last_event()
         age = (datetime.now(timezone.utc) - t_last).total_seconds() if t_last else None
         if age is not None and age > limit:
-            print(f"\n\033[31mЗАВИСАНИЕ: тишина {int(age // 60)} мин\033[0m")
-            print(f"  последнее: {ev.get('kind')} от {ev.get('role')}")
+            print(f"\n\033[31mHANG: silence {int(age // 60)} min\033[0m")
+            print(f"  last: {ev.get('kind')} from {ev.get('role')}")
             for name, info in roles.items():
                 pid = info.get("pid")
-                who = "ПИСАТЕЛЬ" if st.get("writer") == name else "критик"
-                mark = "жив" if pid and alive(pid) else "мёртв"
+                who = "WRITER" if st.get("writer") == name else "critic"
+                mark = "alive" if pid and alive(pid) else "dead"
                 print(f"  {name:10} {who:9} pid={pid} {mark}")
             if kill:
                 for name, info in roles.items():
                     pid = info.get("pid")
                     if pid and alive(pid):
                         os.kill(int(pid), 15)
-                        print(f"  убит {name} pid={pid}")
+                        print(f"  killed {name} pid={pid}")
             else:
-                print("  убить: bin/pairwatch --kill")
+                print("  kill: bin/pairwatch --kill")
         time.sleep(20)
 except KeyboardInterrupt:
-    print("\nвыход")
+    print("\nexit")

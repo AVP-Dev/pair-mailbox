@@ -28,8 +28,8 @@
 
 HERE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd -- "$HERE/.." && pwd)"
-# Определяется здесь, а не ниже: чтение постоянной расстановки происходит выше, чем
-# было это определение, и молча пустая переменная означала бы «расстановки нет».
+# Defined here, not below: the standing-assignment read happens above where this
+# definition stood, and a silently empty variable would mean no assignment.
 STATE_PATH="${PAIR_STATE:-$ROOT/.pair}"
 
 USE_WORKTREE=0
@@ -51,8 +51,8 @@ while [[ $# -gt 0 ]]; do
       shift
       ;;
     --autonomy)
-      # Как далеко пара идёт сама. Без флага решает `pairctl launch-autonomy`:
-      # строка в задаче, файл .pair/autonomy, иначе auto.
+      # How far the pair goes alone. With no flag `pairctl launch-autonomy` decides: a
+      # line in the task, the .pair/autonomy file, else auto.
       AUTONOMY_OPT="${2:-}"
       shift 2 || { echo "error: --autonomy needs a level" >&2; exit 2; }
       ;;
@@ -61,8 +61,8 @@ while [[ $# -gt 0 ]]; do
       shift
       ;;
     --swap-critic)
-      # Смена исполнителя роли критика при кончившихся лимитах: писатель и
-      # право записи не трогаются (PROTOCOL §2 — двигает только человек).
+      # Swapping the critic-role runner at spent limits: the writer and write authority
+      # stay untouched (PROTOCOL §2 — only the human moves).
       SWAP_CRITIC="${2:-}"
       shift 2 || { echo "error: --swap-critic needs a CLI" >&2; exit 2; }
       ;;
@@ -88,15 +88,15 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-# Явный state/project побеждают дефолт: pairup зовёт из папки проекта, а не
-# из репо автономности, и несёт оба пути с собой.
+# Explicit state/project beat the default: pairup calls from the project dir, not
+# the autonomy repo, carrying both paths along.
 if [[ -n "$FLAG_STATE" ]]; then
   STATE_PATH="$FLAG_STATE"
 fi
 PROJECT_ROOT_DIR="${FLAG_PROJECT:-$ROOT}"
 
-# Сверхвизор до агентов (RUNBOOK §3): живого не двоим — второй пилот на тот же
-# state гонял бы тики параллельно и двоил бы пробуждения (замечание agy seq 475).
+# Supervisor before agents (RUNBOOK §3): never doubling the live one — a second
+# pilot on the same state would tick in parallel doubling wakes (agy seq-475 note).
 if [[ "$WANT_PILOT" -eq 1 || -n "$SWAP_CRITIC" ]]; then
   pilot_alive=0
   if command -v pgrep >/dev/null 2>&1; then
@@ -114,28 +114,28 @@ if [[ "$WANT_PILOT" -eq 1 || -n "$SWAP_CRITIC" ]]; then
     fi
   fi
   if [[ "$pilot_alive" -eq 1 ]]; then
-    echo "pair-duo: сверхвизор уже работает, не трогаю"
+    echo "pair-duo: the supervisor already runs, leaving it"
   else
     if [[ ! -d "$STATE_PATH" ]]; then
-      echo "pair-duo: нет состояния $STATE_PATH — пилоту не за чем смотреть" >&2
+      echo "pair-duo: no state at $STATE_PATH — nothing for the pilot to watch" >&2
       exit 1
     fi
     nohup python3 "$HERE/pairpilot" --state "$STATE_PATH" >>"$STATE_PATH/pairpilot.log" 2>&1 &
     echo "$!" >"$STATE_PATH/pilot.pid"
-    echo "pair-duo: сверхвизор поднят (pid $(cat "$STATE_PATH/pilot.pid"))"
+    echo "pair-duo: supervisor up (pid $(cat "$STATE_PATH/pilot.pid"))"
   fi
 fi
 
-# Swap-режим: новая панель с другим CLI в роли критика. Писатель не трогается,
-# старая панель критика остаётся человеку (Ctrl-D) — убивать чужое окно скриптом
-# нельзя: там может быть недописанный вердикт.
+# Swap mode: a new pane with another CLI as critic. The writer stays untouched, the
+# old critic pane stays with the human (Ctrl-D) — killing a foreign window by script
+# is banned: an unfinished verdict may sit there.
 if [[ -n "$SWAP_CRITIC" ]]; then
   case "$SWAP_CRITIC" in
     opencode|agy|claude|codex|pi|omp) ;;
     *) echo "error: unsupported CLI '$SWAP_CRITIC'" >&2; exit 2 ;;
   esac
   if [[ -z "${TMUX:-}" ]]; then
-    echo "pair-duo: --swap-critic работает изнутри tmux-сессии пары" >&2
+    echo "pair-duo: --swap-critic runs inside the pair tmux session" >&2
     exit 1
   fi
   writer="$("$HERE/pairctl" --state "$STATE_PATH" status 2>/dev/null \
@@ -144,11 +144,11 @@ if [[ -n "$SWAP_CRITIC" ]]; then
   if [[ "$SWAP_CRITIC" == "opencode" ]]; then
     critic_cmd="opencode --standalone --auto"
   fi
-  echo "pair-duo: писатель $writer остаётся, критик -> $SWAP_CRITIC"
+  echo "pair-duo: writer $writer stays, critic -> $SWAP_CRITIC"
   tmux split-window $SPLIT_OPT -c "$PROJECT_ROOT_DIR" \
     "$SHELL -c \"export PAIR_ROLE='$SWAP_CRITIC' PAIR_STATE='$STATE_PATH'; cd '$PROJECT_ROOT_DIR'; echo '=== PAIR CRITIC: $SWAP_CRITIC (swap) ==='; $critic_cmd\""
-  echo "pair-duo: новый критик $SWAP_CRITIC в соседней панели; старую панель критика закрой сам (Ctrl-D)"
-  echo "pair-duo: право записи у $writer, не трогал (PROTOCOL §2)"
+  echo "pair-duo: new critic $SWAP_CRITIC in the next pane; close the old critic pane yourself (Ctrl-D)"
+  echo "pair-duo: write authority with $writer, untouched (PROTOCOL §2)"
   exit 0
 fi
 
@@ -185,8 +185,8 @@ CRITIC_CMD="$CLI"
 if [[ "$CLI" == "opencode" ]]; then
   # opencode defaults to a shared background daemon per account;
   # --standalone ensures each window has its own local instance and MCP configuration.
-  # --auto: §13c требует его в launch — без него allow-блок проектного конфига
-  # не применяется и каждый рутинный прогон встаёт на промпт (раунд 33, P0).
+  # --auto: §13c demands it in launch — with no it the project-config allow block
+  # never applies, every routine run halting on a prompt (round 33, P0).
   WRITER_CMD="opencode --standalone --auto"
   CRITIC_CMD="opencode --standalone --auto"
 fi
@@ -194,10 +194,10 @@ fi
 WRITER_ROLE="${CLI}-writer"
 CRITIC_ROLE="${CLI}-critic"
 
-# Режим автономности выбирается один раз, здесь и до того, как агенты получили
-# инструкции. Значение проверяется ДО запуска: опечатка, молча проигнорированная
-# после старта, означала бы, что пара работает не на том режиме, о котором человек
-# думает, и узнать об этом можно было бы только по факту.
+# Autonomy mode picks once, here, before agents took their instructions. The value
+# checks BEFORE launch: a typo silently ignored past start would mean the pair runs
+# a mode the human never thinks, learnable only by fact.
+#
 case "$AUTONOMY_OPT" in
   ""|observe|semi|auto) ;;
   *)
