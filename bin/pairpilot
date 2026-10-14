@@ -879,7 +879,7 @@ class Pilot:
             # was delivered 62s later at unread=0. Stale — drop it, otherwise
             # every fast reply round-trips a bogus nudge.
             return self.unread(state, role) > 0
-        match = re.search(r"(?:запрос|seq)\s+(\d+)", text, re.IGNORECASE)
+        match = re.search(r"(?:запрос|request|seq)\s+(\d+)", text, re.IGNORECASE)
         if match:
             prefix = f"{int(match.group(1)):06d}-"
             root = self.store.obligations_root
