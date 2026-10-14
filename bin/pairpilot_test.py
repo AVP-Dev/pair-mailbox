@@ -766,7 +766,7 @@ class TestOutboxStaleness(PilotCase):
         banned — then the test would discriminate nothing.
         """
         p = self.pilot()
-        path = self._queue(p, "agy", "свежее напоминание")
+        path = self._queue(p, "agy", "a fresh reminder")
         state = self.write_state(roles={"agy": {"pane": "%9", "pid": os.getpid()}})
         calls = []
         orig_deliver = pairpilot.deliver
@@ -856,7 +856,7 @@ class TestOutboxStaleness(PilotCase):
     def test_own_pane_delivery_unaffected_by_belongs_gate(self) -> None:
         """An owned pane delivers as before — the gate spares the normal path."""
         p = self.pilot()
-        path = self._queue(p, "agy", "свежее напоминание")
+        path = self._queue(p, "agy", "a fresh reminder")
         state = self.write_state(roles={"agy": {"pane": "%1", "pid": os.getpid()}})
         calls = []
         orig_deliver = pairpilot.deliver
@@ -876,14 +876,14 @@ class TestOutboxStaleness(PilotCase):
         self.assertFalse(path.exists(), "delivered mail leaves the queue")
 
     def test_a_busy_composer_does_not_expire_a_fresh_nudge(self) -> None:
-        """Переживающая доставка остаётся: пока композер занят, ждать уместно."""
+        """Surviving delivery stays: while the composer is busy, waiting is fit."""
         p = self.pilot()
         p.outbox_ttl = 600.0
-        path = self._queue(p, "agy", "подождём", age_seconds=60)
+        path = self._queue(p, "agy", "we wait", age_seconds=60)
         state = self.write_state(roles={"agy": {"pane": "%1", "pid": os.getpid()}})
 
         def busy(pane, text, wait_for_empty=0.0):
-            raise pairpilot.ComposerBusy("занято")
+            raise pairpilot.ComposerBusy("busy")
 
         orig_alive, orig_deliver = pairpilot.pane_alive, pairpilot.deliver
         orig_belongs = pairpilot.pane_belongs_to_project
@@ -896,7 +896,7 @@ class TestOutboxStaleness(PilotCase):
         finally:
             pairpilot.pane_alive, pairpilot.deliver = orig_alive, orig_deliver
             pairpilot.pane_belongs_to_project = orig_belongs
-        self.assertTrue(path.exists(), "свежее напоминание переживает занятый композер")
+        self.assertTrue(path.exists(), "a fresh reminder survives a busy composer")
 
 
 class TestReport(PilotCase):
@@ -910,7 +910,7 @@ class TestReport(PilotCase):
         pilot = self.pilot()
         pilot.tick()
         report = self.state_dir / "REPORT.md"
-        self.assertTrue(report.exists(), "закрытый раунд обязан оставить отчёт")
+        self.assertTrue(report.exists(), "a closed round must leave a report")
         text = report.read_text(encoding="utf-8")
         self.assertIn("test", text)
         self.assertIn("deliver_busy", text)
@@ -931,13 +931,13 @@ class TestReport(PilotCase):
         first = (self.state_dir / "REPORT.md").stat().st_mtime_ns
         pilot.tick()
         self.assertEqual(first, (self.state_dir / "REPORT.md").stat().st_mtime_ns,
-                         "отчёт не переписывается каждый проход")
+                         "the report never rewrites every pass")
 
 
 class TestSafety(PilotCase):
     def test_pilot_never_touches_write_authority(self) -> None:
-        """Граница, ради которой сверхвизор и сверхвизор: он не имеет права
-        выдать или забрать авторитет, даже если агент молчит."""
+        """The edge the supervisor supervises for: it holds no right to grant or take
+        authority, even when an agent stays silent."""
         self.write_state(writer="agy", roles={"agy": {"last_seen": ago(9999), "pane": "%1"}})
         pilot = self.pilot()
         pilot.tick()
@@ -957,19 +957,19 @@ class TestSafety(PilotCase):
         self.write_state(writer="agy", roles={"agy": {"last_seen": ago(400), "pane": "%1"}})
         tolerant = self.pilot(silence=600)
         tolerant.tick()
-        self.assertEqual("", tolerant.pending("agy"), "400с молчания при пороге 600с — норма")
+        self.assertEqual("", tolerant.pending("agy"), "400s of silence at a 600s threshold — the norm")
 
     def test_short_silence_threshold_wakes(self) -> None:
         self.write_state(writer="agy", roles={"agy": {"last_seen": ago(400), "pane": "%1"}})
         strict = self.pilot(silence=100)
         strict.tick()
         self.assertTrue(self.wake(strict, "agy"),
-                        "400с молчания при пороге 100с — дефект")
+                        "400s of silence at a 100s threshold — a defect")
 
 
 class TestTmuxPaths(PilotCase):
-    """Пути, которые зовут tmux. Им нужна подмена, иначе они проверяются
-    только в бою — а именно там падал append_transcript с чужим role=."""
+    """Paths that call tmux. They need a stub, or they check only live — exactly where
+    append_transcript fell with a foreign role=."""
 
     def fake_tmux(self, alive=True, prompt=None, verdict="allow"):
         pilot = self.pilot()
@@ -979,7 +979,7 @@ class TestTmuxPaths(PilotCase):
             lambda tmux, pane, allow=None: {"approved": verdict == "allow",
                                             "verdict": verdict,
                                             "prompt": prompt or "",
-                                            "why": "в белом списке" if verdict == "allow" else "не в белом списке",
+                                            "why": "on the allowlist" if verdict == "allow" else "off the allowlist",
                                             "matched": None})
         return pilot
 
@@ -1002,8 +1002,8 @@ class TestTmuxPaths(PilotCase):
         self.assertIn("pilot_pane_missing", self.transcript_kinds())
 
     def test_live_pid_without_pane_heals_the_roster(self) -> None:
-        """Панели нет в ростере, но процесс роли жив и сидит в панели:
-        чиним запись, а не хороним роль. Иначе deliver слеп при живом соседе."""
+        """No pane in the roster, but the role process lives sitting in a pane: heal the
+        record, never bury the role. Or deliver goes blind at a live neighbour."""
         import os
         self.write_state(roles={"codex": {"last_seen": ago(10), "pid": os.getpid()}})
         pilot = self.fake_tmux()
@@ -1017,8 +1017,8 @@ class TestTmuxPaths(PilotCase):
         self.assertEqual(self.pilot().store.read()["roles"]["codex"]["pane"], "%7")
 
     def test_live_project_pane_heals_roster_without_pid(self) -> None:
-        """pid мёртв/пуст, но в проекте есть живая свободная панель: чиним
-        запись по cwd, а не хороним роль (P1, критик seq 381)."""
+        """A dead/empty pid with a live free pane in the project: heal the record by cwd,
+        never bury the role (P1, critic seq 381)."""
         self.write_state(roles={"codex": {"last_seen": ago(10), "pid": 1}})
         pilot = self.fake_tmux()
         real_find = pairpilot.find_pane_of_pid
@@ -1043,15 +1043,15 @@ class TestTmuxPaths(PilotCase):
         self.assertEqual(self.pilot().store.read()["roles"]["codex"]["pane"], "%11")
 
     def test_foreign_pane_does_not_heal_the_roster(self) -> None:
-        """Чужая панель не чинит ростер: принадлежность не доказана —
-        роль остаётся без панели, fail-closed."""
+        """A foreign pane never heals the roster: belonging unproven — the role stays
+        paneless, fail-closed."""
         self.write_state(roles={"codex": {"last_seen": ago(10), "pid": 1}})
         pilot = self.fake_tmux()
         real_find = pairpilot.find_pane_of_pid
         real_belongs = pairpilot.pane_belongs_to_project
         real_run = pairpilot.subprocess.run
         pairpilot.find_pane_of_pid = lambda tmux, pid: ""
-        pairpilot.pane_belongs_to_project = lambda tmux, pane, root: (False, "чужой")
+        pairpilot.pane_belongs_to_project = lambda tmux, pane, root: (False, "foreign")
         pairpilot.subprocess.run = lambda *a, **k: type("R", (), {"stdout": "%9\n", "returncode": 0})()
         pilot.pane_key = lambda pane: str(pane)
         try:
@@ -1064,8 +1064,8 @@ class TestTmuxPaths(PilotCase):
         self.assertNotIn("pane", self.pilot().store.read()["roles"]["codex"])
 
     def test_human_shell_is_not_adopted_without_role_server(self) -> None:
-        """Панель проекта без server.py роли (шелл человека) не усыновляется:
-        cwd второй фактор, первый — живой процесс роли (вердикт раунда 33)."""
+        """A project pane with no role server.py (a human shell) never adopts: cwd is the
+        second factor, the first — the live role process (round-33 verdict)."""
         self.write_state(roles={"codex": {"last_seen": ago(10), "pid": 1}})
         pilot = self.fake_tmux()
         real_find = pairpilot.find_pane_of_pid
@@ -1088,9 +1088,9 @@ class TestTmuxPaths(PilotCase):
         self.assertNotIn("pane", self.pilot().store.read()["roles"]["codex"])
 
     def test_provisional_pane_is_preferred_but_rechecked(self) -> None:
-        """Жизненный цикл pane_provisional: сервер видел панель, пилот
-        ставит её первой, но факторы перепроверяет — без server.py
-        не усыновляет даже её (вердикт раунда 33, seq 392)."""
+        """The pane_provisional lifecycle: the server saw the pane, the pilot ranks it
+        first, but rechecks the factors — with no server.py never adopts even it
+        (round-33 verdict, seq 392)."""
         self.write_state(roles={"codex": {"last_seen": ago(10), "pid": 1,
                                           "pane_provisional": "%11"}})
         pilot = self.fake_tmux()
@@ -1108,11 +1108,11 @@ class TestTmuxPaths(PilotCase):
             pairpilot.pane_belongs_to_project = real_belongs
             pairpilot.pane_role_pid = real_rolepid
             pairpilot.subprocess.run = real_run
-        self.assertEqual("%11", found[0], "provisional — первая в очереди")
+        self.assertEqual("%11", found[0], "provisional ranks first in the queue")
 
     def test_wake_placement_rings_the_pane_without_typing(self) -> None:
-        """Постановка wake звонит в панель display-message, а не печатает
-        в композер: звонок виден, строка ввода цела."""
+        """A wake placement rings the pane by display-message, never types into the
+        composer: the ring shows, the input line stays whole."""
         self.write_state(roles={"codex": {"last_seen": ago(10), "pane": "%9"}})
         pilot = self.fake_tmux()
         calls = []
@@ -1120,17 +1120,17 @@ class TestTmuxPaths(PilotCase):
         pairpilot.subprocess.run = lambda *a, **k: calls.append(a[0]) or type("R", (), {
             "stdout": "", "returncode": 0})()
         try:
-            pilot.mark_wake(self.pilot().store.read(), "codex", "сообщение", "текст")
+            pilot.mark_wake(self.pilot().store.read(), "codex", "message", "text")
         finally:
             pairpilot.subprocess.run = real_run
         self.assertIn("pilot_ring", self.transcript_kinds())
         self.assertTrue(any("display-message" in c for c in calls),
-                        "звонок идёт через display-message, а не send-keys")
+                        "the ring goes by display-message, not send-keys")
         self.assertFalse(any("send-keys" in c for c in calls),
-                         "печать в композер запрещена")
+                         "typing into the composer is banned")
 
     def test_ring_is_throttled_to_five_minutes(self) -> None:
-        """Второй звонок подряд — молчание: чаще раза в 5 мин не звоним."""
+        """A second ring in a row is silence: never ringing more often than 5 min."""
         self.write_state(roles={"codex": {"last_seen": ago(10), "pane": "%9"}})
         pilot = self.fake_tmux()
         real_run = pairpilot.subprocess.run
@@ -1138,13 +1138,13 @@ class TestTmuxPaths(PilotCase):
             "stdout": "", "returncode": 0})()
         try:
             state = self.pilot().store.read()
-            pilot.mark_wake(state, "codex", "сообщение", "текст")
+            pilot.mark_wake(state, "codex", "message", "text")
             before = self.transcript_kinds().count("pilot_ring")
-            pilot.mark_wake(self.pilot().store.read(), "codex", "сообщение", "текст")
+            pilot.mark_wake(self.pilot().store.read(), "codex", "message", "text")
             after = self.transcript_kinds().count("pilot_ring")
         finally:
             pairpilot.subprocess.run = real_run
-        self.assertEqual(before, after, "повторный звонок в пределах 5 мин запрещён")
+        self.assertEqual(before, after, "a repeat ring inside 5 min is banned")
 
     def test_dead_pane_is_recorded_once(self) -> None:
         self.write_state(roles={"agy": {"last_seen": ago(10), "pane": "%9"}})
@@ -1152,12 +1152,12 @@ class TestTmuxPaths(PilotCase):
         pilot.tick()
         pilot.tick()
         self.assertEqual(1, self.transcript_kinds().count("pilot_pane_dead"),
-                         "о мёртвой панели говорим один раз, а не каждые 15 секунд")
+                         "a dead pane speaks once, never every 15 seconds")
 
     def test_role_without_wake_adapter_is_named_not_silent(self) -> None:
-        """Нет адаптера — запись в журнал, а не молчание (pi молчал 3 часа)."""
+        """No adapter means a journal record, not silence (pi stayed silent 3 hours)."""
         self.write_state(roles={"pi": {"last_seen": ago(10), "pane": "%9"}})
-        self.fake_tmux().mark_wake(self.pilot().store.read(), "pi", "сообщение", "текст")
+        self.fake_tmux().mark_wake(self.pilot().store.read(), "pi", "message", "text")
         self.assertIn("pilot_wake_no_adapter", self.transcript_kinds())
 
     def test_permission_prompt_is_confirmed_and_logged(self) -> None:
@@ -1167,8 +1167,8 @@ class TestTmuxPaths(PilotCase):
         self.assertIn("pilot_unblock", self.transcript_kinds())
 
     def test_refused_permission_is_recorded_not_pressed(self) -> None:
-        """Отказ — это результат. Молча не нажать «y» нельзя: человек должен
-        знать, что панель стоит и почему он должен встать к ней сам."""
+        """A refusal is a result. Silently skipping "y" is banned: the human must know the
+        pane stands and why he must step to it himself."""
         self.write_state(roles={"agy": {"last_seen": ago(10), "pane": "%9"}})
         pilot = self.fake_tmux(prompt="Allow execution of bash? rm -rf /", verdict="refuse")
         pilot.tick()
@@ -1180,7 +1180,7 @@ class TestTmuxPaths(PilotCase):
         pilot = self.fake_tmux(prompt="Allow Read of server.py?")
         pilot.tick()
         self.assertNotIn("pilot_unblock", self.transcript_kinds(),
-                         "в observe человек за рулём, сверхвизор только говорит")
+                         "in observe the human drives, the supervisor only speaks")
 
     def test_live_pane_produces_no_panic(self) -> None:
         self.write_state(writer="agy", roles={"agy": {"last_seen": ago(10), "pane": "%9"}})
@@ -1190,8 +1190,8 @@ class TestTmuxPaths(PilotCase):
 
 
 class TestRestart(PilotCase):
-    """Перезапуск упавшего агента. Это чинит ровно ту ночную поломку, когда pid
-    GONE, а запись в ростере живёт часами."""
+    """Restarting a fallen agent. It fixes exactly the night breakage where pid reads
+    GONE while the roster record lives for hours."""
 
     DEAD_PID = 999999
 
@@ -1199,16 +1199,16 @@ class TestRestart(PilotCase):
         self._real_subprocess = getattr(pairpilot, "subprocess", None)
         self.calls: list[list[str]] = []
         pairpilot.subprocess = _FakeSubprocess(self.calls)
-        # Модульные подмены восстанавливаются здесь, а не в каждом тесте.
-        # Проверено, что это не теория: подмена pane_pid из одного теста доживала
-        # до следующих и делала их результат случайным — два теста падали, пока
-        # подмена не вернулась после утечки. Тест, зависящий от порядка запуска,
-        # проверяет не своё поведение.
+        # Module stubs restore here, not per test.
+        # Proven no theory: a pane_pid stub from one test outlived into the next ones,
+        # randomizing their result — two tests fell till the stub returned past leaking.
+        # A test that depends on launch order checks not its own behaviour.
+        # checks not its own behaviour.
         self._real_pane_alive = pairpilot.pane_alive
         self._real_pane_role_pid = getattr(pairpilot, "pane_role_pid", None)
         pairpilot.pane_role_pid = lambda tmux, pane, role: None
-        # deliver печатает в живой композер через tmux send-keys: без мока
-        # тесты слали спам в реальную панель %7 (раунд 42, жалоба agy).
+        # deliver types into a live composer over tmux send-keys: with no mock the suite
+        # spammed a real pane %7 (round 42, agy complaint).
         self._real_deliver = pairpilot.deliver
         pairpilot.deliver = lambda pane, text, wait_for_empty=0.0: {"delivered": True}
         super().setUp()
@@ -1234,16 +1234,15 @@ class TestRestart(PilotCase):
         return pilot
 
     def respawns(self, role: str | None = None) -> list[list[str]]:
-        """Вызовы `respawn-pane`, и только они.
+        """`respawn-pane` calls, and only they.
 
-        Тесты ниже утверждают смысл — «роль перезапущена» или «роль НЕ
-        перезапущена», — а не список команд. Разница не вкусовая: `pane_alive` и
-        `pane_identity` ходят в tmux сами, поэтому сверхвизоку обоснованно
-        понадобится ещё один `display-message` там, где раньше не было ни одного.
-        Тест, требующий `self.calls == []`, падал бы на любой такой зов, и чинить
-        это можно было только одним способом — не делать проверку. Поэтому здесь
-        отсеиваются именно перезапуски, а количество и порядок прочих вызовов не
-        утверждаются вовсе.
+        The tests below claim meaning — "role restarted" or "role NOT restarted"
+        — never a command list. The difference is no taste: `pane_alive` and
+        `pane_identity` reach tmux themselves, so the supervisor may well need one
+        more `display-message` where none stood before. A test demanding
+        `self.calls == []` would fall on any such call, fixable only one way — by
+        never checking. So restarts filter here, while other-call count and order
+        never assert at all.
         """
         out = [call for call in self.calls if "respawn-pane" in call]
         if role is not None:
@@ -1254,23 +1253,24 @@ class TestRestart(PilotCase):
         self.assertEqual([], self.respawns(), why)
 
     def test_the_restart_never_kills_whats_in_the_pane(self) -> None:
-        """`-k` был единственным, что разрешало убить процесс человека.
+        """`-k` stood the only thing allowing to kill the human process.
 
-        Без него tmux отказывается перезапускать живую панель, поэтому занятую
-        панель — шелл или отладчик, открытый человеком после падения агента, —
-        остаётся нетронутой, а отказ попадает в транскрипт как отказ."""
+        Without it tmux refuses restarting a live pane, so a busy pane — a shell or
+        a debugger the human opened past the agent fall — stays untouched, and the
+        refusal lands in the transcript as a refusal.
+        """
         self.dead_writer_state()
         pilot = self.pilot_with_launch()
         pilot.tick()
         sent = self.respawns()
         self.assertTrue(sent)
         for call in sent:
-            self.assertNotIn("-k", call, "перезапуск не должен убивать содержимое панели")
+            self.assertNotIn("-k", call, "a restart must never kill the pane content")
 
     def test_a_dead_role_does_not_make_a_pane_shared(self) -> None:
-        """Живой дефект: claude и codex держались в ростере с панелью agy, и
-        `skip` содержал всех троих — сверхвизор переставал обслуживать живого
-        соседа из-за двух умерших записей."""
+        """A live defect: claude and codex stood in the roster with the agy pane, and
+        `skip` held all three — the supervisor stopped serving a live neighbour
+        over two dead records."""
         self.write_state(writer="agy", round=3, roles={
             "agy": {"last_seen": ago(10), "pid": os.getpid(), "pane": "%7"},
             "claude": {"last_seen": ago(9000), "pid": 999999, "pane": "%7"},
@@ -1278,7 +1278,7 @@ class TestRestart(PilotCase):
         pilot = self.pilot()
         pilot.tmux = "/usr/bin/tmux"
         pilot.tick()
-        self.assertNotIn("agy", pilot.skip, "живой сосед не должен попадать под skip")
+        self.assertNotIn("agy", pilot.skip, "a live neighbour must never fall under skip")
         self.assertNotIn("pilot_pane_shared", self.transcript_kinds())
         self.assertIn("pilot_stale_role", self.transcript_kinds())
 
@@ -1292,18 +1292,18 @@ class TestRestart(PilotCase):
         pilot.tick()
         pilot.tick()
         stale = [k for k in self.transcript_kinds() if k == "pilot_stale_role"]
-        self.assertEqual(1, len(stale), "об умершей роли говорим один раз, а не каждый тик")
+        self.assertEqual(1, len(stale), "a dead role speaks once, never every tick")
 
     def test_dead_writer_is_respawned(self) -> None:
         self.dead_writer_state()
         pilot = self.pilot_with_launch()
         pilot.tick()
-        # Утверждается факт перезапуска в нужной панели с нужной командой, а не
-        # то, каким по счёту был вызов: `self.calls[0]` — это утверждение о
-        # порядке, и оно ломается от любой правки в соседнем коде.
+        # What asserts is the restart fact in the right pane with the right command, not
+        # which call number it was: `self.calls[0]` claims order, breaking on any edit
+        # in neighbouring code.
         self.assertEqual([["/usr/bin/tmux", "respawn-pane", "-t", "%999999", "agy --resume"]],
                          self.respawns(),
-                         "упавший писатель перезапускается в своей панели")
+                         "a fallen writer restarts in its own pane")
         self.assertIn("pilot_restart", self.transcript_kinds())
 
     def test_restart_happens_once_per_dead_pid(self) -> None:
@@ -1312,32 +1312,33 @@ class TestRestart(PilotCase):
         pilot.tick()
         pilot.tick()
         self.assertEqual(1, len(self.respawns()),
-                         "один умерший процесс — один перезапуск, а не каждые 15 секунд")
+                         "one dead process means one restart, never every 15 seconds")
 
     def test_dying_on_start_stops_being_restarted_forever(self) -> None:
-        """Дыра, найденная на ревью.
+        """A hole found on review.
 
-        Ключ по pid спасает от повторного перезапуска одного и того же упавшего
-        процесса — и ровно поэтому не спасает от другого: если команда запуска
-        неверна, процесс умирает с НОВЫМ pid, ключ каждый раз новый, и при
-        интервале 15 секунд это бесконечный цикл. Потолок в окне не зависит от
-        pid, поэтому именно он его останавливает."""
+        A pid key saves from restarting the same fallen process twice — and exactly
+        so never saves from another: with a wrong launch command the process dies
+        with a NEW pid, the key reads new every time, and at a 15-second interval
+        that is an endless loop. A windowed ceiling never depends on pid, so exactly
+        it stops the loop.
+        """
         pilot = self.pilot_with_launch()
         for attempt in range(6):
-            # каждая неудачная попытка даёт новый pid, как и было бы в бою
+            # every failed attempt gives a new pid, as it would live
             self.write_state(writer="agy", round=3,
                              roles={"agy": {"last_seen": ago(600), "pid": 999000 + attempt,
                                             "pane": "%7"}})
             pilot.tick()
         respawns = self.respawns()
         self.assertEqual(pilot.restart_limit, len(respawns),
-                         f"перезапусков должно быть не больше {pilot.restart_limit}, "
-                         f"а их {len(respawns)}")
+                         f"restarts must number no more than {pilot.restart_limit}, "
+                         f"but they number {len(respawns)}")
         self.assertIn("pilot_restart_throttled", self.transcript_kinds())
 
     def test_restart_budget_expires_with_the_window(self) -> None:
-        """Потолок не должен становиться permanent: иначе после сбоя сеть
-        отвалилась бы пара насовсем."""
+        """A ceiling must never turn permanent: or a network drop would take the pair
+        down for good."""
         pilot = self.pilot_with_launch()
         pilot.restart_window = 60.0
         for attempt in range(pilot.restart_limit + 2):
@@ -1346,7 +1347,7 @@ class TestRestart(PilotCase):
                                             "pane": "%7"}})
             pilot.tick()
         self.assertEqual(pilot.restart_limit, len(self.respawns()))
-        # Окно истекло: попытки вне окна не должны считаться.
+        # The window expired: attempts outside the window must never count.
         pilot.restarts_file("agy").write_text(
             " ".join(str(int(time.time() - 3600)) for _ in range(pilot.restart_limit)),
             encoding="utf-8")
@@ -1356,24 +1357,24 @@ class TestRestart(PilotCase):
         self.assertEqual(pilot.restart_limit + 1,
                          len(self.respawns()))
     def test_launch_profile_added_after_start_is_picked_up(self) -> None:
-        """Профиль, добавленный после старта пилота, обязан подхватиться.
+        """A profile added past the pilot start must pick up.
 
-        Регрессия 2026-10-06: пилот от 05.10 не знал команду `pi` и писал
-        `pilot_restart_impossible`, хотя `cli-profiles.json` уже содержал
-        профиль. Карта команд морозилась в `__init__` и без перезапуска
-        пилота не обновлялась.
+        The 2026-10-06 regression: the 05.10 pilot never knew the `pi` command and
+        wrote `pilot_restart_impossible`, though `cli-profiles.json` already held
+        the profile. The command map froze in `__init__` refreshing on no pilot
+        restart.
         """
         self.dead_writer_state()
         pilot = self.pilot_with_launch(command="")
         pilot.tmux = "/usr/bin/tmux"
         pairpilot.pane_alive = lambda tmux, pane: True
         pilot.tick()
-        self.assertNoRestart("профиля нет — перезапуска нет")
+        self.assertNoRestart("no profile means no restart")
         self.assertIn("pilot_restart_impossible", self.transcript_kinds())
         pilot._explicit_launch["agy"] = "agy --resume"
         pilot.tick()
         self.assertEqual(1, len(self.respawns()),
-                         "команда появилась позже старта — перезапуск обязан сработать")
+                         "a command appearing past start means the restart must fire")
 
     def test_budget_is_per_role_not_global(self) -> None:
         pilot = self.pilot_with_launch()
@@ -1388,16 +1389,16 @@ class TestRestart(PilotCase):
                                 "claude": {"last_seen": ago(600), "pid": self.DEAD_PID, "pane": "%8"}})
         pilot.tick()
         self.assertTrue(self.respawns("claude"),
-                        "у другого агента свой бюджет")
+                        "another agent owns its own budget")
 
     def test_live_process_is_never_respawned(self) -> None:
-        """Молчание лечится напоминанием, смерть — перезапуском. Убить того,
-        кто просто занят работой, — значит отнять у него контекст."""
+        """Silence heals by reminder, death by restart. Killing one merely busy working
+        means taking his context away."""
         self.write_state(writer="agy",
                          roles={"agy": {"last_seen": ago(10), "pid": os.getpid(), "pane": "%7"}})
         pilot = self.pilot_with_launch()
         pilot.tick()
-        self.assertNoRestart("живой процесс не перезапускается никогда")
+        self.assertNoRestart("a live process never restarts")
         self.assertNotIn("pilot_restart", self.transcript_kinds())
 
     def test_a_live_process_in_the_pane_is_not_respawned(self) -> None:
