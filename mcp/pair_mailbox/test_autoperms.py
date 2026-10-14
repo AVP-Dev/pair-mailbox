@@ -1,8 +1,7 @@
-"""Одно правило — три грамматики. Тест на каждое представление и на границу deny.
+"""One rule — three grammars. A test per view plus the deny edge.
 
-Один тест-файл на один исходник: `autoperms.py` -> `test_autoperms.py`.
-Живая проверка идёт через install_test.py: установщик обязан написать файлы,
-которые парсятся.
+One test file per source: `autoperms.py` -> `test_autoperms.py`. A live check runs
+over install_test.py: the installer must write files that parse.
 """
 from __future__ import annotations
 
@@ -30,7 +29,7 @@ class TestRenderers(unittest.TestCase):
             autoperms.render("codex", self.root, self.home)
 
     def test_codex_and_pi_stay_on_pilot(self) -> None:
-        """У codex и pi нет нативных allow/deny — это решение, а не дыра."""
+        "codex and pi own no native allow/deny — a decision, not a hole."
         self.assertIn("codex", autoperms.PROFILES_ON_PILOT_ONLY)
         self.assertIn("pi", autoperms.PROFILES_ON_PILOT_ONLY)
         for profile in autoperms.PROFILES_ON_PILOT_ONLY:
@@ -52,7 +51,7 @@ class TestRenderers(unittest.TestCase):
         deny_keys = [k for k, v in bash.items() if v == "deny"]
         joined = " ".join(deny_keys)
         for must in ("sudo", "curl", ".env", "--force"):
-            self.assertIn(must, joined, f"§12-категория {must!r} обязана быть в deny")
+            self.assertIn(must, joined, f"a §12 category {must!r} must stand in deny")
 
     def test_agy_shape(self) -> None:
         payload = autoperms.render("agy", self.root, self.home)
@@ -66,18 +65,18 @@ class TestRenderers(unittest.TestCase):
         payload = autoperms.render("claude", self.root, self.home)
         perms = payload["permission"]
         self.assertIn("Bash(git status:*)", perms["allow"])
-        # P0 (раунд 75): раннеры тестов — deny, а не allow.
+        # P0 (round 75): test runners mean deny, not allow.
         self.assertIn("Bash(bun test:*)", perms["deny"])
         self.assertIn("Bash(sudo:*)", perms["deny"])
         self.assertIn("Read(./.env)", perms["deny"])
 
     def test_allow_covers_routine(self) -> None:
-        """Без этого разрешение бесполезно: рутина всё равно спрашивала бы.
+        """With no this the allow reads useless: routine would still ask.
 
-        Канон хранит подкоманды и команды по отдельности (`status` + `git`),
-        склеивает их рендерер — проверяем и канон, и склейку в каждом виде.
-        P0 (раунд 75): раннеры тестов из allow убраны — только человек или
-        изоляция; здесь проверяем, что они переехали в deny.
+        The canon keeps subcommands and commands apart (`status` + `git`), the
+        renderer glues them — canon and glue check in every view. P0 (round 75):
+        test runners left allow — human or isolation only; here they moved into
+        deny checks.
         """
         covered = autoperms._allow_items()
         for item in ("status", "commit", "ruff", "bash scripts/",
@@ -109,7 +108,7 @@ class TestWrite(unittest.TestCase):
         self.tmp.cleanup()
 
     def test_merge_keeps_foreign_keys(self) -> None:
-        """Настройки человека не затираются: дописывается только permissions."""
+        "Human settings never wipe: only permissions appends."
         root = self.home / ".config" / "opencode"
         root.mkdir(parents=True)
         target = root / "opencode.jsonc"
@@ -121,13 +120,13 @@ class TestWrite(unittest.TestCase):
         merged = json.loads(target.read_text(encoding="utf-8"))
         self.assertEqual("keep-me", merged["model"])
         bash = merged["permission"]["bash"]
-        self.assertEqual("allow", bash["*"], "канон добавлен")
-        self.assertEqual("deny", bash["sudo *"], "ручное правило человека выжило")
-        self.assertEqual("allow", bash["x"], "не наше правило не тронуто")
+        self.assertEqual("allow", bash["*"], "the canon added")
+        self.assertEqual("deny", bash["sudo *"], "the human hand rule survived")
+        self.assertEqual("allow", bash["x"], "not our rule stays untouched")
 
     def test_merge_deny_wins_over_human_allow(self) -> None:
-        """Конфликт решается в пользу deny: человеческий allow на опасное
-        ключ перебивается каноном, иначе §12 зависел бы от порядка правок."""
+        """A conflict resolves for deny: a human allow on a dangerous key loses to the
+        canon, or §12 would hang on edit order."""
         root = self.home / ".config" / "opencode"
         root.mkdir(parents=True)
         target = root / "opencode.jsonc"
