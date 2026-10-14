@@ -1,0 +1,150 @@
+#!/usr/bin/env python3
+"""pairreport — read the round manifest: request→debate→plan→implement→review.
+
+The manifest (.pair/rounds/<N>.json) is server-derived, never agent-written.
+This CLI only reads it (or derives on the fly via the same server function).
+
+    pairreport [--round N] [--json] [--recheck]
+
+--recheck re-derives from the CURRENT tree and prints the DELTA: the
+close-written manifest is the CLAIM, the re-derivation is the CURRENT tree,
+and the delta is what changed after the claim, and what the claim got wrong.
+Delta-zero is the only pass; otherwise exit 1.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "mcp" / "pair_mailbox"))
+
+
+def _load_manifest(state_dir: Path, round_number: int) -> dict | None:
+    path = state_dir / "rounds" / f"{round_number}.json"
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+
+
+def render_text(manifest: dict) -> str:
+    lines = [f"# Round {manifest.get('round')} report",
+             "",
+             f"mode: {manifest.get('mode')}  writer: {manifest.get('writer')}",
+             "",
+             "## Request"]
+    for text in manifest.get("request") or ["(no request recorded)"]:
+        lines.append(f"- {text}")
+    lines.append("")
+    lines.append("## Plan")
+    plan = manifest.get("plan") or {}
+    lines.append(f"- {plan.get('path', '?')} sha {plan.get('sha', '?')[:12]}")
+    lines.append("")
+    lines.append("## Implement (commits)")
+    for commit in manifest.get("commits") or ["(no commits)"]:
+        if isinstance(commit, str):
+            lines.append(f"- {commit}")
+        else:
+            lines.append(f"- {commit.get('sha')} {commit.get('subject')}")
+    lines.append("")
+    lines.append("## Tasks closed")
+    for task in manifest.get("tasks_closed") or ["(none)"]:
+        if isinstance(task, str):
+            lines.append(f"- {task}")
+        else:
+            lines.append(f"- #{task.get('id')} [{task.get('status')}] {task.get('text')}")
+    lines.append("")
+    lines.append("## Review (verdicts → notes)")
+    for verdict in manifest.get("verdicts") or ["(none)"]:
+        if isinstance(verdict, str):
+            lines.append(f"- {verdict}")
+        else:
+            lines.append(f"- {verdict.get('role')}/{verdict.get('kind')} → {verdict.get('note') or 'no note'}")
+    lines.append("")
+    lines.append("## Evidence")
+    for item in manifest.get("evidence") or ["(none)"]:
+        if isinstance(item, str):
+            lines.append(f"- {item}")
+        else:
+            mark = "OK" if item.get("ok") else "FAIL"
+            lines.append(f"- [{mark}] {item.get('kind')} ({item.get('role')}) {item.get('value')}")
+    lines.append("")
+    lines.append("## NOT covered (read the verdict notes)")
+    lines.append(f"- {manifest.get('negative', '—')}")
+    return "\n".join(lines)
+
+
+def recheck(state_dir: Path, round_number: int) -> int:
+    """Re-derive from the current tree, diff against the close-written claim."""
+    from manifest import derive_manifest
+    claimed = _load_manifest(state_dir, round_number)
+    if claimed is None:
+        print(f"pairreport: no manifest for round {round_number} — nothing to recheck",
+              file=sys.stderr)
+        return 2
+    try:
+        state = json.loads((state_dir / "state.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        print(f"pairreport: cannot read state: {exc}", file=sys.stderr)
+        return 2
+    current = derive_manifest(state_dir, state)
+    delta = _diff_manifests(claimed, current)
+    if not delta:
+        print(f"pairreport round {round_number}: DELTA ZERO — the claim holds")
+        return 0
+    print(f"pairreport round {round_number}: DELTA ({len(delta)} lines)")
+    for line in delta:
+        print(f"- {line}")
+    return 1
+
+
+def _diff_manifests(claimed: dict, current: dict) -> list[str]:
+    """Claim-vs-real lines. Volatile keys (none today) would be skipped here."""
+    delta = []
+    for key in ("request", "commits", "tasks_closed", "tasks_dropped", "verdicts", "evidence"):
+        old, new = claimed.get(key) or [], current.get(key) or []
+        if json.dumps(old, sort_keys=True) != json.dumps(new, sort_keys=True):
+            delta.append(f"{key}: claimed {len(old)} item(s), tree has {len(new)}")
+    for key in ("mode", "writer", "plan"):
+        if json.dumps(claimed.get(key), sort_keys=True) != json.dumps(current.get(key), sort_keys=True):
+            delta.append(f"{key} differs")
+    return delta
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="read the round manifest")
+    parser.add_argument("--round", type=int, default=None)
+    parser.add_argument("--json", action="store_true")
+    parser.add_argument("--recheck", action="store_true")
+    parser.add_argument("--state", default=None)
+    args = parser.parse_args(argv)
+    state_dir = Path(args.state).expanduser().resolve() if args.state else None
+    if state_dir is None:
+        state_dir = Path.cwd().resolve() / ".pair"
+    if args.round is None:
+        try:
+            args.round = int(json.loads((state_dir / "state.json").read_text(encoding="utf-8")).get("round", 0))
+        except (OSError, ValueError):
+            print("pairreport: cannot determine round — pass --round N", file=sys.stderr)
+            return 2
+    if args.recheck:
+        return recheck(state_dir, args.round)
+    manifest = _load_manifest(state_dir, args.round)
+    if manifest is None:
+        print(f"pairreport: no manifest for round {args.round} yet — it writes at close",
+              file=sys.stderr)
+        return 2
+    if args.json:
+        print(json.dumps(manifest, ensure_ascii=False, indent=1))
+    else:
+        print(render_text(manifest))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
