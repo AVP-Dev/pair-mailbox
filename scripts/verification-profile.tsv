@@ -17,9 +17,9 @@
 
 # --- static: fast checks before every edit ---
 shell-syntax	static	1	bash -n scripts/verify-project.sh scripts/security-scan.sh scripts/file-size-gate.sh scripts/comment-lint.sh scripts/comment-lint_test.sh scripts/eye-of-sauron.sh scripts/eye-of-sauron_test.sh bin/pair-duo bin/pairup bin/pairctl mcp/pair_mailbox/serve.sh
+exec-bits	static	1	test -x scripts/file-size-gate_test.sh
 file-size	static	1	./scripts/file-size-gate.sh
 comment-lint	static	1	bash scripts/comment-lint.sh
-
 # --- positive: behaviour that must work ---
 # Five suites past moving obligations out of `server.py`: one test file per source.
 # Each launches alone, because `python3 test_protocol.py` no longer runs neighbour
