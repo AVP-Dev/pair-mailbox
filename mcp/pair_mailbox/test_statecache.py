@@ -1,12 +1,11 @@
-"""Тесты отпечатка состояния для кэша `pair_state`.
+"""State-fingerprint tests for the `pair_state` cache.
 
-Один тест-файл на один исходник: `statecache.py` отвечает за одно — отпечаток
-того, что читает полный ответ, — и проверяется здесь, а не в `test_protocol.py`
-вместе с сервером.
+One test file per source: `statecache.py` owns one thing — fingerprinting what the
+full answer reads — checking here, never in `test_protocol.py` with the server.
 
-Проверяется в первую очередь противоположное ложному «unchanged»: отпечаток
-обязан меняться, когда ответ изменился. Промах в эту сторону возвращает агенту
-заглушку с правдой, которой нет, и это хуже, чем лишний полный ответ.
+The opposite of a false "unchanged" checks first: the fingerprint must move when
+the answer moved. A miss that way returns the agent a stub with a truth that never
+was, worse than an extra full answer.
 """
 from __future__ import annotations
 
@@ -28,18 +27,17 @@ class TestCacheDisabled(unittest.TestCase):
         self.assertFalse(statecache.cache_disabled({}))
 
     def test_disabled_by_the_documented_variable(self) -> None:
-        """Выключатель, обещанный комментарием, обязан действительно выключать.
+        """A switch promised by a comment must truly switch off.
 
-        Тесты, которым нужен живой ответ на каждый вызов, полагаются на него: без
-        него проверка закрывающего факта читала бы заглушку и проходила, ничего не
-        проверяя.
+        Tests needing a live answer per call lean on it: with no it the closing-fact
+        check would read the stub passing, checking nothing.
         """
         self.assertTrue(
             statecache.cache_disabled({statecache.CACHE_DISABLED_ENV: "1"})
         )
 
     def test_reads_the_real_environment_by_default(self) -> None:
-        """Без аргумента берётся окружение процесса, а не пустой словарь."""
+        """The process env takes with no argument, never an empty dict."""
         original = os.environ.get(statecache.CACHE_DISABLED_ENV)
         os.environ[statecache.CACHE_DISABLED_ENV] = "1"
         try:
@@ -67,26 +65,25 @@ class TestFingerprintSeesEverythingTheAnswerReads(unittest.TestCase):
         )
 
     def test_updated_at_alone_does_not_change_it(self) -> None:
-        """`updated_at` меняется на каждом зове само по себе.
+        """`updated_at` moves on every call alone.
 
-        Включённый в отпечаток, он делал бы кэш бесполезным: заглушка не
-        возвращалась бы никогда.
+        Inside the fingerprint it would void the cache: the stub would never return.
         """
         first = dict(self.base_state(), updated_at="2026-01-01T00:00:00+00:00")
         second = dict(first, updated_at="2026-01-01T00:00:01+00:00")
         self.assertEqual(statecache.fingerprint(first), statecache.fingerprint(second))
 
     def test_last_seen_alone_does_not_change_it(self) -> None:
-        """`last_seen` — тоже след регистрирования, а не содержание ответа."""
+        """`last_seen` is a registration trace too, not answer content."""
         first = {"roles": {"pi": {"pid": 5, "last_seen": "a"}}}
         second = {"roles": {"pi": {"pid": 5, "last_seen": "b"}}}
         self.assertEqual(statecache.fingerprint(first), statecache.fingerprint(second))
 
     def test_new_evidence_changes_it(self) -> None:
-        """Ровно тот случай, который чинился: evidence пишется между зовами.
+        """Exactly the case being fixed: evidence writes between calls.
 
-        Раньше ключ его не видел, и агент получал заглушку без
-        `evidence_this_round` — то есть без ровно того, ради чего звал `pair_state`.
+        The old key never saw it, and the agent took a stub with no
+        `evidence_this_round` — exactly what the `pair_state` call was for.
         """
         before = dict(self.base_state(), evidence=[])
         after = dict(self.base_state(), evidence=[{"kind": "test", "value": "1 passed"}])
@@ -108,16 +105,16 @@ class TestFingerprintSeesEverythingTheAnswerReads(unittest.TestCase):
         self.assertNotEqual(statecache.fingerprint(before), statecache.fingerprint(after))
 
     def test_a_new_pid_changes_it(self) -> None:
-        """Перезапуск соседа меняет ответ, и агент обязан это увидеть."""
+        """A neighbour restart moves the answer, and the agent must see it."""
         before = {"roles": {"pi": {"pid": 1, "last_seen": "a"}}}
         after = {"roles": {"pi": {"pid": 2, "last_seen": "a"}}}
         self.assertNotEqual(statecache.fingerprint(before), statecache.fingerprint(after))
 
     def test_a_new_obligation_file_changes_it(self) -> None:
-        """Обязательства лежат на диске, в state.json их нет.
+        """Obligations lie on disk, never in state.json.
 
-        Если отпечаток видит только state, открытое обязательство не меняет
-        ничего — и агент читает «никто никого не ждёт» о том, что его ждут.
+        Had the fingerprint seen state only, an open obligation would move nothing —
+        and the agent would read "nobody awaits anybody" about being awaited.
         """
         state = self.base_state()
         self.assertNotEqual(
@@ -133,8 +130,8 @@ class TestFingerprintSeesEverythingTheAnswerReads(unittest.TestCase):
         )
 
     def test_a_new_peer_inbox_file_changes_it(self) -> None:
-        """Чужое письмо тоже сдвигает отпечаток: иначе вызыватель получал
-        `unchanged` без новых unread соседа (P1 — затык виден за секунды)."""
+        """A foreign letter moves the fingerprint too: or the caller took `unchanged`
+        with new unread."""
         state = self.base_state()
         self.assertNotEqual(
             statecache.fingerprint(state, peer_inbox_names={"pi": ["1-x.json"]}),
@@ -143,7 +140,7 @@ class TestFingerprintSeesEverythingTheAnswerReads(unittest.TestCase):
 
 
     def test_obligation_order_does_not_change_it(self) -> None:
-        """Порядок имён не содержание: два вызова не должны различаться из-за него."""
+        """Name order is no content: two calls must never differ over it."""
         state = self.base_state()
         self.assertEqual(
             statecache.fingerprint(state, obligation_names=["a.json", "b.json"]),
@@ -153,10 +150,10 @@ class TestFingerprintSeesEverythingTheAnswerReads(unittest.TestCase):
 
 class TestGitSnapshotOnlyMattersWithVerdicts(unittest.TestCase):
     def test_snapshot_ignored_without_verdicts(self) -> None:
-        """Без вердиктов снимок git не читается и в отпечаток не входит.
+        """With no verdicts no git snapshot reads, entering no fingerprint.
 
-        Иначе агент, не публиковавший ни одного вердикта, платил бы git-вызов
-        на каждом `pair_state` впустую.
+        Or an agent that published no verdict would pay a git call on every
+        `pair_state` in vain.
         """
         state = {"evidence": []}
         calls = []
@@ -169,14 +166,14 @@ class TestGitSnapshotOnlyMattersWithVerdicts(unittest.TestCase):
         self.assertEqual(calls, [])
 
     def test_snapshot_included_when_verdicts_exist(self) -> None:
-        """Вердикт есть — его stale зависит от HEAD, и отпечаток обязан это видеть."""
+        """A verdict stands — its stale follows HEAD, and the fingerprint must see it."""
         state = {"verdicts": [{"role": "pi"}]}
         before = statecache.fingerprint(state, git_snapshot=lambda: "head-abc")
         after = statecache.fingerprint(state, git_snapshot=lambda: "head-xyz")
         self.assertNotEqual(before, after)
 
     def test_missing_snapshot_callable_is_not_an_error(self) -> None:
-        """Нет ни снимка, ни вердиктов — отпечаток всё равно считается."""
+        """No snapshot and no verdicts — the fingerprint still counts."""
         self.assertTrue(statecache.fingerprint({"evidence": []}))
 
 
@@ -187,11 +184,12 @@ class TestUnchangedAnswer(unittest.TestCase):
         self.assertEqual(answer["hash"], "abc123")
 
     def test_note_points_at_a_tool_that_works(self) -> None:
-        """Заглушка отсылает к `pair_digest`, поэтому он обязан быть вызываем.
+        """The stub refers to `pair_digest`, so it must stay callable.
 
-        Инструкция в навыке `pair-work` начинает раунд именно с него, и кэш
-        отсылает туда же: если дайджест не отвечает, экономия обещана тому, кто
-        её не получает, и агент молча уходит платить за полный `pair_state`.
+        The `pair-work` skill instruction starts the round exactly there, and the
+        cache refers there too: with no answering digest the savings promise those
+        who never take them, and the agent silently leaves paying for a full
+        `pair_state`.
         """
         note = statecache.unchanged_answer("h")["note"]
         self.assertIn("pair_digest", note)
@@ -202,21 +200,20 @@ class TestUnchangedAnswer(unittest.TestCase):
         advertised = {tool["name"] for tool in tool_definitions()}
         self.assertIn("pair_digest", advertised)
         self.assertTrue(callable(HANDLERS.get("pair_digest")),
-                        "pair_digest объявлен, но не вызываем")
+                        "pair_digest declared but uncallable")
 
 
 class TestCacheOverARealSession(PairTestCase):
-    """Отпечаток на настоящей сессии, а не на словаре.
+    """The fingerprint on a live session, not a dict.
 
-    Юнит-тесты выше доказывают, что отпечаток реагирует на перечисленные поля.
-    Эти доказывают, что он реагирует на то, что агент видит между двумя вызовами
-    `pair_state` в живом раунде. Именно на них падал старый ключ:
-    `obligations` и `evidence_this_round` не попадали в отпечаток, и второй вызов
-    возвращал заглушку — то есть агент, записавший доказательство, читал его
-    отсутствие.
+    The unit tests above prove the fingerprint reacts to the listed fields. These
+    prove it reacts to what the agent sees between two `pair_state` calls in a live
+    round. Exactly on them the old key fell: `obligations` and `evidence_this_round`
+    never entered the fingerprint, and the second call returned a stub — an agent
+    that wrote proof read its absence.
 
-    Право записи берётся по-настоящему: доказательство, записанное без него,
-    не evidence этого раунда, и проверка прошла бы на пустом месте.
+    Write authority takes for real: proof written with no it is no round evidence,
+    and the check would pass on empty ground.
     """
 
     def setUp(self) -> None:
@@ -227,7 +224,7 @@ class TestCacheOverARealSession(PairTestCase):
         self.advance_phases()
 
     def test_evidence_becomes_visible_on_the_next_call(self) -> None:
-        """Агент должен видеть причину заранее, а не тратить ход на заведомый отказ."""
+        """The agent must see the reason upfront, never spend a turn on a known refusal."""
         self.set_autonomy("semi")
         state = self.writer.tool_pair_state()
         self.assertTrue(state["closing_blocked_by"])
@@ -239,18 +236,18 @@ class TestCacheOverARealSession(PairTestCase):
         state = self.writer.tool_pair_state()
         self.assertEqual(
             state["evidence_this_round"][0]["kind"], "test",
-            "заглушка вернулась: записанное доказательство не видно",
+            "the stub returned: written proof never shows",
         )
         self.assertEqual(len(state["closing_blocked_by"]), 1,
-                         "осталось только слово человека")
+                         "only the human word remains")
 
     def test_a_new_obligation_is_visible_to_both_sides(self) -> None:
-        """Обязательства лежат на диске, и отпечаток обязан их видеть.
+        """Obligations lie on disk, and the fingerprint must see them.
 
-        Иначе автор письма читал «никто никого не ждёт» о том, что он только что
-        попросил сосада о проверке, и отправлял второе письмо в тот же ящик.
+        Or the letter author read "nobody awaits anybody" about just asking the
+        neighbour for a check, sending a second letter into the same box.
         """
-        self.writer.tool_pair_send(to="reviewer-agent", text="проверь",
+        self.writer.tool_pair_send(to="reviewer-agent", text="check it",
                                    expects_reply=True)
 
         mine = self.writer.tool_pair_state()["obligations"]
@@ -262,16 +259,15 @@ class TestCacheOverARealSession(PairTestCase):
         self.assertEqual([], theirs["i_am_waiting_for"])
 
     def test_a_repeated_call_with_nothing_changed_is_a_stub(self) -> None:
-        """Сам кэш тоже должен работать, иначе он платит за то, чего не делает.
+        """The cache itself must work, or it charges for what it never does.
 
-        Общая фикстура выключает кэш намеренно — остальные наборы проверяют
-        контракт «каждый зов возвращает полное состояние». Здесь контракт
-        обратный, поэтому кэш включается на время теста и снимается обратно
-        tearDown, который вернёт переменную как была.
+        The shared fixture switches the cache off on purpose — the other suites
+        check the "every call returns full state" contract. Here the contract runs
+        reverse, so the cache switches on for the test, dropping back in tearDown
+        as it was.
 
-        Проверяем обе стороны: неизменившееся состояние даёт короткий ответ, а
-        изменившееся — полный. Без второй половины тест проходил бы и при
-        кэше, который всегда молчит.
+        Both sides check: unchanged state gives the short answer, changed the full.
+        With no second half the test would pass on a cache that always stays silent.
         """
         os.environ.pop(statecache.CACHE_DISABLED_ENV, None)
         try:
@@ -279,25 +275,25 @@ class TestCacheOverARealSession(PairTestCase):
             self.assertNotIn("unchanged", first)
 
             second = self.writer.tool_pair_state()
-            self.assertTrue(second.get("unchanged"), "кэш не сработал на неизменившемся")
+            self.assertTrue(second.get("unchanged"), "the cache never fired on the unchanged")
             self.assertIn("pair_digest", second["note"])
 
             self.record_test_evidence()
             self.assertNotIn(
                 "unchanged", self.writer.tool_pair_state(),
-                "кэш ответил заглушкой после записи доказательства",
+                "the cache answered stub past writing proof",
             )
         finally:
             os.environ[statecache.CACHE_DISABLED_ENV] = "1"
 
     def test_a_dead_peer_is_not_hidden_by_the_stub(self) -> None:
-        """Смерть соседа обязана пробивать заглушку, а не прятаться за ней.
+        """A neighbour death must pierce the stub, never hide behind it.
 
-        `peers.alive` зависит от живого `os.kill(pid, 0)`, а не от номера
-        в state: процесс умирает снаружи, state не меняется, отпечаток
-        тот же — и заглушка врала бы, что сосед слушает. Живым процессом
-        (`sleep 60`, потом `kill`) доказано: до смерти alive=True,
-        после — заглушка вместо alive=False.
+        `peers.alive` follows a live `os.kill(pid, 0)`, not the state number: the
+        process dies outside, state never moves, the fingerprint matches — and the
+        stub would lie that the neighbour listens. A live process proves (`sleep
+        60`, then `kill`): before death alive=True, past it the stub instead of
+        alive=False.
         """
         import subprocess
 
@@ -315,13 +311,13 @@ class TestCacheOverARealSession(PairTestCase):
                 self.assertIn("reviewer-agent", alive["peers"])
                 self.assertTrue(
                     self.writer.tool_pair_state().get("unchanged"),
-                    "кэш не сработал на неизменившемся",
+                    "the cache never fired on the unchanged",
                 )
                 proc.kill()
                 proc.wait()
                 reread = self.writer.tool_pair_state()
                 self.assertNotIn("unchanged", reread,
-                                 "кэш спрятал смерть соседа за заглушкой")
+                                 "the cache hid a neighbour death behind the stub")
                 self.assertFalse(reread["peers"]["reviewer-agent"]["alive"])
             finally:
                 if proc.poll() is None:
@@ -332,32 +328,32 @@ class TestCacheOverARealSession(PairTestCase):
 
 
     def test_a_new_letter_is_not_hidden_by_the_stub(self) -> None:
-        """Новое письмо соседу обязано пробивать заглушку, а не прятаться за ней.
+        """A new letter to the neighbour must pierce the stub, never hide behind it.
 
-        Отпечаток видит ящик по именам файлов, прочтение — по `seen` в state.
-        Проверяется живым вызовом: заглушка на тишине, полный ответ после
-        письма, полный ответ после прочтения. Без этого пара возвращалась
-        к опросу вслепую: агент с кэшем не замечал, что ему написали.
+        The fingerprint sees the box by file names, reading by `seen` in state.
+        A live call checks: a stub on silence, a full answer past the letter, a full
+        answer past reading. With no this the pair fell back to blind polling: an
+        agent with cache never noticed being written to.
         """
         os.environ.pop(statecache.CACHE_DISABLED_ENV, None)
         try:
             self.peer.tool_pair_state()
             self.assertTrue(
                 self.peer.tool_pair_state().get("unchanged"),
-                "кэш не сработал на неизменившемся",
+                "the cache never fired on the unchanged",
             )
 
             self.writer.tool_pair_send(
-                to="reviewer-agent", text="смотри сюда", expects_reply=False)
+                to="reviewer-agent", text="look here", expects_reply=False)
             after = self.peer.tool_pair_state()
             self.assertNotIn("unchanged", after,
-                             "кэш спрятал новое письмо за заглушкой")
+                             "the cache hid a new letter behind the stub")
             self.assertEqual(after.get("unread"), 1)
 
             self.peer.tool_pair_read(limit=10)
             reread = self.peer.tool_pair_state()
             self.assertNotIn("unchanged", reread,
-                             "кэш спрятал прочтение за заглушкой")
+                             "the cache hid reading behind the stub")
             self.assertEqual(reread.get("unread"), 0)
         finally:
             os.environ[statecache.CACHE_DISABLED_ENV] = "1"
