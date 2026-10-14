@@ -2093,7 +2093,7 @@ class TestSmartAutoCompact(PilotCase):
         captured_lines = ["⎋ Working... token 1"]
         pairpilot.capture = lambda tmux, pane: captured_lines
 
-        # 1-й тик
+        # 1st tick
         pilot.tick()
         screen_hash, first_ts = pilot._screen_hashes["omp"]
 
