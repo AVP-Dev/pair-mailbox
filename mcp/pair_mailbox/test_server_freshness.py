@@ -1,6 +1,6 @@
-"""Тесты проверки свежести сервера: server_freshness.py.
+"""Server-freshness tests: server_freshness.py.
 
-Один тест-файл на один исходник: server_freshness.py -> test_server_freshness.py.
+One test file per source: server_freshness.py -> test_server_freshness.py.
 """
 from __future__ import annotations
 
@@ -26,7 +26,7 @@ class TestServerFreshness(unittest.TestCase):
             f1.write_text("x = 1\n", encoding="utf-8")
             st = f1.stat().st_mtime
             
-            # Старт процесса ПОСЛЕ создания файлов
+            # The process starts AFTER the files are created
             verdict = server_freshness.check_server_freshness(
                 code_dir=tmp_path, process_start_ts=st + 10.0
             )
@@ -42,7 +42,7 @@ class TestServerFreshness(unittest.TestCase):
             f1.write_text("y = 2\n", encoding="utf-8")
             st = f1.stat().st_mtime
 
-            # Старт процесса ЗАДОЛГО ДО изменения файлов (> 2s)
+            # The process starts LONG BEFORE the files change (> 2s)
             verdict = server_freshness.check_server_freshness(
                 code_dir=tmp_path, process_start_ts=st - 100.0
             )
@@ -59,7 +59,7 @@ class TestServerFreshness(unittest.TestCase):
             f1.write_text("z = 3\n", encoding="utf-8")
             st = f1.stat().st_mtime
 
-            # Разница 1 секунда попадает в допуск 2.0 секунды
+            # A 1-second gap lands inside the 2.0-second tolerance
             verdict = server_freshness.check_server_freshness(
                 code_dir=tmp_path, process_start_ts=st - 1.0
             )
@@ -76,19 +76,19 @@ class TestServerFreshnessWiring(PairTestCase):
         self.assertIsInstance(st["server_stale_files"], list)
 
     def test_advance_refused_forward_when_stale(self) -> None:
-        # Мокаем check_server_freshness на возврат stale
+        # Stubbing check_server_freshness to return stale
         orig = server_freshness.check_server_freshness
         try:
             server_freshness.check_server_freshness = lambda: {
                 "fresh": False,
                 "stale_files": ["server.py"],
                 "newest_code_file": "server.py",
-                "why": "код изменен после старта",
+                "why": "code changed past start",
             }
             def set_writer(s: dict) -> None:
                 s["writer"] = "writer-agent"
             self.store.mutate(set_writer)
-            # Попытка движения вперед (например scoping -> plan) должна быть отклонена
+            # A forward move (say scoping -> plan) must refuse
             with self.assertRaises(ProtocolError) as ctx:
                 self.writer.tool_pair_advance("plan")
             self.assertIn("server went stale", str(ctx.exception))
@@ -97,7 +97,7 @@ class TestServerFreshnessWiring(PairTestCase):
             server_freshness.check_server_freshness = orig
 
     def test_advance_backward_allowed_when_stale(self) -> None:
-        # Устанавливаем фазу implement
+        # Setting the implement phase
         def set_phase(s: dict) -> None:
             s["phase"] = "implement"
         self.store.mutate(set_phase)
@@ -108,16 +108,16 @@ class TestServerFreshnessWiring(PairTestCase):
                 "fresh": False,
                 "stale_files": ["server.py"],
                 "newest_code_file": "server.py",
-                "why": "код изменен после старта",
+                "why": "code changed past start",
             }
-            # Шаг назад (implement -> plan) разрешен даже при stale сервере
+            # A backward step (implement -> plan) stays allowed on a stale server
             res = self.writer.tool_pair_advance("plan")
             self.assertEqual("plan", res["phase"])
         finally:
             server_freshness.check_server_freshness = orig
 
     def test_reopening_refused_when_stale(self) -> None:
-        # Устанавливаем фазу done
+        # Setting the done phase
         def set_done(s: dict) -> None:
             s["phase"] = "done"
             s["writer"] = "writer-agent"
@@ -129,9 +129,9 @@ class TestServerFreshnessWiring(PairTestCase):
                 "fresh": False,
                 "stale_files": ["server.py"],
                 "newest_code_file": "server.py",
-                "why": "код изменен после старта",
+                "why": "code changed past start",
             }
-            # Reopening (done -> implement) блокируется при stale
+            # Reopening (done -> implement) blocks on stale
             with self.assertRaises(ProtocolError) as ctx:
                 self.writer.tool_pair_advance("implement")
             self.assertIn("server went stale", str(ctx.exception))
