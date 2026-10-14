@@ -1,8 +1,8 @@
 #!/bin/bash
-# Око Саурона: безтокенный сторож пары. Cron: */5 * * * * /path/scripts/eye-of-sauron.sh
-# Пишет ОДНУ строку в .pair/EYE.log за тик. Ноль токенов: чистый bash + python stdlib.
-# ALARM — только если писатель молчит >20 мин, открытых obligations нет и раунд не done
-# (значит пилот пропустил — смотреть человеку).
+# The Eye of Sauron: a tokenless pair guard. Cron: */5 * * * * /path/scripts/eye-of-sauron.sh
+# Writes ONE line into .pair/EYE.log per tick. Zero tokens: plain bash + python stdlib.
+# ALARM only when the writer stays silent >20 min, no open obligations, round not done
+# (meaning the pilot missed it — the human looks).
 set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 LOG="$ROOT/.pair/EYE.log"
@@ -39,11 +39,11 @@ for v in (st.get("verdicts") or [])[::-1]:
     if vrev:
         break
 fresh = "fresh" if (vrev == head) else ("stale(" + vrev + "->" + head + ")" if vrev else "none")
-# Обсуждение до первого коммита (карточка pair-discussion-before-work п.3).
-# send/advance поля round не несут (только evidence) — окно позиционное:
-# последний advance(implement), далее план писателя, далее evidence(commit).
-# План = subject содержит план|plan (case-insensitive): §9a допускает оба.
-# discuss=ok — план внутри окна до коммита; miss — иначе.
+# Discussion before the first commit (the pair-discussion-before-work card item 3).
+# send/advance carry no round field (only evidence) — the window is positional:
+# the last advance(implement), then the writer plan, then evidence(commit).
+# A plan means subject holds plan (case-insensitive): §9a allows both RU and EN.
+# discuss=ok means the plan sits inside the window before the commit; miss otherwise.
 discuss = "miss"
 try:
     import os as _os
@@ -73,10 +73,10 @@ except Exception:
     discuss = "unknown"
 line = f"{time.strftime('%m-%d %H:%M')} ph={phase} r={rnd} w_sil={ws}s c_sil={cs}s obl={obl} verdict={fresh} discuss={discuss}"
 alarm = (phase != "done" and ws > 1200 and obl == 0)
-# Затык — это наоборот: ОБЕ стороны молчат по MCP, а обязательства висят.
-# last_seen меряет вызовы, а не работу (возражение критика: 31 мин молчания
-# при активной работе в панели), поэтому второй фактор — хэш хвоста панели:
-# изменился — работает, стоит — висит. Дешево: capture-pane + tail + sha256.
+# A stuck one is the reverse: BOTH sides stay silent over MCP while obligations hang.
+# last_seen measures calls, not work (the critic objection: 31 min of silence during
+# live pane work), so the second factor is the pane-tail hash: changed means working,
+# still means hung. Cheap: capture-pane + tail + sha256.
 deadlock = ""
 if phase != "done" and obl > 0 and ws > 600 and cs > 600:
     import hashlib as _hl
@@ -105,7 +105,7 @@ if phase != "done" and obl > 0 and ws > 600 and cs > 600:
         pass
     if not _changed:
         deadlock = " DEADLOCK" if (ws > 1200 and cs > 1200) else " warn-deadlock"
-# Проверка Budget Ceiling
+# The Budget Ceiling check
 budget_alarm = False
 budget_str = ""
 try:

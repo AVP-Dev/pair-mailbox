@@ -2,9 +2,9 @@
 set -euo pipefail
 
 usage() {
-  printf '%s\n' "Использование: $0" \
-    "Сканирует tracked и неигнорируемые untracked файлы проекта на вероятные секреты." \
-    "Код возврата: 0 — чисто, 1 — findings, 2 — ошибка сканера."
+  printf '%s\n' "Usage: $0" \
+    "Scans tracked and non-ignored untracked project files for likely secrets." \
+    "Return code: 0 means clean, 1 findings, 2 a scanner error."
 }
 
 case "${1:-}" in
@@ -15,7 +15,7 @@ case "${1:-}" in
     fi
     ;;
   *)
-    printf 'Неизвестная опция: %s\n' "$1" >&2
+    printf 'Unknown option: %s\n' "$1" >&2
     usage >&2
     exit 2
     ;;
@@ -53,15 +53,15 @@ scan_pattern() {
   local matches
   matches="$(LC_ALL=C grep -nE -I -- "$pattern" "$file" 2>/dev/null)" || status=$?
   if [ "$status" -gt 1 ]; then
-    printf 'security-scan: не удалось прочитать %s\n' "$file" >&2
+    printf 'security-scan: failed reading %s\n' "$file" >&2
     return 2
   fi
   if [ "$status" -eq 0 ]; then
     while IFS= read -r match; do
       line_number="${match%%:*}"
       [ -n "$line_number" ] || continue
-      # Присваивание вызова функции — не секрет: url, password = service_endpoint()
-      # (16-символьный идентификатор попадал под паттерн значений).
+      # A function-call assignment is no secret: url, password = service_endpoint()
+      # (a 16-char identifier fell under the value pattern).
       content="${match#*:}"
       if [[ "$content" =~ (password|passwd|secret|api[_-]?key|access[_-]?token|auth[_-]?token|private[_-]?key)[[:space:]]*[:=][[:space:]]*[\'\"]?[A-Za-z_][A-Za-z0-9_]*[[:space:]]*\( ]]; then
         continue
@@ -77,7 +77,7 @@ scan_file() {
   [ -L "$file" ] && return 0
   [ -f "$file" ] || return 0
   if [ ! -r "$file" ]; then
-    printf 'security-scan: файл недоступен для чтения: %s\n' "$file" >&2
+    printf 'security-scan: file not readable: %s\n' "$file" >&2
     return 2
   fi
 
@@ -111,7 +111,7 @@ else
 fi
 
 if [ "$findings" -gt 0 ]; then
-  printf 'security-scan: найдено %s потенциальных finding(s)\n' "$findings" >&2
+  printf 'security-scan: %s potential finding(s) found\n' "$findings" >&2
   exit 1
 fi
 
