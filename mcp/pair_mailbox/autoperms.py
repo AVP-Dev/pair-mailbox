@@ -1,15 +1,15 @@
-"""Нативные permission-слои CLI: одно правило — три грамматики.
+"""Native CLI permission layers: one rule — three grammars.
 
-Зачем модуль: боль раунда 54 — человек прокликивает подтверждения рутинных
-операций, потому что 5 из 6 профилей cli-profiles.json поднимаются с голым
-launch, а install.sh писал deny-блок только для opencode. Разносить правила по
-форматам нельзя: три представления одного правила разойдутся при первой же
-правке. Поэтому здесь канонический список и рендереры-вью.
+Why the module stands: the round-54 pain — the human clicks through routine
+confirmations because 5 of 6 cli-profiles.json profiles rise with a bare launch,
+while install.sh wrote a deny block for opencode only. Spreading rules over formats
+is banned: three views of one rule drift on the very first edit. So here the
+canonical list plus renderer views.
 
-Bypass-флаги (`--dangerously-skip-permissions`, `-a never`) намеренно не
-используются: они снимают все запреты. Промпт снимается нативным allow-list,
-deny остаётся неоспоримым. Где нативного слоя нет (codex, pi) — профиль
-остаётся на пилоте, и это решение, а не недоделка.
+Bypass flags (`--dangerously-skip-permissions`, `-a never`) stay deliberately
+unused: they drop every ban. The prompt lifts by a native allow-list, deny stays
+indisputable. Where no native layer stands (codex, pi) the profile stays on the
+pilot — a decision, not an undone bit.
 """
 
 from __future__ import annotations
@@ -18,35 +18,35 @@ import json
 from pathlib import Path
 from typing import Any
 
-# Канон: категория -> шаблоны, которые разрешены без человека. NEVER-класс
-# (§12: секреты, sudo, сеть, история git, системное удаление) намеренно тут
-# отсутствует: он живёт в NEVER (composer.py) и в deny-каждого рендерера.
+# Canon: category -> patterns allowed with no human. The NEVER class (§12:
+# secrets, sudo, network, git history, system deletion) deliberately misses here:
+# it lives in NEVER (composer.py) and in every-renderer deny.
 ALLOW: dict[str, tuple[str, ...]] = {
-    # локальный git: §10 требует ветку и коммит
+    # local git: §10 demands a branch and a commit
     "git": ("status", "diff", "log", "show", "branch", "remote", "describe",
             "rev-parse", "add", "commit", "checkout", "switch", "stash", "tag",
             "blame", "shortlog", "reflog", "check-ignore"),
-    # проверки и сборки. P0 (раунд 75): раннеры тестов (pytest, unittest,
-    # bun test, npm test, cargo test, jest...) на хосте НЕ разрешены без
-    # человека — только через scripts/run-isolated-test.sh (см. composer
-    # NEVER). В каноне остаются линтеры и сборки; deny ниже дублирует запрет.
+    # checks and builds. P0 (round 75): test runners (pytest, unittest, bun test, npm
+    # test, cargo test, jest...) on host stay human-only — only over
+    # scripts/run-isolated-test.sh (see composer NEVER). Linters and builds stay in the
+    # canon; deny below duplicates the ban.
     "checks": ("ruff", "flake8", "pylint", "mypy",
                "pyright", "eslint", "prettier", "tsc", "black", "isort", "make",
                "bun run", "bun x", "npm run", "vitest", "mocha", "rspec",
                "nox", "tox", "nose"),
-    # наши гейты и раннеры (относительные пути, см. composer.py allow)
+    # our gates and runners (relative paths, see composer.py allow)
     "gates": ("bash scripts/", "scripts/", "bin/pairup", "bin/pairpilot",
               "bin/pair-duo", "bin/pairctl", "bin/pairchat", "bin/pairwatch",
               "bin/pairdoctor", "bin/pairboard"),
-    # чтение и наблюдение без записи
+    # reading and observing with no writes
     "read": ("Read", "read_file", "view", "glob", "grep", "search", "list",
              "list_dir", "cat", "head", "tail", "ls", "find"),
-    # отправка работы: фиче-ветка и PR (§10)
+    # shipping work: a feature branch and a PR (§10)
     "ship": ("git push", "gh pr", "gh issue", "gh run", "gh workflow"),
 }
 
-# §12 + классы, которые запрещены при ЛЮБОМ allow-list. Канон deny: рендереры
-# переводят его в свою грамматику; пустой deny у рендерера — дефект, а не режим.
+# §12 plus classes banned under ANY allow-list. The deny canon: renderers translate
+# it into their grammar; an empty renderer deny is a defect, not a mode.
 DENY: dict[str, tuple[str, ...]] = {
     "secrets": (".env", "secrets", "tokens", "api_key", "api-key", "passwords",
                 "credentials", ".ssh", "id_rsa", "id_ed25519", "/etc/shadow",
@@ -58,8 +58,8 @@ DENY: dict[str, tuple[str, ...]] = {
                 "reflog expire"),
     "network": ("curl", "wget", "nc -", "ssh", "pip install", "npm install",
                 "bun add", "npm publish"),
-    # P0 (раунд 75): запуск тестов на хосте — только человек; в нативных слоях
-    # CLI это deny, безопасный путь — scripts/run-isolated-test.sh.
+    # P0 (round 75): host test runs mean human only; in native CLI layers that is deny,
+    # the safe path scripts/run-isolated-test.sh.
     "testruns": ("pytest", "unittest", "cargo test", "go test", "bun test",
                  "npm test", "npm ci", "jest", "node --test"),
 }
@@ -82,9 +82,9 @@ def _deny_items() -> list[str]:
     return out
 
 
-# Ключ настроек: opencode и claude — `permission`, agy — `permissions`
-# (у обоих это словарь с allow/deny/ask, но имя ключа разное, и мерж по
-# неверному имени молча оставляет старый блок — так и было до этой константы).
+# Settings key: opencode and claude take `permission`, agy `permissions` (both a
+# dict with allow/deny/ask, but the key name differs, and merging under the wrong
+# name silently keeps the old block — as it was before this constant).
 PERM_KEY = {"opencode": "permission", "claude": "permission", "agy": "permissions"}
 
 
@@ -93,9 +93,10 @@ def autoperms_key(profile: str) -> str:
 
 
 def render_opencode(root: Path) -> dict[str, Any]:
-    """opencode.jsonc: bash `*: allow` + deny-глобы, edit/webfetch — ask.
+    """opencode.jsonc: bash `*: allow` plus deny globs, edit/webfetch as ask.
 
-    Формат — glob-строки; порядок в ТУИ не важен, deny всегда сильнее §13c.
+    The format is glob lines; order in the TUI never matters, deny always beats
+    §13c.
     """
     bash: dict[str, str] = {"*": "allow"}
     for item in _deny_items():
@@ -107,8 +108,8 @@ def render_opencode(root: Path) -> dict[str, Any]:
 def render_agy(home: Path) -> dict[str, Any]:
     """~/.gemini/antigravity-cli/settings.json: action(target), Deny>Ask>Allow.
 
-    Грамматика из официальной доки Antigravity (agy.dev/docs/permissions):
-    command(prefix) как allow, command(sudo)/write_file(.git/) как deny.
+    Grammar from the official Antigravity docs (agy.dev/docs/permissions):
+    command(prefix) as allow, command(sudo)/write_file(.git/) as deny.
     """
     allow, deny = [], ["command(sudo)", "command(rm)", "command(rm -rf)",
                        "write_file(.git/)", "write_file(/home/user/.ssh)"]
@@ -131,10 +132,10 @@ def render_agy(home: Path) -> dict[str, Any]:
 
 
 def render_claude(root: Path) -> dict[str, Any]:
-    """Проектный .claude/settings.json: правила Bash(git:*), deny перекрывает.
+    """Project .claude/settings.json: Bash(git:*) rules, deny overrides.
 
-    Формат Claude Code: `Bash(<cmd>:*)`, `Read(<path>)`. Ask-умолчание
-    остаётся умолчанием: allow закрывает только рутину пары.
+    The Claude Code format: `Bash(<cmd>:*)`, `Read(<path>)`. The ask default stays
+    the default: allow closes only pair routine.
     """
     allow = [f"Bash(git {item}:*)" for item in ALLOW["git"]]
     allow += [f"Bash({item})" for item in ALLOW["checks"]]
@@ -154,7 +155,7 @@ RENDERERS = {
     "claude": lambda root, home: render_claude(Path(root)),
 }
 
-# Куда каждый рендерер пишет: (пусть, читаемый человеком ярлык)
+# Where each renderer writes: (path, human-readable label)
 TARGETS = {
     "opencode": lambda root, home: Path(home) / ".config" / "opencode" / "opencode.jsonc",
     "agy": lambda root, home: Path(home) / ".gemini" / "antigravity-cli" / "settings.json",
@@ -163,24 +164,24 @@ TARGETS = {
 
 
 def render(profile: str, root: Path, home: Path) -> dict[str, Any]:
-    """Собрать настройки профиля. Неизвестный профиль — отказ, не пустышка."""
+    "Assemble the profile settings. An unknown profile refuses, never a dummy."
     if profile not in RENDERERS:
-        raise ValueError(f"нет нативного permission-слоя для {profile!r}; "
-                         f"известны: {', '.join(sorted(RENDERERS))}")
+        raise ValueError(f"no native permission layer for {profile!r}; "
+                         f"known: {', '.join(sorted(RENDERERS))}")
     payload = RENDERERS[profile](root, home)
     if not _deny_items() and profile != "claude":
-        raise ValueError("пустой deny — это дыра, а не режим")
+        raise ValueError("an empty deny is a hole, not a mode")
     return payload
 
 
 def _merge_permission(profile: str, existing: Any, canonical: Any) -> Any:
-    """Слияние с чужим блоком: правила человека выживают, канон добавляется.
+    """Merging with a foreign block: human rules survive, the canon adds.
 
-    Замена блока целиком — это молчаливое уничтожение чужой настройки
-    (install_test.py test_unrelated_keys_in_jsonc_survive поймал именно это:
-    ручной `sudo *: deny` из фикстуры исчезал после установки). Объединяем:
-    у opencode — словарь bash по ключам с приоритетом канона (deny сильнее),
-    у agy/claude — объединение списков (в обоих deny перекрывает allow).
+    Replacing the block whole is a silent kill of a foreign setting (install_test.py
+    test_unrelated_keys_in_jsonc_survive caught exactly that: a hand `sudo *:
+    deny` from the fixture vanished past install). Merging: opencode takes a bash
+    dict by keys with canon priority (deny beats), agy/claude take list union
+    (deny overrides allow in both).
     """
     if not isinstance(existing, dict) or not isinstance(canonical, dict):
         return canonical
@@ -200,8 +201,8 @@ def _merge_permission(profile: str, existing: Any, canonical: Any) -> Any:
 
 
 def write_native_perms(profile: str, root: Path, home: Path) -> Path:
-    """Записать настройки и вернуть путь. Слияние с существующим файлом:
-    ключ permissions дописывается/заменяется, остальное содержимое цело."""
+    """Write the settings returning the path. Merging with an existing file: the
+    permissions key appends/replaces, the rest stays whole."""
     target = TARGETS[profile](root, home)
     target.parent.mkdir(parents=True, exist_ok=True)
     payload = render(profile, root, home)
@@ -213,8 +214,8 @@ def write_native_perms(profile: str, root: Path, home: Path) -> Path:
             if not isinstance(merged, dict):
                 merged = {}
         except (OSError, json.JSONDecodeError):
-            # Нечитаемый файл не перезаписываем молча: чужая настройка важнее
-            # нашей автоматики. Пусть установщик скажет об этом человеку.
+            # An unreadable file never rewrites silent: a foreign setting outweighs our
+            # automation. Let the installer tell the human about it.
             raise
     merged[key] = _merge_permission(profile, merged.get(key), payload.get(key, payload))
     target.write_text(json.dumps(merged, ensure_ascii=False, indent=2) + "\n",
