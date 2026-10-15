@@ -698,8 +698,12 @@ PR merging is gated by machine rules rather than prompt agreements:
    layer, and the transcript (`pr_merged` / `pr_merge_forced`) is the audit trail.
 2. **Merge requires a fresh critic APPROVED; NEEDS WORK refuses.**
    The gate reads the last verdict note (`verdict` or `verdict-*` slug, text from
-   its own `notes/<slug>.md`): `**APPROVED**` passes, `**NEEDS WORK**` refuses, bare
-   prose never counts either way. A bare `**APPROVED**` pins HEAD through the verdict
+   its own `notes/<slug>.md`) — and the NEWEST MARKED `## `-section decides
+   (`review_gate.py`, newest block carrying `verdict-approve <sha|round N>`,
+   `**APPROVED**` or a reject marker; unmarked tail sections never hide it).
+   Put the marker in the LAST section of your verdict note. `**APPROVED**`
+   passes, `**NEEDS WORK**` refuses, bare prose never counts either way.
+   A bare `**APPROVED**` pins HEAD through the verdict
    record (`rev.head` must equal HEAD and be fresh). Round 91 is the case: code
    reached `master` five minutes after a refusal.
 3. **Preconditions for merging (`check_pr_merge`)**:
