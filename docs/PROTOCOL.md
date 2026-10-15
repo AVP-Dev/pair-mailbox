@@ -442,6 +442,15 @@ handoff   what is done, what was skipped, what is unclear
 backlog   a real defect outside the task's scope
 ```
 
+Backlog lifecycle: a critic finding that is real but out of scope goes to a
+`backlog` note as `file:line — what breaks — why deferred` (anyone may add).
+The writer moves each note into `docs/backlog/<slug>.md` with frontmatter
+`title/found/severity/round/status: open`; fixed cards are deleted from
+`docs/backlog/` with the fix recorded in the commit message — history keeps
+the record, the directory keeps only open debt. The close report
+(`.pair/REPORT.md`) lists what was parked this round and the open cards, so
+a parked finding cannot die silently.
+
 ## 9a. Talk before work: the plan goes through the mailbox first
 
 Applies in `mode=fix` only — in `audit` there are no commits, so there is

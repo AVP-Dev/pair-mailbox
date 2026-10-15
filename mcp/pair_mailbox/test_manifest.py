@@ -127,6 +127,46 @@ class TestNegativeAndMethod(unittest.TestCase):
                 gaps = cross_check(m, st, sd)
         self.assertTrue(any("#107" in g for g in gaps))
 
+    def test_task_closed_in_archive_is_seen(self) -> None:
+        """Rotation blindness (round-94 live case): task_closed sits in
+        transcript-archive/1.jsonl while the active file is cut."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            sd = Path(tmp)
+            (sd / "transcript-archive").mkdir()
+            (sd / "transcript-archive" / "1.jsonl").write_text(
+                '{"ts": "2026-10-14T20:00:00+00:00", "kind": "advance",'
+                ' "phase": "done"}\n'
+                '{"ts": "2026-10-14T21:01:45+00:00", "kind": "task_closed",'
+                ' "task_id": 107, "status": "done"}\n', encoding="utf-8")
+            (sd / "transcript.jsonl").write_text(
+                '{"ts": "2026-10-14T21:02:00+00:00", "kind": "evidence",'
+                ' "evidence_kind": "test", "ok": true}\n', encoding="utf-8")
+            from manifest import transcript_closed_ids
+            self.assertIn(107, transcript_closed_ids(sd))
+
+    def test_window_anchor_survives_rotation(self) -> None:
+        """The last done lives in the archive: the window still starts there,
+        not at the rotation cut."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            sd = Path(tmp)
+            (sd / "transcript-archive").mkdir()
+            (sd / "transcript-archive" / "2.jsonl").write_text(
+                '{"ts": "2026-10-14T20:00:00+00:00", "kind": "advance",'
+                ' "phase": "done"}\n', encoding="utf-8")
+            (sd / "transcript-archive" / "1.jsonl").write_text(
+                '{"ts": "2026-10-14T21:01:45+00:00", "kind": "task_closed",'
+                ' "task_id": 107, "status": "done"}\n', encoding="utf-8")
+            (sd / "transcript.jsonl").write_text(
+                '{"ts": "2026-10-14T21:05:00+00:00", "kind": "task_closed",'
+                ' "task_id": 108, "status": "done"}\n', encoding="utf-8")
+            from manifest import transcript_closed_ids
+            ids = transcript_closed_ids(sd)
+            self.assertIn(107, ids)
+            self.assertIn(108, ids)
+
+
 
 class TestNegativeRuMarkers(unittest.TestCase):
     def test_russian_markers_found(self) -> None:

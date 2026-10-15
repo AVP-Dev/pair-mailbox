@@ -20,6 +20,8 @@ Do not invent trivia.
 title: <brief>
 found: <date>
 severity: high|medium|low
+round: <N>
+status: open
 ---
 ## Where
 `file:line`
@@ -30,6 +32,11 @@ severity: high|medium|low
 ## What to do
 <step>
 ```
+
+Lifecycle: `status: open` while the debt lives. A fixed card is DELETED from
+`docs/backlog/` (the commit message records what closed it) — history keeps
+the record, the directory keeps only open debt. The close report lists what
+was parked and what stays open, so nothing dies silently.
 
 ## Rules
 

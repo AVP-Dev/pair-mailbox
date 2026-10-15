@@ -1727,6 +1727,11 @@ def write_report(state_dir: Path, state: dict) -> Path:
                          path.read_text(encoding="utf-8", errors="replace").splitlines()
                          if ln.startswith("#")), path.stem)
             notes.append(f"- {path.stem}: {head}")
+    parked = [e for e in events if e.get("kind") == "note" and str(e.get("note_kind", "")).startswith("backlog")]
+    try:
+        cards = sorted(p.name for p in (state_dir.parent / "docs/backlog").glob("*.md"))
+    except OSError:
+        cards = []
 
     lines = [
         f"# Round report {state.get('round')}",
@@ -1802,6 +1807,12 @@ def write_report(state_dir: Path, state: dict) -> Path:
         blockers = _done_blockers(state)
         lines.append("What blocks the round close:")
         lines += [f"- {item}" for item in blockers] or ["- nothing"]
+    lines += ["", "## Backlog parked this round", ""]
+    if parked or cards:
+        lines += [f"- parked: {str(e.get('text', ''))[:120]}" for e in parked]
+        lines += [f"Open cards in docs/backlog/: {len(cards)}"] + [f"- {c}" for c in cards]
+    else:
+        lines.append("- nothing parked; docs/backlog/ empty.")
     lines += [
         "",
         "## Latest notes",
