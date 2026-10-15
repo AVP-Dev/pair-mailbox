@@ -2244,6 +2244,24 @@ class PairSession:
             self.store.append_transcript("doorbell_enter_unverified", self.role,
                                          to=target, bell_kind=kind, pane=pane, reason=reason)
             return {"rung": False, "why": reason, "pane": pane}
+        # Round 97 C5: rc==0 is not submission — the composer may retain the
+        # prompt (seen live post-96-merge). Verify via capture-pane, retry
+        # Enter once, then record unverified instead of claiming woken.
+        def _retained() -> bool:
+            try:
+                line = composer_line(capture(tmux, pane))
+            except Exception:  # noqa: BLE001 - pane vanished mid-ring
+                return True
+            return line is not None and prompt in line
+        if _retained():
+            retry = subprocess.run([tmux, "send-keys", "-t", pane, "Enter"],
+                                   capture_output=True, text=True, timeout=5)
+            if _retained():
+                reason = ("composer retained prompt after Enter "
+                          f"(rc=0 both sends, retry rc={retry.returncode})")
+                self.store.append_transcript("doorbell_enter_unverified", self.role,
+                                             to=target, bell_kind=kind, pane=pane, reason=reason)
+                return {"rung": False, "why": reason, "pane": pane}
         self.store.append_transcript("doorbell", self.role, to=target, bell_kind=kind, pane=pane)
         return {"rung": True, "pane": pane, "prompt": prompt}
 

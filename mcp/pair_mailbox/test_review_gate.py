@@ -502,8 +502,9 @@ class TestReviewGate(PairTestCase):
             ok, _ = review_gate.check_pr_merge(store, tmp_path)
             self.assertFalse(ok)
 
-    def test_slug_file_missing_falls_back(self) -> None:
-        """No verdict-<slug>.md: the old verdict.md still judges (no crash)."""
+    def test_marker_in_first_block_decides(self) -> None:
+        """Round 97 C1: newest MARKED block decides — marker in the first of
+        three sections approves; unmarked tail never hides it."""
         import tempfile
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
@@ -512,10 +513,51 @@ class TestReviewGate(PairTestCase):
             store.read.return_value = self._state(head)
             store.notes_root = tmp_path / "notes"
             store.notes_root.mkdir()
-            (store.notes_root / "verdict.md").write_text(
-                f"## t — opencode\n\nverdict-approve {head[:12]}\n", encoding="utf-8")
+            (store.notes_root / "verdict-round91-critic.md").write_text(
+                f"## t — opencode\n\nverdict-approve {head[:12]}\n"
+                "\n## details\n\nprose, no marker\n"
+                "\n## what this does NOT cover\n\nmore prose\n",
+                encoding="utf-8")
             ok, reason = review_gate.check_pr_merge(store, tmp_path)
             self.assertTrue(ok, reason)
+
+    def test_early_reject_beats_clean_tail(self) -> None:
+        """Round 97 C1: NEEDS WORK in an early block refuses as rejected —
+        not as no-marker — even with a clean tail."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            head = self._repo_with_commit(tmp_path)
+            store = MagicMock()
+            store.read.return_value = self._state(head)
+            store.notes_root = tmp_path / "notes"
+            store.notes_root.mkdir()
+            (store.notes_root / "verdict-round91-critic.md").write_text(
+                "## t — opencode\n\n**NEEDS WORK.** broken\n"
+                "\n## details\n\nclean tail, no marker\n",
+                encoding="utf-8")
+            ok, reason = review_gate.check_pr_merge(store, tmp_path)
+            self.assertFalse(ok)
+            self.assertIn("rejected", reason)
+
+    def test_newest_marker_pin_fail_no_fallback(self) -> None:
+        """Round 97 C1: pin applies to the deciding block only — newest marker
+        pins a stale sha while an older matches HEAD: refusal, no fallback."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            head = self._repo_with_commit(tmp_path)
+            store = MagicMock()
+            store.read.return_value = self._state(head)
+            store.notes_root = tmp_path / "notes"
+            store.notes_root.mkdir()
+            (store.notes_root / "verdict-round91-critic.md").write_text(
+                f"## old — opencode\n\nverdict-approve {head[:12]}\n"
+                "\n## new — opencode\n\nverdict-approve deadbeef1234\n",
+                encoding="utf-8")
+            ok, reason = review_gate.check_pr_merge(store, tmp_path)
+            self.assertFalse(ok)
+            self.assertIn("does not match current HEAD", reason)
 
 
 if __name__ == "__main__":

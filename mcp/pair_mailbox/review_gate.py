@@ -99,7 +99,6 @@ def check_pr_merge(store: Any, repo_dir: Path) -> tuple[bool, str]:
         blocks = [b for b in content.split("\n## ") if b.strip()]
         if not blocks:
             return False, f"notes/{verdict_file.name} is empty: no verdict text found"
-        last_block = blocks[-1]
         # D1: Machine approve channel — the structured 'verdict-approve
         # <head|round>' marker, or the house verdict heading (**APPROVED** /
         # **NEEDS WORK** — round 91 proved the gate must read what the project
@@ -117,12 +116,31 @@ def check_pr_merge(store: Any, repo_dir: Path) -> tuple[bool, str]:
             r"(?:\bverdict-reject\b|^\*\*(NEEDS WORK)(\*\*)?|ВЕРДИКТ\b[^\n]*\b(?:ОТКАЗ|REJECT|CHANGES REQUESTED)\b|\bне\s+одобрен[оаы]?\b)",
             re.IGNORECASE | re.MULTILINE,
         )
-        if VERDICT_REJECT_RE.search(last_block):
-            return False, "last verdict rejected the changes (REFUSE / REJECT / NOT APPROVED)"
+        # Round 97 (C1): the newest MARKED block decides — a marker in an old
+        # block never leaks into the decision. Pin reconciliation (D2) applies
+        # to the deciding block only, failing into refusal, never falling back
+        # to an older marker that happens to match HEAD. Reject wins ties
+        # within one block (checked first, as before).
+        deciding = None
+        for b in reversed(blocks):
+            marked = bool(VERDICT_REJECT_RE.search(b) or VERDICT_APPROVE_RE.search(b))
+            if marked:
+                deciding = b
+                break
+        if deciding is None:
+            # C2(i): no marker in any block — named cause, not silence.
+            return False, (f"last verdict is not approved (no structured 'verdict-approve <head|round>' "
+                           f"marker or verdict heading in any of {len(blocks)} section(s))")
+        if VERDICT_REJECT_RE.search(deciding):
+            # C2(iii): reject overrules approve inside the deciding block.
+            return False, "last verdict rejected the changes (REFUSE / REJECT / NOT APPROVED in the deciding section)"
 
-        approve_match = VERDICT_APPROVE_RE.search(last_block)
+        approve_match = VERDICT_APPROVE_RE.search(deciding)
         if not approve_match:
-            return False, "last verdict is not approved (no structured 'verdict-approve <head|round>' marker)"
+            # Unreachable by construction (deciding is marked and not
+            # rejected), kept fail-closed so a future regex edit cannot
+            # silently approve.
+            return False, "last verdict is not approved (deciding section carries no approval marker)"
 
         # D2: Reconcile the marker value with the verdict (v_head) or the current HEAD / current round.
         # A bare **APPROVED** carries no head/round: then the pin is the

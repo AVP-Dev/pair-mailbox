@@ -172,6 +172,88 @@ class TestEventWake(PairTestCase):
         self.assertIn("doorbell_enter_unverified", kinds)
         self.assertNotIn("doorbell", kinds)
 
+    def test_ring_enter_accepted_and_submitted_rings(self) -> None:
+        """C5 submit mode: rc=0 both sends and the prompt is gone from the
+        composer after Enter — a real ring."""
+        import composer
+        import server as server_mod
+        self.store.mutate(lambda s: s.setdefault("roles", {})
+                          .setdefault("reviewer-agent", {}).update({"pane": "%45"}))
+        os.environ.pop("PAIR_DISABLE_RING", None)
+        orig_which = composer.shutil.which
+        orig_foreign = composer.pane_is_foreign
+        composer.shutil.which = lambda name: "/usr/bin/tmux"
+        composer.pane_is_foreign = lambda tmux, pane, root: (False, "")
+        states = iter(["> ", "> "])  # empty before, empty after
+        orig_line = composer.composer_line
+        orig_capture = composer.capture
+        composer.composer_line = lambda lines: next(states)
+        composer.capture = lambda tmux, pane: []
+        orig_sub_run = server_mod.subprocess.run
+
+        def fake_sub_run(cmd, *a, **kw):
+            return server_mod.subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        server_mod.subprocess.run = fake_sub_run  # type: ignore[method-assign]
+        try:
+            result = self.writer._ring("reviewer-agent", "message")
+        finally:
+            composer.composer_line = orig_line
+            composer.capture = orig_capture
+            composer.shutil.which = orig_which
+            composer.pane_is_foreign = orig_foreign
+            server_mod.subprocess.run = orig_sub_run  # type: ignore[method-assign]
+        self.assertTrue(result["rung"], "submitted prompt is a ring")
+        kinds = [json.loads(line).get("kind") for line in
+                 (self.root / "transcript.jsonl").read_text(encoding="utf-8").splitlines() if line.strip()]
+        self.assertIn("doorbell", kinds)
+        self.assertNotIn("doorbell_enter_unverified", kinds)
+
+    def test_ring_retained_prompt_records_unverified(self) -> None:
+        """C5 retained mode: rc=0 both sends but capture-pane still shows the
+        injected prompt after Enter + retry — unverified, never rung."""
+        import composer
+        import server as server_mod
+        self.store.mutate(lambda s: s.setdefault("roles", {})
+                          .setdefault("reviewer-agent", {}).update({"pane": "%45"}))
+        os.environ.pop("PAIR_DISABLE_RING", None)
+        orig_which = composer.shutil.which
+        orig_foreign = composer.pane_is_foreign
+        composer.shutil.which = lambda name: "/usr/bin/tmux"
+        composer.pane_is_foreign = lambda tmux, pane, root: (False, "")
+        seen = {}
+        orig_line = composer.composer_line
+        orig_capture = composer.capture
+
+        def fake_line(lines):
+            # First (pre-send) call: empty. Post-Enter calls: prompt retained.
+            if not seen:
+                seen["pre"] = True
+                return ""
+            return "pair: message from writer-agent. Read pair_read."
+
+        composer.composer_line = fake_line
+        composer.capture = lambda tmux, pane: []
+        orig_sub_run = server_mod.subprocess.run
+
+        def fake_sub_run(cmd, *a, **kw):
+            return server_mod.subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        server_mod.subprocess.run = fake_sub_run  # type: ignore[method-assign]
+        try:
+            result = self.writer._ring("reviewer-agent", "message")
+        finally:
+            composer.composer_line = orig_line
+            composer.capture = orig_capture
+            composer.shutil.which = orig_which
+            composer.pane_is_foreign = orig_foreign
+            server_mod.subprocess.run = orig_sub_run  # type: ignore[method-assign]
+        self.assertFalse(result["rung"], "retained prompt is not a ring")
+        self.assertIn("retained", result["why"])
+        kinds = [json.loads(line).get("kind") for line in
+                 (self.root / "transcript.jsonl").read_text(encoding="utf-8").splitlines() if line.strip()]
+        self.assertIn("doorbell_enter_unverified", kinds)
+        self.assertNotIn("doorbell", kinds)
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
