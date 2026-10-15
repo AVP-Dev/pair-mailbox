@@ -46,11 +46,17 @@ def render_text(manifest: dict) -> str:
     lines.append(f"- {plan.get('path', '?')} sha {plan.get('sha', '?')[:12]}")
     lines.append("")
     lines.append("## Implement (commits)")
-    for commit in manifest.get("commits") or ["(no commits)"]:
-        if isinstance(commit, str):
-            lines.append(f"- {commit}")
-        else:
-            lines.append(f"- {commit.get('sha')} {commit.get('subject')}")
+    commits = manifest.get("commits")
+    if commits is None:
+        lines.append("- (unrecoverable — no merge evidence recorded, not empty)")
+    elif not commits:
+        lines.append("- (no commits)")
+    else:
+        for commit in commits:
+            if isinstance(commit, str):
+                lines.append(f"- {commit}")
+            else:
+                lines.append(f"- {commit.get('sha')} {commit.get('subject')}")
     lines.append("")
     lines.append("## Tasks closed")
     for task in manifest.get("tasks_closed") or ["(none)"]:
@@ -91,7 +97,7 @@ def render_text(manifest: dict) -> str:
 
 def recheck(state_dir: Path, round_number: int) -> int:
     """Re-derive round N's OWN window, diff against the close-written claim."""
-    from manifest import derive_manifest, _round_bounds, _round_commits_from_evidence
+    from manifest import derive_manifest, _round_commits_from_evidence
     claimed = _load_manifest(state_dir, round_number)
     if claimed is None:
         print(f"pairreport: no manifest for round {round_number} — nothing to recheck",
@@ -102,18 +108,25 @@ def recheck(state_dir: Path, round_number: int) -> int:
     except (OSError, ValueError) as exc:
         print(f"pairreport: cannot read state: {exc}", file=sys.stderr)
         return 2
-    from manifest import cross_check
+    from manifest import cross_check, transcript_closed_ids
     current = derive_manifest(state_dir, state, round_number)
-    # C2: unrecoverable, never empty. No closing advance in the surviving
-    # stream (still open, or archive rotated past it) + no merge evidence
-    # with rows in the window = cannot-prove, never an empty delta.
-    _, ceiling = _round_bounds(state_dir, round_number, state)
+    # B1/C2: unrecoverable, never empty. Closed round + no merge evidence +
+    # rows in the window (task_closed or evidence round=N) = CANNOT-PROVE,
+    # whether or not the ceiling survived. A commits line that says nothing
+    # is the seam the round exists to close.
+    is_open = round_number == int(state.get("round", 0))
     anchor = _round_commits_from_evidence(state, round_number)
-    if ceiling is None and anchor is None and round_number != int(state.get("round", 0)):
-        print(f"pairreport round {round_number}: CANNOT PROVE — no closing advance "
-              f"in the surviving stream and no recorded merge evidence; "
-              f"the window is unrecoverable, not empty", file=sys.stderr)
-        return 2
+    if not is_open and anchor is None:
+        window_rows = transcript_closed_ids(state_dir, round_number,
+                                            state.get("tasks", []), state)
+        window_evidence = [e for e in (state.get("evidence") or [])
+                           if int(e.get("round", -1)) == round_number]
+        if window_rows or window_evidence:
+            print(f"pairreport round {round_number}: CANNOT PROVE — window holds "
+                  f"{len(window_rows)} task-close(s) and {len(window_evidence)} evidence row(s) "
+                  f"but no merge evidence names the commits; unrecoverable, not empty",
+                  file=sys.stderr)
+            return 2
     delta = _diff_manifests(claimed, current)
     for gap in cross_check(current, state, state_dir):
         delta.append("cross-check: " + gap)
@@ -129,10 +142,18 @@ def recheck(state_dir: Path, round_number: int) -> int:
 def _diff_manifests(claimed: dict, current: dict) -> list[str]:
     """Claim-vs-real lines. Volatile keys (none today) would be skipped here."""
     delta = []
-    for key in ("request", "commits", "tasks_closed", "tasks_dropped", "verdicts", "evidence"):
+    for key in ("request", "tasks_closed", "tasks_dropped", "verdicts", "evidence"):
         old, new = claimed.get(key) or [], current.get(key) or []
         if json.dumps(old, sort_keys=True) != json.dumps(new, sort_keys=True):
             delta.append(f"{key}: claimed {len(old)} item(s), tree has {len(new)}")
+    # B1: commits None is unrecoverable, never []. Claim-vs-real names it.
+    old_c, new_c = claimed.get("commits"), current.get("commits")
+    if old_c is None or new_c is None:
+        if (old_c is None) != (new_c is None):
+            delta.append(f"commits: claim is {'unrecoverable' if old_c is None else f'{len(old_c)} item(s)'}, "
+                         f"tree is {'unrecoverable' if new_c is None else f'{len(new_c)} item(s)'}")
+    elif json.dumps(old_c, sort_keys=True) != json.dumps(new_c, sort_keys=True):
+        delta.append(f"commits: claimed {len(old_c)} item(s), tree has {len(new_c)}")
     for key in ("mode", "writer", "plan"):
         if json.dumps(claimed.get(key), sort_keys=True) != json.dumps(current.get(key), sort_keys=True):
             delta.append(f"{key} differs")

@@ -283,7 +283,7 @@ class TestRoundWindow96(unittest.TestCase):
         self.assertEqual(ids, {107, 108})
 
     def test_closed_commits_from_recorded_evidence(self) -> None:
-        """C2: real writer string yields the merge sha, bare pr row nothing."""
+        """C2/B2: range names the tip only — the pre-merge anchor is not ours."""
         from manifest import _round_commits_from_evidence
         st = _state(round=96, evidence=[
             {"round": 94, "evidence_kind": "commit",
@@ -293,7 +293,7 @@ class TestRoundWindow96(unittest.TestCase):
         commits94 = _round_commits_from_evidence(st, 94)
         self.assertIsNotNone(commits94)
         assert commits94 is not None
-        self.assertIn("771fd77", [c["sha"] for c in commits94])
+        self.assertEqual([c["sha"] for c in commits94], ["771fd77"])
         self.assertIsNone(_round_commits_from_evidence(st, 89))
 
     def test_empty_with_anchor_refuses(self) -> None:
@@ -319,6 +319,35 @@ class TestRoundWindow96(unittest.TestCase):
                                    return_value=[{"sha": "abc", "subject": "x"}]):
                 gaps = cross_check(m, st, sd)
         self.assertTrue(any("on branch" in g for g in gaps))
+
+    def test_none_with_rows_refuses_never_empty(self) -> None:
+        """B1: closed round, ceiling survives, no merge evidence — None
+        refuses via the window-rows gap, never collapses to []."""
+        with tempfile.TemporaryDirectory() as tmp:
+            sd = Path(tmp)
+            self._stream(sd)
+            st = _state(round=96)
+            m = derive_manifest(sd, st, 94)
+            self.assertIsNone(m["commits"])
+            self.assertTrue(m["commits_unrecoverable"])
+            gaps = cross_check(m, st, sd)
+        self.assertTrue(any("cannot-prove" in g for g in gaps))
+
+    def test_verdicts_filtered_by_window(self) -> None:
+        """M1: state verdicts filter by at inside the window, note rides along."""
+        with tempfile.TemporaryDirectory() as tmp:
+            sd = Path(tmp)
+            self._stream(sd)
+            (sd / "notes").mkdir()
+            (sd / "notes" / "verdict-v-in.md").write_text("x", encoding="utf-8")
+            st = _state(round=96, verdicts=[
+                {"role": "c", "kind": "v-old", "at": "2026-10-14T20:00:00+00:00",
+                 "note": ".pair/notes/v-old.md"},
+                {"role": "c", "kind": "verdict-v-in", "at": "2026-10-14T21:00:00+00:00",
+                 "note": ".pair/notes/verdict-v-in.md"}])
+            m = derive_manifest(sd, st, 94)
+        self.assertEqual([v["kind"] for v in m["verdicts"]], ["verdict-v-in"])
+        self.assertEqual(m["verdicts"][0]["note"], ".pair/notes/verdict-v-in.md")
 
 
 if __name__ == "__main__":

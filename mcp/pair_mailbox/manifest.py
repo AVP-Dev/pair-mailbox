@@ -129,16 +129,30 @@ def _round_commits_from_evidence(state: dict[str, Any], round_number: int) -> li
     A bare kind=pr row (URL only, no tip — round 89's shape) names nothing.
     """
     import re
-    out = []
+    out: list[dict[str, str]] = []
+    seen: set[str] = set()
+
+    def _add(sha: str, value: str) -> None:
+        short = sha[:12]
+        if short not in seen:
+            seen.add(short)
+            out.append({"sha": short, "subject": value[:120]})
+
     for e in (state.get("evidence") or []):
         if int(e.get("round", -1)) != round_number:
             continue
         if e.get("evidence_kind") not in ("commit",) and e.get("kind") not in ("commit",):
             continue
         value = str(e.get("value", ""))
+        ranged = re.findall(r"[0-9a-f]{7,40}\.\.[0-9a-f]{7,40}", value)
+        if ranged:
+            # "origin/master X..Y" names Y only: X is the pre-merge anchor,
+            # a commit the round did not make.
+            for span in ranged:
+                _add(span.split("..")[1], value)
+            continue
         for sha in re.findall(r"\b[0-9a-f]{7,40}\b", value):
-            if sha not in [c["sha"] for c in out]:
-                out.append({"sha": sha[:12], "subject": value[:120]})
+            _add(sha, value)
     return out or None
 
 
@@ -176,7 +190,11 @@ def derive_manifest(state_dir: Path, state: dict[str, Any], round_number: int | 
                                         transcript_closed_ids(state_dir, round_number, tasks, state))
     evidences = [e for e in (state.get("evidence") or [])
                  if int(e.get("round", -1)) == round_number]
-    verdicts = state.get("verdicts", []) or []
+    anchor, ceiling = _round_bounds(state_dir, round_number, state)
+    # M1: state verdicts carry at+note — filter by at inside N's window,
+    # not a rebind: the note path rides along untouched.
+    verdicts = [v for v in (state.get("verdicts", []) or [])
+                if str(v.get("at", "")) >= anchor and (ceiling is None or str(v.get("at", "")) < ceiling)]
     # Negative record + method: verdict notes carry NOT-covered sections and
     # HOW each claim was verified in prose (round 94: no separate structure
     # exists in state). The manifest binds each verdict to its note path + hash
@@ -188,11 +206,13 @@ def derive_manifest(state_dir: Path, state: dict[str, Any], round_number: int | 
     is_open = round_number == int(state.get("round", 0))
     if is_open:
         commits: list[dict[str, str]] | None = _git_commits(project_root)
+        commits_unrecoverable = False
     else:
         # Closed round: the live master..HEAD is empty after the merge —
         # commits come from the recorded merge evidence, or None
         # (UNRECOVERABLE, never []) when the writer recorded none.
         commits = _round_commits_from_evidence(state, round_number)
+        commits_unrecoverable = commits is None
     plan_path = state_dir / "plan.md"
     try:
         plan_sha = _sha(plan_path.read_text(encoding="utf-8")) if plan_path.exists() else ""
@@ -206,6 +226,7 @@ def derive_manifest(state_dir: Path, state: dict[str, Any], round_number: int | 
         "drafts": _note_hashes(state_dir, ("plan",)),
         "plan": {"path": ".pair/plan.md", "sha": plan_sha},
         "commits": commits,
+        "commits_unrecoverable": commits_unrecoverable,
         "tasks_closed": [{"id": t.get("id"), "text": (t.get("text") or "")[:120],
                           "status": t.get("status"),
                           "bound_by": t.get("bound_by", "")} for t in closed_here],
@@ -392,14 +413,24 @@ def cross_check(manifest: dict[str, Any], state: dict[str, Any],
         if manifest.get("commits") == [] and _git_commits(state_dir.parent):
             gaps.append("commits present on branch but manifest lists none")
     else:
-        # CLOSED round: live master..HEAD is empty by design after a merge.
-        # Recorded merge evidence is the anchor; [] with an anchor refuses,
-        # and no anchor with rows in the window is cannot-prove, never [].
+        # CLOSED round (B1): live master..HEAD is empty by design after a
+        # merge. Recorded merge evidence is the anchor; [] or None with an
+        # anchor refuses — and None (unrecoverable) with rows in the window
+        # refuses too, because a window with rows and no commits is the same
+        # lie wearing a different hat. None collapses to [] NOWHERE.
         anchor = _round_commits_from_evidence(state, round_number)
-        if manifest.get("commits") == [] and anchor:
+        claimed_commits = manifest.get("commits")
+        if claimed_commits in ([], None) and anchor:
             gaps.append("recorded merge evidence names commits but manifest lists none")
+        elif claimed_commits is None and transcript_closed_ids(
+                state_dir, round_number, state.get("tasks", []), state):
+            gaps.append("window holds closed tasks but manifest commits unrecoverable — "
+                        "record the merge evidence or state cannot-prove")
+    anchor, ceiling = _round_bounds(state_dir, round_number, state)
     verdict_notes = [r for r in _transcript_rows(state_dir) if str(r.get("kind", "")).startswith("verdict")
                      or r.get("kind") == "note" and str(r.get("note_kind", "")).startswith("verdict")]
+    verdict_notes = [r for r in verdict_notes
+                     if str(r.get("ts", "")) >= anchor and (ceiling is None or str(r.get("ts", "")) < ceiling)]
     if manifest.get("verdicts") == [] and verdict_notes:
         gaps.append("verdict notes in journal but manifest lists none")
     # Tasks from the TRANSCRIPT in round N's OWN window, not from state's
