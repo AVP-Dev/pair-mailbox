@@ -111,6 +111,41 @@ class TestPiFramedInput(unittest.TestCase):
         self.assertEqual("worked text", line)
         self.assertFalse(composer.is_composer_empty(line))
 
+class TestFramePresenceIsLabelOnly(unittest.TestCase):
+    """composer_frame_present tells invisible apart from busy-with-chrome.
+
+    Delivery decisions never read it (None stays hands-off either way); only
+    the journal label does. Critic live capture 2026-10-15: an activity line
+    inside the frame reads as typed text, composer_line goes None, and the
+    old label said \"invisible\" over a plainly visible frame.
+    """
+
+    def frame(self) -> list:
+        return ["  │  Build auto · Step 5 Preview Free",
+                "  ▌" + "█" * 50,
+                "    Writing command…",
+                "    " + "▁" * 20 + " esc interrupt      104.0K (10%)"]
+
+    def test_frame_with_activity_counts_present(self) -> None:
+        self.assertTrue(composer.composer_frame_present(self.frame()))
+
+    def test_idle_frame_counts_present(self) -> None:
+        self.assertTrue(composer.composer_frame_present(
+            ["  ▌" + "█" * 10, "  Build auto"]))
+
+    def test_bare_shell_counts_absent(self) -> None:
+        self.assertFalse(composer.composer_frame_present(
+            ["user@host:~$ ", "output line"]))
+
+    def test_refusal_names_each_state(self) -> None:
+        self.assertIn("invisible",
+                      composer.ring_refusal_reason(["plain shell"], None) or "")
+        self.assertIn("busy-with-chrome",
+                      composer.ring_refusal_reason(self.frame(), None) or "")
+        self.assertIn("busy",
+                      composer.ring_refusal_reason([], "> typing") or "")
+        self.assertIsNone(composer.ring_refusal_reason([], ""))
+
 
 class TestTuiHintsAreNotContent(unittest.TestCase):
     """TUI hints and shortcuts in the input line — not typed text.

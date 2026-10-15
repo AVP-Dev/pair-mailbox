@@ -682,6 +682,40 @@ def composer_line(lines: list) -> str | None:
     return None if is_footer_or_status_line(fallback or "") else (
         None if looks_like_status_line(fallback or "") else fallback)
 
+def composer_frame_present(lines: list) -> bool:
+    """A composer frame shows, even when no input line is free.
+
+    Label-only: delivery decisions never read this — `composer_line is None`
+    stays hands-off either way. It only tells the journal whether None meant
+    \"no composer at all\" (invisible) or \"a frame with nowhere to type\"
+    (busy-with-chrome, e.g. an activity line read as typed text).
+    """
+    for line in lines:
+        s = (line or "").rstrip()
+        if not s.strip():
+            continue
+        text = s.lstrip()
+        if text and text[0] in INPUT_BOX_CORNERS_LOWER:
+            return True
+        if re.fullmatch(r"[\u2500\u2550\u2501\s]+", text):
+            return True
+    return False
+
+
+def ring_refusal_reason(shot: list, line: str | None) -> str | None:
+    """Why the ring must not print into this pane, or None when it may.
+
+    Lives beside composer_line (server-py-still-a-monolith): the refusal
+    wording and the frame signal stay in one place. Decisions read this;
+    the journal label comes along — None still means hands-off either way.
+    """
+    if line is None:
+        return ("the neighbour composer busy-with-chrome, never interrupting"
+                if composer_frame_present(shot) else
+                "the neighbour composer invisible, never interrupting")
+    if not is_composer_empty(line):
+        return "the neighbour composer busy, never interrupting"
+    return None
 
 def is_composer_empty(line: str) -> bool:
     """A rough but honest check: almost nothing past the marker."""

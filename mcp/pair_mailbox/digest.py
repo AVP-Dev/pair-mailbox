@@ -232,7 +232,21 @@ def build_digest(store: "Any", role: str = "", budget: int = DIGEST_TOKEN_BUDGET
         return cut != text
 
     # 1. What the work is wrong without. Nothing is cut.
-    task = str(state.get("task") or "").strip() or "(task not set)"
+    # A legacy task string from an old round lies about the subject: when it
+    # names no current round (or stands empty) while open tasks stand, the
+    # first open task says the subject instead — marked, never silent.
+    raw_task = str(state.get("task") or "").strip()
+    open_first = next((str(t.get("text") or "").strip()
+                       for t in (state.get("tasks") or [])
+                       if t.get("status") == "open" and str(t.get("text") or "").strip()), "")
+    round_mark = f"round {state.get('round', 0)}"
+    if raw_task and (not open_first or round_mark in raw_task.lower()
+                     or raw_task.lower() in open_first.lower()):
+        task = raw_task
+    elif open_first:
+        task = f"{open_first} (state.task is stale — subject from open tasks)"
+    else:
+        task = "(task not set)"
     cut |= take("ROUND", floor=DIGEST_MIN_LINE)
     cut |= take(f"task: {task}")
     cut |= take(f"mode: {state.get('mode', '?')} · phase: {state.get('phase', '?')} · "

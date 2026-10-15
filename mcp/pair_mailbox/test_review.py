@@ -634,6 +634,48 @@ class TestReviewServer(PairTestCase):
                         if "stale" in b or "pending review" in b]
         self.assertEqual([], blockers, f"a fresh verdict must never hold: {blockers}")
 
+    def test_explicit_head_pins_named_revision_not_live_tree(self) -> None:
+        """Round 97: the re-pin after a branch rebuild must land on the named head."""
+        import review
+        self.writer.tool_pair_state()
+        self.peer.tool_pair_state()
+        with mock.patch.object(review, "resolve_head", return_value="b" * 40), \
+                mock.patch.object(review, "head_files", return_value=["a.py"]), \
+                mock.patch.object(review, "dirty_files", return_value=[]), \
+                mock.patch.object(review, "dirty_hash", return_value="d123"):
+            self.peer.tool_pair_note(kind="verdict", text="re-pinned",
+                                     head=("b" * 40)[:12])
+        verdicts = self.store.read().get("verdicts", [])
+        self.assertTrue(verdicts, "the note must pin a verdict record")
+        self.assertEqual("b" * 40, verdicts[-1]["rev"]["head"],
+                         f"the record must anchor the named head: {verdicts[-1]['rev']}")
+
+    def test_explicit_head_on_unreviewed_tree_stays_stale(self) -> None:
+        """C1: the anchor is only an anchor — staleness still reads content."""
+        import review
+        self.writer.tool_pair_state()
+        self.peer.tool_pair_state()
+        with mock.patch.object(review, "resolve_head", return_value="b" * 40), \
+                mock.patch.object(review, "head_files", return_value=["a.py"]), \
+                mock.patch.object(review, "dirty_files", return_value=[]), \
+                mock.patch.object(review, "dirty_hash", return_value="d123"):
+            self.peer.tool_pair_note(kind="verdict", text="pinned elsewhere",
+                                     head="b" * 40)
+        with mock.patch.object(review, "git_head", return_value="c" * 40), \
+                mock.patch.object(review, "changed_between", return_value=["a.py"]), \
+                mock.patch.object(review, "dirty_files", return_value=[]):
+            blockers = self.writer._done_blockers(self.store.read())
+        self.assertTrue(any("stale" in b for b in blockers),
+                        f"an unreviewed anchor must stay stale: {blockers}")
+
+    def test_unresolvable_head_fails_loudly(self) -> None:
+        """An explicit head git cannot resolve must refuse, never bind elsewhere."""
+        self.writer.tool_pair_state()
+        self.peer.tool_pair_state()
+        with self.assertRaises(ValueError):
+            self.peer.tool_pair_note(kind="verdict", text="bad anchor",
+                                     head="no-such-rev-xyz")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

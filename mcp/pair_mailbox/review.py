@@ -354,15 +354,41 @@ def queue_full(obligations_root: Path, frm: str,
     return open_count(obligations_root, frm) >= limit
 
 
-def pin_verdict(store: Any, role: str, kind: str, text: str, utcnow: Any) -> dict[str, Any]:
+def resolve_head(root: Path, head: str) -> str:
+    "Full SHA for an explicit revision, or '' when git cannot resolve it."
+    if not (head or "").strip():
+        return ""
+    out = _run_git(root, "rev-parse", "--verify", (head or "").strip())
+    return (out or "").strip()
+
+
+def pin_verdict(store: Any, role: str, kind: str, text: str, utcnow: Any,
+                head: str | None = None) -> dict[str, Any]:
     """Bind the verdict to the revision: HEAD + dirty-hash + files.
 
     Moved out of server.tool_pair_note (server-py-still-a-monolith): the binding
     lives beside the snapshot building it. Silently applying a verdict to a moved
     revision reads worse than no verdict. Fail-open: with no git an empty snapshot
     writes, never dropping the verdict.
+
+    An explicit `head` anchors the record to that revision instead of the live
+    tree (round 97: the re-pin after a branch rebuild landed on the mid-rebuild
+    HEAD). The anchor is only an anchor — staleness still reads CONTENT
+    (changed_between + overlap), so pinning an unreviewed tree stays stale.
+    An unresolvable head raises ValueError: an explicit request must fail
+    loudly, never silently bind elsewhere.
     """
-    rev = snapshot(store.project_root)
+    root = store.project_root
+    if head:
+        resolved = resolve_head(root, head)
+        if not resolved:
+            raise ValueError(f"cannot resolve head {head!r}")
+        live_dirty = dirty_files(root, include_untracked=False)
+        h_files = head_files(root, resolved)
+        files = sorted(set(h_files) | set(live_dirty)) if h_files else live_dirty
+        rev = {"head": resolved, "dirty": dirty_hash(root), "files": files}
+    else:
+        rev = snapshot(root)
 
     def remember_verdict(state: dict[str, Any]) -> None:
         verdicts = state.setdefault("verdicts", [])

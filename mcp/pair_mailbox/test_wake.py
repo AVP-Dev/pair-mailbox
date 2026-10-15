@@ -255,5 +255,58 @@ class TestEventWake(PairTestCase):
         self.assertIn("doorbell_enter_unverified", kinds)
         self.assertNotIn("doorbell", kinds)
 
+    def test_ring_invisible_composer_records_refusal(self) -> None:
+        """C2: an invisible composer refuses with a durable row, never silence."""
+        import composer
+        self.store.mutate(lambda s: s.setdefault("roles", {})
+                          .setdefault("reviewer-agent", {}).update({"pane": "%45"}))
+        os.environ.pop("PAIR_DISABLE_RING", None)
+        orig_line = composer.composer_line
+        orig_capture = composer.capture
+        orig_which = composer.shutil.which
+        orig_foreign = composer.pane_is_foreign
+        composer.composer_line = lambda lines: None
+        composer.capture = lambda tmux, pane: ["plain shell, no frame"]
+        composer.shutil.which = lambda name: "/usr/bin/tmux"
+        composer.pane_is_foreign = lambda tmux, pane, root: (False, "")
+        try:
+            result = self.writer._ring("reviewer-agent", "message")
+        finally:
+            composer.composer_line = orig_line
+            composer.capture = orig_capture
+            composer.shutil.which = orig_which
+            composer.pane_is_foreign = orig_foreign
+        self.assertFalse(result["rung"])
+        self.assertIn("invisible", result["why"])
+        rows = [json.loads(line) for line in
+                (self.root / "transcript.jsonl").read_text(encoding="utf-8").splitlines() if line.strip()]
+        refused = [r for r in rows if r.get("kind") == "doorbell_refused"]
+        self.assertTrue(refused, "every refusal leaves a durable row")
+        self.assertEqual("%45", refused[-1].get("pane"))
+
+    def test_ring_frame_with_chrome_labels_busy_not_invisible(self) -> None:
+        """C3: a visible frame with nowhere to type is busy-with-chrome."""
+        import composer
+        self.store.mutate(lambda s: s.setdefault("roles", {})
+                          .setdefault("reviewer-agent", {}).update({"pane": "%45"}))
+        os.environ.pop("PAIR_DISABLE_RING", None)
+        orig_line = composer.composer_line
+        orig_capture = composer.capture
+        orig_which = composer.shutil.which
+        orig_foreign = composer.pane_is_foreign
+        composer.composer_line = lambda lines: None
+        composer.capture = lambda tmux, pane: ["  │  Build auto", "  ▌" + "█" * 10]
+        composer.shutil.which = lambda name: "/usr/bin/tmux"
+        composer.pane_is_foreign = lambda tmux, pane, root: (False, "")
+        try:
+            result = self.writer._ring("reviewer-agent", "message")
+        finally:
+            composer.composer_line = orig_line
+            composer.capture = orig_capture
+            composer.shutil.which = orig_which
+            composer.pane_is_foreign = orig_foreign
+        self.assertFalse(result["rung"], "hands off either way")
+        self.assertIn("busy-with-chrome", result["why"])
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
