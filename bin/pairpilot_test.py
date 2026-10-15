@@ -1929,6 +1929,28 @@ class TestReportNotCovered(PilotCase):
         text = (self.state_dir / "REPORT.md").read_text(encoding="utf-8")
         self.assertIn("NONE. The round closed", text)
 
+    def test_report_backlog_section_sees_active_and_archive(self) -> None:
+        """Round-95 verdict: the Backlog section renders note rows from the
+        active file AND the rotated archive, with real fields (never text)."""
+        import json as _json
+        (self.state_dir / "transcript-archive").mkdir(parents=True, exist_ok=True)
+        (self.state_dir / "transcript-archive" / "1.jsonl").write_text(
+            _json.dumps({"ts": "2026-10-14T21:01:45+00:00", "kind": "note",
+                         "role": "omp", "note_kind": "backlog", "chars": 42}) + "\n",
+            encoding="utf-8")
+        (self.state_dir / "transcript.jsonl").write_text(
+            _json.dumps({"ts": "2026-10-15T00:00:00+00:00", "kind": "note",
+                         "role": "opencode", "note_kind": "backlog-x", "chars": 10}) + "\n",
+            encoding="utf-8")
+        self.write_state(phase="done", closed_at=ago(60), round=3, writer="agy",
+                         roles={"agy": {"last_seen": ago(60), "pane": "%1"}})
+        self.pilot().tick()
+        text = (self.state_dir / "REPORT.md").read_text(encoding="utf-8")
+        self.assertIn("## Backlog parked this round", text)
+        self.assertIn("omp backlog (42 chars)", text)
+        self.assertIn("opencode backlog-x (10 chars)", text)
+        self.assertNotIn("- parked: \n", text)
+
 
 class TestOperatorSafety(PilotCase):
     """The supervisor must never harm whoever launched it."""
