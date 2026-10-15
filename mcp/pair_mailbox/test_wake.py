@@ -269,6 +269,15 @@ class TestEventWake(PairTestCase):
         composer.capture = lambda tmux, pane: ["plain shell, no frame"]
         composer.shutil.which = lambda name: "/usr/bin/tmux"
         composer.pane_is_foreign = lambda tmux, pane, root: (False, "")
+        import server as server_mod
+        orig_sub_run = server_mod.subprocess.run
+
+        def fake_sub_run(cmd, *a, **kw):
+            if isinstance(cmd, (list, tuple)) and cmd[:2] == ["/usr/bin/tmux", "display-message"]:
+                return server_mod.subprocess.CompletedProcess(cmd, 0, stdout="0\n", stderr="")
+            return orig_sub_run(cmd, *a, **kw)
+
+        server_mod.subprocess.run = fake_sub_run  # type: ignore[method-assign]
         try:
             result = self.writer._ring("reviewer-agent", "message")
         finally:
@@ -276,6 +285,7 @@ class TestEventWake(PairTestCase):
             composer.capture = orig_capture
             composer.shutil.which = orig_which
             composer.pane_is_foreign = orig_foreign
+            server_mod.subprocess.run = orig_sub_run  # type: ignore[method-assign]
         self.assertFalse(result["rung"])
         self.assertIn("invisible", result["why"])
         rows = [json.loads(line) for line in
@@ -298,6 +308,15 @@ class TestEventWake(PairTestCase):
         composer.capture = lambda tmux, pane: ["  │  Build auto", "  ▌" + "█" * 10]
         composer.shutil.which = lambda name: "/usr/bin/tmux"
         composer.pane_is_foreign = lambda tmux, pane, root: (False, "")
+        import server as server_mod
+        orig_sub_run = server_mod.subprocess.run
+
+        def fake_sub_run(cmd, *a, **kw):
+            if isinstance(cmd, (list, tuple)) and cmd[:2] == ["/usr/bin/tmux", "display-message"]:
+                return server_mod.subprocess.CompletedProcess(cmd, 0, stdout="0\n", stderr="")
+            return orig_sub_run(cmd, *a, **kw)
+
+        server_mod.subprocess.run = fake_sub_run  # type: ignore[method-assign]
         try:
             result = self.writer._ring("reviewer-agent", "message")
         finally:
@@ -305,8 +324,39 @@ class TestEventWake(PairTestCase):
             composer.capture = orig_capture
             composer.shutil.which = orig_which
             composer.pane_is_foreign = orig_foreign
+            server_mod.subprocess.run = orig_sub_run  # type: ignore[method-assign]
         self.assertFalse(result["rung"], "hands off either way")
         self.assertIn("busy-with-chrome", result["why"])
+
+    def test_ring_dead_pane_refusal_leaves_durable_row(self) -> None:
+        """Every early _ring refusal writes doorbell_refused — no silent class."""
+        import composer
+        self.store.mutate(lambda s: s.setdefault("roles", {})
+                          .setdefault("reviewer-agent", {}).update({"pane": "%45"}))
+        os.environ.pop("PAIR_DISABLE_RING", None)
+        orig_which = composer.shutil.which
+        orig_foreign = composer.pane_is_foreign
+        composer.shutil.which = lambda name: "/usr/bin/tmux"
+        composer.pane_is_foreign = lambda tmux, pane, root: (False, "")
+        import server as server_mod
+        orig_sub_run = server_mod.subprocess.run
+
+        def fake_dead_pane(cmd, *a, **kw):
+            return server_mod.subprocess.CompletedProcess(cmd, 1, stdout="", stderr="")
+
+        server_mod.subprocess.run = fake_dead_pane  # type: ignore[method-assign]
+        try:
+            result = self.writer._ring("reviewer-agent", "message")
+        finally:
+            composer.shutil.which = orig_which
+            composer.pane_is_foreign = orig_foreign
+            server_mod.subprocess.run = orig_sub_run  # type: ignore[method-assign]
+        self.assertFalse(result["rung"])
+        self.assertIn("dead", result["why"])
+        rows = [json.loads(line) for line in
+                (self.root / "transcript.jsonl").read_text(encoding="utf-8").splitlines() if line.strip()]
+        self.assertTrue(any(r.get("kind") == "doorbell_refused" for r in rows),
+                        "even the pane probe refusal leaves a durable row")
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

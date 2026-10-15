@@ -663,6 +663,26 @@ class TestOutboxStaleness(PilotCase):
         self.assertIn("pilot_nudge_expired", kinds,
                       "a drop must show in the transcript, or it reads as delivered")
 
+    def test_retained_submit_keeps_file_and_names_it(self) -> None:
+        """Round 98: the composer kept the text — the file stays, the journal names it."""
+        p = self.pilot()
+        path = self._queue(p, "agy", "a hanging nudge")
+        state = self.write_state(roles={"agy": {"pane": "%1", "pid": os.getpid()}})
+        orig_alive, orig_deliver = pairpilot.pane_alive, pairpilot.deliver
+        orig_belongs = pairpilot.pane_belongs_to_project
+        pairpilot.pane_alive = lambda tmux, pane: True
+        pairpilot.pane_belongs_to_project = lambda tmux, pane, root: (True, "")
+        pairpilot.deliver = lambda pane, text, wait_for_empty=0.0: {
+            "delivered": True, "submit_state": "retained"}
+        try:
+            p.tmux = "tmux"
+            p.flush_outbox(state)
+        finally:
+            pairpilot.pane_alive, pairpilot.deliver = orig_alive, orig_deliver
+            pairpilot.pane_belongs_to_project = orig_belongs
+        self.assertTrue(path.exists(), "retained text stays queued for the mailbox")
+        self.assertIn("pilot_deliver_unverified", self.transcript_kinds())
+
     def test_expired_nudge_falls_back_to_mailbox(self) -> None:
         """The rotten in the composer duplicates into the box, never vanishes.
 

@@ -827,6 +827,16 @@ class Pilot:
                 result = deliver(pane, text, wait_for_empty=0)
             except ComposerBusy:
                 continue
+            if result.get("submit_state") == "retained":
+                # The text sits in the composer unsent (round 98: the human saw
+                # the nudge hanging). Keep the file for the mailbox fallback and
+                # say so durably — delivered must never mean submitted.
+                self.store.append_transcript(
+                    "pilot_deliver_unverified", "pairpilot", to=role,
+                    pane=pane, text=text[:120],
+                    reason="Enter sent twice, the composer retained the text")
+                log(f"composer retained the text for {role} — kept for mailbox")
+                continue
             if result.get("delivered"):
                 path.unlink(missing_ok=True)
                 self.store.append_transcript("pilot_deliver", "pairpilot", to=role, text=text[:120])

@@ -1290,6 +1290,44 @@ class TestOverflowedComposer(PairTestCase):
                          "confirmation never issues when the text provably stands on screen")
         self.assertIn("Enter", sent, "Enter still sends")
 
+    def test_enter_that_does_not_submit_reports_retained(self) -> None:
+        """Round 98: Enter sent, text still in the composer — retained, never submitted.
+
+        The human saw the nudge hanging unsent (finding-human-nudge-enter-unverified):
+        deliver sent Enter and claimed delivered=True. Post-Enter capture decides.
+        """
+        import composer
+        sent: list[str] = []
+
+        def fake_run(cmd, **kw):
+            if "send-keys" in cmd:
+                sent.append(cmd[-1])
+            return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+        body_frames = [["", "  some output", ">"],
+                       ["", "  some output", "> nudge text here"],
+                       ["", "  some output", "> nudge text here"],
+                       ["", "  some output", "> nudge text here"]]
+
+        def fake_capture(tmux, pane):
+            return body_frames.pop(0) if len(body_frames) > 1 else body_frames[0]
+
+        orig = (composer.subprocess.run, composer.capture, composer._tmux,
+                composer.pane_alive)
+        composer.subprocess.run = fake_run
+        composer.capture = fake_capture
+        composer._tmux = lambda: "tmux"
+        composer.pane_alive = lambda tmux, pane: True
+        try:
+            res = composer.deliver("%1", "nudge text here", wait_for_empty=0)
+        finally:
+            (composer.subprocess.run, composer.capture, composer._tmux,
+             composer.pane_alive) = orig
+        self.assertEqual("retained", res.get("submit_state"),
+                         "text still on screen after two Enters is retained")
+        self.assertEqual(2, sent.count("Enter"), "retry sends Enter once more")
+        self.assertIn("why", res)
+
     def test_a_composer_longer_than_the_screen_still_counts_as_delivered(self) -> None:
         """The third collapse mode, worse than the two before.
 
