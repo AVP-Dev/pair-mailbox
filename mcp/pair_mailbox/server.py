@@ -2234,10 +2234,16 @@ class PairSession:
             # one line it never fits anyway, reading as a stub no cause follows from.
             # a stub no cause follows from.
             prompt += f" ({detail})"
-        subprocess.run([tmux, "send-keys", "-t", pane, "-l", prompt],
-                       capture_output=True, text=True, timeout=5)
-        subprocess.run(["tmux", "send-keys", "-t", pane, "Enter"],
-                       capture_output=True, text=True, timeout=5)
+        first = subprocess.run([tmux, "send-keys", "-t", pane, "-l", prompt],
+                               capture_output=True, text=True, timeout=5)
+        second = subprocess.run(["tmux", "send-keys", "-t", pane, "Enter"],
+                                capture_output=True, text=True, timeout=5)
+        if first.returncode != 0 or second.returncode != 0:
+            reason = (f"send-keys text rc={first.returncode} enter rc={second.returncode}"
+                      + (f" {second.stderr.strip()[:120]}" if second.stderr else ""))
+            self.store.append_transcript("doorbell_enter_unverified", self.role,
+                                         to=target, bell_kind=kind, pane=pane, reason=reason)
+            return {"rung": False, "why": reason, "pane": pane}
         self.store.append_transcript("doorbell", self.role, to=target, bell_kind=kind, pane=pane)
         return {"rung": True, "pane": pane, "prompt": prompt}
 

@@ -240,6 +240,171 @@ class TestRecheckDelta(unittest.TestCase):
         delta = mod._diff_manifests(old, new)
         self.assertTrue(any("evidence" in line for line in delta))
 
+    def test_cannot_prove_exits_2_without_merge_evidence(self) -> None:
+        """Round-96 verify should-fix: the recheck exit-2 path gets a
+        durable hermetic test, not just live runs. Closed round, ceiling
+        survives, window holds rows, no merge evidence → exit 2."""
+        import importlib.util as _ilu
+        from importlib.machinery import SourceFileLoader
+        loader = SourceFileLoader(
+            "pairreport_mod2",
+            str(Path(__file__).resolve().parent.parent.parent / "bin" / "pairreport"))
+        spec = _ilu.spec_from_loader("pairreport_mod2", loader)
+        mod = _ilu.module_from_spec(spec)
+        loader.exec_module(mod)
+        with tempfile.TemporaryDirectory() as tmp:
+            sd = Path(tmp)
+            (sd / "transcript-archive").mkdir()
+            (sd / "transcript-archive" / "1.jsonl").write_text(
+                '{"ts": "2026-10-14T20:35:08+00:00", "kind": "advance", "phase": "done"}\n'
+                '{"ts": "2026-10-14T21:01:45+00:00", "kind": "task_closed", "task_id": 107}\n',
+                encoding="utf-8")
+            (sd / "transcript.jsonl").write_text(
+                '{"ts": "2026-10-14T21:44:53+00:00", "kind": "advance", "phase": "done"}\n',
+                encoding="utf-8")
+            (sd / "rounds").mkdir()
+            (sd / "rounds" / "94.json").write_text(
+                json.dumps({"round": 94, "commits": [], "tasks_closed": []}), encoding="utf-8")
+            (sd / "state.json").write_text(json.dumps(
+                {"round": 96,
+                 "tasks": [{"id": 107, "round": 94, "status": "done",
+                            "closed_at": "2026-10-14T21:01:45+00:00"}],
+                 "evidence": [], "verdicts": []}), encoding="utf-8")
+            rc = mod.recheck(sd, 94)
+        self.assertEqual(rc, 2)
+
+    def test_open_round_never_cannot_prove(self) -> None:
+        """Twin: the OPEN round must not exit 2 — the guard is `not is_open`.
+        Dropping that check would silently turn every current-round recheck
+        into exit 2; this pins the guard."""
+        import importlib.util as _ilu
+        from importlib.machinery import SourceFileLoader
+        loader = SourceFileLoader(
+            "pairreport_mod3",
+            str(Path(__file__).resolve().parent.parent.parent / "bin" / "pairreport"))
+        spec = _ilu.spec_from_loader("pairreport_mod3", loader)
+        mod = _ilu.module_from_spec(spec)
+        loader.exec_module(mod)
+        with tempfile.TemporaryDirectory() as tmp:
+            sd = Path(tmp)
+            (sd / "transcript.jsonl").write_text("", encoding="utf-8")
+            (sd / "rounds").mkdir()
+            (sd / "rounds" / "96.json").write_text(
+                json.dumps({"round": 96, "commits": [], "tasks_closed": []}), encoding="utf-8")
+            (sd / "state.json").write_text(json.dumps(
+                {"round": 96, "tasks": [], "evidence": [], "verdicts": []}), encoding="utf-8")
+            rc = mod.recheck(sd, 96)
+        self.assertNotEqual(rc, 2)
+
+class TestRoundWindow96(unittest.TestCase):
+    """Round 96: the manifest and the recheck see their OWN round.
+
+    Window from N-stamped rows (evidence round=N + closed_at of N-labeled
+    tasks) over the united stream; closed-round commits from recorded merge
+    evidence, never the live diff; unrecoverable, never empty.
+    """
+
+    def _stream(self, sd: Path) -> None:
+        (sd / "transcript-archive").mkdir()
+        (sd / "transcript-archive" / "1.jsonl").write_text(
+            '{"ts": "2026-10-14T20:35:08+00:00", "kind": "advance", "phase": "done"}\n'
+            '{"ts": "2026-10-14T21:01:45+00:00", "kind": "task_closed", "task_id": 107}\n'
+            '{"ts": "2026-10-14T21:04:20+00:00", "kind": "task_closed", "task_id": 108}\n',
+            encoding="utf-8")
+        (sd / "transcript.jsonl").write_text(
+            '{"ts": "2026-10-14T21:43:40+00:00", "kind": "evidence", "round": 94}\n'
+            '{"ts": "2026-10-14T21:44:53+00:00", "kind": "advance", "phase": "done"}\n'
+            '{"ts": "2026-10-15T16:51:46+00:00", "kind": "task_closed", "task_id": 111}\n',
+            encoding="utf-8")
+
+    def test_window_names_own_round_not_last_done(self) -> None:
+        """C1: round-94 window is anchor..ceiling, task 111 (round 95) excluded."""
+        from manifest import _round_bounds
+        with tempfile.TemporaryDirectory() as tmp:
+            sd = Path(tmp)
+            self._stream(sd)
+            st = _state(round=96)
+            anchor, ceiling = _round_bounds(sd, 94, st)
+        self.assertEqual(anchor, "2026-10-14T20:35:08+00:00")
+        self.assertEqual(ceiling, "2026-10-14T21:44:53+00:00")
+
+    def test_closed_round_ids_exclude_later_round(self) -> None:
+        """task_closed 107+108 in window, 111 (after ceiling) out."""
+        from manifest import transcript_closed_ids
+        with tempfile.TemporaryDirectory() as tmp:
+            sd = Path(tmp)
+            self._stream(sd)
+            st = _state(round=96)
+            ids = transcript_closed_ids(sd, 94, [], st)
+        self.assertEqual(ids, {107, 108})
+
+    def test_closed_commits_from_recorded_evidence(self) -> None:
+        """C2/B2: range names the tip only — the pre-merge anchor is not ours."""
+        from manifest import _round_commits_from_evidence
+        st = _state(round=96, evidence=[
+            {"round": 94, "evidence_kind": "commit",
+             "value": "PR #40 merged: 771fd77 Round 94 D1,D2,C9,C10, origin/master b6bfb65..771fd77"},
+            {"round": 89, "evidence_kind": "pr",
+             "value": "https://github.com/AVP-Dev/pair-mailbox/pull/36 round89-deliver-round88 -> master"}])
+        commits94 = _round_commits_from_evidence(st, 94)
+        self.assertIsNotNone(commits94)
+        assert commits94 is not None
+        self.assertEqual([c["sha"] for c in commits94], ["771fd77"])
+        self.assertIsNone(_round_commits_from_evidence(st, 89))
+
+    def test_empty_with_anchor_refuses(self) -> None:
+        """Acceptance #3: manifest [] with recorded anchor commits refuses."""
+        with tempfile.TemporaryDirectory() as tmp:
+            sd = Path(tmp)
+            self._stream(sd)
+            st = _state(round=96, evidence=[
+                {"round": 94, "evidence_kind": "commit", "value": "merged: abc1234 x"}])
+            m = derive_manifest(sd, st, 94)
+            m["commits"] = []
+            gaps = cross_check(m, st, sd)
+        self.assertTrue(any("recorded merge evidence" in g for g in gaps))
+
+    def test_open_round_live_branch_still_refuses(self) -> None:
+        """C4: the open-round branch guards the round being closed now."""
+        with tempfile.TemporaryDirectory() as tmp:
+            sd = Path(tmp)
+            st = _state(round=96)
+            m = derive_manifest(sd, st)
+            m["commits"] = []
+            with mock.patch.object(manifest, "_git_commits",
+                                   return_value=[{"sha": "abc", "subject": "x"}]):
+                gaps = cross_check(m, st, sd)
+        self.assertTrue(any("on branch" in g for g in gaps))
+
+    def test_none_with_rows_refuses_never_empty(self) -> None:
+        """B1: closed round, ceiling survives, no merge evidence — None
+        refuses via the window-rows gap, never collapses to []."""
+        with tempfile.TemporaryDirectory() as tmp:
+            sd = Path(tmp)
+            self._stream(sd)
+            st = _state(round=96)
+            m = derive_manifest(sd, st, 94)
+            self.assertIsNone(m["commits"])
+            self.assertTrue(m["commits_unrecoverable"])
+            gaps = cross_check(m, st, sd)
+        self.assertTrue(any("cannot-prove" in g for g in gaps))
+
+    def test_verdicts_filtered_by_window(self) -> None:
+        """M1: state verdicts filter by at inside the window, note rides along."""
+        with tempfile.TemporaryDirectory() as tmp:
+            sd = Path(tmp)
+            self._stream(sd)
+            (sd / "notes").mkdir()
+            (sd / "notes" / "verdict-v-in.md").write_text("x", encoding="utf-8")
+            st = _state(round=96, verdicts=[
+                {"role": "c", "kind": "v-old", "at": "2026-10-14T20:00:00+00:00",
+                 "note": ".pair/notes/v-old.md"},
+                {"role": "c", "kind": "verdict-v-in", "at": "2026-10-14T21:00:00+00:00",
+                 "note": ".pair/notes/verdict-v-in.md"}])
+            m = derive_manifest(sd, st, 94)
+        self.assertEqual([v["kind"] for v in m["verdicts"]], ["verdict-v-in"])
+        self.assertEqual(m["verdicts"][0]["note"], ".pair/notes/verdict-v-in.md")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
