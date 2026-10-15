@@ -130,6 +130,48 @@ class TestEventWake(PairTestCase):
         self.assertIn("busy", result["why"])
         self.assertEqual([], sleeps, "composer waiting must stay single-shot with no sleep")
 
+    def test_ring_failing_enter_records_miss_not_rung(self) -> None:
+        """Human-observed hang: Enter send-keys fails, transcript must name
+        the miss (doorbell_enter_unverified), never rung=True.
+
+        Mutation: unconditional rung=True must redden this test.
+        """
+        import composer
+        import server as server_mod
+        self.store.mutate(lambda s: s.setdefault("roles", {})
+                          .setdefault("reviewer-agent", {}).update({"pane": "%45"}))
+        os.environ.pop("PAIR_DISABLE_RING", None)
+        orig_line = composer.composer_line
+        orig_which = composer.shutil.which
+        orig_foreign = composer.pane_is_foreign
+        composer.composer_line = lambda lines: ""
+        composer.shutil.which = lambda name: "/usr/bin/tmux"
+        composer.pane_is_foreign = lambda tmux, pane, root: (False, "")
+        orig_sub_run = server_mod.subprocess.run
+        calls = []
+
+        def fake_sub_run(cmd, *a, **kw):
+            calls.append(list(cmd) if isinstance(cmd, (list, tuple)) else cmd)
+            if isinstance(cmd, (list, tuple)) and cmd[-1] == "Enter":
+                return server_mod.subprocess.CompletedProcess(cmd, 1, stdout="", stderr="no such pane")
+            if isinstance(cmd, (list, tuple)) and len(cmd) >= 2 and cmd[1] == "display-message":
+                return server_mod.subprocess.CompletedProcess(cmd, 0, stdout="0\n", stderr="")
+            return server_mod.subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        server_mod.subprocess.run = fake_sub_run  # type: ignore[method-assign]
+        try:
+            result = self.writer._ring("reviewer-agent", "message")
+        finally:
+            composer.composer_line = orig_line
+            composer.shutil.which = orig_which
+            composer.pane_is_foreign = orig_foreign
+            server_mod.subprocess.run = orig_sub_run  # type: ignore[method-assign]
+        self.assertFalse(result["rung"], "a failed Enter is not a ring")
+        kinds = [json.loads(line).get("kind") for line in
+                 (self.root / "transcript.jsonl").read_text(encoding="utf-8").splitlines() if line.strip()]
+        self.assertIn("doorbell_enter_unverified", kinds)
+        self.assertNotIn("doorbell", kinds)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
