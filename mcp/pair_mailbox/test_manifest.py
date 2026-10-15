@@ -293,7 +293,10 @@ class TestRecheckDelta(unittest.TestCase):
                 json.dumps({"round": 96, "commits": [], "tasks_closed": []}), encoding="utf-8")
             (sd / "state.json").write_text(json.dumps(
                 {"round": 96, "tasks": [], "evidence": [], "verdicts": []}), encoding="utf-8")
-            rc = mod.recheck(sd, 96)
+            import contextlib
+            import io
+            with contextlib.redirect_stdout(io.StringIO()):
+                rc = mod.recheck(sd, 96)
         self.assertNotEqual(rc, 2)
 
 class TestRoundWindow96(unittest.TestCase):
