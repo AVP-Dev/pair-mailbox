@@ -404,6 +404,34 @@ class Pilot:
             if isinstance(pid, int) and pid > 0 and not is_pid_alive(pid):
                 out[role] = f"pid {pid} is gone"
         return out
+    def role_pushable(self, info: dict) -> bool:
+        """Whether a push can reach the role: live process or live pane.
+
+        A dead pid with no live pane means nobody sits there — wake files
+        and outbox escorts addressed to it loop forever: poll re-escalates,
+        flush keeps the file as unproven (round 99). A live pid OR a live
+        pane keeps the push: the role may still heal its record.
+
+        No record at all (pending_answers on a role past the roster) is
+        NOT proven dead: the push goes through, flush judges the pane.
+        """
+        if not info:
+            return True
+        pid = info.get("pid")
+        if isinstance(pid, int) and pid > 0 and is_pid_alive(pid):
+            return True
+        pane = info.get("pane")
+        if pane and self.tmux is not None:
+            try:
+                if pane_alive(self.tmux, pane):
+                    return True
+            except Exception:
+                pass
+        # No tmux (tests) means no pane verdict: only the pid decides.
+        if pane and self.tmux is None:
+            return True
+        return False
+
 
     def shared_panes(self, state: dict) -> dict[str, list[str]]:
         return {pane: names for pane, names in self.panes(state).items() if len(names) > 1}
@@ -662,6 +690,15 @@ class Pilot:
             # The pause between repeats and its reason live in may_escalate_again.
             if not self.may_escalate_again(wake, now):
                 continue
+            if not self.role_pushable(info):
+                # Dead process, no live pane: escalation would enqueue into
+                # a file flush can never deliver. Drop the wake file with a
+                # record instead of re-arming it forever (round 99).
+                path.unlink(missing_ok=True)
+                self.store.append_transcript("pilot_wake_dead_role", "pairpilot",
+                                             target=role, reason=wake.get("reason"))
+                log(f"{role}: dead, no live pane — wake dropped, not escalated")
+                continue
             self.store.append_transcript("pilot_wake_escalated", "pairpilot",
                                          target=role, reason=wake.get("reason"),
                                          age_seconds=int(age),
@@ -814,6 +851,16 @@ class Pilot:
                 log(f"not delivering for {role} into foreign pane {pane}: {why}")
                 continue
             if not ours:
+                if not self.role_pushable(info):
+                    # Dead process, no live pane: keeping the file means
+                    # re-logging unproven every TTL forever, and no future
+                    # tick can deliver it. Drop with a record (round 99).
+                    path.unlink(missing_ok=True)
+                    self.store.append_transcript(
+                        "pilot_outbox_dead_role", "pairpilot", to=role,
+                        pane=pane, text=text[:120])
+                    log(f"queued for {role} dropped: dead, no live pane")
+                    continue
                 # Unproven: dead pane or a failed check is NOT proven foreign
                 # (panes.py forbids mixing the two facts). Keep the file for
                 # the next tick; record once per outbox content.
@@ -962,6 +1009,13 @@ class Pilot:
         for role in state.get("roles", {}):
             if role in self.skip:
                 continue
+            info = (state.get("roles") or {}).get(role) or {}
+            if not self.role_pushable(info):
+                # Dead process and no live pane: nobody sits there to read a
+                # push. Waking it would write a wake file + outbox escort that
+                # flush can never deliver — an eternal loop (round 99: agy/pi/
+                # claude with dead pids and pane None re-armed every tick).
+                continue
             missing = self.unread(state, role)
             if missing <= 0:
                 # Read once — the stamp resets: the next letter wakes anew.
@@ -1047,6 +1101,10 @@ class Pilot:
             if self.unread(state, role) > 0:
                 # Mail wakes its own path (unread_peers); a second push with
                 # the same text is spam.
+                continue
+            if not self.role_pushable(info):
+                # Nobody sits there: an idle push would write a wake file +
+                # outbox escort no tick can deliver (round 99 dead-role loop).
                 continue
             age = self.role_seen_age(info)
             if age < self.silence:
@@ -1219,7 +1277,8 @@ class Pilot:
 
             if receiver and age >= self.reply_grace and receiver not in self.skip:
                 key = f"reply-{seq}-{receiver}"
-                if self.remember(key, ttl=self.reply_repeat):
+                rinfo = (state.get("roles") or {}).get(receiver) or {}
+                if self.remember(key, ttl=self.reply_repeat) and self.role_pushable(rinfo):
                     text = (f"[pairpilot] {sender} waits for an answer to request {seq} "
                             f"already {int(age // 60)} min{f': {subject}' if subject else ''}. "
                             f"This is a request with expects_reply, and its mailbox holds no answer. "
@@ -1230,7 +1289,8 @@ class Pilot:
 
             if sender and age >= self.reply_hard and sender not in self.skip:
                 key = f"waiting-{seq}-{sender}"
-                if self.remember(key, ttl=self.reply_repeat):
+                sinfo = (state.get("roles") or {}).get(sender) or {}
+                if self.remember(key, ttl=self.reply_repeat) and self.role_pushable(sinfo):
                     text = (f"[pairpilot] You wait for an answer to request {seq} from {receiver} "
                             f"already {int(age // 60)} min{f': {subject}' if subject else ''}. "
                             f"No answer. Do not wait forever: take the next step yourself, "

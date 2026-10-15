@@ -274,6 +274,73 @@ class TestWakeFileIntegrity(PilotCase):
 
 
 class TestLiveness(PilotCase):
+    def test_dead_role_without_pane_takes_no_push(self) -> None:
+        """A dead pid with no pane: unread mail writes no wake, no outbox.
+
+        Live 2026-10-15 (round 99): agy/pi/claude held dead pids and pane
+        None with unread mail stacked — every tick wrote a wake file plus
+        an outbox escort that flush could never deliver (pane None reads
+        unproven, kept). An eternal loop over nobody."""
+        self.write_state(roles={"agy": {"last_seen": ago(3600), "pid": 998111}},
+                         seen={"agy": 0})
+        self.inbox("agy", 2)
+        pilot = self.pilot()
+        pilot.tick()
+        self.assertEqual({}, self.wake(pilot, "agy"),
+                         "no wake file for a role nobody can reach")
+        self.assertEqual("", pilot.pending("agy"),
+                         "no outbox escort for a role nobody can reach")
+
+    def test_dead_role_wake_file_drops_instead_of_escalating(self) -> None:
+        """A hanging wake of a dead role drops with a record, never re-arms.
+
+        poll_wakes used to re-escalate past the pause forever: enqueue into
+        a file flush keeps as unproven, wake file re-armed, repeat. The
+        drop lands in the transcript as pilot_wake_dead_role."""
+        self.write_state(roles={"agy": {"last_seen": ago(3600), "pid": 998111}})
+        pilot = self.pilot()
+        pilot.wake_grace = 0.0
+        pilot.mark_wake(pilot.state(), "agy", "2 unread", "read your mail")
+        wake_file = pilot.wake_root / "agy.json"
+        payload = json.loads(wake_file.read_text(encoding="utf-8"))
+        payload["asked_at"] = ago(3600)
+        wake_file.write_text(json.dumps(payload), encoding="utf-8")
+        pilot.tick()
+        pilot.tick()
+        self.assertFalse(wake_file.exists(),
+                         "the dead-role wake must drop, not re-arm")
+        self.assertEqual("", pilot.pending("agy"),
+                         "no escalation enqueue for a dead role")
+        self.assertIn("pilot_wake_dead_role", self.transcript_kinds())
+    def test_dead_role_outbox_drops_instead_of_keeping(self) -> None:
+        """A queued escort of a dead role drops with a record, never kept.
+
+        flush_outbox held pane-None files as unproven every tick (log
+        'keeping for next tick' forever). With role_pushable the file
+        drops as pilot_outbox_dead_role."""
+        p = self.pilot()
+        p.enqueue("agy", "queued nudge")
+        path = p.outbox / "agy.txt"
+        state = self.write_state(roles={"agy": {"pane": None, "pid": 998111}})
+        calls = []
+        orig_deliver = pairpilot.deliver
+        orig_belongs = pairpilot.pane_belongs_to_project
+        orig_alive = pairpilot.pane_alive
+        pairpilot.deliver = lambda pane, text, wait_for_empty=0.0: calls.append((pane, text)) or {"delivered": True}
+        pairpilot.pane_belongs_to_project = lambda tmux, pane, root: (_ for _ in ()).throw(RuntimeError("no pane"))
+        pairpilot.pane_alive = lambda tmux, pane: False
+        try:
+            p.tmux = "tmux"
+            p.flush_outbox(state)
+        finally:
+            pairpilot.deliver = orig_deliver
+            pairpilot.pane_belongs_to_project = orig_belongs
+            pairpilot.pane_alive = orig_alive
+        self.assertEqual(calls, [], "nothing printed for a dead role")
+        self.assertFalse(path.exists(), "the dead-role escort drops, not kept")
+        self.assertIn("pilot_outbox_dead_role", self.transcript_kinds())
+
+
     def test_silent_writer_is_woken_silently(self) -> None:
         """A silent writer: the wake records, nothing prints to the composer.
 
@@ -2363,6 +2430,22 @@ class TestObligations(PilotCase):
         pilot = self.pilot()
         pilot.tick()
         self.assertEqual("", pilot.pending("agy"), "a shared pane means no poking")
+    def test_dead_roles_get_no_obligation_nag(self) -> None:
+        """An obligation on proven-dead roles writes no outbox escort.
+
+        Round 99: pending_answers enqueued for dead pids with pane None —
+        escorts flush could never deliver. Unknown roles (no record) still
+        pass; only proven-dead records stop the push."""
+        self.obligation(7, "opencode", "agy", age=3000)
+        self.write_state(roles={"agy": {"last_seen": ago(3600), "pid": 998111},
+                                "opencode": {"last_seen": ago(3600), "pid": 998112}})
+        pilot = self.pilot()
+        pilot.tick()
+        self.assertEqual("", pilot.pending("agy"),
+                         "no receiver escort for a dead role")
+        self.assertEqual("", pilot.pending("opencode"),
+                         "no author escort for a dead role")
+
 
 
 class TestDoneParking(PilotCase):

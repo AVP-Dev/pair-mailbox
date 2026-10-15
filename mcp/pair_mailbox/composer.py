@@ -607,7 +607,14 @@ def composer_line(lines: list) -> str | None:
         if not stripped.strip():
             continue
         text = stripped.lstrip()
+        # Art is no edge: a splash logo (`██ v18.11.1`) leads with the full
+        # block but carries text — a real edge leads with ╹/▌, or is frame
+        # glyphs only. The border demand touches █-led lines alone: typed
+        # text inside a ╹-frame (`╹▀▀ typing ▀▀`) stays a busy composer
+        # (frozen: test_a_typed_border_is_a_busy_composer).
         if text and text[0] in INPUT_BOX_CORNERS_LOWER:
+            if text[0] == "█" and not is_input_box_border(stripped):
+                continue
             low_idx = i
     if low_idx is not None:
         # Frame lines above the bottom edge; status/footer below.

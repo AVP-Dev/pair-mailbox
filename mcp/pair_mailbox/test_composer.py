@@ -203,6 +203,19 @@ class TestTuiHintsAreNotContent(unittest.TestCase):
                  "  ╹" + "▀" * 30, "  ~/work/umputum:master"]
         self.assertIsNone(composer.composer_line(panel))
 
+    def test_splash_logo_is_no_input_edge(self) -> None:
+        """Splash art (`██ v18.11.1`) starts at a block glyph but carries
+        text — it must never claim the input-field bottom edge.
+        Live 2026-10-15: after auto-compact the pane sat on the splash,
+        low_idx took the version line, the detector read busy, and all
+        three wake channels (doorbell, deliver, pilot print) refused."""
+        panel = ["  ██       v18.11.1", "",
+                 "  ╰─ work  ⇧⇥ to change thinking effort"]
+        line = composer.composer_line(panel)
+        self.assertIsNotNone(line)
+        self.assertFalse("v18.11.1" in line,
+                         f"splash art claimed the edge: {line!r}")
+
     def test_shell_footer_with_text_below_one_rule_is_not_composer(self) -> None:
         """A lone output bar never makes the next line a composer: or text above any
         printed line would go for delivery."""
