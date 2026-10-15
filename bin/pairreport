@@ -90,8 +90,8 @@ def render_text(manifest: dict) -> str:
 
 
 def recheck(state_dir: Path, round_number: int) -> int:
-    """Re-derive from the current tree, diff against the close-written claim."""
-    from manifest import derive_manifest
+    """Re-derive round N's OWN window, diff against the close-written claim."""
+    from manifest import derive_manifest, _round_bounds, _round_commits_from_evidence
     claimed = _load_manifest(state_dir, round_number)
     if claimed is None:
         print(f"pairreport: no manifest for round {round_number} — nothing to recheck",
@@ -103,7 +103,17 @@ def recheck(state_dir: Path, round_number: int) -> int:
         print(f"pairreport: cannot read state: {exc}", file=sys.stderr)
         return 2
     from manifest import cross_check
-    current = derive_manifest(state_dir, state)
+    current = derive_manifest(state_dir, state, round_number)
+    # C2: unrecoverable, never empty. No closing advance in the surviving
+    # stream (still open, or archive rotated past it) + no merge evidence
+    # with rows in the window = cannot-prove, never an empty delta.
+    _, ceiling = _round_bounds(state_dir, round_number, state)
+    anchor = _round_commits_from_evidence(state, round_number)
+    if ceiling is None and anchor is None and round_number != int(state.get("round", 0)):
+        print(f"pairreport round {round_number}: CANNOT PROVE — no closing advance "
+              f"in the surviving stream and no recorded merge evidence; "
+              f"the window is unrecoverable, not empty", file=sys.stderr)
+        return 2
     delta = _diff_manifests(claimed, current)
     for gap in cross_check(current, state, state_dir):
         delta.append("cross-check: " + gap)

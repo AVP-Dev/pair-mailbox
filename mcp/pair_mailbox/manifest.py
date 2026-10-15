@@ -48,10 +48,10 @@ def _transcript_paths(state_dir: Path) -> list[Path]:
     """Active journal plus rotated archives, oldest first.
 
     Rotation shifts the active file to transcript-archive/1.jsonl (server.py
-    _rotate_transcript, cap 99). Readers that see only the active file go
-    blind the moment rotation cuts it — round 94 closed with tasks_closed []
-    while task_closed 107-110 sat in the archive. Same precedent as
-    scripts/eye-of-sauron.sh.
+    _rotate_transcript, TRANSCRIPT_ARCHIVES = 4). Readers that see only the
+    active file go blind the moment rotation cuts it — round 94 closed with
+    tasks_closed [] while task_closed 107-110 sat in the archive. Same
+    precedent as scripts/eye-of-sauron.sh.
     """
     archive = Path(state_dir) / "transcript-archive"
     try:
@@ -89,6 +89,59 @@ def _transcript_rows(state_dir: Path) -> list[dict[str, Any]]:
     return rows
 
 
+def _round_bounds(state_dir: Path, round_number: int, state: dict[str, Any]) -> tuple[str, str | None]:
+    """Round N's own window: (anchor, ceiling) over the united stream.
+
+    Stamped rows of N: evidence rows tagged round=N in the stream plus
+    closed_at of state tasks labeled N (closed_round, else add-round).
+    task_closed rows carry no round tag, so they are NOT inputs — they are
+    what the window CHECKS. Anchor: last done-advance at/before the first
+    stamped row (the done that closed N-1); \"\" when none. Ceiling: first
+    done-advance at/after the last stamped row (the done that closed N);
+    None while N is still open (window runs to now) or when the closing
+    advance is gone from the surviving stream (archive rotated past it,
+    TRANSCRIPT_ARCHIVES = 4) — callers print cannot-prove, never empty.
+    """
+    rows = _transcript_rows(state_dir)
+    dones = sorted(str(r.get("ts", "")) for r in rows
+                   if r.get("kind") == "advance" and r.get("phase") == "done")
+    stamped = sorted(str(r.get("ts", "")) for r in rows
+                     if r.get("kind") == "evidence" and int(r.get("round", -1)) == round_number)
+    for t in (state.get("tasks", []) or []):
+        labeled = (int(t["closed_round"]) == round_number if t.get("closed_round") is not None
+                   else int(t.get("round", -1)) == round_number)
+        if labeled and t.get("closed_at"):
+            stamped.append(str(t["closed_at"]))
+    stamped.sort()
+    if not stamped:
+        return (dones[-1] if dones else ""), None
+    anchor = max([d for d in dones if d <= stamped[0]] + [""])
+    after = [d for d in dones if d >= stamped[-1]]
+    return anchor, (after[0] if after else None)
+
+def _round_commits_from_evidence(state: dict[str, Any], round_number: int) -> list[dict[str, str]] | None:
+    """Closed round's commits from its recorded merge evidence, never the live diff.
+
+    Returns None when the round recorded no commit evidence: the commits are
+    then UNRECOVERABLE (not empty) — callers print cannot-prove, never [].
+    Parses the real writer strings: full sha + master range
+    ("PR #40 merged: 771fd77 ... origin/master b6bfb65..771fd77").
+    A bare kind=pr row (URL only, no tip — round 89's shape) names nothing.
+    """
+    import re
+    out = []
+    for e in (state.get("evidence") or []):
+        if int(e.get("round", -1)) != round_number:
+            continue
+        if e.get("evidence_kind") not in ("commit",) and e.get("kind") not in ("commit",):
+            continue
+        value = str(e.get("value", ""))
+        for sha in re.findall(r"\b[0-9a-f]{7,40}\b", value):
+            if sha not in [c["sha"] for c in out]:
+                out.append({"sha": sha[:12], "subject": value[:120]})
+    return out or None
+
+
 def _note_hashes(state_dir: Path, kinds: tuple[str, ...] = ("plan",)) -> list[dict[str, str]]:
     """Draft paths + content hashes for the miting drafts (derived, not typed)."""
     out = []
@@ -107,13 +160,20 @@ def _note_hashes(state_dir: Path, kinds: tuple[str, ...] = ("plan",)) -> list[di
     return out
 
 
-def derive_manifest(state_dir: Path, state: dict[str, Any]) -> dict[str, Any]:
-    """Build the manifest from state/transcript/git. Pure read, never writes."""
+def derive_manifest(state_dir: Path, state: dict[str, Any], round_number: int | None = None) -> dict[str, Any]:
+    """Build the manifest from state/transcript/git. Pure read, never writes.
+
+    round_number selects whose window and commits are derived: the write path
+    passes the current round, recheck passes --round N. Default (None) keeps
+    the current round from state. A closed round derives its OWN window
+    (anchor..ceiling) and its commits from recorded merge evidence — never
+    the live master..HEAD, which is empty after the merge.
+    """
     state_dir = Path(state_dir)
-    round_number = int(state.get("round", 0))
+    round_number = int(state.get("round", 0)) if round_number is None else round_number
     tasks = state.get("tasks", [])
     closed_here = tasks_closed_in_round(tasks, round_number,
-                                        transcript_closed_ids(state_dir))
+                                        transcript_closed_ids(state_dir, round_number, tasks, state))
     evidences = [e for e in (state.get("evidence") or [])
                  if int(e.get("round", -1)) == round_number]
     verdicts = state.get("verdicts", []) or []
@@ -125,7 +185,14 @@ def derive_manifest(state_dir: Path, state: dict[str, Any]) -> dict[str, Any]:
     verdict_notes = _verdict_note_hashes(state_dir)
     rows = _transcript_rows(state_dir)
     project_root = state_dir.parent
-    commits = _git_commits(project_root)
+    is_open = round_number == int(state.get("round", 0))
+    if is_open:
+        commits: list[dict[str, str]] | None = _git_commits(project_root)
+    else:
+        # Closed round: the live master..HEAD is empty after the merge —
+        # commits come from the recorded merge evidence, or None
+        # (UNRECOVERABLE, never []) when the writer recorded none.
+        commits = _round_commits_from_evidence(state, round_number)
     plan_path = state_dir / "plan.md"
     try:
         plan_sha = _sha(plan_path.read_text(encoding="utf-8")) if plan_path.exists() else ""
@@ -210,23 +277,44 @@ def tasks_closed_in_round(tasks: list[dict[str, Any]], round_number: int,
     return out
 
 
-def transcript_closed_ids(state_dir: Path) -> set[int]:
-    """Task ids with task_closed in the current round window."""
-    return {int(r.get("task_id", 0)) for r in _transcript_rows(state_dir)
-            if r.get("kind") == "task_closed" and _in_round_window(state_dir, r)}
+def transcript_closed_ids(state_dir: Path, round_number: int | None = None,
+                          tasks: list[dict[str, Any]] | None = None,
+                          state: dict[str, Any] | None = None) -> set[int]:
+    """Task ids with task_closed in round N's OWN window (anchor..ceiling).
+
+    Round is required: the old no-arg form answered "since last done",
+    which after round N closes is N's own close — every closed round then
+    re-derived []. The window comes from N-STAMPED rows (evidence round=N
+    plus closed_at of N-labeled tasks); every task_closed inside it is
+    reported, not just pre-bound ids — the binding is what is checked.
+    """
+    if round_number is None or tasks is None:
+        return {int(r.get("task_id", 0)) for r in _transcript_rows(state_dir)
+                if r.get("kind") == "task_closed" and _in_round_window(state_dir, r)}
+    anchor, ceiling = _round_bounds(state_dir, round_number, state or {"tasks": tasks})
+    out = set()
+    for r in _transcript_rows(state_dir):
+        if r.get("kind") != "task_closed":
+            continue
+        ts = str(r.get("ts", ""))
+        if ts >= anchor and (ceiling is None or ts < ceiling):
+            out.add(int(r.get("task_id", 0)))
+    return out
 
 
 def _in_round_window(state_dir: Path, row: dict[str, Any]) -> bool:
     """Whether a transcript row falls in the current round's window.
 
-    Window start: the last advance to done (previous round's close), else the
-    last reopen-advance, else the beginning of time. A shortcut claim writes
-    no reopen, so done is the reliable anchor.
+    Legacy open-round form (ts >= last done): kept for the receipt path and
+    any caller without a round number. Round-scoped derivations use
+    _round_bounds + transcript_closed_ids(state_dir, N, tasks) instead —
+    after round N closes, \"last done\" IS N's own close and this form
+    re-derives [].
 
     The window runs over the UNITED stream (active plus transcript-archive):
     rotation cuts the active file mid-round, so a file-local last-done would
     restart the window at the cut. Honest caveat: the archive itself rotates
-    (cap 99 shifts) — a round older than the surviving archive cannot prove
+    (TRANSCRIPT_ARCHIVES = 4, server.py:197) — a round older than the surviving archive cannot prove
     its window, and the check then leans open rather than refusing on gaps
     it cannot see.
     """
@@ -297,18 +385,27 @@ def cross_check(manifest: dict[str, Any], state: dict[str, Any],
     """
     gaps = []
     round_number = manifest.get("round", 0)
-    if manifest.get("commits") == [] and _git_commits(state_dir.parent):
-        gaps.append("commits present on branch but manifest lists none")
+    is_open = round_number == int(state.get("round", 0))
+    if is_open:
+        # OPEN round (C4): the live branch question stays — this is what
+        # protects the round being closed right now. Must stay red-proven.
+        if manifest.get("commits") == [] and _git_commits(state_dir.parent):
+            gaps.append("commits present on branch but manifest lists none")
+    else:
+        # CLOSED round: live master..HEAD is empty by design after a merge.
+        # Recorded merge evidence is the anchor; [] with an anchor refuses,
+        # and no anchor with rows in the window is cannot-prove, never [].
+        anchor = _round_commits_from_evidence(state, round_number)
+        if manifest.get("commits") == [] and anchor:
+            gaps.append("recorded merge evidence names commits but manifest lists none")
     verdict_notes = [r for r in _transcript_rows(state_dir) if str(r.get("kind", "")).startswith("verdict")
                      or r.get("kind") == "note" and str(r.get("note_kind", "")).startswith("verdict")]
     if manifest.get("verdicts") == [] and verdict_notes:
         gaps.append("verdict notes in journal but manifest lists none")
-    # Tasks from the TRANSCRIPT, not from state's list: the binding is what is
-    # in question, so a check sourced from the list shares its blindness
-    # (round 94: four task_closed since the claim, manifest would claim []).
-    # Window: last reopen-advance → now.
-    closed_ids = {int(r.get("task_id", 0)) for r in _transcript_rows(state_dir)
-                  if r.get("kind") == "task_closed" and _in_round_window(state_dir, r)}
+    # Tasks from the TRANSCRIPT in round N's OWN window, not from state's
+    # list: the binding is what is in question (round 94: four task_closed
+    # since the claim, manifest would claim []).
+    closed_ids = transcript_closed_ids(state_dir, round_number, state.get("tasks", []), state)
     claimed_ids = {int(x.get("id", 0)) for x in (manifest.get("tasks_closed") or [])
                    if isinstance(x, dict)}
     if closed_ids - claimed_ids:

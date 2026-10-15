@@ -240,6 +240,86 @@ class TestRecheckDelta(unittest.TestCase):
         delta = mod._diff_manifests(old, new)
         self.assertTrue(any("evidence" in line for line in delta))
 
+class TestRoundWindow96(unittest.TestCase):
+    """Round 96: the manifest and the recheck see their OWN round.
+
+    Window from N-stamped rows (evidence round=N + closed_at of N-labeled
+    tasks) over the united stream; closed-round commits from recorded merge
+    evidence, never the live diff; unrecoverable, never empty.
+    """
+
+    def _stream(self, sd: Path) -> None:
+        (sd / "transcript-archive").mkdir()
+        (sd / "transcript-archive" / "1.jsonl").write_text(
+            '{"ts": "2026-10-14T20:35:08+00:00", "kind": "advance", "phase": "done"}\n'
+            '{"ts": "2026-10-14T21:01:45+00:00", "kind": "task_closed", "task_id": 107}\n'
+            '{"ts": "2026-10-14T21:04:20+00:00", "kind": "task_closed", "task_id": 108}\n',
+            encoding="utf-8")
+        (sd / "transcript.jsonl").write_text(
+            '{"ts": "2026-10-14T21:43:40+00:00", "kind": "evidence", "round": 94}\n'
+            '{"ts": "2026-10-14T21:44:53+00:00", "kind": "advance", "phase": "done"}\n'
+            '{"ts": "2026-10-15T16:51:46+00:00", "kind": "task_closed", "task_id": 111}\n',
+            encoding="utf-8")
+
+    def test_window_names_own_round_not_last_done(self) -> None:
+        """C1: round-94 window is anchor..ceiling, task 111 (round 95) excluded."""
+        from manifest import _round_bounds
+        with tempfile.TemporaryDirectory() as tmp:
+            sd = Path(tmp)
+            self._stream(sd)
+            st = _state(round=96)
+            anchor, ceiling = _round_bounds(sd, 94, st)
+        self.assertEqual(anchor, "2026-10-14T20:35:08+00:00")
+        self.assertEqual(ceiling, "2026-10-14T21:44:53+00:00")
+
+    def test_closed_round_ids_exclude_later_round(self) -> None:
+        """task_closed 107+108 in window, 111 (after ceiling) out."""
+        from manifest import transcript_closed_ids
+        with tempfile.TemporaryDirectory() as tmp:
+            sd = Path(tmp)
+            self._stream(sd)
+            st = _state(round=96)
+            ids = transcript_closed_ids(sd, 94, [], st)
+        self.assertEqual(ids, {107, 108})
+
+    def test_closed_commits_from_recorded_evidence(self) -> None:
+        """C2: real writer string yields the merge sha, bare pr row nothing."""
+        from manifest import _round_commits_from_evidence
+        st = _state(round=96, evidence=[
+            {"round": 94, "evidence_kind": "commit",
+             "value": "PR #40 merged: 771fd77 Round 94 D1,D2,C9,C10, origin/master b6bfb65..771fd77"},
+            {"round": 89, "evidence_kind": "pr",
+             "value": "https://github.com/AVP-Dev/pair-mailbox/pull/36 round89-deliver-round88 -> master"}])
+        commits94 = _round_commits_from_evidence(st, 94)
+        self.assertIsNotNone(commits94)
+        assert commits94 is not None
+        self.assertIn("771fd77", [c["sha"] for c in commits94])
+        self.assertIsNone(_round_commits_from_evidence(st, 89))
+
+    def test_empty_with_anchor_refuses(self) -> None:
+        """Acceptance #3: manifest [] with recorded anchor commits refuses."""
+        with tempfile.TemporaryDirectory() as tmp:
+            sd = Path(tmp)
+            self._stream(sd)
+            st = _state(round=96, evidence=[
+                {"round": 94, "evidence_kind": "commit", "value": "merged: abc1234 x"}])
+            m = derive_manifest(sd, st, 94)
+            m["commits"] = []
+            gaps = cross_check(m, st, sd)
+        self.assertTrue(any("recorded merge evidence" in g for g in gaps))
+
+    def test_open_round_live_branch_still_refuses(self) -> None:
+        """C4: the open-round branch guards the round being closed now."""
+        with tempfile.TemporaryDirectory() as tmp:
+            sd = Path(tmp)
+            st = _state(round=96)
+            m = derive_manifest(sd, st)
+            m["commits"] = []
+            with mock.patch.object(manifest, "_git_commits",
+                                   return_value=[{"sha": "abc", "subject": "x"}]):
+                gaps = cross_check(m, st, sd)
+        self.assertTrue(any("on branch" in g for g in gaps))
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
