@@ -2149,6 +2149,16 @@ class PairSession:
             ),
         }
 
+    def _ring_refused(self, target: str, kind: str, pane: str, reason: str) -> dict[str, Any]:
+        """One exit for every ring refusal: a durable row, then the answer.
+
+        Every rung=False leaves the same trace (reason + pane + addressee) —
+        the silent-refusal class has nowhere left to hide.
+        """
+        self.store.append_transcript("doorbell_refused", self.role,
+                                     to=target, bell_kind=kind, pane=pane, reason=reason)
+        return {"rung": False, "why": reason}
+
     def _ring(self, target: str, kind: str, detail: str = "") -> dict[str, Any]:
         """Knock on the peer's tmux pane so a sleeping agent wakes itself.
 
@@ -2170,15 +2180,15 @@ class PairSession:
         state = self.store.read()
         pane = (state.get("roles", {}).get(target) or {}).get("pane")
         if not pane:
-            return {"rung": False, "why": "no pane, the neighbour is outside tmux"}
+            return self._ring_refused(target, kind, "", "no pane, the neighbour is outside tmux")
         # String comparison never serves here: our own pane arrives from the environment
         # as `%1` while state holds `mail:0.1`. Such equality just stops holding, and the
         # ring leaves for our own pane.
         if same_pane(pane, os.environ.get("TMUX_PANE")):
-            return {"rung": False, "why": "never ring our own pane"}
+            return self._ring_refused(target, kind, pane, "never ring our own pane")
         tmux = shutil.which("tmux")
         if not tmux:
-            return {"rung": False, "why": "tmux not found in PATH"}
+            return self._ring_refused(target, kind, pane, "tmux not found in PATH")
         try:
             probe = subprocess.run(
                 [tmux, "display-message", "-p", "-t", pane, "#{pane_dead}"],
@@ -2188,9 +2198,9 @@ class PairSession:
             # tmux died between which() and launch, the pane is gone — the ring is not
             # guaranteed to deliver, but no fix for this round either (the §10 lesson: fixing
             # the master never outranks delivering the letter).
-            return {"rung": False, "why": f"the neighbour pane never verifies: {exc}"}
+            return self._ring_refused(target, kind, pane, f"the neighbour pane never verifies: {exc}")
         if probe.returncode != 0 or probe.stdout.strip() == "1":
-            return {"rung": False, "why": "the neighbour pane is dead"}
+            return self._ring_refused(target, kind, pane, "the neighbour pane is dead")
         # Liveness is not identity. The pane number outlives the death of the process that
         # held it, and several pair-mailbox projects run on this machine: ringing the
         # recorded number woke another agent.
@@ -2206,28 +2216,24 @@ class PairSession:
                                 f"[pair] {kind} from {self.role} — take it from the mailbox"],
                                capture_output=True, text=True, timeout=5)
             except Exception as exc:  # noqa: BLE001 - the pane vanished between checks
-                return {"rung": False, "why": f"pane unreadable: {exc}"}
+                return self._ring_refused(target, kind, pane, f"pane unreadable: {exc}")
             self.store.append_transcript("doorbell_fallback", self.role, to=target,
                                          bell_kind=kind, pane=pane, reason=why_foreign)
             return {"rung": True, "pane": pane, "fallback": "display-message"}
-        from composer import capture, composer_line, is_composer_empty
+        from composer import capture, composer_line, ring_refusal_reason
         # Single-shot with no waiting: the ring is an optimization, not a condition.
         # The wake/*.json file (written by the caller on the event) is the guarantee the
         # pairpilot polls; waiting for the composer to free here means hanging the tool
         # for 1.5s and grabbing the neighbour input.
         # Busy/invisible means straight back to the file channel.
         try:
-            line = composer_line(capture(tmux, pane))
+            shot = capture(tmux, pane)
+            line = composer_line(shot)
         except Exception as exc:  # noqa: BLE001 - the pane vanished between checks
-            return {"rung": False, "why": f"pane unreadable: {exc}"}
-        # None means no composer visible, never the same as "free".
-        # `is_composer_empty(None)` falls on NoneType.rstrip: any ring into a pane where
-        # the TUI redraws dropped the ringer. No input line means "hands off", exactly as
-        # in deliver().
-        if line is None or not is_composer_empty(line):
-            reason = "the neighbour composer invisible, never interrupting" if line is None \
-                else "the neighbour composer busy, never interrupting"
-            return {"rung": False, "why": reason}
+            return self._ring_refused(target, kind, pane, f"pane unreadable: {exc}")
+        reason = ring_refusal_reason(shot, line)
+        if reason is not None:
+            return self._ring_refused(target, kind, pane, reason)
         prompt = f"pair: {kind} from {self.role}. Read pair_read."
         if detail:
             # A cause with no letter text. Trimmed text here would be a "bus in parts": past
@@ -3434,9 +3440,8 @@ class PairSession:
                 "file_lines": len(lines),
                 "text": "\n".join(body)}
 
-    def tool_pair_note(self, kind: str, text: str) -> dict[str, Any]:
+    def tool_pair_note(self, kind: str, text: str, head: str | None = None) -> dict[str, Any]:
         """Append a durable note: a plan, a decision, a finding, a verdict.
-
         Notes are the shared memory two agents leave behind. Anything one of them
         needs to survive a context reset belongs here, not in the conversation.
         """
@@ -3462,7 +3467,9 @@ class PairSession:
             # snapshot writes.
             try:
                 from review import pin_verdict
-                pin_verdict(self.store, self.role, kind, text, utcnow)
+                pin_verdict(self.store, self.role, kind, text, utcnow, head=head)
+            except ValueError:
+                raise
             except Exception:  # noqa: BLE001 - the snapshot never drops the verdict
                 pass
             # A verdict with no obligation is a dead end: the critic passed, the writer awaits,
@@ -3864,6 +3871,7 @@ def tool_definitions() -> list[dict[str, Any]]:
                 "properties": {
                     "kind": {"type": "string", "description": "Slug, e.g. plan, decision, finding, verdict."},
                     "text": {"type": "string", "description": "Markdown body."},
+                    "head": {"type": "string", "description": "Optional explicit revision (SHA) the verdict binds to instead of the live tree. Verdict kinds only; staleness still reads content."},
                 },
                 "required": ["kind", "text"],
             },

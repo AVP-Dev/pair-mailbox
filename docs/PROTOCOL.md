@@ -706,6 +706,10 @@ PR merging is gated by machine rules rather than prompt agreements:
    A bare `**APPROVED**` pins HEAD through the verdict
    record (`rev.head` must equal HEAD and be fresh). Round 91 is the case: code
    reached `master` five minutes after a refusal.
+   A verdict note may carry an explicit `head` (`pair_note` `head` arg): the record
+   anchors that revision instead of the live tree (round 97 — re-pin after a branch
+   rebuild). The anchor is only an anchor: staleness still reads content, so pinning
+   an unreviewed tree stays stale; an unresolvable head refuses loudly.
 3. **Preconditions for merging (`check_pr_merge`)**:
    - **Phase constraint**: Phase must be strictly `verify` (merging during `implement`, `plan`, or `scoping` is refused).
    - **Environment**: Must be a valid git repository (fail-closed on merge path: "cannot verify: not a git repo").

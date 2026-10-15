@@ -682,6 +682,40 @@ def composer_line(lines: list) -> str | None:
     return None if is_footer_or_status_line(fallback or "") else (
         None if looks_like_status_line(fallback or "") else fallback)
 
+def composer_frame_present(lines: list) -> bool:
+    """A composer frame shows, even when no input line is free.
+
+    Label-only: delivery decisions never read this — `composer_line is None`
+    stays hands-off either way. It only tells the journal whether None meant
+    \"no composer at all\" (invisible) or \"a frame with nowhere to type\"
+    (busy-with-chrome, e.g. an activity line read as typed text).
+    """
+    for line in lines:
+        s = (line or "").rstrip()
+        if not s.strip():
+            continue
+        text = s.lstrip()
+        if text and text[0] in INPUT_BOX_CORNERS_LOWER:
+            return True
+        if re.fullmatch(r"[\u2500\u2550\u2501\s]+", text):
+            return True
+    return False
+
+
+def ring_refusal_reason(shot: list, line: str | None) -> str | None:
+    """Why the ring must not print into this pane, or None when it may.
+
+    Lives beside composer_line (server-py-still-a-monolith): the refusal
+    wording and the frame signal stay in one place. Decisions read this;
+    the journal label comes along — None still means hands-off either way.
+    """
+    if line is None:
+        return ("the neighbour composer busy-with-chrome, never interrupting"
+                if composer_frame_present(shot) else
+                "the neighbour composer invisible, never interrupting")
+    if not is_composer_empty(line):
+        return "the neighbour composer busy, never interrupting"
+    return None
 
 def is_composer_empty(line: str) -> bool:
     """A rough but honest check: almost nothing past the marker."""
@@ -1335,6 +1369,22 @@ def resolve_permission_prompt(tmux: str, pane: str, allow: list[str] | None = No
             "menu": bool(menu)}
 
 
+def submit_verified(tmux: str, pane: str, body: str) -> str:
+    """Press Enter and prove the composer took it: 'submitted' or 'retained'.
+
+    Round 97 fixed the rc-trust in _ring (retained prompt after rc=0); the
+    pilot path (deliver) sent Enter blind. One predicate for both: Enter,
+    capture, retry once, capture again. Retained means the text still sits in
+    the composer — the caller must say so durably, never claim submitted.
+    """
+    subprocess.run([tmux, "send-keys", "-t", pane, "Enter"],
+                   capture_output=True, text=True, timeout=5)
+    if not tail_present(capture(tmux, pane), body):
+        return "submitted"
+    subprocess.run([tmux, "send-keys", "-t", pane, "Enter"],
+                   capture_output=True, text=True, timeout=5)
+    return "retained" if tail_present(capture(tmux, pane), body) else "submitted"
+
 def deliver(pane: str, text: str, wait_for_empty: float = 0.0, submit: bool = True) -> dict:
     """Deliver text into the neighbour composer. Returns a report of what happened.
 
@@ -1376,8 +1426,11 @@ def deliver(pane: str, text: str, wait_for_empty: float = 0.0, submit: bool = Tr
                   "chunks": len(chunks(body)), "pane": pane, "submitted": submit,
                   "tail_hidden": True}
         if submit:
-            subprocess.run([tmux, "send-keys", "-t", pane, "Enter"],
-                           capture_output=True, text=True, timeout=5)
+            submit_state = submit_verified(tmux, pane, body)
+            result["submit_state"] = submit_state
+            if submit_state == "retained":
+                result["why"] = ("Enter sent twice, the text still sits in the composer — "
+                                 "take the message from the mailbox")
         return result
     if not landed:
         # Unconfirmed means UNKNOWN whether the text landed, not "it never did".
@@ -1397,6 +1450,9 @@ def deliver(pane: str, text: str, wait_for_empty: float = 0.0, submit: bool = Tr
     result = {"delivered": True, "chars": len(body), "chunks": len(chunks(body)),
               "pane": pane, "submitted": submit}
     if submit:
-        subprocess.run([tmux, "send-keys", "-t", pane, "Enter"],
-                       capture_output=True, text=True, timeout=5)
+        submit_state = submit_verified(tmux, pane, body)
+        result["submit_state"] = submit_state
+        if submit_state == "retained":
+            result["why"] = ("Enter sent twice, the text still sits in the composer — "
+                             "take the message from the mailbox")
     return result

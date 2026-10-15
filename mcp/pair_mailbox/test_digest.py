@@ -99,6 +99,27 @@ class TestDigest(PairTestCase):
         text = self.digest(budget=80)
         self.assertLessEqual(self.server.estimate_tokens(text), 80)
 
+    def test_stale_task_string_falls_back_to_open_task(self) -> None:
+        """Round 98: a task string from an old round must not pose as subject."""
+        self.with_state(task="Round 88/1: bin/pairpilot to English",
+                        writer="omp", mode="fix", phase="implement", round=98)
+        self.store.mutate(lambda st: st.setdefault("tasks", []).append(
+            {"id": 115, "text": "Round 98: explicit rev/head on pair_note",
+             "status": "open", "added_at": "now", "added_by": "omp", "round": 98,
+             "reason": "", "closed_at": None, "closed_by": None}))
+        text = self.digest()
+        self.assertIn("Round 98: explicit rev/head on pair_note", text)
+        self.assertIn("state.task is stale", text)
+        self.assertNotIn("task: Round 88/1", text)
+
+    def test_current_task_string_stays(self) -> None:
+        """A task string naming the current round is not overridden."""
+        self.with_state(task="Round 98: explicit rev/head on pair_note",
+                        writer="omp", mode="fix", phase="implement", round=98)
+        text = self.digest()
+        self.assertIn("task: Round 98: explicit rev/head on pair_note", text)
+        self.assertNotIn("state.task is stale", text)
+
     def test_what_did_not_fit_is_said(self) -> None:
         """Trimming must declare itself.
 
