@@ -20,6 +20,8 @@ description: Park a real finding that will not be fixed in this run, without los
 title: <коротко>
 found: <дата>
 severity: high|medium|low
+round: <N>
+status: open
 ---
 ## Где
 `file:line`
@@ -30,6 +32,11 @@ severity: high|medium|low
 ## Что сделать
 <шаг>
 ```
+
+Жизненный цикл: `status: open`, пока долг жив. Исправленная карточка УДАЛЯЕТСЯ
+из `docs/backlog/` (коммит фиксирует, что закрыто) — запись хранит история,
+каталог хранит только открытый долг. Отчёт закрытия перечисляет, что
+припарковано и что осталось открытым, чтобы ничего не умирало молча.
 
 ## Правила
 

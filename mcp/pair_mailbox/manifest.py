@@ -44,18 +44,48 @@ def _git_commits(project_root: Path, since_round_start: str = "") -> list[dict[s
     return commits
 
 
+def _transcript_paths(state_dir: Path) -> list[Path]:
+    """Active journal plus rotated archives, oldest first.
+
+    Rotation shifts the active file to transcript-archive/1.jsonl (server.py
+    _rotate_transcript, cap 99). Readers that see only the active file go
+    blind the moment rotation cuts it — round 94 closed with tasks_closed []
+    while task_closed 107-110 sat in the archive. Same precedent as
+    scripts/eye-of-sauron.sh.
+    """
+    archive = Path(state_dir) / "transcript-archive"
+    try:
+        archived = list(archive.glob("*.jsonl"))
+    except OSError:
+        archived = []
+    # Numeric order, oldest rotation first: N..2,1 then active. Numeric sort,
+    # not lexical ("10" < "2" lexically). Higher number = older rotation
+    # (each shift bumps 1->2, 2->3; the freshest cut lands at 1.jsonl).
+    def _num(p: Path) -> int:
+        try:
+            return int(p.stem)
+        except ValueError:
+            return -1
+    archived = sorted(archived, key=_num, reverse=True)
+    return archived + [state_dir / "transcript.jsonl"]
+
+
 def _transcript_rows(state_dir: Path) -> list[dict[str, Any]]:
     rows = []
-    path = state_dir / "transcript.jsonl"
-    if not path.exists():
-        return rows
-    for raw in path.read_text(encoding="utf-8", errors="replace").splitlines():
-        if not raw.strip():
+    for path in _transcript_paths(state_dir):
+        if not path.exists():
             continue
         try:
-            rows.append(json.loads(raw))
-        except ValueError:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
             continue
+        for raw in text.splitlines():
+            if not raw.strip():
+                continue
+            try:
+                rows.append(json.loads(raw))
+            except ValueError:
+                continue
     return rows
 
 
@@ -192,6 +222,13 @@ def _in_round_window(state_dir: Path, row: dict[str, Any]) -> bool:
     Window start: the last advance to done (previous round's close), else the
     last reopen-advance, else the beginning of time. A shortcut claim writes
     no reopen, so done is the reliable anchor.
+
+    The window runs over the UNITED stream (active plus transcript-archive):
+    rotation cuts the active file mid-round, so a file-local last-done would
+    restart the window at the cut. Honest caveat: the archive itself rotates
+    (cap 99 shifts) — a round older than the surviving archive cannot prove
+    its window, and the check then leans open rather than refusing on gaps
+    it cannot see.
     """
     try:
         rows = _transcript_rows(state_dir)

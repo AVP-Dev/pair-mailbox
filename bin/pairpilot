@@ -1697,10 +1697,16 @@ def _done_blockers(state: dict) -> list[str]:
 
 def write_report(state_dir: Path, state: dict) -> Path:
     """One screen for the human: what is done, what proves it, and what is NOT covered."""
-    transcript = state_dir / "transcript.jsonl"
+    from manifest import _transcript_paths
     events: list[dict] = []
-    if transcript.exists():
-        for raw in transcript.read_text(encoding="utf-8", errors="replace").splitlines():
+    for path in _transcript_paths(state_dir):
+        if not path.exists():
+            continue
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        for raw in text.splitlines():
             if raw.strip():
                 try:
                     events.append(json.loads(raw))
@@ -1727,6 +1733,14 @@ def write_report(state_dir: Path, state: dict) -> Path:
                          path.read_text(encoding="utf-8", errors="replace").splitlines()
                          if ln.startswith("#")), path.stem)
             notes.append(f"- {path.stem}: {head}")
+    dones = [e.get("ts", "") for e in events if e.get("kind") == "advance" and e.get("phase") == "done"]
+    anchor = max(dones) if dones else ""
+    parked = [e for e in events if e.get("kind") == "note" and str(e.get("note_kind", "")).startswith("backlog")
+              and str(e.get("ts", "")) >= anchor]
+    try:
+        cards = sorted(p.name for p in (state_dir.parent / "docs/backlog").glob("*.md"))
+    except OSError:
+        cards = []
 
     lines = [
         f"# Round report {state.get('round')}",
@@ -1802,6 +1816,13 @@ def write_report(state_dir: Path, state: dict) -> Path:
         blockers = _done_blockers(state)
         lines.append("What blocks the round close:")
         lines += [f"- {item}" for item in blockers] or ["- nothing"]
+    lines += ["", "## Backlog parked this round", ""]
+    if parked or cards:
+        for e in parked:
+            lines.append(f"- parked {e.get('ts', '')} {e.get('role', '')} {e.get('note_kind', '')} ({e.get('chars', '?')} chars)")
+        lines += [f"Open cards in docs/backlog/: {len(cards)}"] + [f"- {c}" for c in cards]
+    else:
+        lines.append("- nothing parked; docs/backlog/ empty.")
     lines += [
         "",
         "## Latest notes",
