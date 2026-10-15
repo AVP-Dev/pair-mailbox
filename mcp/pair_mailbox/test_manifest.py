@@ -240,6 +240,62 @@ class TestRecheckDelta(unittest.TestCase):
         delta = mod._diff_manifests(old, new)
         self.assertTrue(any("evidence" in line for line in delta))
 
+    def test_cannot_prove_exits_2_without_merge_evidence(self) -> None:
+        """Round-96 verify should-fix: the recheck exit-2 path gets a
+        durable hermetic test, not just live runs. Closed round, ceiling
+        survives, window holds rows, no merge evidence → exit 2."""
+        import importlib.util as _ilu
+        from importlib.machinery import SourceFileLoader
+        loader = SourceFileLoader(
+            "pairreport_mod2",
+            str(Path(__file__).resolve().parent.parent.parent / "bin" / "pairreport"))
+        spec = _ilu.spec_from_loader("pairreport_mod2", loader)
+        mod = _ilu.module_from_spec(spec)
+        loader.exec_module(mod)
+        with tempfile.TemporaryDirectory() as tmp:
+            sd = Path(tmp)
+            (sd / "transcript-archive").mkdir()
+            (sd / "transcript-archive" / "1.jsonl").write_text(
+                '{"ts": "2026-10-14T20:35:08+00:00", "kind": "advance", "phase": "done"}\n'
+                '{"ts": "2026-10-14T21:01:45+00:00", "kind": "task_closed", "task_id": 107}\n',
+                encoding="utf-8")
+            (sd / "transcript.jsonl").write_text(
+                '{"ts": "2026-10-14T21:44:53+00:00", "kind": "advance", "phase": "done"}\n',
+                encoding="utf-8")
+            (sd / "rounds").mkdir()
+            (sd / "rounds" / "94.json").write_text(
+                json.dumps({"round": 94, "commits": [], "tasks_closed": []}), encoding="utf-8")
+            (sd / "state.json").write_text(json.dumps(
+                {"round": 96,
+                 "tasks": [{"id": 107, "round": 94, "status": "done",
+                            "closed_at": "2026-10-14T21:01:45+00:00"}],
+                 "evidence": [], "verdicts": []}), encoding="utf-8")
+            rc = mod.recheck(sd, 94)
+        self.assertEqual(rc, 2)
+
+    def test_open_round_never_cannot_prove(self) -> None:
+        """Twin: the OPEN round must not exit 2 — the guard is `not is_open`.
+        Dropping that check would silently turn every current-round recheck
+        into exit 2; this pins the guard."""
+        import importlib.util as _ilu
+        from importlib.machinery import SourceFileLoader
+        loader = SourceFileLoader(
+            "pairreport_mod3",
+            str(Path(__file__).resolve().parent.parent.parent / "bin" / "pairreport"))
+        spec = _ilu.spec_from_loader("pairreport_mod3", loader)
+        mod = _ilu.module_from_spec(spec)
+        loader.exec_module(mod)
+        with tempfile.TemporaryDirectory() as tmp:
+            sd = Path(tmp)
+            (sd / "transcript.jsonl").write_text("", encoding="utf-8")
+            (sd / "rounds").mkdir()
+            (sd / "rounds" / "96.json").write_text(
+                json.dumps({"round": 96, "commits": [], "tasks_closed": []}), encoding="utf-8")
+            (sd / "state.json").write_text(json.dumps(
+                {"round": 96, "tasks": [], "evidence": [], "verdicts": []}), encoding="utf-8")
+            rc = mod.recheck(sd, 96)
+        self.assertNotEqual(rc, 2)
+
 class TestRoundWindow96(unittest.TestCase):
     """Round 96: the manifest and the recheck see their OWN round.
 
