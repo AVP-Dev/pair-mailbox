@@ -2390,7 +2390,10 @@ class PairSession:
             try:
                 _sp.run([_tmux(), "display-message", "-t", pane,
                          "-d", "4000",
-                         f"[pair] {self.role}: new message in the mailbox, read pair_read"],
+                        # Round 103 S2: the pointer carries its mail seq so a
+                        # reader can tell this pointer's vintage — one stale
+                        # pointer text was indistinguishable from three fresh ones.
+                         f"[pair] {self.role}: new message in the mailbox (seq {seq}), read pair_read"],
                         capture_output=True, text=True, timeout=5)
             except Exception as exc:  # noqa: BLE001 - the pane vanished between checks
                 result["why"] = f"pane unreadable: {exc}"
@@ -2405,7 +2408,9 @@ class PairSession:
             return result
 
         # 2. The pointer. Short on purpose: a line in another TUI, not text.
-        pointer = f"[pair] {self.role}: new message in the mailbox, read pair_read"
+        # Round 103 S2: carries the mail seq — a reader must never need the
+        # filesystem to know this pointer's vintage.
+        pointer = f"[pair] {self.role}: new message in the mailbox (seq {seq}), read pair_read"
         try:
             pointed = deliver(pane, pointer, wait_for_empty=wait_for_empty, submit=submit)
         except ComposerBusy as exc:
@@ -2533,8 +2538,9 @@ class PairSession:
         # the fast-response optimization.
         try:
             from wake import record_wake
+            # Round 103 S2: the wake text carries the seq.
             record_wake(self.store.root, self.store.read(), to, "message",
-                        f"[pair] {self.role}: new message in the mailbox, read pair_read")
+                        f"[pair] {self.role}: new message in the mailbox (seq {result['seq']}), read pair_read")
             self.store.append_transcript("wake_pending", self.role, to=to,
                                          reason="message", seq=result["seq"])
         except Exception:  # noqa: BLE001 - the wake file must never drop the send

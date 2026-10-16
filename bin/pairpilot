@@ -607,17 +607,26 @@ class Pilot:
             seen = [str(r) for r in prior_reasons]
             if reason not in seen:
                 seen.append(reason)
+            # Round 103 S2: same rule as wake.record_wake — ask fields come
+            # from a fresh measurement on a NEW ask only; a hanging wake keeps
+            # its patience anchors. previous.get(K, compute()) here froze
+            # unread_at_ask at 0 (escalation gate unsatisfiable) and seen_at_ask
+            # at the first raise for the life of the file.
+            fresh = not previous
+            asked_at = utcnow() if fresh else str(previous.get("asked_at") or utcnow())
+            unread_at_ask = self.unread(state, role) if fresh else int(
+                previous.get("unread_at_ask") or 0)
+            seen_at_ask = info.get("last_seen") if fresh else previous.get("seen_at_ask")
             payload = dict(previous)
             payload.update({
                 "role": role,
                 "reason": seen[-1],
                 "reasons": seen,
-                "asked_at": previous.get("asked_at") or utcnow(),
-                "seen_at_ask": previous.get("seen_at_ask", info.get("last_seen")),
-                "unread_at_ask": int(previous.get("unread_at_ask", self.unread(state, role))),
+                "asked_at": asked_at,
+                "seen_at_ask": seen_at_ask,
+                "unread_at_ask": unread_at_ask,
                 "text": text,
             })
-            payload.setdefault("asked_at", utcnow())
             path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         except OSError as error:
             # Not recorded means nothing to wake with, and that must be said, not
