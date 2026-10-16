@@ -1061,6 +1061,11 @@ def is_pid_alive(pid: Any) -> bool:
     return liveness.pid_alive(pid)
 
 
+def _proc_starttime(pid: Any) -> int | None:
+    """`liveness.proc_starttime` wrapper (round 103 S3), same drift rule."""
+    return liveness.proc_starttime(pid)
+
+
 def same_pane(left, right) -> bool:
     """`composer.same_pane` with tmux found. The logic lives in composer, next to
     `pane_identity`: pane comparison belongs to pane parsing, not the protocol. The
@@ -1159,6 +1164,7 @@ class PairSession:
             self.role, {"first_seen": utcnow(), "reads": 0, "sends": 0})
         entry["last_seen"] = utcnow()
         entry["pid"] = os.getpid()
+        entry["pid_start"] = _proc_starttime(os.getpid())
         if self.role == "opencode":
             meta = request_meta if isinstance(request_meta, dict) else {}
             session_id = meta.get("ai.opencode/sessionID")
@@ -1400,6 +1406,7 @@ class PairSession:
         entry = roles.setdefault(self.role, {"first_seen": utcnow(), "reads": 0, "sends": 0})
         entry["last_seen"] = utcnow()
         entry["pid"] = current_pid
+        entry["pid_start"] = _proc_starttime(current_pid)
         if pin and not pin_unverified:
             # The override beats the environment. Exactly this lay broken: hand-editing
             # state.json fixed nothing, because `_register` rewrote `pane` on every call of

@@ -39,6 +39,50 @@ def pid_alive(pid: Any) -> bool:
         return err.errno == errno.EPERM
     return True
 
+def proc_starttime(pid: Any) -> int | None:
+    """The process's boot-relative start time (/proc/<pid>/stat field 22).
+
+    Round 103 S3: `os.kill(pid, 0)` proves SOME process holds the pid, not
+    that OUR process does — pids recycle, and the round-102 live case (a role
+    server killed at 17:30Z kept a roster entry alive for three hours through
+    plain pid reuse) is the outcome this closes. Read-only in /proc, no new
+    files. Linux-only by nature; None on any failure (wrong platform, exited
+    between os.kill and open) — callers fall back to pid_alive, never guess.
+    """
+    if not isinstance(pid, int) or pid <= 0:
+        return None
+    try:
+        with open(f"/proc/{pid}/stat", "rb") as handle:
+            stat = handle.read()
+    except OSError:
+        return None
+    try:
+        # After "(comm)" the fields restart at 3; starttime is field 22 →
+        # index 19 in the post-comm split (field 3 == index 0 here).
+        tail = stat.rpartition(b")")[2].split()
+        return int(tail[19])
+    except (IndexError, ValueError):
+        return None
+
+
+def pid_slot_alive(pid: Any, expected_start: Any) -> bool:
+    """Whether OUR process (pid + recorded starttime) still holds the slot.
+
+    The staleness rule of the round: a stored snapshot (pid alone) is read as
+    current only when something recomputes it. A reused pid must read DEAD
+    even though os.kill says alive. No recorded starttime (old roster entries)
+    or an unreadable /proc keeps the coarser os.kill answer — stated fallback,
+    never a guess in either direction on our own slot.
+    """
+    if not pid_alive(pid):
+        return False
+    start = proc_starttime(pid)
+    if start is None or not isinstance(expected_start, int):
+        # Fallback (stated): no /proc on this platform, the process exited
+        # between probes, or a pre-S3 entry has no recorded start.
+        return True
+    return start == int(expected_start)
+
 
 def peer_status(
     state: dict[str, Any],
@@ -76,7 +120,15 @@ def peer_status(
             age = None
         closed = phase == "done"
         pid = info.get("pid")
-        alive = alive_check(pid) if pid else None
+        # Round 103 S3: alive NOW means "the recorded process still holds the
+        # slot" — pid + its recorded /proc starttime. A reused pid reads DEAD
+        # (proof of the round): os.kill alone proved "some process", and the
+        # dead-for-3-hours roster entry was the measured cost.
+        alive = None
+        if pid:
+            start = info.get("pid_start")
+            alive = (pid_slot_alive(pid, start) if isinstance(start, int)
+                     else alive_check(pid))
         # The role server lives but no agent stands behind it: the roster pid is the
         # server pid, and the server itself writes a fresh last_seen at start and while
         # serving foreign calls. A role that never sent anything for grace after

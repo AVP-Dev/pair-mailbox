@@ -25,6 +25,7 @@ import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
+from liveness import pid_slot_alive  # noqa: E402  (round 103 S3)
 
 # How long a paneless dead entry stays quiet before expiring. 7 days: shorter
 # kills context after a vacation, longer hoards junk. Manual `pairctl roster
@@ -130,7 +131,12 @@ def expire_dead_roles(
         if info.get("pane") or info.get("pane_pin"):
             continue
         pid = info.get("pid")
-        if isinstance(pid, int) and pid > 0 and pid_alive(pid):
+        # Round 103 S3: expiry consults the SLOT, not just os.kill — a reused
+        # pid must let this paneless record expire (its process is not ours).
+        alive_here = (pid_slot_alive(pid, info.get("pid_start"))
+                      if isinstance(info.get("pid_start"), int) and pid
+                      else pid_alive(pid))
+        if isinstance(pid, int) and pid > 0 and alive_here:
             continue
         if name == writer:
             # Write authority never evaporates on a timer (as in prune).

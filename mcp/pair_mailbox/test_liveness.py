@@ -91,6 +91,64 @@ class TestPidAlive(unittest.TestCase):
                                side_effect=OSError(_errno.ESRCH, "no such process")):
             self.assertFalse(liveness.pid_alive(os.getpid()))
 
+class TestPidSlotAlive(unittest.TestCase):
+    """Round 103 S3: pid + /proc starttime (f22) — a reused pid is DEAD.
+
+    The roster staleness rule: `os.kill(pid, 0)` proves a process holds the
+    pid, not OUR process. Live proof (round 102): the opencode server killed
+    at 17:30Z stayed "alive" for three hours.
+    """
+
+    def test_real_own_process_true(self) -> None:
+        import subprocess
+        proc = subprocess.Popen(["sleep", "30"])
+        try:
+            start = liveness.proc_starttime(proc.pid)
+            self.assertIsNotNone(start)
+            self.assertTrue(liveness.pid_slot_alive(proc.pid, start))
+        finally:
+            proc.kill()
+
+    def test_reused_pid_reads_dead(self) -> None:
+        """THE red proof: pid reused by an unrelated live process must read
+        dead, though os.kill says alive."""
+        import subprocess
+        proc = subprocess.Popen(["sleep", "30"])
+        try:
+            start = liveness.proc_starttime(proc.pid)
+            self.assertIsNotNone(start)
+            self.assertFalse(liveness.pid_slot_alive(proc.pid, start - 1),
+                             "a mismatched starttime is a reused pid: DEAD")
+            self.assertTrue(liveness.pid_alive(proc.pid),
+                            "sanity: os.kill still says alive -> slot check adds the fact")
+        finally:
+            proc.kill()
+
+    def test_no_proc_records_fallback_alive(self) -> None:
+        """Stated fallback: an entry with no recorded starttime (pre-S3 roster)
+        keeps the coarser os.kill answer; a pid that has no /proc either reads
+        coarsely, never guessed."""
+        real = liveness.pid_alive(os.getpid())
+        self.assertTrue(liveness.pid_slot_alive(os.getpid(), None) == real)
+        self.assertFalse(liveness.pid_slot_alive(99999999, None))
+
+    def test_peer_status_honours_pid_start(self) -> None:
+        """With pid_start recorded, a reused pid reads DEAD in the status."""
+        status = liveness.peer_status(
+            state_with(roles={"pi": {"pid": 4242, "pid_start": 111111}}),
+            role="opencode", writer="opencode",
+            alive_check=alive,  # os.kill stub says alive: the slot decides
+        )
+        self.assertFalse(status["pi"]["alive"])
+
+    def test_peer_status_without_pid_start_unchanged(self) -> None:
+        """Pre-S3 entry: the old coarser check stands (stated fallback)."""
+        status = liveness.peer_status(
+            state_with(roles={"pi": {"pid": 4242}}),
+            role="opencode", writer="opencode", alive_check=alive,
+        )
+        self.assertTrue(status["pi"]["alive"])
+
 
 class TestPeerStatusShape(unittest.TestCase):
     def test_self_is_absent(self) -> None:
