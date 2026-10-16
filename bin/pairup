@@ -293,7 +293,12 @@ if [ -n "$SWAP" ]; then
   # not knowing how to use a single pane. The critic is already next door.
   writer_cmd="$(python3 -c "import json; p=json.load(open('$PAIRUP_ROOT/cli-profiles.json')); print(p.get('$writer',{}).get('launch','') or '$writer')")"
   echo "pairup: critic $SWAP in the next pane, starting writer $writer here"
-  export PAIR_ROLE="$writer" PAIR_STATE="$STATE_DIR"
+  # Round 103 S5: PAIR_ROLE no longer exported. It is the source of 30
+  # "PAIR_ROLE=x != argv role" refusals (2026-10-07..today, peer measurement):
+  # a session inheriting another role's export failed the serve.sh guard that
+  # must stay intact ("role comes from config, never from env"). The role of a
+  # pane is its MCP config entry, and PAIR_STATE still pins the shared dir.
+  export PAIR_STATE="$STATE_DIR"
   cd "$PROJECT_DIR"
   echo "=== PAIR WRITER: $writer ==="
   [ -f "$STATE_DIR/task-banner.txt" ] && cat "$STATE_DIR/task-banner.txt"
@@ -310,8 +315,8 @@ writer_cmd="$(launch_for "$writer")"
 critic_cmd="$(launch_for "$critic")"
 proj_name="$(basename -- "$PROJECT_DIR")"
 title_for() { printf '%s:%s (%s)' "$proj_name" "$1" "$2"; }
-writer_init="export PAIR_ROLE='$writer' PAIR_STATE='$STATE_DIR'; cd '$PROJECT_DIR'; echo '=== PAIR WRITER: $writer ==='; [ -f '$STATE_DIR/task-banner.txt' ] && cat '$STATE_DIR/task-banner.txt'; $writer_cmd"
-critic_init="export PAIR_ROLE='$critic' PAIR_STATE='$STATE_DIR'; cd '$PROJECT_DIR'; echo '=== PAIR CRITIC: $critic ==='; [ -f '$STATE_DIR/task-banner.txt' ] && cat '$STATE_DIR/task-banner.txt'; $critic_cmd"
+writer_init="export PAIR_STATE='$STATE_DIR'; cd '$PROJECT_DIR'; echo '=== PAIR WRITER: $writer ==='; [ -f '$STATE_DIR/task-banner.txt' ] && cat '$STATE_DIR/task-banner.txt'; $writer_cmd"
+critic_init="export PAIR_STATE='$STATE_DIR'; cd '$PROJECT_DIR'; echo '=== PAIR CRITIC: $critic ==='; [ -f '$STATE_DIR/task-banner.txt' ] && cat '$STATE_DIR/task-banner.txt'; $critic_cmd"
 title_writer="$(title_for "$writer" writer)"
 title_critic="$(title_for "$critic" critic)"
 

@@ -105,7 +105,7 @@ def launch_standing_pair(args) -> None:
 
     state_path = (ROOT / args.state).resolve()
     init = lambda role, label: (
-        f"export PAIR_ROLE='{role}' PAIR_STATE='{state_path}'; cd '{ROOT}'; "
+        f"export PAIR_STATE='{state_path}'; cd '{ROOT}'; "
         f"echo '=== {label}: {role} ==='; {launch_command_for(role)}"
     )
     session = f"pair-{writer_role}-{critic_role}-{int(time.time())}"
