@@ -20,6 +20,7 @@ shell-syntax	static	1	bash -n scripts/verify-project.sh scripts/security-scan.sh
 exec-bits	static	1	test -x scripts/file-size-gate_test.sh
 file-size	static	1	./scripts/file-size-gate.sh
 comment-lint	static	1	bash scripts/comment-lint.sh
+staleness-detector	static	1	python3 scripts/staleness-detector.py
 # --- positive: behaviour that must work ---
 # Five suites past moving obligations out of `server.py`: one test file per source.
 # Each launches alone, because `python3 test_protocol.py` no longer runs neighbour
