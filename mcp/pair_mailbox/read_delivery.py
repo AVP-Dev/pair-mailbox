@@ -6,6 +6,14 @@ the letters silently - seq 1440 was read, `_drain`ed and never delivered. The
 batch protocol here is the fix: the batch is persisted BEFORE the reply, stays
 pending until its exact token is ACKed, and replays serve the SAME letters the
 original batch recorded - by seq, never by file position.
+
+Poison invariant (stated before code, agreed with the critic seq 1468-1472):
+one corrupt file may wedge its OWN batch - visible, named, human-skippable -
+but never the role's mail flow. Letters after the hole keep draining as fresh
+batches. `seen` stays a contiguous-prefix integer by design: fresh-below-poison
+acks are recorded in pending_reads[role].acked_runs and folded into `seen` only
+when the hole closes - downstream `seen` readers still read a true prefix, do
+not rewrite them.
 """
 from __future__ import annotations
 
@@ -32,8 +40,37 @@ def create_pending_batch(
         "seqs": list(seqs),
         "attempts": 1,
         "escalated": False,
+        # File-index ranges [start, end) of fresh batches acked while this
+        # batch blocked the prefix; folded into `seen` when the hole closes.
+        "acked_runs": [],
     }
     return batch_id
+
+
+def _fold_acked_runs(state: dict[str, Any], role: str, from_index: int) -> None:
+    """Close the hole: move `seen` over the highest contiguous acked run.
+
+    Runs beyond the next hole stay recorded - two holes resolve one at a time,
+    and the later run must survive until its own hole closes.
+    """
+    pending = (state.get("pending_reads") or {}).get(role)
+    if not isinstance(pending, dict):
+        return
+    runs = sorted(
+        (int(r[0]), int(r[1])) for r in (pending.get("acked_runs") or [])
+        if isinstance(r, (list, tuple)) and len(r) == 2)
+    index = from_index
+    kept = []
+    for start, end in runs:
+        if start <= index < end:
+            index = max(index, end)
+        else:
+            kept.append([start, end])
+    if index > from_index:
+        state.setdefault("seen", {})[role] = index
+        pending["acked_runs"] = kept
+        if not pending["acked_runs"]:
+            pending.pop("acked_runs", None)
 
 
 def replay_attempt(state: dict[str, Any], role: str) -> tuple[dict[str, Any], int, bool]:
@@ -63,7 +100,36 @@ def acknowledge_batch(
     if decision == "skip" and not reason.strip():
         raise ValueError("skip requires a non-empty reason")
     pending = (state.get("pending_reads") or {}).get(role)
-    if not isinstance(pending, dict) or pending.get("batch_id") != batch_id:
+    if not isinstance(pending, dict):
+        raise ValueError("unknown or already acknowledged read batch")
+    fresh_below = pending.get("fresh_below")
+    if isinstance(fresh_below, dict) and fresh_below.get("batch_id") == batch_id:
+        # The fresh batch below the hole acks FIRST: its range is already
+        # recorded (acked_runs); `seen` stays at the hole until the wedge
+        # itself resolves.
+        if decision == "skip":
+            del pending["fresh_below"]
+            runs = [r for r in (pending.get("acked_runs") or [])
+                    if not (int(r[0]) == int(fresh_below["start"])
+                            and int(r[1]) == int(fresh_below["cursor"]))]
+            pending["acked_runs"] = runs
+            return {
+                "decision": "skip",
+                "batch_id": batch_id,
+                "seqs": list(fresh_below.get("seqs") or []),
+                "reason": reason.strip(),
+            }
+        del pending["fresh_below"]
+        runs = list(pending.get("acked_runs") or [])
+        runs.append([int(fresh_below["start"]), int(fresh_below["cursor"])])
+        pending["acked_runs"] = runs
+        return {
+            "decision": "ack",
+            "batch_id": batch_id,
+            "seqs": list(fresh_below.get("seqs") or []),
+            "reason": "",
+        }
+    if pending.get("batch_id") != batch_id:
         raise ValueError("unknown or already acknowledged read batch")
     if require_escalated and not pending.get("escalated"):
         raise ValueError("operator read-ack is allowed only after replay escalation")
@@ -71,6 +137,7 @@ def acknowledge_batch(
     if int(seen.get(role, 0)) != int(pending.get("start", -1)):
         raise ValueError(DRIFT_CAUSE)
     seen[role] = int(pending["cursor"])
+    _fold_acked_runs(state, role, int(pending["cursor"]))
     del state["pending_reads"][role]
     return {
         "decision": decision,
@@ -88,12 +155,17 @@ def pending_summary(state: dict[str, Any], role: str) -> dict[str, Any] | None:
         attempts = int(pending.get("attempts", 1))
     except (TypeError, ValueError):
         attempts = 1
-    return {
+    summary = {
         "batch_id": pending.get("batch_id"),
         "seqs": list(pending.get("seqs") or []),
         "attempts": attempts,
         "escalated": bool(pending.get("escalated")),
     }
+    if pending.get("poison"):
+        summary["poison"] = dict(pending["poison"])
+    if pending.get("fresh_below"):
+        summary["fresh_below"] = dict(pending["fresh_below"])
+    return summary
 
 
 def _migrate_legacy(state: dict[str, Any], role: str) -> None:
@@ -165,6 +237,13 @@ class DrainRefused(ValueError):
 
 
 def drain(session: Any, limit: int) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
+    """Serve one batch: the pending replay, or fresh mail after acked runs.
+
+    Poison: when the pending batch cannot be replayed honestly, its poison is
+    recorded (named path + cause, the cure is `pairctl read-ack`), and drain
+    STILL serves letters after the hole as a fresh batch - the channel keeps
+    moving while the wedge waits for its explicit word.
+    """
     def apply(state: dict[str, Any]):
         session._register(state)
         _migrate_legacy(state, session.role)
@@ -172,30 +251,58 @@ def drain(session: Any, limit: int) -> tuple[list[dict[str, Any]], dict[str, Any
         pending = (state.get("pending_reads") or {}).get(session.role)
         replayed = isinstance(pending, dict)
         escalation = None
+        replay_paths: list[Any] | None = None
         if replayed:
             if int((state.get("seen") or {}).get(session.role, 0)) != int(pending.get("start", -1)):
                 raise ValueError(DRIFT_CAUSE)
             pending, attempts, escalated_now = replay_attempt(state, session.role)
             try:
-                fresh = _replay_files(session, files, pending)
-            except ValueError:
-                # The batch cannot be replayed honestly; it stays pending and the
-                # operator resolves it - never a positional fallback.
+                replay_paths = _replay_files(session, files, pending)
+            except ValueError as poison_exc:
+                # The wedge is recorded on the pending record - named path, cause,
+                # cure - never a positional fallback, never a whole-channel stop.
+                blocked = None
+                if "unreadable" in str(poison_exc):
+                    start_i, end_i = int(pending.get("start", 0)), int(pending.get("cursor", 0))
+                    for path in files[start_i:end_i]:
+                        try:
+                            path.read_text(encoding="utf-8")
+                        except (OSError, json.JSONDecodeError):
+                            blocked = str(path.name)
+                            break
+                pending["poison"] = {
+                    "path": blocked,
+                    "cause": str(poison_exc),
+                    "cure": "pairctl read-ack --skip --reason ... (or ack the token)",
+                }
                 if escalated_now:
                     escalation = {"batch_id": pending["batch_id"],
                                   "seqs": list(pending.get("seqs") or []),
                                   "attempts": attempts}
-                raise
-            if escalated_now:
-                escalation = {"batch_id": pending["batch_id"],
-                              "seqs": list(pending.get("seqs") or []),
-                              "attempts": attempts}
+                replay_paths = None  # fall through to fresh mail below the hole
+            else:
+                pending.pop("poison", None)
+                if escalated_now:
+                    escalation = {"batch_id": pending["batch_id"],
+                                  "seqs": list(pending.get("seqs") or []),
+                                  "attempts": attempts}
+        if replay_paths is not None and replayed:
+            fresh = replay_paths
+            start = int(pending["start"])
         else:
-            seen = int(state.get("seen", {}).get(session.role, 0))
-            if seen > len(files):
-                seen = len(files)
-            start = seen
-            fresh = files[seen:seen + max(0, int(limit))]
+            if replayed and pending is not None:
+                runs = sorted((int(r[0]), int(r[1])) for r in (pending.get("acked_runs") or []))
+                index = int(pending.get("cursor", 0))
+                for run_start, run_end in runs:
+                    if run_start <= index:
+                        index = max(index, run_end)
+                start = index
+            else:
+                seen = int(state.get("seen", {}).get(session.role, 0))
+                if seen > len(files):
+                    seen = len(files)
+                start = seen
+            fresh = files[start:start + max(0, int(limit))]
             attempts = 1
 
         out: list[dict[str, Any]] = []
@@ -226,7 +333,7 @@ def drain(session: Any, limit: int) -> tuple[list[dict[str, Any]], dict[str, Any
             if isinstance(seq, int):
                 seqs.append(seq)
 
-        if replayed:
+        if replayed and replay_paths is not None:
             batch = {
                 "batch_id": pending["batch_id"],
                 "seqs": list(pending.get("seqs") or []),
@@ -235,17 +342,34 @@ def drain(session: Any, limit: int) -> tuple[list[dict[str, Any]], dict[str, Any
                 "escalated": bool(pending.get("escalated")),
             }
         elif consumed and out:
-            batch_id = create_pending_batch(
-                state, session.role, start, start + consumed, seqs)
-            batch = {"batch_id": batch_id, "seqs": seqs, "attempts": 1,
-                     "replayed": False, "escalated": False}
+            if replayed and pending is not None:
+                # A fresh batch below the hole: it rides beside the poisoned
+                # one (fresh_below), never replaces the wedge, never moves
+                # `seen` while the poison stands.
+                batch_id = uuid.uuid4().hex
+                pending["fresh_below"] = {
+                    "batch_id": batch_id,
+                    "start": start,
+                    "cursor": start + consumed,
+                    "seqs": list(seqs),
+                }
+                # The run records on the fresh batch's ACK (acknowledge_batch),
+                # never at delivery: delivered-but-unacked mail is not read.
+                batch = {"batch_id": batch_id, "seqs": seqs, "attempts": 1,
+                         "replayed": False, "escalated": False}
+            else:
+                batch_id = create_pending_batch(
+                    state, session.role, start, start + consumed, seqs)
+                batch = {"batch_id": batch_id, "seqs": seqs, "attempts": 1,
+                         "replayed": False, "escalated": False}
         else:
             batch = None
-            if consumed:
-                # Invalid signatures are rejected, not held as unread poison.
-                state.setdefault("seen", {})[session.role] = start + consumed
-            elif start != int((state.get("seen") or {}).get(session.role, 0)):
-                state.setdefault("seen", {})[session.role] = start
+            if not replayed:
+                if consumed:
+                    # Invalid signatures are rejected, not held as unread poison.
+                    state.setdefault("seen", {})[session.role] = start + consumed
+                elif start != int((state.get("seen") or {}).get(session.role, 0)):
+                    state.setdefault("seen", {})[session.role] = start
         return out, batch, escalation
 
     try:

@@ -44,9 +44,9 @@ class WakeExactSession(unittest.TestCase):
             get.call_args.args[0],
             "the adapter verifies the exact session, not the session list",
         )
-        posted = run.call_args.args[0]
+        posted = " ".join(str(part) for part in run.call_args.args)
         self.assertIn("/api/session/ses_recipient/prompt", posted)
-        self.assertNotIn("/api/session\"", posted)
+        self.assertNotIn('/api/session"', posted)
 
     def test_foreign_project_session_refuses(self) -> None:
         session = {"data": {"id": "ses_other",
@@ -69,7 +69,7 @@ class WakeExactSession(unittest.TestCase):
             result = wake_opencode.wake("/project", "pointer", session_id)
         self.assertTrue(result["woken"])
         self.assertIn("ses%2Fa", get.call_args.args[0])
-        self.assertIn("ses%2Fa", run.call_args.args[0])
+        self.assertIn("ses%2Fa", " ".join(str(part) for part in run.call_args.args))
 
 
 if __name__ == "__main__":

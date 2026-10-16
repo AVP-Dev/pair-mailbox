@@ -188,28 +188,99 @@ class ReadDeliveryReplay(PairTestCase):
                          "the pending batch must live in state, not in memory")
         revived.tool_pair_read(ack_token=first["ack_token"])
 
-    def test_missing_recorded_file_refuses_with_named_cause(self) -> None:
+    def test_missing_recorded_file_names_the_poison_and_keeps_serving(self) -> None:
+        """Poison invariant: the wedge is named, the channel keeps moving.
+
+        The vanish/unreadable/inserted cases used to abort the whole drain.
+        Per the agreed invariant (seq 1468-1472): the poisoned batch stays
+        pending with its token, pair_state names the path and the cure, and
+        letters after the hole keep draining as fresh batches.
+        """
         self._batch_of("vanishing letter")
         for path in sorted((self.store.mailbox_root / self.peer.role).glob("*.json")):
             path.unlink()
-        with self.assertRaisesRegex(ProtocolError, "vanished"):
-            self.peer.tool_pair_read()
+        answer = self.peer.tool_pair_read()
+        st = self.peer.tool_pair_state()
+        pending = st["pending_read"]
+        self.assertIn("vanished", pending["poison"]["cause"])
+        self.assertIn("pairctl read-ack", pending["poison"]["cure"])
 
-    def test_lower_seq_inserted_inside_the_range_refuses(self) -> None:
+    def test_lower_seq_inserted_inside_the_range_names_the_poison(self) -> None:
         batch = self._batch_of("range letter")["pending_read"]
         recorded_seqs = batch["seqs"]
         inbox = self.store.mailbox_root / self.peer.role
         recorded = sorted(inbox.glob("*.json"))
-        # A file sorting BEFORE the recorded one, inside the batch range, with a
-        # seq the batch never recorded.
         low = json.loads(recorded[0].read_text(encoding="utf-8"))
         low["seq"] = 1
         if 1 in recorded_seqs:
             low["seq"] = recorded_seqs[0] - 1
         (inbox / "00000001-inserted.json").write_text(
             json.dumps(low), encoding="utf-8")
-        with self.assertRaisesRegex(ProtocolError, "inside the pending batch range"):
-            self.peer.tool_pair_read()
+        self.peer.tool_pair_read()
+        pending = self.peer.tool_pair_state()["pending_read"]
+        self.assertIn("inside the pending batch range", pending["poison"]["cause"])
+
+    def test_poisoned_batch_does_not_stop_the_channel(self) -> None:
+        """(i)-(iv) from the agreed pin: seen stays at the hole, fresh acks
+        record runs, the hole's resolution folds them in, and acked runs never
+        re-serve."""
+        # Batch over the first letter, then poison its file.
+        first = self._batch_of("poisoned letter")["pending_read"]
+        inbox = self.store.mailbox_root / self.peer.role
+        poison_path = sorted(inbox.glob("*.json"))[0]
+        poison_path.write_text("not json", encoding="utf-8")
+
+        # Fresh letters arrive after the hole and drain as their own batch.
+        self.writer.tool_pair_send(to="reviewer-agent", text="after 1")
+        self.writer.tool_pair_send(to="reviewer-agent", text="after 2")
+        fresh = self.peer.tool_pair_read()
+        self.assertEqual(["after 1", "after 2"],
+                         [m["text"] for m in fresh["messages"]])
+        self.assertEqual(0, (self.store.read().get("seen") or {}).get(self.peer.role, 0),
+                         "(i) seen stays at the hole while it stands")
+        st = self.store.read()
+        pending = st["pending_reads"][self.peer.role]
+        self.assertTrue(pending.get("fresh_below"),
+                         "(i) the fresh batch rides below the hole, unacked")
+
+        # A later drain must not re-serve the acked fresh range.
+        self.peer.tool_pair_read(ack_token=fresh["ack_token"])
+        self.writer.tool_pair_send(to="reviewer-agent", text="after 3")
+        later = self.peer.tool_pair_read()
+        self.assertEqual(["after 3"], [m["text"] for m in later["messages"]],
+                         "(iv) acked runs are consulted, not re-served")
+
+        # Resolving the wedge folds the recorded runs into `seen`. The one
+        # letter after the last fold ("after 3", unacked) becomes the normal
+        # pending batch of a live channel.
+        self.peer.tool_pair_read(ack_token=first["batch_id"])
+        st = self.store.read()
+        self.assertEqual(3, st["seen"]["reviewer-agent"],
+                         "(ii) seen jumps over the hole and the folded runs")
+        after_poison = st["pending_reads"][self.peer.role]
+        self.assertEqual([4], after_poison["seqs"],
+                         "the letter after the fold drains as a normal batch")
+
+    def test_two_holes_resolve_one_at_a_time(self) -> None:
+        """(iii) two holes: the later run stays recorded until its own hole closes."""
+        import read_delivery
+
+        state = {"seen": {"opencode": 0}}
+        read_delivery.create_pending_batch(state, "opencode", 0, 1, [7])
+        pending = state["pending_reads"]["opencode"]
+        # Two acked runs recorded, separated by a second hole.
+        pending["acked_runs"] = [[1, 3], [4, 6]]
+        # Closing the first hole folds only the first run.
+        read_delivery._fold_acked_runs(state, "opencode", 1)
+        self.assertEqual(3, state["seen"]["opencode"],
+                         "seen lands at the end of the FIRST contiguous run")
+        self.assertEqual([[4, 6]], pending["acked_runs"],
+                         "the later run stays recorded for its own hole")
+        # Closing the second hole folds the rest. The file-3 batch acks first
+        # (its own acknowledge moves seen to 4); the fold then catches the run.
+        read_delivery._fold_acked_runs(state, "opencode", 4)
+        self.assertEqual(6, state["seen"]["opencode"])
+        self.assertNotIn("acked_runs", pending)
 
 
 if __name__ == "__main__":
