@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import json
 import signal
 import subprocess
 import sys
@@ -199,7 +200,29 @@ def ask(explicit_yes: bool) -> bool:
     return answer == "yes"
 
 
+def record_restart(rows: list[dict], state_dir: Path, why: str = "pairrestart") -> None:
+    """Leave one durable line the killed role reads on reconnect.
+
+    Written BEFORE the kill: the killed writer must not die before its own
+    record lands (a kill that eats its own trace is the round-101 channel-dark
+    period). One JSON line per restart, .pair/restarts.jsonl, {ts, why, roles}
+    — the newest line is what pair_state surfaces as restarts_last.
+    """
+    roles = [{"role": r["name"], "pid": r["pid"], "action": "kill"}
+             for r in rows if r["verdict"] == "STALE" and r["pid"]]
+    if not roles:
+        return
+    line = json.dumps({"ts": datetime.now(timezone.utc).isoformat(),
+                       "why": why, "roles": roles}, ensure_ascii=False)
+    try:
+        with open(state_dir / "restarts.jsonl", "a", encoding="utf-8") as handle:
+            handle.write(line + "\n")
+    except OSError as exc:
+        print(f"could not record restart trace: {exc}", file=sys.stderr)
+
+
 def act(rows: list[dict], state_dir: Path) -> None:
+    record_restart(rows, state_dir)
     for row in [r for r in rows if r["verdict"] == "STALE" and r["pid"]]:
         pid = row["pid"]
         try:

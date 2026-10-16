@@ -103,6 +103,44 @@ def _dead_roles(raw: str | None) -> set[str]:
     return out
 
 
+def _roster_names(raw: str | None) -> set[str]:
+    """Role names present in the roster, dead or alive."""
+    if not raw:
+        return set()
+    try:
+        roles = json.loads(raw).get("roles") or {}
+    except (ValueError, AttributeError):
+        return set()
+    return set(roles)
+
+
+def _witness_dead_regression(before: str | None, after: str | None) -> str | None:
+    """Whether the dead-role witness moved in a way only the installer could cause.
+
+    The regression guarded (round 31): the installer ADDS or DROPS a role whose
+    pid is dead — a live role's appearance proves nothing, the pair writes its
+    own registrations into live state mid-install. A role flipping dead->live
+    between snapshots is a spawn (bg_68, round 102: a second omp CLI brought its
+    server up mid-window), the opposite of the regression, and must not redden.
+
+    Red means the installer's two hands, caught on roster MEMBERSHIP: a role
+    dead in before whose roster entry is GONE in 'after' (installer dropped
+    it); a role dead in 'after' whose name the roster never had in before
+    (installer added it). A role whose entry stays in the roster moved only by
+    its own process change — spawn (dead->live, bg_68) or death (live->dead) —
+    never by the installer, and never reddens.
+    """
+    dead_before, dead_after = _dead_roles(before), _dead_roles(after)
+    names_before, names_after = _roster_names(before), _roster_names(after)
+    dropped = dead_before - names_after
+    if dropped:
+        return f"role(s) {sorted(dropped)} dead in before, gone from the roster in 'after'"
+    added = dead_after - names_before
+    if added:
+        return f"role(s) {sorted(added)} dead in 'after' but the roster never had them"
+    return None
+
+
 class InstallCase(unittest.TestCase):
     def setUp(self) -> None:
         self.home = Path(tempfile.mkdtemp(prefix="pair-install-"))
@@ -365,22 +403,20 @@ class TestVerifyDoesNotTouchTheRoster(InstallCase):
         # file during install (messages, pilot rings, evidence), so the test deterministically
         # reddened on the WITNESS, not an installer bug. What checks is what the installer
         # can truly break: the launch pane owning and the role count.
-        # truly break: the launch pane owning and the role count.
-        # launch and the role count.
         if before is not None and after is not None:
             self.assertEqual(
                 _roles_claiming(before, pane), _roles_claiming(after, pane),
                 "the launching-process pane must never move to another "
                 "role: the installer added or took it in the live roster")
-            # Not "opencode" for the allowlist: comparing runs on a role that no live one
-            # holds. A live role appears alone (its agent writes into state during install —
-            # the pair suite lives), a dead one appears by no hand but the installer.
-            # holds. A live role appears alone (its agent writes into state during install —
-            self.assertEqual(
-                _dead_roles(before), _dead_roles(after),
-                "the installer must never add or drop live-roster roles: "
-                "a dead role appears or vanishes only by its hand "
-                "(verify, writing into the real state.json — the 31st regression)")
+            # The dead-role witness, narrowed (round 102): only the installer's
+            # two hands redden — dropping a dead role, adding one. A spawn
+            # (dead->live, bg_68) is the role's own process change and stays green.
+            regression = _witness_dead_regression(before, after)
+            self.assertIsNone(
+                regression,
+                "the installer must never add or drop dead-roster roles: "
+                "a role with a dead pid appears or vanishes only by its hand "
+                f"(the round-31 regression); witness said: {regression}")
         return
 
     def test_a_pane_may_belong_to_a_role_without_being_rejected(self) -> None:
@@ -411,6 +447,51 @@ class TestVerifyDoesNotTouchTheRoster(InstallCase):
         """
         result = run_install(self.home, "opencode")
         self.assertIn("check: OK, pair-mailbox", result.stdout)
+
+
+class TestWitnessDeadRegression(unittest.TestCase):
+    """The narrowed dead-role witness, proven both ways without a live pair.
+
+    The old full-set equality reddened on a spawn: any role going dead->live
+    between the two snapshots moved the set (bg_68, round 101 — a second omp CLI
+    brought its server up mid-window, pid 1612, the installer wrote nothing).
+    The predicate must redden ONLY on the installer's two hands: dropping a
+    dead role, adding one.
+    """
+
+    @staticmethod
+    def _state(roles: dict[str, object]) -> str:
+        return json.dumps({"roles": roles})
+
+    def test_installer_dropping_a_dead_role_reds(self) -> None:
+        """Round-31 shape: a dead-pid role present before, gone after."""
+        before = self._state({"agy": {"pid": 999999}})
+        after = self._state({})
+        self.assertIsNotNone(_witness_dead_regression(before, after))
+
+    def test_installer_adding_a_dead_role_reds(self) -> None:
+        """Round-31 shape, the other hand: a dead-pid role appears."""
+        before = self._state({})
+        after = self._state({"agy": {"pid": 999999}})
+        self.assertIsNotNone(_witness_dead_regression(before, after))
+
+    def test_spawn_of_a_dead_role_stays_green(self) -> None:
+        """bg_68 shape: the role went dead->live — a spawn, not the installer."""
+        before = self._state({"omp": {"pid": 999999}})
+        after = self._state({"omp": {"pid": os.getpid()}})
+        self.assertIsNone(_witness_dead_regression(before, after))
+
+    def test_spawn_of_a_new_role_stays_green(self) -> None:
+        """A second CLI registering mid-window: absent before, live after."""
+        before = self._state({"omp": {"pid": os.getpid()}})
+        after = self._state({"omp": {"pid": os.getpid()},
+                             "claude": {"pid": os.getpid()}})
+        self.assertIsNone(_witness_dead_regression(before, after))
+
+    def test_stable_dead_role_at_both_snapshots_neutral(self) -> None:
+        """A role dead at both snapshots moves nothing on its own."""
+        dead = self._state({"agy": {"pid": 999999}})
+        self.assertIsNone(_witness_dead_regression(dead, dead))
 
 
 class TestPaneRoleLookup(InstallCase):
