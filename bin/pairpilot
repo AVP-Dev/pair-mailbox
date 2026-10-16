@@ -337,7 +337,19 @@ class Pilot:
     def state(self) -> dict:
         return self.store._load()
 
-    def remember(self, key: str, ttl: float | None = None) -> bool:
+    # A stamp written without an explicit ttl lives a day: longer than every
+    # nudge cadence the supervisor has (the longest is the 2h hanging-answer
+    # repeat), short enough that .pair/pilot cannot grow unbounded again
+    # (924 files / 3.7M by 2026-10-16, 397 older than 7 days — the leak ran
+    # from round 43 to 101). Pass ttl=None EXPLICITLY for the old immortal
+    # behaviour; ttl=0 is NOT a sentinel and would suppress nothing.
+    DEFAULT_STAMP_TTL = 86400.0
+    # Legacy stamps predate the default and carry no recorded ttl; the floor
+    # for collecting any stamp (default-written or legacy-immortal) is a week
+    # (opencode's amendment, seq 1505).
+    LEGACY_STAMP_FLOOR = 7 * 86400.0
+
+    def remember(self, key: str, ttl: float | None = DEFAULT_STAMP_TTL) -> bool:
         """True if we have not done this yet. Stops repeat writes.
 
         Without ttl a stamp lives forever: a second event of the same kind
@@ -361,6 +373,49 @@ class Pilot:
         """Drop the stamp: the event closed, the next one starts clean."""
         stamp = self.state_dir / "pilot" / f".{stamp_name(key)}"
         stamp.unlink(missing_ok=True)
+    def sweep_stamps(self, now: float | None = None) -> int:
+        """Delete stamps the sweeper can PROVE expired; return the count.
+
+        A stamp whose condition still holds must survive: deleting it makes
+        the next remember() return True and the nudge re-fire — the exact
+        spam the stamp exists to prevent. So the rule is conservative
+        (opencode seq 1505): a stamp is collectable when its mtime is older
+        than LEGACY_STAMP_FLOOR (7 days) — a week covers every explicit ttl
+        in the file (the longest is 2h) plus DEFAULT_STAMP_TTL itself, and an
+        immortal legacy stamp younger than a week may still hold a live
+        condition, so when in doubt, leave it. Runs at the END of tick,
+        after all work: sweeping first could delete a stamp a later check in
+        the same tick is about to consult.
+        """
+        if now is None:
+            now = time.time()
+        pilot_dir = self.state_dir / "pilot"
+        try:
+            stamps = list(pilot_dir.glob(".*"))
+        except OSError:
+            return 0
+        collected = 0
+        for stamp in stamps:
+            if not stamp.is_file():
+                continue
+            try:
+                age = now - stamp.stat().st_mtime
+            except OSError:
+                continue
+            if age <= self.LEGACY_STAMP_FLOOR:
+                continue
+            try:
+                stamp.unlink()
+                collected += 1
+            except OSError:
+                continue
+        return collected
+
+    def unremember(self, key: str) -> None:
+        """Drop the stamp: the event closed, the next one starts clean."""
+        stamp = self.state_dir / "pilot" / f".{stamp_name(key)}"
+        stamp.unlink(missing_ok=True)
+
 
     def panes(self, state: dict) -> dict[str, list[str]]:
         """Who sits on which pane, minus the dead.
@@ -1785,6 +1840,10 @@ class Pilot:
         self.check_server_freshness(state)
         self.checkpoint(state)
         self.report_once(state)
+        # Sweeper LAST (opencode seq 1505): before the work it could delete a
+        # stamp a check in this same tick was about to consult — a duplicate
+        # nudge in the same tick, the exact spam stamps prevent.
+        self.sweep_stamps()
         return state
 
 

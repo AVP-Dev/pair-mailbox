@@ -2080,6 +2080,67 @@ class TestStamps(PilotCase):
         name = pairpilot.stamp_name("stalled-/tmp/x/.pair/patches/pair-codex-1.patch-agy")
         self.assertNotIn("/", name)
 
+    def test_default_ttl_stops_repeat_then_refreshes(self) -> None:
+        """No explicit ttl: one write, a repeat is suppressed, past 24h it refreshes.
+
+        The leak (round 43-101): remember() with ttl=None wrote IMMORTAL stamps
+        — 924 files / 3.7M, 397 older than 7 days. The default is a day now;
+        an old stamp refreshes instead of living forever.
+        """
+        p = self.pilot()
+        self.assertTrue(p.remember("nopane-ghost"))
+        self.assertFalse(p.remember("nopane-ghost"), "a day-old bound still holds")
+        stamp = p.state_dir / "pilot" / f".{pairpilot.stamp_name('nopane-ghost')}"
+        old = time.time() - 2 * 86400
+        os.utime(stamp, (old, old))
+        self.assertTrue(p.remember("nopane-ghost"),
+                        "a stamp past the default ttl must refresh, not live forever")
+
+    def test_explicit_none_keeps_immortal_behaviour(self) -> None:
+        """ttl=None stays the documented immortal form for long-horizon keys."""
+        p = self.pilot()
+        self.assertTrue(p.remember("checkpoint-94", ttl=None))
+        stamp = p.state_dir / "pilot" / f".{pairpilot.stamp_name('checkpoint-94')}"
+        old = time.time() - 40 * 86400
+        os.utime(stamp, (old, old))
+        self.assertFalse(p.remember("checkpoint-94", ttl=None),
+                         "an immortal stamp must never refresh on its own")
+
+    def test_sweeper_collects_week_old_stamps(self) -> None:
+        """The sweeper takes stamps older than the 7-day floor, spares fresh ones."""
+        p = self.pilot()
+        p.remember("ancient-event")            # default ttl, but mtime decides
+        p.remember("checkpoint-94", ttl=None)  # immortal legacy, mtime decides
+        pilot_dir = p.state_dir / "pilot"
+        ancient = time.time() - 8 * 86400
+        for stamp in pilot_dir.glob(".*"):
+            os.utime(stamp, (ancient, ancient))
+        self.assertEqual(p.sweep_stamps(), 2)
+        self.assertEqual(list(pilot_dir.glob(".*")), [])
+
+    def test_sweeper_leaves_live_condition_stamps(self) -> None:
+        """A stamp younger than the floor never dies, whatever wrote it.
+
+        Deleting a live-condition stamp re-fires the nudge — the spam the
+        stamp exists to prevent (opencode seq 1505).
+        """
+        p = self.pilot()
+        p.remember("fresh-event")
+        p.remember("checkpoint-94", ttl=None)
+        pilot_dir = p.state_dir / "pilot"
+        recent = time.time() - 3600
+        for stamp in pilot_dir.glob(".*"):
+            os.utime(stamp, (recent, recent))
+        self.assertEqual(p.sweep_stamps(), 0)
+        self.assertEqual(len(list(pilot_dir.glob(".*"))), 2)
+
+    def test_sweep_at_tick_end_never_breaks_the_tick(self) -> None:
+        """tick() runs the sweeper last and returns normally on an empty dir."""
+        p = self.pilot()
+        self.write_state()
+        state = p.tick()
+        self.assertIsInstance(state, dict)
+
 
 class TestCheckpoint(PilotCase):
     """In semi closing a round takes the human word. So the human must take everything
