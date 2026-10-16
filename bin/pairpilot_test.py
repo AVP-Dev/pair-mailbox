@@ -204,6 +204,106 @@ class TestWakeAdapterCall(PilotCase):
         self.assertIn("pilot_wake_api", self.transcript_kinds())
 
 
+
+class TestWakeAckContract(PilotCase):
+    """(d) A wake resolves on unread DECREASE, never on any tool call.
+
+    Round 101 live false ack (08:08:12): a role with unread mail called any
+    pair_* tool, last_seen moved, `woke` fired and the wake file died - mail
+    never read. The clause that read `seen_now != seen_ask` measured activity,
+    not consumption.
+    """
+
+    def _wake_file(self, pilot, role="agy"):
+        self.inbox(role, 2)
+        self.write_state(writer=None, roles={role: {
+            "last_seen": ago(3600), "pid": 1, "pane": "%1"}})
+        pilot.tick()
+        path = pilot.wake_root / f"{role}.json"
+        self.assertTrue(path.exists(), "the wake must be raised")
+        return path
+
+    def test_last_seen_movement_alone_never_acknowledges(self) -> None:
+        pilot = self.pilot()
+        path = self._wake_file(pilot)
+        # The role calls tools: last_seen moves, unread stays 2.
+        self.write_state(writer=None, roles={"agy": {
+            "last_seen": now_iso(), "pid": 1, "pane": "%1"}})
+        pilot.tick()
+        self.assertTrue(path.exists(),
+                        "activity without consumption keeps the wake alive")
+        self.assertNotIn("pilot_wake_acknowledged", self.transcript_kinds())
+
+    def test_unread_decrease_acknowledges(self) -> None:
+        pilot = self.pilot()
+        path = self._wake_file(pilot)
+        # The role reads one letter: unread drops 2 -> 1.
+        state = self.write_state(writer=None,
+                                 roles={"agy": {"last_seen": now_iso(),
+                                                "pid": 1, "pane": "%1"}},
+                                 seen={"agy": 1})
+        pilot.tick()
+        self.assertFalse(path.exists(),
+                         "a real unread decrease is the ack")
+        self.assertIn("pilot_wake_acknowledged", self.transcript_kinds())
+
+    def test_parked_round_never_false_acknowledges_or_escalates(self) -> None:
+        """Parked in done: no escalation AND no last_seen-based ack - the two
+        fixes must not undo each other (ordering pin)."""
+        pilot = self.pilot()
+        path = self._wake_file(pilot)
+        self.write_state(writer=None, phase="done", tasks=[],
+                         roles={"agy": {"last_seen": now_iso(), "pid": 1,
+                                        "pane": "%1"}}, seen={})
+        pilot.tick()
+        self.assertTrue(path.exists(),
+                        "parked means untouched: neither acked nor escalated")
+        kinds = self.transcript_kinds()
+        self.assertNotIn("pilot_wake_acknowledged", kinds)
+        self.assertNotIn("pilot_wake_escalated", kinds)
+
+    def test_stale_wake_file_drops_with_a_named_record(self) -> None:
+        """A wake nobody consumed past the TTL drops, naming file, age and ask."""
+        pilot = self.pilot()
+        pilot.wake_grace = 10**9  # never escalate: only the TTL path may act
+        pilot.outbox_ttl = 60.0
+        path = self._wake_file(pilot)
+        old = time.time() - 120
+        os.utime(path, (old, old))
+        pilot.tick()
+        self.assertFalse(path.exists(), "the stale pointer drops")
+        drops = [e for e in self.transcript_entries()
+                 if e.get("kind") == "pilot_wake_expired"]
+        self.assertEqual(1, len(drops))
+        self.assertEqual("agy", drops[0].get("target"))
+        self.assertGreaterEqual(drops[0].get("age_seconds", 0), 60)
+        self.assertIn("unread_at_ask", drops[0])
+
+    def test_parked_round_drops_queued_items(self) -> None:
+        """Parked in done: queued pointers drop at once, not at TTL.
+
+        The parked gate existed in poll_wakes and unread_peers but not in the
+        flush path: an item queued before `done` hung for its whole lifetime
+        and landed as fresh mail about a finished round.
+        """
+        pilot = self.pilot()
+        pilot.tmux = "tmux-fake"
+        self.write_state(writer=None, roles={"agy": {"last_seen": now_iso(),
+                                                     "pid": 1, "pane": "%1"}})
+        pilot.enqueue("agy", "old pointer text")
+        self.assertEqual("old pointer text", pilot.pending("agy"))
+        self.write_state(writer=None, phase="done", tasks=[],
+                         roles={"agy": {"last_seen": now_iso(), "pid": 1,
+                                        "pane": "%1"}}, seen={})
+        with mock.patch.object(pairpilot, "pane_alive", return_value=True), \
+                mock.patch.object(pairpilot, "deliver",
+                                  return_value={"delivered": True}):
+            pilot.tick()
+        self.assertEqual("", pilot.pending("agy"),
+                         "a parked round empties the queue in the same tick")
+        self.assertIn("pilot_outbox_parked_drop", self.transcript_kinds())
+
+
 class TestWakeFileIntegrity(PilotCase):
     """A wake is one file per role, never losing what it gathered.
 
@@ -221,15 +321,18 @@ class TestWakeFileIntegrity(PilotCase):
         long the role stayed silent. The file ages on purpose here, or rounding to
         whole seconds would hide the zero bug.
         """
-        self.write_state(writer="agy", roles={"agy": {"last_seen": ago(3600), "pid": 1, "pane": "%1"}})
+        self.write_state(writer="agy", seen={"agy": 0},
+                         roles={"agy": {"last_seen": ago(3600), "pid": 1, "pane": "%1"}})
+        self.inbox("agy", 2)
         pilot = self.pilot()
         pilot.tick()
         path = pilot.wake_root / "agy.json"
         self.assertTrue(path.exists())
         old = time.time() - 600
         os.utime(path, (old, old))
-        # The role answers: last_seen moved, the wake drops.
-        self.write_state(writer="agy", roles={"agy": {"last_seen": now_iso(), "pid": 1, "pane": "%1"}})
+        # The role consumes one letter: unread drops, the wake resolves.
+        self.write_state(writer="agy", seen={"agy": 1},
+                         roles={"agy": {"last_seen": now_iso(), "pid": 1, "pane": "%1"}})
         pilot.tick()
         entries = [e for e in self.transcript_entries()
                    if e.get("kind") == "pilot_wake_acknowledged"]
@@ -237,6 +340,27 @@ class TestWakeFileIntegrity(PilotCase):
         self.assertGreaterEqual(
             entries[0]["since_seconds"], 590,
             "silence measures before the file removal, or the field always reads zero")
+
+    def test_last_seen_movement_without_consumption_keeps_the_wake(self) -> None:
+        """[R101d] The inverse pin of the contract: activity is not consumption.
+
+        The old shape of the test above satisfied itself by moving last_seen
+        alone - exactly the live false ack (08:08:12) this contract removes.
+        """
+        self.write_state(writer="agy", roles={"agy": {"last_seen": ago(3600), "pid": 1, "pane": "%1"}})
+        self.inbox("agy", 2)
+        pilot = self.pilot()
+        pilot.tick()
+        path = pilot.wake_root / "agy.json"
+        self.assertTrue(path.exists())
+        old = time.time() - 600
+        os.utime(path, (old, old))
+        self.write_state(writer="agy", roles={"agy": {"last_seen": now_iso(), "pid": 1, "pane": "%1"}})
+        pilot.tick()
+        self.assertTrue(path.exists(),
+                        "last_seen moved, unread unchanged - the wake stays")
+        self.assertEqual([], [e for e in self.transcript_entries()
+                              if e.get("kind") == "pilot_wake_acknowledged"])
 
     def test_two_reasons_escalate_once_not_twice(self) -> None:
         """Two wake reasons — one escalation.
@@ -420,13 +544,17 @@ class TestLiveness(PilotCase):
         It used to read same as "delivered and forgotten": the print queue cleared
         past success and past a dropped-by-deadline alike. Now the outcome shows in
         the journal, proving no printing was needed.
+        [R101d] "Woke up" reads as unread DECREASE: last_seen moves on every
+        tool call and is not evidence any mail was consumed.
         """
         self.write_state(writer="agy", roles={"agy": {"last_seen": ago(3600), "pid": 1, "pane": "%1"}})
+        self.inbox("agy", 2)
         pilot = self.pilot()
         pilot.tick()
         self.assertTrue(self.wake(pilot, "agy"))
-        # The role answers: last_seen moved.
-        self.write_state(writer="agy", roles={"agy": {"last_seen": now_iso(), "pid": 1, "pane": "%1"}})
+        # The role consumes one letter: unread 2 -> 1.
+        self.write_state(writer="agy", seen={"agy": 1},
+                         roles={"agy": {"last_seen": now_iso(), "pid": 1, "pane": "%1"}})
         pilot.tick()
         self.assertEqual({}, self.wake(pilot, "agy"), "the wake drops")
         kinds = [e.get("kind") for e in self.transcript_entries()]

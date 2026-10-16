@@ -311,7 +311,8 @@ class ReadDeliveryReplay(PairTestCase):
         shown = st["pending_read"]["batch_id"]
         self.assertEqual(batch["batch_id"], shown)
         acked = self.peer.tool_pair_read(ack_token=shown)
-        self.assertEqual(shown, acked["ack_token"] if "ack_token" in acked else shown)
+        self.assertNotIn("ack_token", acked,
+                         "a bare ack returns no new batch, no new token")
         st_after = self.peer.tool_pair_state()
         self.assertIsNone(st_after.get("pending_read"),
                           "(b) after an ack, no pending batch remains")
