@@ -1012,64 +1012,6 @@ class TestDefaultAllowlist(PairTestCase):
         self.assertTrue(on_default)
         self.assertTrue(patterns)
 
-class TestReadWaitBudget(PairTestCase):
-    """pair_read must never promise more than the client can wait out.
-
-    Live waiting is protocol (§7), but opencode tears the MCP call at 20 seconds:
-    40 of the allowed 60 stayed unreachable, and from the returned waited_seconds
-    "no answer" never told from "timed out on me".
-    """
-
-    def test_a_long_wait_is_cut_to_what_the_client_survives(self) -> None:
-        import server as srv
-        with mock.patch.object(srv, "CLIENT_TIMEOUT_SECONDS", 20000):
-            wait, capped = srv.effective_read_wait(60)
-        self.assertTrue(capped)
-        self.assertLessEqual(wait, 15.0, "20s minus margin — the ceiling the client survives")
-
-    def test_a_short_wait_is_left_alone(self) -> None:
-        import server as srv
-        with mock.patch.object(srv, "CLIENT_TIMEOUT_SECONDS", 20000):
-            wait, capped = srv.effective_read_wait(5)
-        self.assertFalse(capped)
-        self.assertEqual(5.0, wait)
-
-    def test_the_cap_is_reported_not_hidden(self) -> None:
-        """A trimmed wait used to read as ordinary silence, and the agent concluded about
-        the neighbour, not its own client."""
-        import server as srv
-        with mock.patch.object(srv, "CLIENT_TIMEOUT_SECONDS", 20000), \
-             mock.patch.object(self.peer, "_drain", return_value=[]), \
-             mock.patch("time.sleep"):
-            answer = self.peer.tool_pair_read(wait_seconds=45)
-        self.assertTrue(answer["wait_capped_by_client_timeout"])
-        self.assertEqual(20000, answer["client_timeout_seconds"])
-        self.assertIn("PAIR_CLIENT_TIMEOUT", answer["why"])
-
-    def test_a_generous_client_gets_the_full_protocol_wait(self) -> None:
-        import server as srv
-        with mock.patch.object(srv, "CLIENT_TIMEOUT_SECONDS", 65000):
-            wait, capped = srv.effective_read_wait(60)
-        self.assertFalse(capped)
-        self.assertEqual(60.0, wait)
-
-    def test_every_profile_outlives_the_protocol_wait(self) -> None:
-        """A config where the client tears before the server counts as a config defect,
-        and silently passing it is banned."""
-        import json as _json
-        root = Path(__file__).resolve().parent.parent.parent
-        profiles = _json.loads((root / "cli-profiles.json").read_text(encoding="utf-8"))
-        import server as srv
-        for name, entry in profiles.items():
-            if name.startswith("_") or not isinstance(entry, dict):
-                continue
-            timeout = (entry.get("mcp") or {}).get("entry", {}).get("timeout")
-            with self.subTest(profile=name):
-                self.assertIsInstance(timeout, int, f"{name}: the MCP timeout is unset")
-                self.assertGreater(
-                    timeout / 1000.0, srv.MAX_READ_WAIT_SECONDS,
-                    f"{name}: the client tears the call before the server can wake")
-
 class TestPatchAccounting(PairTestCase):
     """A patch nobody reported applied must show.
 

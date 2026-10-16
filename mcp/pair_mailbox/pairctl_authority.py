@@ -419,3 +419,43 @@ def cmd_keys(store: Store, args: argparse.Namespace) -> int:
     store.append_transcript("keys_gen", "human", target_role=role, key_id=made["key_id"], rekey=bool(old))
     print(f"{role}: key_id {made['key_id']}" + (" (old key revoked)" if old else ""))
     return 0
+
+
+def cmd_read_ack(store: Store, args: argparse.Namespace) -> int:
+    """Operator recovery for a batch no agent ever acknowledged.
+
+    Round 101: a pending read batch survives restarts and blocks the round from
+    closing. The agent's own path is `pair_read(ack_token=...)`; this command is
+    the human's: `pairctl read-ack <role> <token>` for processed mail, or
+    `--skip --reason` after escalation to drop a batch that cannot be replayed
+    honestly (vanished or poisoned files). The skip never runs before the batch
+    has visibly refused three times - the same rule `pair_read` enforces.
+    """
+    import read_delivery
+
+    role = str(args.role or "").strip()
+    token = str(getattr(args, "token", "") or "").strip()
+    decision = "skip" if getattr(args, "skip", False) else "ack"
+    reason = str(args.reason or "").strip()
+    if not role:
+        print("usage: pairctl read-ack <role> <token> [--skip --reason ...]", file=sys.stderr)
+        return 2
+
+    def apply(state):
+        return read_delivery.acknowledge_batch(
+            state, role, token, decision=decision, reason=reason,
+            require_escalated=decision == "skip")
+
+    try:
+        receipt = store.mutate(apply)
+    except ValueError as exc:
+        print(f"refused: {exc}", file=sys.stderr)
+        return 1
+    store.append_transcript("pair_read_acknowledged", "human",
+                            target_role=role, batch_id=receipt["batch_id"],
+                            seqs=receipt["seqs"],
+                            decision=receipt["decision"], reason=receipt["reason"])
+    seqs = ",".join(str(s) for s in receipt["seqs"]) or "(none)"
+    print(f"{role}: batch {receipt['batch_id'][:8]} {receipt['decision']} "
+          f"({seqs})" + (f" — {receipt['reason']}" if receipt["reason"] else ""))
+    return 0

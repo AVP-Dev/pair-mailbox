@@ -470,5 +470,56 @@ class TestRoundMode(PairTestCase):
         payload = json.loads(buffer.getvalue()[buffer.getvalue().index("{") :])
         self.assertEqual(payload["mode"], "audit")
 
+
+class TestReadAckCommand(PairTestCase):
+    """The operator's recovery path for a batch the agent never acked.
+
+    Round 101: an escalated batch (three replays, letters the client never
+    received an answer for) otherwise blocks close forever. `pairctl read-ack`
+    is the only tool that may drop it, and only with a stated reason.
+    """
+
+    def _ctl(self, *args: str) -> int:
+        return main(["--state", str(self.root), *args])
+
+    def _pending_batch(self) -> str:
+        self.writer.tool_pair_send(to="reviewer-agent", text="answer me")
+        return self.peer.tool_pair_read()["ack_token"]
+
+    def test_ack_advances_the_cursor_and_journals(self) -> None:
+        token = self._pending_batch()
+        self.assertEqual(0, self._ctl("read-ack", "reviewer-agent", token))
+        st = self.store.read()
+        self.assertNotIn("reviewer-agent", st.get("pending_reads") or {})
+        events = [e for e in self.store.read_transcript(20)
+                  if e.get("kind") == "pair_read_acknowledged"
+                  and e.get("target_role") == "reviewer-agent"]
+        self.assertTrue(events, "the operator's word must be on the record")
+
+    def test_skip_before_escalation_is_refused(self) -> None:
+        token = self._pending_batch()
+        errors = io.StringIO()
+        with contextlib.redirect_stderr(errors), contextlib.redirect_stdout(io.StringIO()):
+            rc = self._ctl("read-ack", "reviewer-agent", token,
+                           "--skip", "--reason", "obsolete")
+        self.assertNotEqual(0, rc, "skip is escalation-gated, not a silent reset")
+        self.assertIn("escalation", errors.getvalue())
+
+    def test_skip_after_escalation_needs_a_reason(self) -> None:
+        token = self._pending_batch()
+        for _ in range(2):
+            self.peer.tool_pair_read()
+        errors = io.StringIO()
+        with contextlib.redirect_stderr(errors), contextlib.redirect_stdout(io.StringIO()):
+            rc = self._ctl("read-ack", "reviewer-agent", token, "--skip")
+        self.assertNotEqual(0, rc, "a reasonless skip vanishes the mail silently")
+        self.assertIn("skip requires", errors.getvalue())
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(0, self._ctl("read-ack", "reviewer-agent", token,
+                                          "--skip", "--reason", "client confirmed dead"))
+        st = self.store.read()
+        self.assertNotIn("reviewer-agent", st.get("pending_reads") or {})
+        self.assertEqual(1, st["seen"]["reviewer-agent"])
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

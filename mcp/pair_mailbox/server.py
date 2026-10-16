@@ -58,6 +58,10 @@ import liveness  # noqa: E402 - needs sys.path above
 import obligations  # noqa: E402 - needs sys.path above
 import server_freshness  # noqa: E402 - needs sys.path above
 import statecache  # noqa: E402 - needs sys.path above
+import read_delivery  # noqa: E402 - pending mailbox batch transitions
+from read_wait import (  # noqa: E402 - reads the role's configured MCP budget
+    DEFAULT_READ_WAIT_SECONDS, MAX_READ_WAIT_SECONDS, client_timeout_ms, effective_read_wait,
+)
 
 # Digest names re-export from `digest`: `pairctl_read` reads them, and keeping a
 # second source of truth means returning the drift the digest was extracted for.
@@ -85,42 +89,6 @@ DEFAULT_PROTOCOL_VERSION = "2024-11-05"
 SERVER_NAME = "pair-mailbox"
 SERVER_VERSION = "1.0.0"
 
-# The wait ceiling in pair_read. Live waiting is part of the protocol (§7): without
-# it the agent unaware of the letter never learns and never answers, and the channel dies.
-#
-# But the server must never promise more than the client can wait out: opencode
-# tears the MCP call at 20 seconds, and 40 seconds of allowed range stayed
-# unreachable. The client tore earlier than the server woke — and from the returned
-# waited_seconds nobody saw the client interrupt, not the server.
-#
-# Hence two rules. The ceiling here is the server last word, while the actual limit
-# is min(this ceiling, CLIENT_TIMEOUT with margin), read from the environment because
-# every CLI owns its client. And the consistency check at start: a profile with a
-# timeout below the ceiling is a config defect, never to pass silently.
-# silently.
-MAX_READ_WAIT_SECONDS = 60
-DEFAULT_READ_WAIT_SECONDS = 0.0
-
-# The default MCP-client timeout when unset in the environment. 20 seconds is the
-# opencode out-of-box value, and the cause of the finding.
-CLIENT_TIMEOUT_SECONDS = int(os.environ.get("PAIR_CLIENT_TIMEOUT", "20000"))
-
-# The margin between the server wait and the client patience. Without it the server
-# starts answering exactly as the client disconnects.
-READ_WAIT_MARGIN_SECONDS = 5.0
-
-
-def effective_read_wait(wait: float) -> tuple[float, bool]:
-    """How long to actually wait, and what had to give.
-
-    Returns (wait, whether trimmed). A trimmed wait returns outward explicitly,
-    because otherwise the agent sees "I asked 60 and got silence" and never tells
-    "no answer" from "timed out on me".
-    """
-    capped = min(float(wait), float(MAX_READ_WAIT_SECONDS))
-    client_budget = max(0.0, (CLIENT_TIMEOUT_SECONDS / 1000.0) - READ_WAIT_MARGIN_SECONDS)
-    effective = min(capped, client_budget)
-    return effective, effective < capped
 GLOB_CHARS = ("*", "?", "[", "]")
 
 # Phase graph. Mirrors the shape that works in practice: scope the work, agree on
@@ -1178,23 +1146,25 @@ class PairSession:
         except Exception:  # noqa: BLE001 - the snapshot must never drop the cache
             return None
 
-    def _heartbeat(self, state: dict[str, Any]) -> None:
-        """Mark this role alive: only `last_seen` (+ `pid`), nothing more.
+    def _heartbeat(self, state: dict[str, Any], request_meta: Any = None) -> None:
+        """Mark liveness and bind the OpenCode host session from request metadata.
 
-        writes), called by only 4 tools of 19. An agent writing notes or moving evidence
-        stayed silent for hours while working: `last_seen` aged, `_writer_is_abandoned`
-        fired, and the neighbour took authority from the active writer
-        (the last-seen-stale card, done).
-
-        Heartbeat runs at the start of every `invoke`, so the liveness mark is the call
-        itself, not a picked tool. No pane here on purpose: delivery addressing changes
-        only in `_register`.
+        A process may survive a host-session change, so this value is refreshed on
+        every OpenCode tool call. Missing or malformed metadata clears the old ID:
+        wake delivery must fail closed, never target a previous session.
         """
         roles = state.setdefault("roles", {})
         entry = roles.setdefault(
             self.role, {"first_seen": utcnow(), "reads": 0, "sends": 0})
         entry["last_seen"] = utcnow()
         entry["pid"] = os.getpid()
+        if self.role == "opencode":
+            meta = request_meta if isinstance(request_meta, dict) else {}
+            session_id = meta.get("ai.opencode/sessionID")
+            if isinstance(session_id, str) and 0 < len(session_id) <= 256 and session_id.strip():
+                entry["opencode_session_id"] = session_id
+            else:
+                entry.pop("opencode_session_id", None)
 
     def _register(self, state: dict[str, Any]) -> None:
         roles = state.setdefault("roles", {})
@@ -1792,6 +1762,10 @@ class PairSession:
             "legal_next_phases": legal_next,
             "roles": self._known_roles(state),
             "unread": self._unread_count(state),
+            # [R101] A read batch that was returned but never ACKed. The agent must
+            # see it on every state call — not only when it happens to re-read —
+            # or "delivered but unprocessed" is indistinguishable from "empty".
+            "pending_read": read_delivery.pending_summary(state, self.role),
             "peers": self._peer_status(state, writer),
             # What else blocks the round close. The agent must see it BEFORE spending a move
             # on a doomed pair_advance("done").
@@ -2581,95 +2555,64 @@ class PairSession:
             ),
         }
 
-    def tool_pair_read(self, limit: int = 10, wait_seconds: float = DEFAULT_READ_WAIT_SECONDS) -> dict[str, Any]:
-        """Read messages addressed to this role.
+    def tool_pair_read(self, limit: int = 10, wait_seconds: float = DEFAULT_READ_WAIT_SECONDS,
+                       ack_token: str | None = None) -> dict[str, Any]:
+        """Return mail at least once; a batch stays unread until its token is ACKed."""
+        if ack_token is not None:
+            try:
+                receipt = self.store.mutate(lambda state: read_delivery.acknowledge_batch(
+                    state, self.role, ack_token))
+            except ValueError as exc:
+                raise ProtocolError(str(exc)) from None
+            self.store.append_transcript("pair_read_acknowledged", self.role,
+                                         batch_id=receipt["batch_id"], seqs=receipt["seqs"])
 
-        The writer never blocks. A writer that waits for its peer while the peer
-        waits for the writer is a deadlock, so wait_seconds is forced to 0 for the
-        writer. Only a non-writer may wait, and it is still capped.
-        """
         try:
             wait = float(wait_seconds)
         except (TypeError, ValueError):
             raise ProtocolError("`wait_seconds` must be a number.") from None
         if wait < 0:
             raise ProtocolError("`wait_seconds` must not be negative.")
-        wait, was_capped = effective_read_wait(wait)
-
-        # Both roles may wait. This used to be forced to zero for the writer, to stop
-        # two agents blocking each other, but that killed the channel instead: an agent
-        # that cannot wait goes idle and never notices an incoming message, so the human
-        # ends up relaying by hand. A bounded wait cannot deadlock, because the wait
-        # always expires and the caller must then get back to work.
-
+        timeout_ms = client_timeout_ms(self.role)
+        wait, was_capped = effective_read_wait(wait, timeout_ms)
         deadline = time.monotonic() + wait
+        messages: list[dict[str, Any]] = []
+        batch: dict[str, Any] | None = None
         while True:
-            messages = self._drain(limit)
-            if messages or time.monotonic() >= deadline:
+            try:
+                messages, batch = self._drain(limit)
+            except read_delivery.DrainRefused as exc:
+                raise ProtocolError(str(exc)) from None
+            if batch or messages or time.monotonic() >= deadline:
                 break
             time.sleep(0.1)
 
-        answer = {
+        answer: dict[str, Any] = {
             "messages": messages,
             "count": len(messages),
             "waited_seconds": round(wait, 2),
             "note": (
-                "Waiting is the normal way to hear from your peer. If it came back empty, "
-                "call again. You must not answer a status question with a promise to go and "
-                "check — read pair_state or pair_transcript and answer with what is true now."
+                "Read messages by seq. If `ack_token` is returned, pass it on the next "
+                "pair_read after processing the batch. A retry without it returns the "
+                "same batch; no other tool call acknowledges mail."
             ),
         }
+        if batch:
+            answer["pending_read"] = batch
+            answer["ack_token"] = batch["batch_id"]
         if was_capped:
-            # This information used to vanish, and the call read as ordinary silence. In fact
-            # the client would never wait out even more: a timeout cut read as "nobody answered",
-            # and the agent concluded about the neighbour, not itself.
             answer["wait_capped_by_client_timeout"] = True
-            answer["client_timeout_seconds"] = CLIENT_TIMEOUT_SECONDS
+            answer["client_timeout_ms"] = timeout_ms
             answer["max_read_wait_seconds"] = MAX_READ_WAIT_SECONDS
             answer["why"] = (
                 f"You asked for more than this client can wait for. It cut the wait to "
-                f"{wait:.0f}s (client timeout {CLIENT_TIMEOUT_SECONDS}ms minus a "
-                f"{READ_WAIT_MARGIN_SECONDS:.0f}s margin). Raise PAIR_CLIENT_TIMEOUT, or ask "
-                f"for less and call again."
+                f"{wait:.0f}s (MCP timeout {timeout_ms}ms minus the client margin). Raise "
+                f"the role's MCP timeout or ask for less and call again."
             )
         return answer
 
-    def _drain(self, limit: int) -> list[dict[str, Any]]:
-        def apply(state: dict[str, Any]) -> list[dict[str, Any]]:
-            self._register(state)
-            files = self._inbox_files()
-            seen = int(state.get("seen", {}).get(self.role, 0))
-            if seen > len(files):
-                seen = len(files)
-            fresh = files[seen : seen + max(0, int(limit))]
-            out: list[dict[str, Any]] = []
-            consumed = 0
-            for path in fresh:
-                try:
-                    msg = json.loads(path.read_text(encoding="utf-8"))
-                except (OSError, json.JSONDecodeError) as exc:
-                    self.store.append_transcript("message_unreadable", self.role,
-                                                 path=str(path), error=str(exc))
-                    break
-                consumed += 1
-                try:  # the check never drops the read; with no key the letter serves as before
-                    import rolekeys as _keys3
-                    env = msg.get("envelope")
-                    vk = _keys3.load_verify_key(self.store.root, msg.get("from", "")) if isinstance(env, dict) else None
-                    if vk is not None and not _keys3.verify_envelope(vk, env, msg.get("text", "")):
-                        self.store.append_transcript("bad_signature", self.role,
-                                                     path=str(path), seq=msg.get("seq"))
-                        continue
-                except Exception:  # noqa: BLE001
-                    pass
-                out.append(msg)
-            if consumed:
-                state.setdefault("seen", {})[self.role] = seen + consumed
-            elif seen != int(state.get("seen", {}).get(self.role, 0)):
-                state.setdefault("seen", {})[self.role] = seen
-            return out
-
-        return self.store.mutate(apply)
+    def _drain(self, limit: int) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
+        return read_delivery.drain(self, limit)
 
     def tool_pair_advance(self, phase: str) -> dict[str, Any]:
         """Move the shared phase.
@@ -3509,7 +3452,7 @@ class PairSession:
         except Exception:  # noqa: BLE001 - the wake import never drops the note
             pass
         return {"kind": kind, "path": str(target), "woke_peers": {}}
-    def invoke(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    def invoke(self, name: str, arguments: dict[str, Any], request_meta: Any = None) -> dict[str, Any]:
         """Run one tool by name, recording refusals on the audit trail.
 
         Every refusal lands in the transcript regardless of transport, so the
@@ -3529,7 +3472,7 @@ class PairSession:
         # needless.
         if handler is not None:
             try:
-                self.store.mutate(self._heartbeat)
+                self.store.mutate(lambda state: self._heartbeat(state, request_meta))
             except Exception:  # noqa: BLE001 - heartbeat never drops the tool
                 pass
         else:
@@ -3718,9 +3661,9 @@ def tool_definitions() -> list[dict[str, Any]]:
         {
             "name": "pair_read",
             "description": (
-                "Read messages addressed to your role, oldest first. Marks them read. `wait_seconds` "
-                "lets a non-writer block briefly for the peer; the writer is always forced to zero, "
-                "because two agents waiting on each other is a deadlock. Read once, act, move on."
+                "Read messages oldest first. A returned batch stays unread until its exact `ack_token` "
+                "is passed on a later pair_read; a retry without it replays the same batch. Other tools "
+                "do not ACK it. Pending batches appear in pair_state/digest and block close."
             ),
             "inputSchema": {
                 "type": "object",
@@ -3728,8 +3671,12 @@ def tool_definitions() -> list[dict[str, Any]]:
                     "limit": {"type": "integer", "description": "Max messages to return.", "default": 10},
                     "wait_seconds": {
                         "type": "number",
-                        "description": "Bounded wait. Ignored (forced to 0) for the writer.",
+                        "description": "Bounded wait, capped by this role's configured timeout.",
                         "default": DEFAULT_READ_WAIT_SECONDS,
+                    },
+                    "ack_token": {
+                        "type": "string",
+                        "description": "Exact token from the previous batch; acknowledges only that batch.",
                     },
                 },
                 "required": [],
@@ -4086,6 +4033,8 @@ class MCPServer:
         with self.session.store.lock():
             state = self.session.store._load()
             self.session._register(state)
+            if self.session.role == "opencode":
+                state["roles"][self.session.role].pop("opencode_session_id", None)
             self.session.store._save(state)
         log(f"initialized by {params.get('clientInfo', {}).get('name', '?')} protocol={version}")
         self.reply(
@@ -4098,7 +4047,9 @@ class MCPServer:
                     f"You are role {self.session.role!r} in a two-agent collaboration. One role holds write "
                     "authority and edits project files; the other is read-only and proposes sealed patches. "
                     "Authority is transferred only by the human through pairctl, never by a message. "
-                    "Call pair_state first to see where you stand."
+                    "Call pair_state first to see where you stand. Read peer messages with pair_read; "
+                    "ACK returned batches with their exact ack_token after processing. Retries replay; "
+                    "messages remain unread until ACK, and pair_state shows the pending batch."
                 ),
             },
         )
@@ -4117,7 +4068,7 @@ class MCPServer:
         arguments = params.get("arguments") or {}
         if not isinstance(arguments, dict):
             raise ProtocolError("`arguments` must be an object")
-        result = self.session.invoke(name, arguments)
+        result = self.session.invoke(name, arguments, params.get("_meta"))
         text = json.dumps(result, ensure_ascii=False, indent=2)
         self.reply(request_id, {"content": [{"type": "text", "text": text}], "isError": False})
 

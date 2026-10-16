@@ -53,6 +53,7 @@ def _commands() -> dict[str, str]:
         "assign": "pairctl_authority",
         "roles": "pairctl_authority",
         "release": "pairctl_authority",
+        "read-ack": "pairctl_authority",
         "mode": "pairctl_authority",
         "autonomy": "pairctl_authority",
         "launch-autonomy": "pairctl_authority",
@@ -102,6 +103,22 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub = parser.add_subparsers(dest="ctl_command")
     sub.add_parser("status", help="show shared state")
+
+    read_ack = sub.add_parser(
+        "read-ack",
+        help="human: acknowledge or skip a role's pending read batch",
+        description="A batch `pair_read` returned but whose ack never arrived stays "
+                    "pending forever and blocks the round from closing. After three "
+                    "replays it is escalated; the human then either ACKs it by token "
+                    "or skips it with a reason.",
+    )
+    read_ack.add_argument("role", help="whose pending batch")
+    read_ack.add_argument("token", help="the batch_id from pair_state.pending_read")
+    read_ack.add_argument("--skip", action="store_true",
+                          help="drop the batch instead of advancing to it; needs --reason "
+                               "and only works after replay escalation")
+    read_ack.add_argument("--reason", default="",
+                          help="why the batch is skipped; required with --skip")
 
     assign = sub.add_parser("assign", help="human: give write authority to a role")
     assign.add_argument("role")
