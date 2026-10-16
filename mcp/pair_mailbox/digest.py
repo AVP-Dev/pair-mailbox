@@ -27,6 +27,11 @@ def _transcript_tail(path, limit):
     from server import _transcript_tail as impl
 
     return impl(path, limit)
+def _pending_summary(state, role):
+    import read_delivery as impl
+
+    return impl.pending_summary(state, role)
+
 
 # The digest ceiling. The replaced bundle measured: `pair_state` 939 +
 # `pair_task list` 1051 + `pair_transcript` 1734 = 3724 tokens per orientation.
@@ -265,6 +270,25 @@ def build_digest(store: "Any", role: str = "", budget: int = DIGEST_TOKEN_BUDGET
         cut |= take(f"#{item.get('id')} {_digest_line(str(item.get('text', '')), 60)}")
     if len(open_tasks) > 4:
         cut |= take(f"…and {len(open_tasks) - 4}: `pair_task list`")
+
+    # 2b. [R101] A read batch returned but never ACKed. It decides the next read
+    #     (replay vs fresh), so it stands with the open tasks, ahead of everything
+    #     that merely informs.
+    if role:
+        pending = _pending_summary(state, role)
+        if pending:
+            cut |= take("")
+            cut |= take(
+                f"PENDING READ: seqs {pending['seqs']} · attempts {pending['attempts']}"
+                + (" · ESCALATED: pairctl read-ack" if pending["escalated"] else ""))
+            poison = pending.get("poison") or {}
+            if poison:
+                # A wedged batch that only verbose state could see is the
+                # silent-wedge class this round exists to kill: the digest
+                # names the path, the cause and the cure.
+                cut |= take(f"  POISONED: {poison.get('path') or '(file unnamed)'}")
+                cut |= take(f"  cause: {poison.get('cause', '')}", floor=40)
+                cut |= take(f"  cure: {poison.get('cure', '')}", floor=40)
 
     # 3. Obligations. Their absence is a fact too, not emptiness.
     obligations = _open_obligations(store)

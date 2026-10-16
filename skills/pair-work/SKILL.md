@@ -59,6 +59,9 @@ This is the main thing that makes the pair work. An agent that silently waits is
 
 **In your free time call `pair_read(wait_seconds=45)`.** It returns when the peer
 sends a message, or when the time runs out. Came back empty — **call again**.
+The batch it returns stays unread until you ACK it: process it, then pass its
+`ack_token` on a later `pair_read`. A retry without the token replays the same
+letters (round 101 batch contract — see `pair-chat` Reading).
 
 Waiting rules:
 

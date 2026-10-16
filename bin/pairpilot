@@ -609,8 +609,13 @@ class Pilot:
             return
         adapter = self.WAKE_ADAPTERS.get(role)
         if adapter:
+            # [R101c] The exact recorded session id, never a directory or
+            # recency guess: the adapter fails closed when it is absent/stale.
+            session_id = ((state.get("roles") or {}).get(role) or {}).get(
+                "opencode_session_id")
             try:
-                result = __import__(adapter).wake(self.store.project_root, pointer)
+                result = __import__(adapter).wake(self.store.project_root, pointer,
+                                                  session_id)
                 self.store.append_transcript("pilot_wake_api", "pairpilot",
                                              target=role, woken=result.get("woken"),
                                              why=(result.get("why") or "")[:120])
@@ -661,15 +666,15 @@ class Pilot:
                 continue
             role = str(wake.get("role") or "")
             info = (state.get("roles") or {}).get(role) or {}
-            seen_now = info.get("last_seen")
-            seen_ask = wake.get("seen_at_ask")
             unread_now = self.unread(state, role)
-            woke = (seen_now != seen_ask) or (unread_now < int(wake.get("unread_at_ask", 0)))
+            parked = self.is_done_parked(state)
+            # [R101d] A wake resolves on unread DECREASE only. `last_seen`
+            # moves on every tool call (server _heartbeat), so any activity
+            # with unread mail hanging was read as "the mail was consumed" -
+            # the live false ack of 08:08:12. Parked means untouched: neither
+            # this ack nor escalation may fire.
+            woke = (unread_now < int(wake.get("unread_at_ask", 0))) and not parked
             if woke:
-                # The order is mandatory: the file used to be removed first, and `stat`
-                # afterwards always said “no file”, so since_seconds stayed
-                # at 0 forever — the field that tells how long the role was silent
-                # said nothing.
                 try:
                     since = int(now - path.stat().st_mtime)
                 except OSError:
@@ -677,11 +682,30 @@ class Pilot:
                 path.unlink(missing_ok=True)
                 self.store.append_transcript("pilot_wake_acknowledged", "pairpilot",
                                              target=role, reason=wake.get("reason"),
-                                             since_seconds=since)
+                                             since_seconds=since,
+                                             unread_at_ask=wake.get("unread_at_ask"),
+                                             unread_now=unread_now)
                 log(f"{role}: woke on its own, no printing needed")
                 continue
             if self.is_done_parked(state):
                 # In done phase the pilot is parked: do not escalate wake files into the composer.
+                continue
+            try:
+                file_age = now - path.stat().st_mtime
+            except OSError:
+                continue
+            if file_age > self.outbox_ttl:
+                # [R101d] TTL pointer drop: a wake nobody consumed past the
+                # queue lifetime is a dead pointer, not patience. Same record
+                # shape as the ack - file, age, unread_at_ask - because a
+                # silent drop is the class this round exists to remove.
+                path.unlink(missing_ok=True)
+                self.store.append_transcript(
+                    "pilot_wake_expired", "pairpilot", target=role,
+                    file=path.name, age_seconds=int(file_age),
+                    unread_at_ask=wake.get("unread_at_ask"),
+                    reason=wake.get("reason"))
+                log(f"{role}: wake pointer expired after {int(file_age // 60)} min — dropped")
                 continue
             asked = parse_iso(wake.get("asked_at"))
             age = now - asked.timestamp() if asked else 0.0
@@ -829,6 +853,16 @@ class Pilot:
                     fallback_seq=seq)
                 log(f"queued for {role} went stale in the composer "
                     f"{int(age // 60)} min — mirroring into the mailbox (seq {seq})")
+                continue
+            if self.is_done_parked(state):
+                # [R101d] Parked close: the round is done and nothing is open -
+                # a queued pointer would land as fresh mail about a finished
+                # round. Drop now with a record, never hang to TTL.
+                path.unlink(missing_ok=True)
+                self.store.append_transcript(
+                    "pilot_outbox_parked_drop", "pairpilot", to=role,
+                    text=text[:120])
+                log(f"queued for {role} dropped: the round is parked in done")
                 continue
             pane = info.get("pane")
             try:

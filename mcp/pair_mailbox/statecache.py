@@ -18,9 +18,9 @@ import hashlib
 import json
 from typing import Any, Callable
 
-# Fields that move on every state call alone, hence never dropping the cache:
-# their absence from the fingerprint loses no information about what the agent
-# can see — or the cache would never fire.
+## Fields that move on every state call alone, hence never dropping the cache:
+## their absence from the fingerprint loses no information about what the agent
+## can see — or the cache would never fire.
 VOLATILE_STATE_KEYS = ("updated_at", "roles")
 VOLATILE_ROLE_KEYS = ("last_seen",)
 

@@ -335,6 +335,16 @@ ends its turn with `pair_read(wait_seconds=N)` is never idle *with unread mail*:
 either reading, or it already has the message. The cost is latency — the agent waits
 instead of exiting. The alternative costs the round its night.
 
+**Delivery ends at the ACK (round 101).** A `pair_read` batch is persisted with
+its token before the answer goes out; it stays unread until the agent passes
+that exact `ack_token` on a later `pair_read`. A retry without the token replays
+the SAME letters under the SAME token — at-least-once, never lost and never
+silently skipped. One unreadable or shifted file wedges its OWN batch (named in
+`pair_state` and the digest, curable with `pairctl read-ack`), never the role's
+mail flow: letters after the hole keep draining. `seen` remains a contiguous
+prefix by design; fresh-below-poison acks are recorded as runs and folded in
+when the hole closes.
+
 Delivery is the second path, and it is best-effort by nature:
 - **`pair_deliver`** — active: types into the peer's pane and presses Enter.
 - **`pair_send`** — passive: drops into the mailbox, which always works.

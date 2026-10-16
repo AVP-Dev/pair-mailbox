@@ -71,17 +71,28 @@ the actual error text. Quote it rather than describing it.
 ## Reading
 
 ```bash
-pair_read()                    # returns everything unread (limit 10), marks it read
+pair_read()                    # one batch of mail; it stays unread until acked
 pair_read(wait_seconds=45)     # bounded wait for a peer message
+pair_read(ack_token="...")     # commit the batch: mail is read only then
 ```
 
-- `wait_seconds` default is `0` (`DEFAULT_READ_WAIT_SECONDS`,
-  `server.py:97`); cap is 60s (`MAX_READ_WAIT_SECONDS`), further capped by the
-  client timeout. Both roles may wait — a bounded wait always expires, so it
-  cannot deadlock. Empty answer means call again; waiting is the normal way to
-  hear from the peer.
+- Round 101 batch contract: `pair_read` returns a batch plus its `ack_token`
+  and the batch is PERSISTED. Retry without the token replays the SAME
+  letters under the SAME token; other tools never acknowledge mail. Process
+  the batch, then pass `ack_token` on a later `pair_read` — only that marks
+  it read. `pair_state` and the digest show a `pending_read` with attempts
+  and (if the batch cannot be replayed) a named poison with the cure; after
+  three attempts (the initial delivery plus two replays,
+  `MAX_REPLAY_ATTEMPTS=3`) the operator may settle it with
+  `pairctl read-ack <role> <token> [--skip --reason ...]`.
+- `wait_seconds` default is `0` (`DEFAULT_READ_WAIT_SECONDS`); cap is 60s
+  (`MAX_READ_WAIT_SECONDS`), further capped by the role's real MCP timeout
+  (`cli-profiles.json` `mcp.entry.timeout`); a cut wait is reported with the
+  named numbers, never hidden. Both roles may wait — a bounded wait always
+  expires, so it cannot deadlock. Empty answer means call again; waiting is
+  the normal way to hear from the peer.
 - Closing is refused over unread mail: a report the writer never read is not a
-  report. Run `pair_read` before `pair_advance("done")`.
+  report. Run `pair_read` and ACK its batch before `pair_advance("done")`.
 
 ## Delivery is not a promise
 

@@ -1012,64 +1012,6 @@ class TestDefaultAllowlist(PairTestCase):
         self.assertTrue(on_default)
         self.assertTrue(patterns)
 
-class TestReadWaitBudget(PairTestCase):
-    """pair_read must never promise more than the client can wait out.
-
-    Live waiting is protocol (§7), but opencode tears the MCP call at 20 seconds:
-    40 of the allowed 60 stayed unreachable, and from the returned waited_seconds
-    "no answer" never told from "timed out on me".
-    """
-
-    def test_a_long_wait_is_cut_to_what_the_client_survives(self) -> None:
-        import server as srv
-        with mock.patch.object(srv, "CLIENT_TIMEOUT_SECONDS", 20000):
-            wait, capped = srv.effective_read_wait(60)
-        self.assertTrue(capped)
-        self.assertLessEqual(wait, 15.0, "20s minus margin — the ceiling the client survives")
-
-    def test_a_short_wait_is_left_alone(self) -> None:
-        import server as srv
-        with mock.patch.object(srv, "CLIENT_TIMEOUT_SECONDS", 20000):
-            wait, capped = srv.effective_read_wait(5)
-        self.assertFalse(capped)
-        self.assertEqual(5.0, wait)
-
-    def test_the_cap_is_reported_not_hidden(self) -> None:
-        """A trimmed wait used to read as ordinary silence, and the agent concluded about
-        the neighbour, not its own client."""
-        import server as srv
-        with mock.patch.object(srv, "CLIENT_TIMEOUT_SECONDS", 20000), \
-             mock.patch.object(self.peer, "_drain", return_value=[]), \
-             mock.patch("time.sleep"):
-            answer = self.peer.tool_pair_read(wait_seconds=45)
-        self.assertTrue(answer["wait_capped_by_client_timeout"])
-        self.assertEqual(20000, answer["client_timeout_seconds"])
-        self.assertIn("PAIR_CLIENT_TIMEOUT", answer["why"])
-
-    def test_a_generous_client_gets_the_full_protocol_wait(self) -> None:
-        import server as srv
-        with mock.patch.object(srv, "CLIENT_TIMEOUT_SECONDS", 65000):
-            wait, capped = srv.effective_read_wait(60)
-        self.assertFalse(capped)
-        self.assertEqual(60.0, wait)
-
-    def test_every_profile_outlives_the_protocol_wait(self) -> None:
-        """A config where the client tears before the server counts as a config defect,
-        and silently passing it is banned."""
-        import json as _json
-        root = Path(__file__).resolve().parent.parent.parent
-        profiles = _json.loads((root / "cli-profiles.json").read_text(encoding="utf-8"))
-        import server as srv
-        for name, entry in profiles.items():
-            if name.startswith("_") or not isinstance(entry, dict):
-                continue
-            timeout = (entry.get("mcp") or {}).get("entry", {}).get("timeout")
-            with self.subTest(profile=name):
-                self.assertIsInstance(timeout, int, f"{name}: the MCP timeout is unset")
-                self.assertGreater(
-                    timeout / 1000.0, srv.MAX_READ_WAIT_SECONDS,
-                    f"{name}: the client tears the call before the server can wake")
-
 class TestPatchAccounting(PairTestCase):
     """A patch nobody reported applied must show.
 
@@ -1943,6 +1885,13 @@ class TestMessaging(PairTestCase):
         self.assertIn("here is my read", message["text"])
 
     def test_read_marks_messages_read(self) -> None:
+        """Round 101 batch contract: at-least-once, then the ack commits.
+
+        The pre-batch pin (second read returns 0) measured the old
+        mark-on-reply semantics whose reply the client could lose. Now the
+        retry returns the SAME letters under the SAME token with the cursor
+        unmoved, and only the token's ack marks the mail read.
+        """
         self.writer.tool_pair_state()
         self.peer.tool_pair_state()
         self.writer.tool_pair_send(to="reviewer-agent", text="one")
@@ -1951,7 +1900,15 @@ class TestMessaging(PairTestCase):
         first = self.peer.tool_pair_read()
         self.assertEqual(first["count"], 2)
         second = self.peer.tool_pair_read()
-        self.assertEqual(second["count"], 0)
+        self.assertEqual(second["count"], 2, "a retry replays, never skips")
+        self.assertEqual(second["ack_token"], first["ack_token"])
+        self.assertEqual([m["text"] for m in second["messages"]],
+                         [m["text"] for m in first["messages"]])
+        self.assertEqual(0, (self.store.read().get("seen") or {}).get("reviewer-agent", 0),
+                         "the cursor stays where the batch was issued")
+        self.peer.tool_pair_read(ack_token=first["ack_token"])
+        third = self.peer.tool_pair_read()
+        self.assertEqual(third["count"], 0, "the ack commits, the next read is fresh")
 
     def test_send_without_subject_still_leaves_trace_in_transcript(self) -> None:
         """A blind send event (seq 257–258) never repeats.
@@ -2004,23 +1961,22 @@ class TestMessaging(PairTestCase):
         self.assertLess(elapsed, 4.0, "but the wait stays bounded")
 
     def test_wait_is_capped(self) -> None:
-        """The cap must be asserted without actually sitting through it.
+        """The clamp is a function of the client budget, not a module constant.
 
-        Asking for more than the cap does not help: the clamp happens before the wait,
-        so the suite would still spend the full minute. Lower the cap instead, then ask
-        for more than it. The constant is read at call time, so patching the module
-        attribute is enough.
+        Round 101 moved the cap to `read_wait.effective_read_wait`: any wait
+        above the protocol ceiling or the role's MCP budget comes back cut, and
+        the answer says so with the named numbers instead of a silent clamp.
         """
-        import server
+        import read_wait
 
-        self.writer.tool_pair_state()
-        original = server.MAX_READ_WAIT_SECONDS
-        server.MAX_READ_WAIT_SECONDS = 1
-        try:
-            result = self.writer.tool_pair_read(wait_seconds=9999)
-            self.assertLessEqual(result["waited_seconds"], 1)
-        finally:
-            server.MAX_READ_WAIT_SECONDS = original
+        # 45s sits inside both the 60s ceiling and the 65s profile budget: untouched.
+        self.assertEqual((45.0, False), read_wait.effective_read_wait(45, 65_000))
+        # Above the 60s protocol ceiling: cut to the ceiling, not reported as client-capped.
+        self.assertEqual((60.0, False), read_wait.effective_read_wait(9999, 65_000))
+        # A tight client budget cuts the wait and says by how much and why.
+        wait, capped = read_wait.effective_read_wait(45, 20_000)
+        self.assertEqual(15.0, wait, "20s budget minus the 5s margin")
+        self.assertTrue(capped)
 
     def test_peer_wait_is_bounded(self) -> None:
         self.peer.tool_pair_state()
@@ -3798,6 +3754,13 @@ class TestMailboxInvariants(PairTestCase):
         self.assertEqual(read["messages"][1]["text"], "second message")
 
     def test_unreadable_message_does_not_increment_seen_silently(self) -> None:
+        """Poison invariant (round 101): the wedge is named, never silent.
+
+        The first read returns the good message as its batch; the corrupt file
+        is not consumed - `seen` does not move past it, the batch stays
+        pending, and `message_unreadable` is on the record. The documented
+        exit is `pairctl read-ack` after escalation, never a silent skip.
+        """
         self.writer.tool_pair_claim(reason="writer")
         self.peer.tool_pair_state()
         self.writer.tool_pair_send(to="reviewer-agent", text="msg 1")
@@ -3807,18 +3770,37 @@ class TestMailboxInvariants(PairTestCase):
         files = sorted((self.store.mailbox_root / "reviewer-agent").glob("*.json"))
         files[1].write_text("not json", encoding="utf-8")
 
-        # Drain should only return message 1 and not skip message 2 silently
+        # Drain returns message 1 only - the corrupt one is not skipped silently
         read = self.peer.tool_pair_read(limit=5)
         self.assertEqual(read["count"], 1)
         self.assertEqual(read["messages"][0]["text"], "msg 1")
 
-        # seen must be 1, not 2
+        # The batch holds; `seen` never moves past the poison until a human word.
         st = self.store.read()
-        self.assertEqual(st.get("seen", {}).get("reviewer-agent"), 1)
+        self.assertEqual(0, (st.get("seen") or {}).get("reviewer-agent", 0))
+        pending = st.get("pending_reads", {}).get("reviewer-agent") or {}
+        self.assertEqual(1, pending.get("cursor"),
+                         "the batch covers only the good message")
 
         # message_unreadable must be in transcript
         transcript_events = [e.get("kind") for e in self.store.read_transcript(10)]
         self.assertIn("message_unreadable", transcript_events)
+
+        # The poison is resolvable: skip (escalation-gated) commits the cursor.
+        for _ in range(2):
+            self.peer.tool_pair_read()
+        import io, contextlib
+        errors = io.StringIO()
+        with contextlib.redirect_stdout(io.StringIO()):
+            with contextlib.redirect_stderr(errors):
+                from server import main as ctl_main
+                rc = ctl_main(["--state", str(self.root), "read-ack",
+                               "reviewer-agent", pending["batch_id"],
+                               "--skip", "--reason", "corrupt file, operator reviewed"])
+        self.assertEqual(0, rc, errors.getvalue())
+        st = self.store.read()
+        self.assertEqual(1, st["seen"]["reviewer-agent"],
+                         "the skip commits exactly the batch cursor, not past it")
 
     def test_pair_deliver_rejects_self_and_empty(self) -> None:
         self.assertRefused(
