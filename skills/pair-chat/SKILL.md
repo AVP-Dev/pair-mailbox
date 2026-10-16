@@ -82,7 +82,8 @@ pair_read(ack_token="...")     # commit the batch: mail is read only then
   the batch, then pass `ack_token` on a later `pair_read` — only that marks
   it read. `pair_state` and the digest show a `pending_read` with attempts
   and (if the batch cannot be replayed) a named poison with the cure; after
-  three replays the operator may settle it with
+  three attempts (the initial delivery plus two replays,
+  `MAX_REPLAY_ATTEMPTS=3`) the operator may settle it with
   `pairctl read-ack <role> <token> [--skip --reason ...]`.
 - `wait_seconds` default is `0` (`DEFAULT_READ_WAIT_SECONDS`); cap is 60s
   (`MAX_READ_WAIT_SECONDS`), further capped by the role's real MCP timeout
