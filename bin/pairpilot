@@ -609,8 +609,13 @@ class Pilot:
             return
         adapter = self.WAKE_ADAPTERS.get(role)
         if adapter:
+            # [R101c] The exact recorded session id, never a directory or
+            # recency guess: the adapter fails closed when it is absent/stale.
+            session_id = ((state.get("roles") or {}).get(role) or {}).get(
+                "opencode_session_id")
             try:
-                result = __import__(adapter).wake(self.store.project_root, pointer)
+                result = __import__(adapter).wake(self.store.project_root, pointer,
+                                                  session_id)
                 self.store.append_transcript("pilot_wake_api", "pairpilot",
                                              target=role, woken=result.get("woken"),
                                              why=(result.get("why") or "")[:120])

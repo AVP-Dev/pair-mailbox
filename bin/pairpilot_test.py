@@ -18,6 +18,7 @@ import time
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "mcp" / "pair_mailbox"))
@@ -146,6 +147,61 @@ class PilotCase(unittest.TestCase):
         if not path.exists():
             return []
         return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+
+
+class TestWakeAdapterCall(PilotCase):
+    """The pilot hands the wake adapter the exact recorded session id.
+
+    Round 101c: wake_opencode.wake grew a required `session_id` and the pilot
+    still called the old two-arg signature - a pilot wake would have died as
+    pilot_wake_api_failed forever. The pin: the call is three-arg and the id
+    comes from the state roster, never a guess.
+    """
+
+    def test_ring_passes_recorded_session_id(self) -> None:
+        """The recorded session id rides to the adapter, never a guess."""
+        pilot = self.pilot()
+        pilot.tmux = "tmux-fake"  # ring gates on a live pane; pane_alive is mocked
+        state = self.write_state(roles={"opencode": {
+            "pane": "%7", "opencode_session_id": "ses_recorded"}})
+        captured = {}
+
+        class FakeAdapter:
+            @staticmethod
+            def wake(project_root, pointer, session_id=None):
+                captured["args"] = (project_root, pointer, session_id)
+                return {"woken": False, "why": "test adapter"}
+
+        with mock.patch.object(pairpilot, "pane_alive", return_value=True), \
+                mock.patch.object(pairpilot.subprocess, "run"), \
+                mock.patch.dict(sys.modules, {"wake_opencode": FakeAdapter}):
+            pilot.ring(state, "opencode", "2 unread")
+        self.assertIn("args", captured, "the adapter must be called")
+        root, pointer, session_id = captured["args"]
+        self.assertEqual("ses_recorded", session_id,
+                         "the recorded session id rides to the adapter")
+        self.assertIn("[pair]", pointer)
+        self.assertEqual(str(pilot.store.project_root), str(root))
+
+    def test_ring_without_a_recorded_session_still_calls_fail_closed(self) -> None:
+        """Absent id passes None; the adapter refuses, never guesses."""
+        pilot = self.pilot()
+        pilot.tmux = "tmux-fake"
+        state = self.write_state(roles={"opencode": {"pane": "%7"}})
+        captured = {}
+
+        class FakeAdapter:
+            @staticmethod
+            def wake(project_root, pointer, session_id=None):
+                captured["session_id"] = session_id
+                return {"woken": False, "why": "no recorded OpenCode session id"}
+
+        with mock.patch.object(pairpilot, "pane_alive", return_value=True), \
+                mock.patch.object(pairpilot.subprocess, "run"), \
+                mock.patch.dict(sys.modules, {"wake_opencode": FakeAdapter}):
+            pilot.ring(state, "opencode", "2 unread")
+        self.assertIsNone(captured["session_id"])
+        self.assertIn("pilot_wake_api", self.transcript_kinds())
 
 
 class TestWakeFileIntegrity(PilotCase):

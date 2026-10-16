@@ -282,6 +282,41 @@ class ReadDeliveryReplay(PairTestCase):
         self.assertEqual(6, state["seen"]["opencode"])
         self.assertNotIn("acked_runs", pending)
 
+    def test_digest_names_the_poison_with_path_and_cure(self) -> None:
+        batch = self._batch_of("digest poison")
+        inbox = self.store.mailbox_root / self.peer.role
+        sorted(inbox.glob("*.json"))[0].write_text("not json", encoding="utf-8")
+        self.peer.tool_pair_read()
+        text = self.peer.tool_pair_digest()["digest"]
+        self.assertIn("POISONED:", text)
+        self.assertIn("cause:", text)
+        self.assertIn("pairctl read-ack", text)
+
+    def test_digest_prints_no_poison_for_a_healthy_batch(self) -> None:
+        self._batch_of("healthy batch")
+        text = self.peer.tool_pair_digest()["digest"]
+        self.assertIn("PENDING READ", text)
+        self.assertNotIn("POISONED", text)
+
+
+    def test_state_pending_token_always_acks_consistency(self) -> None:
+        """(a) Whatever pair_state calls pending, pair_read can ack - one truth.
+
+        Round 101 live finding (seq 1477): a stale server answered two ways
+        about one batch - pair_read refused the token pair_state still showed.
+        On committed code these two surfaces must never disagree.
+        """
+        batch = self._batch_of("consistency letter")["pending_read"]
+        st = self.peer.tool_pair_state()
+        shown = st["pending_read"]["batch_id"]
+        self.assertEqual(batch["batch_id"], shown)
+        acked = self.peer.tool_pair_read(ack_token=shown)
+        self.assertEqual(shown, acked["ack_token"] if "ack_token" in acked else shown)
+        st_after = self.peer.tool_pair_state()
+        self.assertIsNone(st_after.get("pending_read"),
+                          "(b) after an ack, no pending batch remains")
+        self.assertEqual(0, st_after["unread"],
+                          "(b) the acked letter no longer reads unread")
 
 if __name__ == "__main__":
     unittest.main()
