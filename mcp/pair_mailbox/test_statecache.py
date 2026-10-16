@@ -373,10 +373,16 @@ class TestCacheOverARealSession(PairTestCase):
             self.assertEqual(after.get("unread"), 1)
 
             self.peer.tool_pair_read(limit=10)
+            # [R101] The batch contract: a read leaves a PENDING batch; `seen`
+            # stays at the batch start until the ACK, so unread still reads 1.
+            pending = self.peer.tool_pair_state().get("pending_read")
+            self.assertIsNotNone(pending, "a read batch waits for its ack")
+            self.peer.tool_pair_read(ack_token=pending["batch_id"])
             reread = self.peer.tool_pair_state()
             self.assertNotIn("unchanged", reread,
-                             "the cache hid reading behind the stub")
-            self.assertEqual(reread.get("unread"), 0)
+                             "the cache hid the ack behind the stub")
+            self.assertEqual(reread.get("unread"), 0,
+                             "only the ack commits: unread drops after it")
         finally:
             os.environ[statecache.CACHE_DISABLED_ENV] = "1"
 
