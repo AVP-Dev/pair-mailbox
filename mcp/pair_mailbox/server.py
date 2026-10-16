@@ -56,6 +56,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import digest  # noqa: E402 - needs sys.path above
 import liveness  # noqa: E402 - needs sys.path above
 import obligations  # noqa: E402 - needs sys.path above
+import restart_trace  # noqa: E402 - needs sys.path above
 import server_freshness  # noqa: E402 - needs sys.path above
 import statecache  # noqa: E402 - needs sys.path above
 import read_delivery  # noqa: E402 - pending mailbox batch transitions
@@ -1656,6 +1657,7 @@ class PairSession:
                 peer_inbox_names=self._peer_inbox_names(state),
                 git_snapshot=self._git_fingerprint,
                 alive=alive,
+                restart_line=restart_trace.restarts_last(self.store.root),
             )
             if state_hash == self._last_state_hash:
                 return statecache.unchanged_answer(state_hash)
@@ -1777,6 +1779,11 @@ class PairSession:
             ],
             "awaiting_human_ok": (autonomy == "semi" and not self.human_ok_for_round(state)),
             "unresolved_patches": self.unresolved_patches(state) if mode != "audit" else [],
+            # [R102] The last thing pairrestart did, one durable line. A role
+            # killed by a restart reads here on reconnect WHO killed it, when,
+            # and which pids — instead of learning it from the human (the
+            # round-101 channel-dark period).
+            "restarts_last": restart_trace.restarts_last(self.store.root),
             "server_fresh": server_freshness.check_server_freshness()["fresh"],
             "server_stale_files": server_freshness.list_stale_files(),
             # [R91] Delivery advisory (B7): the PR ceiling cannot run here — `gh`

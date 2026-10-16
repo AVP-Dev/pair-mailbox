@@ -49,6 +49,7 @@ def fingerprint(
     peer_inbox_names: dict[str, list[str]] | None = None,
     git_snapshot: Callable[[], Any] | None = None,
     alive: dict[str, bool | None] | None = None,
+    restart_line: dict[str, Any] | None = None,
 ) -> str:
     """A short fingerprint of all the full `pair_state` answer reads.
 
@@ -93,6 +94,9 @@ def fingerprint(
         "peer_inbox": {k: sorted(v) for k, v in (peer_inbox_names or {}).items()},
         "git": git_fp,
         "alive": dict(sorted((alive or {}).items())),
+        # [R102] The pairrestart trace rides in the answer; a fresh line must
+        # break the unchanged stub or the reconnected role never sees it.
+        "restart": restart_line,
     }
     return hashlib.sha256(json.dumps(cache_key, sort_keys=True).encode()).hexdigest()[:12]
 
