@@ -2028,6 +2028,36 @@ class TestPhasesAndNotes(PairTestCase):
         self.assertRefused(self.writer.tool_pair_note, kind="../escape", text="x", contains="slug")
         self.assertRefused(self.writer.tool_pair_note, kind="plan", text="", contains="required")
 
+    def test_note_row_carries_sha_and_attempt(self) -> None:
+        """Round 103 S6: attribution on the note row. Five identical blocks
+        landed in handoff.md at one ts and no field could say whether one call
+        appended five times or five calls ran inside a second."""
+        self.writer.tool_pair_note(kind="handoff", text="the same body\n")
+        self.writer.tool_pair_note(kind="handoff", text="the same body")
+        rows = [r for r in self.store.read_transcript(limit=20)
+                if r.get("kind") == "note" and r.get("note_kind") == "handoff"]
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[0].get("note_sha"), rows[1].get("note_sha"),
+                         "trailing whitespace must not change the sha")
+        self.assertEqual(rows[0].get("note_attempt"), 1)
+        self.assertEqual(rows[1].get("note_attempt"), 2,
+                         "the repeat is counted, not silently swallowed")
+        plan = (self.store.notes_root / "handoff.md").read_text(encoding="utf-8")
+        self.assertIn("attempt 2", plan, "the file carries the attempt marker")
+
+    def test_whitespace_only_difference_counts_as_repeat(self) -> None:
+        """Peer amendment 2 (member of the class): blocks 1-4 sha-equal len
+        1204, block 5 len 1203 — one trailing newline apart; exact equality
+        refuses four and misses the fifth."""
+        self.writer.tool_pair_note(kind="handoff", text="block body\n\n")
+        self.writer.tool_pair_note(kind="handoff", text="block body\n")
+        self.writer.tool_pair_note(kind="handoff", text="block body")  # no newline
+        rows = [r for r in self.store.read_transcript(limit=20)
+                if r.get("kind") == "note" and r.get("note_kind") == "handoff"]
+        shas = {r.get("note_sha") for r in rows}
+        self.assertEqual(len(shas), 1, "all three normalize to one sha")
+        self.assertEqual(rows[-1].get("note_attempt"), 3)
+
 class TestHeartbeatIsEveryCall(PairTestCase):
     """Every call moves `last_seen` (heartbeat in invoke)."""
 

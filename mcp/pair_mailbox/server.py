@@ -3415,16 +3415,39 @@ class PairSession:
         if not (text or "").strip():
             raise ProtocolError("`text` is required.")
         self.store.notes_root.mkdir(parents=True, exist_ok=True)
+        body = text.strip()
+        normalized = "\n".join(line.rstrip() for line in body.splitlines()).strip()
+        import hashlib as _hashlib
+        body_sha = _hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:12]
+        # Round 103 S6, peer amendment 3: attribution first. Five identical
+        # blocks landed in handoff.md at one ts and the transcript could not
+        # say whether one call appended five times or five calls ran inside a
+        # second — the fields that would tell (tool, call id, attempt) were
+        # never written. A fact nobody can attribute is a fact nobody trusts.
+        attempt: dict[str, int] = {}
+        for row in self.store.read_transcript(limit=50):
+            if row.get("kind") != "note" or row.get("note_kind") != kind \
+                    or row.get("role") != self.role:
+                continue
+            if str(row.get("note_sha", "")) == body_sha:
+                attempt["n"] = int(row.get("note_attempt", 0)) + 1
+        n_attempt = attempt.get("n", 1)
         target = self.store.notes_root / f"{kind}.md"
         with self.store.lock():
             with target.open("a", encoding="utf-8") as stream:
-                stream.write(f"\n## {utcnow()} — {self.role}\n\n{text.strip()}\n")
+                stream.write(f"\n## {utcnow()} — {self.role} (note {body_sha} attempt {n_attempt})\n\n{body}\n")
             # Rotation at 10 KB: notes grow unbounded, and a tail read from a 72 KB file costs
             # ~18000 tokens. Rotation keeps the active part compact, the old leaving for archive/.
-            # leaving for archive/.
             if target.stat().st_size > 10 * 1024:
                 self._rotate_note(kind, target)
-        self.store.append_transcript("note", self.role, note_kind=kind, chars=len(text))
+        # Round 103 S6: normalization closes the one-newline gap (peer
+        # amendment 2: blocks 1-4 sha-equal len 1204, block 5 len 1203 — exact
+        # equality would refuse four and miss the fifth). The row carries the
+        # normalized sha + attempt; repeated content is ATTRIBUTED, not
+        # silently swallowed.
+        self.store.append_transcript("note", self.role, note_kind=kind,
+                                     chars=len(text), note_sha=body_sha,
+                                     note_attempt=n_attempt)
         if kind == "verdict" or kind.startswith("verdict-"):
             # The verdict-to-revision bind lives in review next to snapshot. Silently applying a
             # verdict to a drifted revision beats missing verdict. Fail-open: with no git an empty
