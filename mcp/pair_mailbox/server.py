@@ -2699,6 +2699,7 @@ class PairSession:
                 # open PR (prepared, human word still owed); auto needs a merge
                 # (end to end). Verified against `gh`, never trusted from a
                 # kind=pr row (E1). Audit exempt (B6, D3).
+                blockers = []
                 if state.get("mode", "fix") != "audit":
                     try:
                         from review import pr_ceiling
@@ -2709,7 +2710,7 @@ class PairSession:
                         ceil_status, ceil_detail = "unknown", "PR check failed to run"
                     if ceil_status == "missing":
                         blockers.append(f"round is not shipped: {ceil_detail}.")
-                blockers = self._done_blockers(state)
+                blockers.extend(self._done_blockers(state))
                 if blockers:
                     raise ProtocolError(
                         "this round cannot be closed yet: " + " ".join(blockers),
