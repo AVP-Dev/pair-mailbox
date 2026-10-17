@@ -353,11 +353,11 @@ def _verdict_owes_review(text: str) -> bool:
     )):
         return False
     return any(marker in low for marker in (
-        "needs work", "needs-work", "reopen", "re-open", "hold s",
-        "not approved", "refus", "reject", "objection", "i object",
-        "must be fixed", "fix this", "re-review", "rereview", "redo",
+        "needs work", "needs-work", "reopen", "re-open", "hold s", "refus",
+        "reject", "objection", "i object", "must be fixed", "fix this",
+        "re-review", "rereview", "redo",
     ))
-    return max((int(item.get("id", 0)) for item in tasks_of(state)), default=0) + 1
+
 
 def _subject(state: dict[str, Any]) -> str:
     """The round's subject — task_subject.py: one rule, four surfaces."""
