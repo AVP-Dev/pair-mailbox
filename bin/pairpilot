@@ -2060,9 +2060,9 @@ def main() -> int:
         log(f"pass done: phase={state.get('phase')} writer={state.get('writer')}")
         return 0
 
-    # Own pid for pair-duo's liveness check (pair-duo:108-124): a stale record makes it raise a SECOND pilot.
+    # Own pid, bare like pairrestart:249 writes it, for pair-duo's liveness check (pair-duo:108-124): a stale record raises a SECOND pilot.
     _pid_file = state_dir / "pilot.pid"
-    _pid_file.write_text(f"{os.getpid()}\n", encoding="utf-8")
+    _pid_file.write_text(str(os.getpid()), encoding="utf-8")
 
     log(f"supervisor on {state_dir}, silence threshold {int(args.silence)} s, Ctrl-C exits")
     try:
