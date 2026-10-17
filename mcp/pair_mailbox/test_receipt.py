@@ -115,6 +115,29 @@ class TestReceiptGroundTruth(unittest.TestCase):
             receipt.generate_receipt(self.repo.state, state_for())
         self.assertFalse((self.repo.state / "RECEIPT-1.md").exists())
 
+    def test_receipt_names_the_commit_it_closed(self) -> None:
+        """Round 103: the receipt is the next round's record of this one.
+
+        The close path called generate_receipt without head_commit, so round
+        103's receipt recorded `Head Commit: —` above twelve commits and a
+        merged PR. Anyone reading the receipt could not tell which commit the
+        round ended on. With a repo available the sha must land.
+        """
+        head = git(self.repo.root, "rev-parse", "HEAD")
+        target = receipt.generate_receipt(self.repo.state, state_for(),
+                                          head_commit=head)
+        text = target.read_text(encoding="utf-8")
+        self.assertIn(f"**Head Commit**: {head}", text)
+        self.assertNotIn("**Head Commit**: —", text)
+
+    def test_receipt_survives_a_missing_head(self) -> None:
+        """No sha must not lose the receipt: em-dash, but the rest still lands."""
+        target = receipt.generate_receipt(self.repo.state, state_for(),
+                                          head_commit="")
+        text = target.read_text(encoding="utf-8")
+        self.assertIn("**Head Commit**: —", text)
+        self.assertIn("## Ground Truth", text)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -2748,15 +2748,16 @@ class PairSession:
                 state["reopened_by"] = self.role
                 state["round"] = int(state.get("round", 0)) + 1
             elif phase == "done":
+                import traceback
                 state["closed_at"] = utcnow()
                 from receipt import GroundTruthBlocked, generate_receipt
+                from review import git_head
                 try:
-                    generate_receipt(self.store.root, state)
+                    _head = git_head(self.store.project_root)
+                    generate_receipt(self.store.root, state, head_commit=_head)
                 except GroundTruthBlocked as exc:
-                    raise ProtocolError(f"round cannot be closed: {exc}",
-                                        "Remove combat mocks, commit and retry.")
+                    raise ProtocolError(f"round cannot be closed: {exc}", "Remove combat mocks, commit and retry.")
                 except Exception:
-                    import traceback
                     traceback.print_exc()
                 # Round 94 C9: server-derived manifest beside the receipt.
                 from manifest import ManifestRefused, write_manifest
@@ -2766,7 +2767,6 @@ class PairSession:
                     raise ProtocolError(f"round cannot be closed: {exc}",
                                         "The journal disagrees with the manifest.")
                 except Exception:
-                    import traceback
                     traceback.print_exc()
 
         self.store.mutate(apply)
