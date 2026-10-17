@@ -255,7 +255,19 @@ def write_mcp(profile, role):
     # No --state by design: pinning an absolute project path into shared configs
     # (~/.config) is banned — all projects would share one state. Resolving at
     # runtime: walk-up to .pair/state.json in serve.sh and extract_state.
-    argv = ["sh", str(SERVER), role]
+    #
+    # TRANSPORT (round 106 slice F): PAIR_TRANSPORT=socket installs the THIN
+    # CLIENT instead of a child-spawning server, which is the whole point of the
+    # slice — the daemon's lifetime stops being the CLI's. The daemon itself is
+    # raised by pairup/pairrestart; the client connects or refuses naming the
+    # remedy, and never spawns.
+    transport = (os.environ.get("PAIR_TRANSPORT") or os.environ.get("PAIR_SOCKET_CLIENT") or "").strip().lower()
+    if transport in ("socket", "client", "sock"):
+        argv = [sys.executable, str(ROOT / "mcp" / "pair_mailbox" / "mcp_socket_client.py"), role]
+        transport_note = "thin socket client (daemon raised by pairup)"
+    else:
+        argv = ["sh", str(SERVER), role]
+        transport_note = "child server (default; PAIR_TRANSPORT=socket switches)"
     path.parent.mkdir(parents=True, exist_ok=True)
 
     if spec["format"] == "toml":
@@ -289,6 +301,7 @@ def write_mcp(profile, role):
         entry["command"] = argv
     else:
         entry["command"], entry["args"] = argv[0], argv[1:]
+    entry["pairTransport"] = transport_note
     entry_json = json.dumps(entry, indent=2, ensure_ascii=False)
     # Editing in place, never a whole-file json.dumps: or human comments and
     # formatting wipe on every install.
