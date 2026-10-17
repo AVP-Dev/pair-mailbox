@@ -115,3 +115,11 @@ class TestRestartTrace(unittest.TestCase):
         after = statecache.fingerprint(
             state, restart_line={"ts": "t2", "roles": [{"role": "omp", "pid": 2}]})
         self.assertNotEqual(base, after)
+
+
+if __name__ == "__main__":
+    # Round 103 NEEDS WORK #2: without this the profile leg
+    # (`&& python3 mcp/pair_mailbox/test_restart_trace.py`) collects zero
+    # tests and reports rc=0 — a silently green gate inside the round whose
+    # goal is a proven, not silent, gate. Every sibling carries the runner.
+    unittest.main(verbosity=2)
