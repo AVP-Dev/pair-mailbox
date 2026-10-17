@@ -103,6 +103,73 @@ class TestDiagnose(unittest.TestCase):
         self.assertEqual(code, 0)
         do_act.assert_not_called()
 
+    # --- round 104 S0: the inventory belongs to one state dir ---------------
+
+    _PS_LINE = ("  1234 Sat Oct 17 15:00:00 2026  900 /usr/bin/python3 "
+                "/home/alubuntu/x/mcp/pair_mailbox/server.py --role {role} "
+                "--state {state}")
+
+    def test_foreign_state_server_is_not_our_inventory(self) -> None:
+        """A server of ANOTHER project is not a row here, and never a kill target.
+
+        Live proof (critic seq 1536): galatour's `--role omp` server was
+        inventoried as this repo's FRESH omp and printed "Nothing stale" while
+        our own stale omp stayed alive. A `--yes` run under that inventory kills
+        another project's server — fixing one thing must not break another.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            mine = Path(tmp)
+            foreign = mine.parent / "some-other-project"
+            lines = [self._PS_LINE.format(role="omp", state=foreign),
+                     self._PS_LINE.format(role="omp", state=mine)]
+            with mock.patch.object(PR.subprocess, "run",
+                                   return_value=mock.Mock(stdout="\n".join(lines))):
+                found = PR.live_servers(mine)
+        self.assertEqual([s["pid"] for s in found], [1234],
+                         "only our own state's server may be inventoried")
+        self.assertFalse(any("other-project" in str(s) for s in found))
+
+    def test_state_equals_form_parses_too(self) -> None:
+        """`--state=DIR` is the same membership as `--state DIR`."""
+        with tempfile.TemporaryDirectory() as tmp:
+            mine = Path(tmp)
+            line = ("  99 Sat Oct 17 15:00:00 2026  900 /usr/bin/python3 "
+                    f"/x/mcp/pair_mailbox/server.py --role omp --state={mine}")
+            with mock.patch.object(PR.subprocess, "run",
+                                   return_value=mock.Mock(stdout=line)):
+                found = PR.live_servers(mine)
+        self.assertEqual([s["pid"] for s in found], [99])
+
+    def test_two_servers_of_one_role_both_show(self) -> None:
+        """Two live servers of the SAME role and state: two rows, never one.
+
+        diagnose() used to build a dict by role, so the last line silently won and
+        a second same-role server looked FRESH while the real one sat stale.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            sd = self._state(Path(tmp), ["omp"])
+            two = [{"pid": 11, "role": "omp", "start": "x"},
+                   {"pid": 22, "role": "omp", "start": "x"}]
+            with mock.patch.object(PR, "live_servers", return_value=two), \
+                 mock.patch.object(PR, "proc_start_ts", return_value=1.0), \
+                 mock.patch.object(PR, "server_code_mtime", return_value=9e9), \
+                 mock.patch.object(PR, "pilot_procs", return_value=[]):
+                rows = PR.diagnose(sd)
+        pids = sorted(r["pid"] for r in rows if r["kind"] == "role")
+        self.assertEqual(pids, [11, 22], "both same-role servers must be listed")
+        self.assertEqual({r["verdict"] for r in rows if r["kind"] == "role"}, {"STALE"})
+
+    def test_no_state_arg_means_not_ours(self) -> None:
+        """A server launched without --state runs on its cwd: not ours to claim."""
+        with tempfile.TemporaryDirectory() as tmp:
+            mine = Path(tmp)
+            line = ("  55 Sat Oct 17 15:00:00 2026  900 /usr/bin/python3 "
+                    "/x/mcp/pair_mailbox/server.py --role omp")
+            with mock.patch.object(PR.subprocess, "run",
+                                   return_value=mock.Mock(stdout=line)):
+                found = PR.live_servers(mine)
+        self.assertEqual(found, [])
+
 
 
 

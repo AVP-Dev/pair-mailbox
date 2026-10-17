@@ -79,10 +79,22 @@ def fmt_ts(ts: float | None) -> str:
     return datetime.fromtimestamp(ts).astimezone().strftime("%m-%d %H:%M")
 
 
-def live_servers() -> list[dict]:
-    """Every pair server process: pid, role, start time. ps-sourced, no imports."""
+def live_servers(state_dir: Path) -> list[dict]:
+    """Every pair server of THIS state dir: pid, role, start time.
+
+    ps-sourced, no imports. The `--state` argument decides membership, exactly
+    like `pilot_procs` filters pilots below: without it a second project's
+    server for the same role answers to this repo's name. That is proven live
+    (round 104, peer seq 1536): a galatour `--role omp` server was inventoried
+    as this repo's FRESH omp while the real one went stale, and a `--yes` run
+    under that inventory kills another project's server.
+
+    `--state dir` and `--state=dir` both parse; a server with no `--state` runs
+    on its cwd and is not ours to claim.
+    """
     out = subprocess.run(["ps", "-eo", "pid,lstart,etimes,args"],
                          capture_output=True, text=True).stdout or ""
+    want = str(state_dir)
     found = []
     for line in out.splitlines():
         if "server.py" not in line or "--role" not in line:
@@ -97,6 +109,19 @@ def live_servers() -> list[dict]:
         try:
             role = parts[parts.index("--role") + 1]
         except (ValueError, IndexError):
+            continue
+        # Both spellings: `--state DIR` as two tokens, `--state=DIR` as one.
+        # ps output collapses nothing, so an =form hides in a single part and
+        # index-based reading of it picks the NEXT argument instead.
+        state = ""
+        for i, part in enumerate(parts):
+            if part == "--state" and i + 1 < len(parts):
+                state = parts[i + 1]
+                break
+            if part.startswith("--state="):
+                state = part[len("--state="):]
+                break
+        if state != want:
             continue
         start = " ".join(parts[1:6])
         found.append({"pid": pid, "role": role, "start": start})
@@ -133,7 +158,11 @@ def diagnose(state_dir: Path) -> list[dict]:
     rows: list[dict] = []
     code_server = server_code_mtime()
     code_pilot = pilot_code_mtime()
-    servers = {s["role"]: s for s in live_servers()}
+    # All servers of this state, grouped by role: one row each, never a
+    # dict-by-role that silently keeps only the last line and hides the rest.
+    servers: dict[str, list[dict]] = {}
+    for srv in live_servers(state_dir):
+        servers.setdefault(srv["role"], []).append(srv)
     try:
         import json as _json
         state = _json.loads((state_dir / "state.json").read_text(encoding="utf-8"))
@@ -141,18 +170,19 @@ def diagnose(state_dir: Path) -> list[dict]:
     except Exception:
         roles = ["omp", "opencode"]
     for role in roles:
-        srv = servers.get(role)
-        if srv is None:
+        role_servers = servers.get(role) or []
+        if not role_servers:
             rows.append({"kind": "role", "name": role, "pid": None,
                          "verdict": "ABSENT",
                          "detail": "no live server — reconnect its MCP when done"})
             continue
-        started = proc_start_ts(srv["pid"]) or time.time()
-        stale = code_server is not None and code_server > started
-        rows.append({"kind": "role", "name": role, "pid": srv["pid"],
-                     "started": fmt_ts(started), "code": fmt_ts(code_server),
-                     "verdict": "STALE" if stale else "FRESH",
-                     "detail": "kill, session reconnects" if stale else "leave alone"})
+        for srv in role_servers:
+            started = proc_start_ts(srv["pid"]) or time.time()
+            stale = code_server is not None and code_server > started
+            rows.append({"kind": "role", "name": role, "pid": srv["pid"],
+                         "started": fmt_ts(started), "code": fmt_ts(code_server),
+                         "verdict": "STALE" if stale else "FRESH",
+                         "detail": "kill, session reconnects" if stale else "leave alone"})
     pilots = pilot_procs(state_dir)
     if not pilots:
         rows.append({"kind": "pilot", "name": "pilot", "pid": None,
