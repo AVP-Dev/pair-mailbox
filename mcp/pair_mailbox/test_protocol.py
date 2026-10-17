@@ -4466,5 +4466,89 @@ def _is_type(node) -> bool:
     """An `X | Y` annotation side: a name, a subscription, or a None constant."""
     return isinstance(node, (ast.Name, ast.Attribute, ast.Subscript, ast.Constant))
 
+class TestRoundBasePin(PairTestCase):
+    """Round 105 slice 2b prerequisite: the number round 104 lacked.
+
+    The delivery floor answered `delivered` from local remote-tracking refs while
+    origin sat 7 ahead — with no recorded base, "ahead of what?" had no answer.
+    round_base is that answer: the head origin/master carries, stamped when the
+    round opens.
+    """
+
+    @staticmethod
+    def git(cwd: Path, *args: str) -> None:
+        subprocess.run(["git", *args], cwd=str(cwd), check=True,
+                       capture_output=True, text=True, timeout=10)
+
+    def _fresh(self) -> tuple[Any, Any]:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        proj = Path(tmp.name) / "proj"
+        # Store.project_root is root.parent when the dir is named .pair — the
+        # same derivation the server uses, so the fixture must sit in one.
+        store = Store(proj / ".pair")
+        return store, proj
+
+    def test_round_open_stamps_the_head_origin_carries(self) -> None:
+        store, proj = self._fresh()
+        self.git(proj, "init", "-q")
+        self.git(proj, "config", "user.email", "t@t.t")
+        self.git(proj, "config", "user.name", "t")
+        (proj / "a.py").write_text("x\n", encoding="utf-8")
+        self.git(proj, "add", "-A")
+        self.git(proj, "commit", "-qm", "base")
+        head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=str(proj),
+                              capture_output=True, text=True).stdout.strip()
+        self.git(proj, "update-ref", "refs/remotes/origin/master", head)
+        session = PairSession("omp", store)
+        self.allow_panes()
+        session.tool_pair_claim(reason="test")
+        state = store.read()
+        self.assertEqual(state.get("round_base"), head)
+
+    def test_no_origin_leaves_base_unset_not_invented(self) -> None:
+        """A repo with no origin/master must not fabricate a base: the comparison
+        then reports its own inability, and never diffs against a guess."""
+        store, proj = self._fresh()
+        self.git(proj, "init", "-q")
+        self.git(proj, "config", "user.email", "t@t.t")
+        self.git(proj, "config", "user.name", "t")
+        (proj / "a.py").write_text("x\n", encoding="utf-8")
+        self.git(proj, "add", "-A")
+        self.git(proj, "commit", "-qm", "base")
+        session = PairSession("omp", store)
+        self.allow_panes()
+        session.tool_pair_claim(reason="test")
+        self.assertIsNone(store.read().get("round_base"))
+
+    def test_base_is_not_restamped_inside_one_round(self) -> None:
+        """The base belongs to the round that opened it: a reopen within the same
+        round must not move it, or the comparison would diff against the wrong end."""
+        store, proj = self._fresh()
+        self.git(proj, "init", "-q")
+        self.git(proj, "config", "user.email", "t@t.t")
+        self.git(proj, "config", "user.name", "t")
+        (proj / "a.py").write_text("x\n", encoding="utf-8")
+        self.git(proj, "add", "-A")
+        self.git(proj, "commit", "-qm", "base")
+        head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=str(proj),
+                              capture_output=True, text=True).stdout.strip()
+        self.git(proj, "update-ref", "refs/remotes/origin/master", head)
+        session = PairSession("omp", store)
+        self.allow_panes()
+        session.tool_pair_claim(reason="test")
+        first = store.read()["round_base"]
+        # origin/master moves mid-round: the pinned base must hold
+        (proj / "b.py").write_text("y\n", encoding="utf-8")
+        self.git(proj, "add", "-A")
+        self.git(proj, "commit", "-qm", "second")
+        moved = subprocess.run(["git", "rev-parse", "HEAD"], cwd=str(proj),
+                               capture_output=True, text=True).stdout.strip()
+        self.git(proj, "update-ref", "refs/remotes/origin/master", moved)
+        store.mutate(lambda s: s.update({"round": s.get("round", 0) + 1}))
+        self.assertEqual(store.read().get("round_base"), first)
+        self.assertNotEqual(first, moved)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
