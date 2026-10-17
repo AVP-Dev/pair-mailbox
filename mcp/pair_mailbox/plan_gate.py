@@ -38,7 +38,7 @@ SECTION_PATTERNS = (
 )
 
 # A verdict note: the header carries time and role, the body the plan-ack line.
-NOTE_ENTRY = re.compile(r"^##\s*(\S+)\s+—\s+(\S+)\s*$")
+NOTE_ENTRY = re.compile(r"^##\s*(\S+)\s+—\s+(\S+)(?:\s*\(note\s+\S+\s+attempt\s+\d+\)\s*)?$")
 ACK_LINE = re.compile(r"\bplan-ack\s+round\s+(\d+)\b", re.IGNORECASE)
 
 
