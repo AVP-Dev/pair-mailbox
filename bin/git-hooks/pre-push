@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+# pre-push: the local lane guard (round 105 slice 2a).
+#
+# Rule: master receives code ONLY by PR merge. A direct `git push origin master`
+# (or any refspec that updates refs/heads/master) is refused before bytes leave
+# the machine — no network, no gh, no pairctl, no .pair read. It therefore also
+# catches round 104's deviation shape with the servers down.
+#
+# Deliberately NOT the merge gate: this hook approves nothing. It only refuses
+# one direction of travel. Human override exists, is explicit, and is echoed so
+# it cannot be silent.
+#
+# stdin contract (git): <local_ref> <local_sha> <remote_ref> <remote_sha> per line.
+set -u
+
+while read -r local_ref local_sha remote_ref _remote_sha; do
+    [ -z "${remote_ref:-}" ] && continue
+    case "$remote_ref" in
+        refs/heads/master)
+            if [ "${PAIR_ALLOW_MASTER_PUSH:-}" = "1" ]; then
+                echo "pair pre-push: PAIR_ALLOW_MASTER_PUSH=1 — direct push to master allowed by local override" >&2
+                continue
+            fi
+            cat >&2 <<'MSG'
+pair pre-push REFUSED: direct push to refs/heads/master
+
+master receives code ONLY by PR merge (round 105 lane rule; round 104's
+ab9ba87 deviation closed on the record). Push your branch instead:
+
+    git push -u origin <branch>
+
+then open a PR (bin/pairctl pr merge runs the machine gate).
+
+Human override, echoed so it is never silent:
+    PAIR_ALLOW_MASTER_PUSH=1 git push origin master
+MSG
+            exit 1
+            ;;
+    refs/heads/dev)
+            # dev is the accumulator: any push allowed here. The hook stays
+            # quiet on purpose — a guard that narrates every legal push is noise.
+            continue
+            ;;
+    esac
+done
+exit 0
