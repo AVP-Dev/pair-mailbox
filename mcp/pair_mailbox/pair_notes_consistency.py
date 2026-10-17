@@ -29,6 +29,20 @@ NOTE_ENTRY_RE = re.compile(
     r"^##\s*(\S+)\s+—\s+(\S+)(?:\s*\(note\s+([0-9a-f]{12})\s+attempt\s+(\d+)\s*\))?\s*$"
 )
 
+# The timestamp is an ISO-ish stamp wherever it sits: canonical headers put it
+# first, corrected headers put a mark there and the stamp AFTER it
+# (`## Correction — 2026-10-16T08:06:29Z`), legacy ones carry a bare date.
+# Parser discipline: read the DATE from its own shape, never from a positional
+# group — a positional read hands back "Correction" as the timestamp and every
+# era comparison built on it silently fails.
+STAMP_RE = re.compile(r"(\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}:\d{2}(?:[+-]\d{2}:?\d{2}|Z)?)?)")
+
+
+def entry_stamp(header: str) -> str:
+    """The entry's timestamp, wherever the header puts it."""
+    m = STAMP_RE.search(header)
+    return m.group(1) if m else ""
+
 
 def _transcript_note_rows(state_dir: Path) -> list[dict[str, Any]]:
     """All `note` rows from the united stream — active plus archive.
@@ -68,36 +82,58 @@ def _transcript_note_rows(state_dir: Path) -> list[dict[str, Any]]:
     return rows
 
 
+def attribution_floor(state_dir: Path) -> str:
+    """When the appender began stamping provenance — the era boundary.
+
+    The earliest `ts` among journal note rows that CARRY a note_sha. Entries
+    predating it were written by an appender that had no sha field yet, so their
+    provenance is absent by construction, not by tampering. Empty stream means
+    no boundary is known and nothing is scoped out (fail closed, the leg then
+    treats everything as in-era).
+    """
+    stamps = [str(r.get("ts") or "") for r in _transcript_note_rows(Path(state_dir))
+              if r.get("note_sha")]
+    return min(stamps) if stamps else ""
+
+
 def check_notes(state_dir: Path) -> tuple[bool, str]:
     """Cross-check every notes/<kind>.md entry against the transcript's note rows.
 
-    Returns `(ok, detail)`. Three classes, each named:
-    - an entry whose (role, note_sha, attempt) has NO matching transcript row —
-      the hand-edit case: written into the file without the journal's knowledge,
-      which is how a foreign-agent write into a kind file hides;
+    Returns `(ok, detail)`. Blocking and non-blocking are SEPARATE (critic
+    ruling, round 106, decision-round106-rulings): only an entry that COULD have
+    been checked and does not match blocks. Report-only, named and counted:
+    - an entry predating the attribution floor — its provenance is absent by
+      construction (the appender had no sha field yet), so it cannot be judged;
+    - an entry whose journal row rotated away (its sha never appears anywhere in
+      the surviving stream) — its only sin is rotation, not tampering;
     - a transcript row with no entry in any notes/ file — content that exists
-      only in the journal;
-    - an entry with no `note <sha> attempt <n>` tail at all, written by a tool
-      that is not pair_note: unprovable provenance, so it cannot be matched
-      either way.
+      only in the journal.
 
-    Refuses on any of the three. Fail-open ONLY when nothing can be read at all
-    (no notes dir, no transcript) — a silent pass is the one result that must
-    never happen, and an empty tree is not "consistent", it is unprovable, which
-    the caller treats as unknown, not as ok.
+    Blocking, refused:
+    - an attribution-era entry (at/after the floor) whose (role, note_sha,
+      attempt) has NO matching row anywhere in the surviving stream: the
+      hand-edit / foreign-write shape this leg exists to catch. Pre-attribution
+      entries are never in this class, because nothing could have matched them.
+
+    Fail-open only when nothing can be read at all (no notes dir, no rows): an
+    empty tree is not "consistent", it is unprovable, which the caller treats
+    as unknown, not as ok.
     """
     state_dir = Path(state_dir)
     notes_dir = state_dir / "notes"
     if not notes_dir.is_dir():
         return True, "no notes directory: nothing to check"
 
+    floor = attribution_floor(state_dir)
     journal_keys = {
         (str(row.get("role") or ""), str(row.get("note_sha") or ""), int(row.get("note_attempt") or 0))
         for row in _transcript_note_rows(state_dir)
     }
+    journal_shas = {str(r.get("note_sha") or "") for r in _transcript_note_rows(state_dir)}
 
-    orphans: list[str] = []
-    unprovable: list[str] = []
+    pre_era: list[str] = []
+    rotated: list[str] = []
+    forged: list[str] = []
     file_keys: set[tuple[str, str, int]] = set()
     for path in sorted(notes_dir.glob("*.md")):
         try:
@@ -113,29 +149,54 @@ def check_notes(state_dir: Path) -> tuple[bool, str]:
             match = NOTE_ENTRY_RE.match(header)
             if not match:
                 continue
+            # A note entry always carries a timestamp; a markdown section head
+            # (`## P3 — hygiene`, `## Итоги раунда 75`) can match the shape
+            # without one and must never be counted as an unprovable entry —
+            # measured live: plan.md's section heads fired the leg on files
+            # that are not note logs at all.
+            if not STAMP_RE.search(header):
+                continue
             ts, role, sha, attempt = match.groups()
+            stamp = entry_stamp(header) or ts
             if not sha:
-                unprovable.append(f"{path.name}: entry {ts} — {role} carries no note sha/attempt")
+                # No sha at all: in-era this is the unprovable case (blocking),
+                # pre-era it is the same construction as everything else.
+                if floor and stamp < floor:
+                    pre_era.append(f"{path.name}: {stamp} — {role}")
+                else:
+                    forged.append(f"{path.name}: entry {stamp} — {role} carries no note sha/attempt")
                 continue
             key = (role, sha, int(attempt))
             file_keys.add(key)
-            if key not in journal_keys:
-                orphans.append(f"{path.name}: entry {ts} — {role} (note {sha} attempt {attempt}) has no transcript row")
+            if key in journal_keys:
+                continue
+            # The entry names a sha. Does that sha exist ANYWHERE in the
+            # surviving stream under any attempt? Yes -> rotation, report only.
+            # No -> nothing in the journal ever knew this body: blocking.
+            if sha in journal_shas:
+                rotated.append(f"{path.name}: entry {stamp} — {role} (note {sha} attempt {attempt})")
+            elif floor and stamp < floor:
+                # A pre-attribution entry that happens to carry a sha-ish tail
+                # cannot be judged against a stream that had no such field.
+                pre_era.append(f"{path.name}: {stamp} — {role}")
+            else:
+                forged.append(f"{path.name}: entry {stamp} — {role} (note {sha} attempt {attempt}) has no transcript row")
 
     journal_only = sorted(k for k in journal_keys - file_keys)
-    if orphans or unprovable or journal_only:
-        parts: list[str] = []
-        if orphans:
-            parts.append("note entries with no journal row (hand-edited or foreign-written): "
-                         + "; ".join(orphans[:5]))
-        if unprovable:
-            parts.append("note entries with no provable provenance: "
-                         + "; ".join(unprovable[:5]))
-        if journal_only:
-            parts.append("journal rows with no note entry: "
-                         + "; ".join(f"{r}/{s} attempt {a}" for (r, s, a) in journal_only[:5]))
-        return False, " — ".join(parts)
-    return True, f"every note entry matches its journal row ({len(file_keys)} checked)"
+    if forged:
+        return False, ("note entries that could be checked and do not match — "
+                       "hand-edited or foreign-written: " + "; ".join(forged[:5]))
+    parts: list[str] = [f"every checkable note entry matches its journal row ({len(file_keys)} checked)"]
+    if pre_era:
+        parts.append(f"{len(pre_era)} pre-attribution entry(ies) counted as history: "
+                     + "; ".join(pre_era[:5]))
+    if rotated:
+        parts.append(f"{len(rotated)} entry(ies) whose journal row rotated away: "
+                     + "; ".join(rotated[:5]))
+    if journal_only:
+        parts.append("journal rows with no note entry: "
+                     + "; ".join(f"{r}/{s} attempt {a}" for (r, s, a) in journal_only[:5]))
+    return True, " — ".join(parts)
 
 
 def tamper_probe(kind: str, body: str, stamp: str, role: str) -> tuple[bool, str]:

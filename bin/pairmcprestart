@@ -100,34 +100,35 @@ def reconnect(role: str, pane: str, check: bool) -> int:
     # appears AFTER the toggle — it was transient during earlier attempts.
     send(pane, MENU, enter=True)
     subprocess.run(["sleep", "6"], check=False)
-    for _ in range(PAIR_INDEX - 1):
-        send(pane, "Down")
-        subprocess.run(["sleep", "0.5"], check=False)
-    # Toggle toward CONNECTED: if the row is already Connected we must not flip
-    # it off — that is how an earlier run turned context7 Disabled. Read the
-    # pane before pressing space and skip when the row already reads Connected.
+    # Filter, do not navigate: the picker opens on the SEARCH caret, and arrows
+    # move the caret, not the row (measured — Tab and Down both left the
+    # highlight on context7, the row Space would DISABLE). Typing `pair` leaves
+    # that one row under the caret, so Space lands on the row we mean.
+    send(pane, "pair")
+    subprocess.run(["sleep", "2"], check=False)
     _code, screen = tmux("capture-pane", "-t", pane, "-p")
     row = [ln for ln in screen.splitlines() if "pair" in ln.lower()]
     joined = " ".join(row).lower()
     if "pair" in joined and "connected" in joined and "not connected" not in joined:
-        send(pane, "Escape")
+        tmux("send-keys", "-t", pane, "Escape")
         print(f"pairmcprestart: {label} already Connected — nothing to toggle")
         return 0
     send(pane, "space")
-    subprocess.run(["sleep", "8"], check=False)
-    _code, screen2 = tmux("capture-pane", "-t", pane, "-p")
-    if "pair" not in " ".join(screen2.splitlines()).lower():
-        print(f"pairmcprestart: {label}: picker closed unexpectedly", file=sys.stderr)
-        return 1
-    send(pane, "Escape")
-    subprocess.run(["sleep", "2"], check=False)
-    new_pid = server_pid(role)
+    # No Escape: quitting the picker aborts a pending handshake. Wait on the
+    # process, the only honest signal that the reconnect landed.
+    new_pid = ""
+    for _ in range(10):
+        subprocess.run(["sleep", "3"], check=False)
+        new_pid = server_pid(role)
+        if new_pid:
+            break
     if new_pid:
         print(f"pairmcprestart: {label} reconnected — server pid {new_pid} "
               f"(was {'DOWN' if not pid else pid})")
         return 0
     print(f"pairmcprestart: {label} still DOWN after the /mcp toggle — "
-          f"check the composer manually: /mcp, select pair, space", file=sys.stderr)
+          f"check the composer manually: /mcp, select pair, space, and WAIT for the "
+          f"handshake without leaving the picker", file=sys.stderr)
     return 1
 
 

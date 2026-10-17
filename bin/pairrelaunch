@@ -1,0 +1,173 @@
+#!/usr/bin/env python3
+"""Relaunch a role's CLI in its pane — the standing cure for a dropped pair MCP.
+
+Why this and not /mcp keystrokes: measured over hours, the picker approach failed
+four different ways (Tab/Down left the highlight on context7 — the row Space
+DISABLES; space on a Connected row disconnected it; Escape aborted a pending
+handshake; the modal ate a stray command and blocked everything). The picker is
+a mutating CLI-internal UI with invisible focus and transient state — no
+contract. A relaunch boots the MCP deterministically through serve.sh, which IS
+a contract.
+
+Measured: C-c, clear, launch, Enter -> pane returns with `⊙ 2 MCP` and the role
+server (pid per run) serving the state dir, in ~45 seconds.
+
+Single-flight, because a relaunch twice in a row is the round-104 S5 failure shape
+(two supervisors delivering one wake twice). `fcntl.flock(LOCK_EX|LOCK_NB)` on
+`.pair/.server-relaunch-<role>.lock` — one doctor, one pilot, one human at a time;
+the kernel releases it if the holder dies, so a crash never wedges the role.
+
+Cost, stated rather than hidden: the relaunched CLI loses its IN-MEMORY session
+context. The mailbox, notes, transcript and manifests survive, so the peer
+re-reads state and continues. This is the trade the human picked over unbounded
+picker time.
+
+Usage:
+  bin/pairrelaunch                the peer role with a live pane (default)
+  bin/pairrelaunch --role opencode
+  bin/pairrelaunch --check        report only
+"""
+from __future__ import annotations
+
+import argparse
+import errno
+import fcntl
+import json
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+STATE = ROOT / ".pair"
+KNOWN_ROLES = ("omp", "opencode", "agy", "claude", "pi", "codex")
+
+
+def tmux(*args: str):
+    proc = subprocess.run(["tmux", *args], capture_output=True, text=True, timeout=15)
+    return proc.returncode, (proc.stdout or "")
+
+
+def state_roles() -> list[str]:
+    try:
+        data = json.loads((STATE / "state.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return list(KNOWN_ROLES)
+    return [r for r in (data.get("roles") or {}) if r in KNOWN_ROLES] or list(KNOWN_ROLES)
+
+
+def pane_of(role: str) -> str:
+    code, out = tmux("list-panes", "-a", "-F",
+                     "#{pane_id}|#{session_name}|#{pane_index}|#{pane_current_command}")
+    for line in out.splitlines():
+        pane_id, _session, _index, command = (line.split("|") + [""] * 4)[:4]
+        if command.strip().lower().startswith(role):
+            return pane_id.strip()
+    return ""
+
+
+def server_pid(role: str) -> str:
+    proc = subprocess.run(["pgrep", "-f", f"server.py --role {role}"],
+                          capture_output=True, text=True, timeout=10)
+    return proc.stdout.strip().splitlines()[0] if proc.stdout.strip() else ""
+
+
+def launch_cmd(role: str) -> str:
+    """The launch command from cli-profiles.json — the profile's own line."""
+    try:
+        profiles = json.loads((ROOT / "cli-profiles.json").read_text(encoding="utf-8"))
+        return str((profiles.get(role) or {}).get("launch") or "").strip()
+    except (OSError, ValueError):
+        return ""
+
+
+def relaunch_lock(role: str):
+    """One relaunch at a time, per role. Held only around the launch itself."""
+    path = STATE / f".server-relaunch-{role}.lock"
+    handle = path.open("a+")
+    try:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError as exc:
+        handle.close()
+        if exc.errno in (errno.EACCES, errno.EAGAIN):
+            return None
+        raise
+    return handle
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description="Relaunch a role's CLI to restore its pair MCP.")
+    ap.add_argument("--role", default="")
+    ap.add_argument("--check", action="store_true", help="report only, touch nothing")
+    args = ap.parse_args()
+
+    try:
+        mine = str(json.loads((STATE / "state.json").read_text(encoding="utf-8")).get("writer") or "")
+    except (OSError, ValueError):
+        mine = ""
+    role = args.role
+    if not role:
+        for candidate in state_roles():
+            if candidate != mine and pane_of(candidate):
+                role = candidate
+                break
+        if not role:
+            print("pairrelaunch: no peer role with a live pane — name it with --role",
+                  file=sys.stderr)
+            return 1
+    pane = pane_of(role)
+    cmd = launch_cmd(role)
+    pid = server_pid(role)
+    if args.check:
+        print(f"[check] {role} @ {pane or '-'}: server "
+              f"{'alive pid ' + pid if pid else 'DOWN'} | launch: {cmd or 'unknown'}")
+        return 0
+    if not pane:
+        print(f"pairrelaunch: no live pane for {role} — nothing to relaunch into",
+              file=sys.stderr)
+        return 1
+    if not cmd:
+        print(f"pairrelaunch: no launch command in cli-profiles.json for {role}",
+              file=sys.stderr)
+        return 1
+    lock = relaunch_lock(role)
+    if lock is None:
+        print(f"[held ] {role}: a relaunch is already in flight — leaving it to finish")
+        return 0
+    try:
+        # Re-read inside the lock: the other relauncher may have already
+        # finished while we waited, and relaunching a live CLI is the same
+        # toggle-shaped mistake the picker made.
+        if server_pid(role):
+            print(f"[ok   ] {role}: server came back while we held the lock — "
+                  f"nothing to relaunch")
+            return 0
+        print(f"[start] {role}: C-c, clear composer, launch {cmd!r} in {pane}")
+        tmux("send-keys", "-t", pane, "C-c")
+        time.sleep(3)
+        # A second C-c in case a modal held the pane; then a truly empty line so
+        # nothing of the previous composer survives to be appended to.
+        tmux("send-keys", "-t", pane, "C-c")
+        time.sleep(2)
+        tmux("send-keys", "-t", pane, "-l", "")
+        tmux("send-keys", "-t", pane, "-l", cmd)
+        time.sleep(1)
+        tmux("send-keys", "-t", pane, "Enter")
+        # The process is the honest signal. 45s was enough in measurement.
+        for _ in range(15):
+            time.sleep(3)
+            new_pid = server_pid(role)
+            if new_pid:
+                print(f"[ok   ] {role}: relaunched — pair server pid {new_pid} "
+                      f"(was {'DOWN' if not pid else pid})")
+                return 0
+        print(f"[FAIL ] {role}: no pair server after the relaunch — check the pane",
+              file=sys.stderr)
+        return 1
+    finally:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+        lock.close()
+
+
+if __name__ == "__main__":
+    sys.exit(main())
