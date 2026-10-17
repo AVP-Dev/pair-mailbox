@@ -89,11 +89,47 @@ class TestPrePushLaneGuard(unittest.TestCase):
     def test_human_override_is_echoed_not_silent(self) -> None:
         """The override works, and announces itself on stderr every time."""
         with tempfile.TemporaryDirectory() as tmp:
-            work, _ = self._repo_with_hook(Path(tmp))
+            work, origin = self._repo_with_hook(Path(tmp))
             r = _git(work, "push", "origin", "master",
                      env={"PAIR_ALLOW_MASTER_PUSH": "1"})
             self.assertEqual(r.returncode, 0, r.stderr)
             self.assertIn("PAIR_ALLOW_MASTER_PUSH=1", r.stderr)
+
+    def test_equal_head_push_is_not_a_guard_signal(self) -> None:
+        """Seen live: master already equal to origin answers rc=0 with no hook
+        run at all — a no-op push. So 'rc==0, no REFUSED' is ambiguous between
+        a firing guard and an idle one. The only meaningful proof is rc!=0 on
+        real divergence, and this test pins that the divergence case is what
+        the suite exercises (master advanced past origin by one commit)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            work, origin = self._repo_with_hook(Path(tmp))
+            # Seed only dev: pushing master to seed origin is itself the banned
+            # direction, so the fixture must not train itself on it.
+            seeded = _git(work, "push", "-q", "origin", "dev")
+            self.assertEqual(seeded.returncode, 0, seeded.stderr)
+            # origin/master exists via refspec-free ls-remote? No: construct it
+            # directly so the local repo sees origin/master WITHOUT a banned
+            # push — the merge that would normally be the only legal way in.
+            _git(work, "fetch", "-q", "origin", "dev")
+            _git(work, "update-ref", "refs/remotes/origin/master", "HEAD")
+            origin_master = _git(work, "rev-parse", "refs/remotes/origin/master").stdout.strip()
+            # now diverge: a commit on master that origin does not have
+            _git(work, "checkout", "-q", "master")
+            (work / "h.txt").write_text("hotfix", encoding="utf-8")
+            _git(work, "add", "-A")
+            _git(work, "commit", "-q", "-m", "post-merge hotfix")
+            after_local = _git(work, "rev-parse", "master").stdout.strip()
+            self.assertNotEqual(after_local, origin_master,
+                                "test fixture must diverge from origin, else the push is a no-op")
+            r = _git(work, "push", "origin", "master")
+            self.assertNotEqual(r.returncode, 0,
+                               "a diverging master push must be refused; equal-head would say nothing")
+            self.assertIn("REFUSED", r.stderr)
+            # The authoritative check: a push that travelled would have updated
+            # the real bare origin under refs/heads/master. It has no master ref
+            # at all, so absence proves no bytes landed.
+            self.assertEqual(_git(work, "ls-remote", "--heads", "origin", "master").stdout.strip(),
+                             "", "no refs/heads/master may exist on origin after a refused push")
 
 
 if __name__ == "__main__":

@@ -684,6 +684,14 @@ class TestHotfixTrailer(unittest.TestCase):
     FOLLOWED the merge is invisible by design — the PR carried the merge, not the
     hotfix. That blind spot is why round 104's seven direct commits read as no-PR
     at close. The trailer closes it from the commit side, verified through gh.
+
+    ANTI-PATTERN pinned here so it is not re-learned (round 105 slice 3): mock
+    the DOMAIN boundary (review._run_gh), never the OS boundary
+    (subprocess.run). The first cut mocked subprocess.run globally and this
+    class's own `git log -1 --format=%B` — how the fixture reads a commit body —
+    runs through subprocess too, so it swallowed the gh JSON and every case
+    failed for the wrong reason. Same class as S1/S2: a shared blind spot,
+    not a shared fixture.
     """
 
     def setUp(self) -> None:
