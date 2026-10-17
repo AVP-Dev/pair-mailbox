@@ -27,13 +27,20 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent.parent
 PROFILE = ROOT / "scripts" / "verification-profile.tsv"
-GLOBS = ("bin/*", "mcp/pair_mailbox/*", "scripts/*")
 
 
 def _tracked() -> list[str]:
+    """Every git-tracked path, repo-wide.
+
+    Derivation must be independent of the leg's own: a gate and its proof
+    sharing one membership (round 104's glob trio) pass together while both
+    miss the same files — install.sh and finish.sh at the repo root, python
+    files with .sh names, invisible to three directories and to a test that
+    swept the same three. No globs here either.
+    """
     import subprocess
 
-    out = subprocess.run(["git", "ls-files", *GLOBS], cwd=ROOT,
+    out = subprocess.run(["git", "ls-files"], cwd=ROOT,
                          capture_output=True, text=True).stdout or ""
     return [line for line in out.splitlines()
             if "__pycache__" not in line]
@@ -124,8 +131,10 @@ class TestProfileMatchesTargetLanguage(unittest.TestCase):
 
 
 def _is_covered_by_python_syntax(rel: str) -> bool:
-    """The leg's own rule, restated: shebang says python, path under a glob."""
-    return rel.startswith(("bin/", "mcp/pair_mailbox/", "scripts/"))
+    """The leg's rule, restated: shebang says python, and the sweep is
+    repo-wide over every tracked path. Deriving this by directory prefix is
+    what let three root-level python files pass unseen."""
+    return True
 
 
 if __name__ == "__main__":

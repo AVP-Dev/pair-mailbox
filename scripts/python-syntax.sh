@@ -11,7 +11,11 @@
 # Membership is DERIVED, never listed: every git-tracked file whose shebang is
 # python gets compile()d. A new python file is covered the moment it is added;
 # a removed file drops out with no edit here. The hand-written list was the
-# defect, so there is no hand-written list.
+# defect, so there is no hand-written list — and the same applies to a GLOB
+# TRío, round 104's second proof: the first version swept bin/, mcp/pair_mailbox/
+# and scripts/ and missed three python files at the repo root, install.sh and
+# finish.sh among them — python files carrying .sh names, exactly this leg's
+# shape. The sweep is repo-wide, over every tracked path.
 #
 # Exit 0 all parse; 1 any file fails to compile, naming each one.
 set -eu
@@ -20,7 +24,7 @@ cd "$(dirname "$0")/.."
 
 status=0
 count=0
-for f in $(git ls-files 'bin/*' 'mcp/pair_mailbox/*' 'scripts/*'); do
+for f in $(git ls-files); do
     case "$f" in *__pycache__*) continue ;; esac
     case "$(head -1 "$f" 2>/dev/null || true)" in
         '#!'*python*) ;;
