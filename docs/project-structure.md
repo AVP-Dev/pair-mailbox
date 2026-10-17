@@ -48,24 +48,26 @@ Check: `bash scripts/file-size-gate_test.sh`, 30 scenarios.
 
 ## 3. Our files over 300 lines
 
-Numbers — from `scripts/file-size-baseline.tsv` (ceilings; actual — `wc -l`):
+Numbers — from `scripts/file-size-baseline.tsv` (ceilings; actual — `wc -l`).
+The last five rows are under the 300-line target and ungated: their numbers are
+current sizes, not ceilings, and the gate does not watch them.
 
 | File | Ceiling | Responsibility | Status |
 |---|---|---|---|
-| `mcp/pair_mailbox/server.py` | 4119 | whole protocol: helpers, `Store`, `PairSession`, MCP layer | frozen, plan below |
-| `mcp/pair_mailbox/test_protocol.py` | 4381 | protocol invariants | frozen, follows server.py |
-| `bin/pairpilot_test.py` | 1725 | supervisor tests | frozen |
-| `bin/pairpilot` | 1567 | supervisor: panes, role launches, throttling | frozen |
-| `mcp/pair_mailbox/composer.py` | 1194 | composer and permission menu | frozen |
-| `install.sh` | 494 | installer | frozen |
-| `bin/pairchat` | 438 | CLI over `pair_send` | frozen |
-| `mcp/pair_mailbox/pairctl_authority.py` | 367 | writing to round state | extracted from server.py (round 15) |
-| `mcp/pair_mailbox/pairctl_read.py` | 328 | read-only + project overview | extracted from server.py (round 15) |
-| `mcp/pair_mailbox/board_snapshot.py` | 311 | what the pair recorded about itself: phase, roles, tasks, log tail | dashboard, split by scale |
+| `mcp/pair_mailbox/test_protocol.py` | 4429 | protocol invariants | frozen, follows server.py |
+| `mcp/pair_mailbox/server.py` | 4226 | whole protocol: helpers, `Store`, `PairSession`, MCP layer | frozen, plan below |
+| `bin/pairpilot_test.py` | 2749 | supervisor tests | frozen |
+| `bin/pairpilot` | 2072 | supervisor: panes, role launches, throttling | frozen |
+| `mcp/pair_mailbox/composer.py` | 1465 | composer and permission menu | frozen |
+| `mcp/pair_mailbox/pairctl_authority.py` | 462 | writing to round state | extracted from server.py (round 15) |
+| `mcp/pair_mailbox/pairctl_read.py` | 351 | read-only + project overview | extracted from server.py (round 15) |
+| `install.sh` | 572 | installer | frozen |
+| `bin/pairchat` | 438 | CLI: thin over `pair_send` | frozen |
+| `mcp/pair_mailbox/board_snapshot.py` | 321 | what the pair recorded about itself: phase, roles, tasks, log tail | dashboard, split by scale |
 | `mcp/pair_mailbox/assets/board.js` | 328 | client: draws the snapshot, theme, pause. Requests no data | dashboard, split by scale |
-| `mcp/pair_mailbox/board_render.py` | 189 | assembling one self-contained HTML page | dashboard, split by scale |
+| `mcp/pair_mailbox/board_render.py` | 187 | assembling one self-contained HTML page | dashboard, split by scale |
 | `mcp/pair_mailbox/board_hosts.py` | 184 | liveness on this machine: panes, pids, pilot process | dashboard, split by scale |
-| `bin/pairboard` | 178 | CLI: single pass or timer-driven rebuild | dashboard, split by scale |
+| `bin/pairboard` | 177 | CLI: single pass or timer-driven rebuild | dashboard, split by scale |
 The boundary between `board_hosts` and `board_snapshot` is not stylistic. The first answers
 questions to the system and must degrade to "don't know"; the second reads what
 the pair recorded, and must survive a corrupt file. Mixed in one file, they drag along
