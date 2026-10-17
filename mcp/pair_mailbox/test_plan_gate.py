@@ -196,5 +196,57 @@ class TestGateCases(PairTestCase):
         self.writer.tool_pair_advance("done")
 
 
+class TestNewestCauseNamed(PairTestCase):
+    """Round 105 slice 4a: with several rejected visas the `why` names the NEWEST.
+
+    The docstring promised "the newest of each cause is what the answer names"
+    while the driver answered the first block it saw: two stale visas made the
+    message point at a superseded one, so the reader re-acked a plan whose newer
+    visa was already stale. Label-only defect — ack=False was already correct.
+    """
+
+    @staticmethod
+    def _blocks(note_dir: Path, *entries: tuple[str, int]) -> None:
+        note_dir.mkdir(parents=True, exist_ok=True)
+        body = "".join(
+            f"## {stamp} — reviewer-agent (note {sha} attempt 1)\n\nplan-ack round {rnd}\n"
+            for (stamp, rnd), sha in zip(entries, "aaa1111 bbb2222 ccc3333"))
+        (note_dir / "verdict.md").write_text(body, encoding="utf-8")
+
+    @staticmethod
+    def _not_before() -> Any:
+        from datetime import datetime, timezone
+        return datetime(2026, 10, 17, 9, 30, tzinfo=timezone.utc)
+
+    def test_two_stale_visas_name_the_newer_stamp(self) -> None:
+        import plan_gate
+        self._blocks(self.store.root / "notes",
+                     ("2026-10-17T08:00:00+00:00", 105),
+                     ("2026-10-17T09:00:00+00:00", 105))
+        res = plan_gate.critic_ack(self.store.root, 105, "omp", not_before=self._not_before())
+        self.assertFalse(res["ack"])
+        self.assertIn("2026-10-17T09:00:00+00:00", res["why"])
+        self.assertNotIn("2026-10-17T08:00:00+00:00", res["why"])
+
+    def test_two_wrong_round_visas_name_the_newer_stamp(self) -> None:
+        import plan_gate
+        self._blocks(self.store.root / "notes",
+                     ("2026-10-17T08:00:00+00:00", 104),
+                     ("2026-10-17T09:00:00+00:00", 103))
+        res = plan_gate.critic_ack(self.store.root, 105, "omp", not_before=self._not_before())
+        self.assertFalse(res["ack"])
+        self.assertIn("2026-10-17T09:00:00+00:00", res["why"])
+        self.assertIn("round 103", res["why"])
+
+    def test_newer_valid_visa_still_wins_over_stale(self) -> None:
+        import plan_gate
+        self._blocks(self.store.root / "notes",
+                     ("2026-10-17T08:00:00+00:00", 105),
+                     ("2026-10-17T10:00:00+00:00", 105))
+        res = plan_gate.critic_ack(self.store.root, 105, "omp", not_before=self._not_before())
+        self.assertTrue(res["ack"])
+        self.assertEqual(res["at"], "2026-10-17T10:00:00+00:00")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
