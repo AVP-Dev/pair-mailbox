@@ -116,6 +116,34 @@ class TestGateCases(PairTestCase):
         result = self.writer.tool_pair_advance("implement")
         self.assertEqual("implement", result["phase"])
 
+    def test_visa_written_by_pair_note_is_readable(self) -> None:
+        """Round 104/105: the gate must read what its own writer writes.
+
+        `pair_note` has appended entries as `## <ts> — <role> (note <sha> attempt N)`
+        since round 103 S6's attribution change, while NOTE_ENTRY demanded the bare
+        `## <ts> — <role>` shape. Every tool-written visa was therefore invisible:
+        the gate named a round-92 visa on today's round and 31 records in .pair/notes
+        stayed unread. RED before the cure (critic_ack -> "no critic note"), GREEN
+        after (ack: True, role, stamp). Derived through the tool's own appender, not
+        a hand-written fixture — the fixture is what hid the defect for 12 green tests.
+        """
+        self.advance_to_plan()
+        self.store.mutate(lambda st: st.__setitem__("round", 1))
+        write_plan(self.store.root, 1)
+        # The note header stamps seconds, plan.md mtime carries microseconds:
+        # written in the same second, the truncated stamp reads as older. Push
+        # the plan a second into the past so the comparison is about the shape,
+        # not about a rounding accident.
+        import os
+        plan_path = self.store.root / plan_gate.PLAN_FILE
+        stamped = os.stat(plan_path).st_mtime - 2
+        os.utime(plan_path, (stamped, stamped))
+        self.peer.tool_pair_note(kind="verdict", text="plan-ack round 1")
+        found = plan_gate.critic_ack(self.store.root, 1, "writer-agent", not_before=None)
+        self.assertTrue(found["ack"], f"the tool's own visa must be readable: {found}")
+        self.assertEqual("reviewer-agent", found["role"])
+        self.assertEqual("implement", self.writer.tool_pair_advance("implement")["phase"])
+
     def test_self_ack_does_not_count(self) -> None:
         """A self-visa from the writer bypasses the gate: the author role is checked."""
         self.advance_to_plan()
