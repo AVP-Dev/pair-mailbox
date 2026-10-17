@@ -375,6 +375,50 @@ def _run_gh(root: Path, *args: str) -> tuple[int, str]:
     return proc.returncode, (proc.stdout or "").strip()
 
 
+def origin_truth(root: Path, round_base: str) -> tuple[str, str]:
+    """Round 105 slice 2b: does the LOCAL head match what origin carries?
+
+    The floor answers for local head only — "HEAD is reachable from some
+    remote-tracking ref" — so a reset backwards read `delivered` while origin sat
+    7 ahead (round 104's measured false pass). This comparison asks the other
+    question: how far is LOCAL from where the round started and what origin has.
+
+    Returns `(status, detail)`:
+    - `"aligned"`: local head is an ancestor-or-equal of origin/master — nothing
+      of ours is missing from origin, and nothing on origin is missing locally.
+    - `"behind"`: origin/master carries commits local does not; the count is
+      named, because "behind" with no number is not actionable.
+    - `"ahead"`: local head carries commits origin does not (push first).
+    - `"unknown"`: no round_base recorded (a fresh round: nothing to diff
+      against), no git, no origin/master, or a probe that failed mid-way —
+      loud, never scored as a pass.
+    """
+    if not round_base:
+        return "unknown", "no round_base recorded: nothing to diff against (pin it at round open)"
+    head = git_head(root)
+    if not head:
+        return "unknown", "not a git repository: origin truth cannot be checked"
+    if not _run_git(root, "rev-parse", "--verify", f"{round_base}^{{commit}}"):
+        return "unknown", f"round base {round_base[:12]} does not resolve: cannot compare"
+    if not _run_git(root, "rev-parse", "--verify", "origin/master"):
+        return "unknown", "origin/master does not resolve: cannot compare"
+
+    behind = _run_git(root, "rev-list", "--count", f"HEAD..origin/master")
+    ahead = _run_git(root, "rev-list", "--count", f"origin/master..HEAD")
+    if behind is None or ahead is None:
+        return "unknown", "rev-list failed mid-check (timeout, lock, or damage): origin truth cannot be checked"
+    behind = behind.strip()
+    ahead = ahead.strip()
+    if not behind.isdigit() or not ahead.isdigit():
+        return "unknown", "rev-list answered unreadable counts: origin truth cannot be checked"
+    n_behind, n_ahead = int(behind), int(ahead)
+    if n_behind:
+        return "behind", f"{n_behind} commits behind origin/master: pull/rebase before the round can ship"
+    if n_ahead:
+        return "ahead", f"{n_ahead} commits ahead of origin/master: push first (`git push -u origin <branch>`)"
+    return "aligned", "local head equals origin/master"
+
+
 def snapshot(root: Path) -> dict[str, Any]:
     """A revision snapshot binding a request/verdict.
 
