@@ -15,10 +15,18 @@ import plan_gate
 
 
 def write_plan(state_dir: Path, round_number: int, sections: tuple = ("Goal", "Invariants", "Acceptance")) -> None:
+    import os
+    import time
     body = [f"round: {round_number}", ""]
     for section in sections:
         body += [f"## {section}", "text", ""]
-    (state_dir / plan_gate.PLAN_FILE).write_text("\n".join(body), encoding="utf-8")
+    plan = state_dir / plan_gate.PLAN_FILE
+    plan.write_text("\n".join(body), encoding="utf-8")
+    # not_before comes from the plan file's mtime, which carries microseconds,
+    # while a note entry stamps whole seconds: a visa in the same second
+    # truncates older and reads "predates the current plan". Backdate the plan.
+    stamp = time.time() - 2
+    os.utime(plan, (stamp, stamp))
 
 
 def write_ack(note_dir: Path, role: str, round_number: int, at: float | None = None) -> None:
@@ -187,9 +195,12 @@ class TestGateCases(PairTestCase):
         self.assertEqual("implement", self.writer.tool_pair_advance("implement")["phase"])
 
     def ready_and_close(self) -> None:
+        # Through the base helper, which uses the real appender: round 105 slice
+        # 4b refuses a close whose note entries carry no journal row, so a
+        # hand-shaped visa cannot reach `done` any more. The old write_ack
+        # helper stays for the pure-gate tests that never close.
         write_plan(self.store.root, self.store.read()["round"])
-        write_ack(self.store.root / "notes", "reviewer-agent",
-                  self.store.read()["round"], at=time.time() + 1)
+        self.ack_plan(self.store.read()["round"])
         for phase in ("plan", "implement", "verify"):
             self.writer.tool_pair_advance(phase)
         self.record_test_evidence()

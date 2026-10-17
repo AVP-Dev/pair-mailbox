@@ -147,6 +147,16 @@ class PairTestCase(unittest.TestCase):
                 "## Invariants", "test", "",
                 "## Acceptance", "test", ""]
         (self.store.root / plan_gate.PLAN_FILE).write_text("\n".join(body), encoding="utf-8")
+        # The gate reads not_before from the plan file's mtime, which carries
+        # MICROSECONDS, while a note entry stamps whole seconds — a visa written
+        # in the same second truncates older and is refused as "predates the
+        # current plan". Backdate the plan so the visa it follows is unambiguously
+        # newer. Same fix as the NOTE_ENTRY cure (round 104 slice 5).
+        import os
+        import time
+        plan = self.store.root / plan_gate.PLAN_FILE
+        stamp = time.time() - 2
+        os.utime(plan, (stamp, stamp))
 
     def ack_plan(self, round_number: int) -> None:
         """The critic visa: a verdict note with a plan-ack round N line.
@@ -156,14 +166,23 @@ class PairTestCase(unittest.TestCase):
         """
         import os
         import time
-        from datetime import datetime, timezone
-        stamp = time.time() + 1
+        # Through the real appender, never a hand-shaped header: round 105 slice
+        # 4b cross-checks notes/<kind>.md against the journal, and a helper
+        # writing a lookalike — or a header whose sha has no journal row — gets
+        # the suite refusing to close. Both shapes already bit, measured.
+        session = self._peer_session()
+        session.tool_pair_note(kind="verdict", text=f"plan-ack round {round_number}")
         note = self.store.root / "notes" / "verdict.md"
-        note.parent.mkdir(parents=True, exist_ok=True)
-        header = ("## " + datetime.fromtimestamp(stamp, tz=timezone.utc).isoformat()
-                  + " — reviewer-agent\n")
-        note.write_text(header + f"\nplan-ack round {round_number}\n", encoding="utf-8")
-        os.utime(note, (stamp, stamp))
+        if note.exists():
+            now = time.time() + 1
+            os.utime(note, (now, now))
+
+    def _peer_session(self) -> Any:
+        """The critic's own session, so the visa carries its role, not ours."""
+        if not hasattr(self, "_peer_pair_session"):
+            from server import PairSession
+            self._peer_pair_session = PairSession("reviewer-agent", self.store)
+        return self._peer_pair_session
 
     def advance_phases(self, phases: tuple = ("plan", "implement", "verify")) -> None:
         """Walk the phases as a real pair walks them: with a plan and a visa.

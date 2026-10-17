@@ -1935,6 +1935,16 @@ class PairSession:
             elif truth == "ahead":
                 blockers.append(f"{truth_why} (delivered means origin carries it) ")
             pending = 0
+            # Round 105 slice 4b: notes consistency, the leg the kind-file card
+            # needed to be enforceable. A note is two writes that must agree —
+            # the entry in notes/<kind>.md and pair_note's transcript row. An
+            # entry with no journal row is a hand-edit, and a foreign agent's
+            # write into our kind file is exactly that shape hiding. Refuses at
+            # close, never repaired here: the writer sees their own edit.
+            from pair_notes_consistency import check_notes
+            notes_ok, notes_why = check_notes(self.store.root)
+            if not notes_ok:
+                blockers.append(f"the notes disagree with the journal: {notes_why}. ")
             if self.store.obligations_root.is_dir():
                 for path in self.store.obligations_root.glob("*.json"):
                     try:
