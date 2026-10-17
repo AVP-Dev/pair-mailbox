@@ -540,6 +540,32 @@ In `audit` this section does not apply — there are no commits to plan. In
 `fix` the "miting" is a discipline for user-facing work and for cross-file
 edits; a one-line doc typo does not need a meeting.
 
+## 9b. Never write into another agent's kind file
+
+A note's kind is its author's namespace. `notes/verdict*.md` is the critic's, a
+`backlog` card the writer's, and so on: writing into the other side's kind file
+is how a forgery stops being detectable — one hand-written entry among hundreds
+of real ones, with no journal row to contradict it.
+
+So neither side writes into a kind file it does not own. `pair_note(kind=...)`
+owns its own kind, appends its own role into the header, and records a journal
+row beside the entry (`server.py:3518-3528`) — three facts that must agree.
+
+Enforcement: `pair_notes_consistency.check_notes` cross-checks every entry in
+`notes/*.md` (header role + note_sha + attempt) against the transcript's note
+rows, across the united stream (active `transcript.jsonl` plus
+`transcript-archive/N.jsonl`, `manifest.py:56`). An entry with no journal row
+is named at close (`server._done_blockers`): it is either a hand-edit or a
+foreign write, and a round cannot close over it. The check names and refuses;
+it never repairs, because the author must see their own entry.
+
+Corollary invariant, from three instances in one session: a comment claiming
+behaviour has a test asserting it, or it is not a claim. `critic_ack`'s "the
+newest of each cause" answered the first block seen (round 105 4a);
+`pair_notes_consistency`'s "united stream" read an archive path that was always
+empty (round 105 4b); round 104's floor names claimed what origin carries while
+probing only local refs. Each comment made a promise its tests could not check.
+
 ## 10. Git is part of the work
 
 A branch per task, a commit after every green step, tests green as a precondition,
