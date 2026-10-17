@@ -280,6 +280,26 @@ Evidence records the task it proves when exactly one task is open, and stays
 unattached with a snapshot of what was open when several are — the journal prints
 those separately rather than guessing.
 
+#### The subject line is derived, never the raw string
+
+`state["task"]` is the legacy scalar: only the human's `pairctl task "..."` writes it,
+and nothing rewrites it when a round advances, so it can only go stale. It therefore
+never poses as the current subject. Every surface that shows the subject —
+`pair_state.task`, `pair_digest`, the board snapshot, `pairctl status` — reads one rule,
+`task_subject.subject_line`:
+
+- the scalar names its own round → it is the subject;
+- otherwise the first open task speaks for the subject;
+- otherwise the stale scalar travels, marked `(stale — not round N)`;
+- nothing set → empty, never a guess.
+
+Round 103 shipped with the scalar still reading "Round 98: …" while round 103 worked,
+because the guard for this existed in `digest` alone since round 98 and the other three
+surfaces never had it — the one-surface-guard failure, which is why the rule now lives
+in one module and four surfaces import it. `pairctl status` prints the raw scalar and
+the derived subject side by side, so the drift is visible to the human instead of
+silently resolved for them.
+
 ## 6. Stepping a phase back is open to both
 
 Forward is the writer's. **One step back is anyone's:**
