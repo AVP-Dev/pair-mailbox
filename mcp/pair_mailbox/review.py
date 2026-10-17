@@ -287,6 +287,82 @@ def pr_ceiling(root: Path, autonomy: str) -> tuple[str, str]:
             "HEAD merged by no PR and carried by no open PR: "
             "merge first — autonomy is auto, which means end to end")
 
+def unanchored_master_commits(root: Path, base: str) -> list[str]:
+    """Commits on origin/master after `base` — the close-side leg of the lane.
+
+    The ceiling associates only HEAD (`commits/<oid>/pulls`), so a post-merge
+    commit on master is invisible by design: the PR carried the merge, not the
+    hotfix that followed it. That blind spot is why round 104's seven direct
+    commits read as no-PR at close.
+    """
+    if not base:
+        return []
+    out = _run_git(root, "log", "--format=%H", f"{base}..origin/master")
+    return [line.strip() for line in out.splitlines() if line.strip()] if out else []
+
+
+def hotfix_trailer_check(root: Path, base: str) -> tuple[bool, str]:
+    """Every commit after `base` on origin/master must name its parent PR.
+
+    Trailer `follows: PR #N`, verified merged through `gh`. An unknown or
+    unmerged N REFUSES — the leg never assigns itself a number, because the
+    defect it exists to catch is work reaching master without review.
+
+    Returns `(ok, detail)`; `ok=True` only when every commit names a verified
+    merged PR, or when nothing sits after base (nothing to name).
+    """
+    import json
+    import re
+
+    commits = unanchored_master_commits(root, base)
+    if not commits:
+        return True, "no commits after the round base on origin/master"
+
+    trailer_re = re.compile(r"^follows:\s*PR\s*#(\d+)\s*$", re.IGNORECASE | re.MULTILINE)
+    slug = _repo_slug(root)
+    unnamed: list[str] = []
+    unverified: list[str] = []
+    for sha in commits:
+        body = _run_git(root, "log", "-1", "--format=%B", sha) or ""
+        m = trailer_re.search(body)
+        if not m:
+            unnamed.append(sha[:8])
+            continue
+        number = m.group(1)
+        if not slug:
+            unverified.append(
+                f"{sha[:8]} names PR #{number} but the repo slug is unreadable: cannot verify it merged")
+            continue
+        code, out = _run_gh(root, "pr", "view", number, "--json", "number,state,mergedAt")
+        if code != 0:
+            unverified.append(f"{sha[:8]} names PR #{number}, which gh does not know")
+            continue
+        try:
+            pr = json.loads(out or "{}")
+        except ValueError:
+            pr = {}
+        if not pr.get("mergedAt"):
+            unverified.append(f"{sha[:8]} names PR #{number} which is not merged")
+    if unnamed or unverified:
+        parts = []
+        if unnamed:
+            parts.append("commit(s) on master naming no parent PR: " + ", ".join(unnamed))
+        parts.extend(unverified)
+        return False, "; ".join(parts)
+    return True, f"{len(commits)} commit(s) after base, each naming a verified merged PR"
+
+
+def _run_gh(root: Path, *args: str) -> tuple[int, str]:
+    """One `gh` call, or (1, "") when the binary or the network is absent."""
+    import subprocess
+    try:
+        proc = subprocess.run(["gh", *args], cwd=str(root),
+                              capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.TimeoutExpired):
+        return 1, ""
+    return proc.returncode, (proc.stdout or "").strip()
+
+
 def snapshot(root: Path) -> dict[str, Any]:
     """A revision snapshot binding a request/verdict.
 

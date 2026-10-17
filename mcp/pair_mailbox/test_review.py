@@ -677,5 +677,98 @@ class TestReviewServer(PairTestCase):
                                      head="no-such-rev-xyz")
 
 
+class TestHotfixTrailer(unittest.TestCase):
+    """Round 105 slice 3: a post-merge commit on master names its parent PR.
+
+    The ceiling associates only HEAD (`commits/<oid>/pulls`), so a commit that
+    FOLLOWED the merge is invisible by design — the PR carried the merge, not the
+    hotfix. That blind spot is why round 104's seven direct commits read as no-PR
+    at close. The trailer closes it from the commit side, verified through gh.
+    """
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.repo = Path(self._tmp.name)
+        git(self.repo, "init", "-q", "-b", "master")
+        git(self.repo, "config", "user.email", "t@t.t")
+        git(self.repo, "config", "user.name", "t")
+        (self.repo / "a.py").write_text("x=1\n", encoding="utf-8")
+        git(self.repo, "add", "-A")
+        git(self.repo, "commit", "-qm", "base")
+        git(self.repo, "remote", "add", "origin", "https://github.com/o/r.git")
+        base = subprocess.run(["git", "rev-parse", "HEAD"], cwd=str(self.repo),
+                              capture_output=True, text=True).stdout.strip()
+        self.base = base
+        git(self.repo, "update-ref", "refs/remotes/origin/master", base)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _hotfix(self, message: str) -> str:
+        (self.repo / "h.py").write_text("y=2\n", encoding="utf-8")
+        git(self.repo, "add", "-A")
+        git(self.repo, "commit", "-qm", message)
+        import review
+        git(self.repo, "update-ref", "refs/remotes/origin/master", review.git_head(self.repo))
+        return review.git_head(self.repo)
+
+    def test_tagged_hotfix_passes(self) -> None:
+        import review
+        self._hotfix("post-merge hotfix\n\nfollows: PR #49\n")
+        with mock.patch.object(review, "_repo_slug", return_value="o/r"), \
+                mock.patch.object(review, "_run_gh",
+                                  return_value=(0, __import__("json").dumps(
+                                      {"number": 49, "state": "MERGED",
+                                       "mergedAt": "2026-10-17T18:00:00Z"}))):
+            ok, detail = review.hotfix_trailer_check(self.repo, self.base)
+        self.assertTrue(ok, detail)
+        self.assertIn("verified merged PR", detail)
+
+    def test_untagged_hotfix_is_named(self) -> None:
+        import review
+        self._hotfix("post-merge hotfix with no parent PR")
+        ok, detail = review.hotfix_trailer_check(self.repo, self.base)
+        self.assertFalse(ok)
+        self.assertIn("naming no parent PR", detail)
+
+    def test_untagged_refuses_without_assigning_a_number(self) -> None:
+        """The point of the slice: it must not invent a PR for itself."""
+        import review
+        sha = self._hotfix("silent hotfix")
+        ok, detail = review.hotfix_trailer_check(self.repo, self.base)
+        self.assertFalse(ok)
+        self.assertIn(sha[:8], detail)
+        for token in ("#", "PR "):
+            # the refusal names the defect and the commit; any PR number in the
+            # message would be the hook fabricating one.
+            self.assertNotIn(token, detail.split("naming no parent PR")[-1])
+
+    def test_unmerged_named_pr_refuses(self) -> None:
+        import review
+        self._hotfix("hotfix\n\nfollows: PR #7\n")
+        with mock.patch.object(review, "_repo_slug", return_value="o/r"), \
+                mock.patch.object(review, "_run_gh",
+                                  return_value=(0, __import__("json").dumps(
+                                      {"number": 7, "state": "OPEN", "mergedAt": None}))):
+            ok, detail = review.hotfix_trailer_check(self.repo, self.base)
+        self.assertFalse(ok)
+        self.assertIn("not merged", detail)
+
+    def test_gh_unknown_pr_refuses_loudly(self) -> None:
+        import review
+        self._hotfix("hotfix\n\nfollows: PR #999\n")
+        with mock.patch.object(review, "_repo_slug", return_value="o/r"), \
+                mock.patch.object(review, "_run_gh", return_value=(1, "")):
+            ok, detail = review.hotfix_trailer_check(self.repo, self.base)
+        self.assertFalse(ok)
+        self.assertIn("gh does not know", detail)
+
+    def test_nothing_after_base_passes(self) -> None:
+        import review
+        ok, detail = review.hotfix_trailer_check(self.repo, self.base)
+        self.assertTrue(ok)
+        self.assertIn("no commits after the round base", detail)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
