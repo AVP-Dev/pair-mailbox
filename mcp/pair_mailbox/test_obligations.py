@@ -57,20 +57,32 @@ class TestObligations(PairTestCase):
         self.assertEqual([], list(self.store.obligations_root.glob("*.json")))
 
     def test_verdict_opens_obligation_for_writer(self) -> None:
-        """A critic verdict opens an obligation on the writer (the full cycle).
+        """A verdict that still owes work opens an obligation (the full cycle).
 
         Measured 2026-10-06: verdict seq 252 lay 3.5 hours, the writer stood on a
         "awaiting the verdict" recap, the pilot stayed silent — nothing to watch,
         no obligation file. Now the pilot pokes the recipient automatically.
         """
         self.writer.tool_pair_claim(reason="taking the pen")
-        self.peer.tool_pair_note(kind="verdict", text="accepted, closing")
+        self.peer.tool_pair_note(kind="verdict", text="needs work: the why still collapses")
         files = list(self.store.obligations_root.glob("*.json"))
         self.assertEqual(1, len(files))
         record = json.loads(files[0].read_text(encoding="utf-8"))
         self.assertEqual("reviewer-agent", record["from"])
         self.assertEqual("writer-agent", record["to"])
         self.assertIn("verdict", record.get("subject", ""))
+
+    def test_a_final_approve_opens_no_obligation(self) -> None:
+        """Round 104 S3: a verdict that says "fine as is" owes nobody an answer.
+
+        This test used to write `text="accepted, closing"` and assert an
+        obligation — the exact shape peer's live case proved wrong: the approve
+        left pending_reviews=1 and the round could not close over its own
+        finished review. An approve is a report, not a request.
+        """
+        self.writer.tool_pair_claim(reason="taking the pen")
+        self.peer.tool_pair_note(kind="verdict", text="accepted, closing")
+        self.assertEqual([], list(self.store.obligations_root.glob("*.json")))
 
 
 if __name__ == "__main__":
