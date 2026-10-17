@@ -314,6 +314,18 @@ def hotfix_trailer_check(root: Path, base: str) -> tuple[bool, str]:
     import json
     import re
 
+    # F1 (critic finding-slice3): an empty commit list is ambiguous between
+    # "nothing after base" (a pass) and "git could not answer" (a refusal).
+    # The rule this slice exists for is loud refusal, never a pass — so the
+    # two inputs are resolved BEFORE the list is read, and a failure refuses
+    # instead of silently reading as an empty history.
+    if not base or not _run_git(root, "rev-parse", "--verify", f"{base}^{{commit}}"):
+        return False, (f"round base '{base or 'unset'}' does not resolve: "
+                       f"cannot locate the commits to check")
+    head_ref = _run_git(root, "rev-parse", "--verify", "origin/master")
+    if not head_ref:
+        return False, "origin/master does not resolve: cannot locate the commits to check"
+
     commits = unanchored_master_commits(root, base)
     if not commits:
         return True, "no commits after the round base on origin/master"

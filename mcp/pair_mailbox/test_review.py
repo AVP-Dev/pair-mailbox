@@ -769,6 +769,23 @@ class TestHotfixTrailer(unittest.TestCase):
         self.assertTrue(ok)
         self.assertIn("no commits after the round base", detail)
 
+    def test_unresolvable_base_refuses(self) -> None:
+        """F1: `git log base..origin/master` fails on a broken base and answers
+        empty — and an empty list reads as 'nothing to check', a PASS. The one
+        direction the slice did not test. Refuse loud, never pass on silence."""
+        import review
+        ok, detail = review.hotfix_trailer_check(self.repo, "no-such-base-xyz")
+        self.assertFalse(ok)
+        self.assertIn("does not resolve", detail)
+
+    def test_missing_origin_master_refuses(self) -> None:
+        """Same seam from the other side: no origin/master ref, silent empty."""
+        import review
+        git(self.repo, "update-ref", "-d", "refs/remotes/origin/master")
+        ok, detail = review.hotfix_trailer_check(self.repo, self.base)
+        self.assertFalse(ok)
+        self.assertIn("origin/master does not resolve", detail)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
