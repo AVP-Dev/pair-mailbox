@@ -116,12 +116,13 @@ class TestEventWake(PairTestCase):
         # after the ack round-trip keeps anchors (round-15), and an ACKED-then-
         # new wake takes fresh anchors. RecordLiving form: read the fields a
         # freshly created file carries.
+        before_probe = _now()
         path.unlink()
         record_wake(self.root, self.store.read(), "reviewer-agent", "fresh", "t")
         fresh = json.loads(path.read_text(encoding="utf-8"))
         self.assertNotEqual(fresh.get("asked_at"), "2026-10-14T00:00:00+00:00",
                             "a new ask must take a fresh asked_at")
-        self.assertTrue(str(fresh.get("asked_at", "")).startswith("2026-10-16"))
+        self.assertGreaterEqual(str(fresh.get("asked_at")), before_probe)
 
     def test_pending_wake_keeps_patience_anchors(self) -> None:
         """Round-15 invariant stays: a hanging wake (previous present) keeps

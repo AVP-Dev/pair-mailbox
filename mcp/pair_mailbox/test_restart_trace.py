@@ -10,12 +10,27 @@ dict, junk lines skipped; statecache fingerprint breaks on a fresh line.
 from __future__ import annotations
 
 import json
+import importlib.util as _ilu
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(__file__).resolve().parent.parent.parent
+
+
+def _load():
+    from importlib.machinery import SourceFileLoader
+    loader = SourceFileLoader("pairrestart_mod", str(ROOT / "bin" / "pairrestart"))
+    spec = _ilu.spec_from_loader("pairrestart_mod", loader)
+    mod = _ilu.module_from_spec(spec)
+    loader.exec_module(mod)
+    return mod
+
+
+PR = _load()
+
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 
