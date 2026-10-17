@@ -95,6 +95,13 @@ def critic_ack(state_dir: Path, round_number: int, writer: str,
     notes_dir = Path(state_dir) / "notes"
     if not notes_dir.is_dir():
         return {"ack": False, "why": "note directory unreadable"}
+    # Every rejection keeps its own cause: "nothing is there" and "what is
+    # there is old" and "what is there is another round's" are three states
+    # with three different actions, and collapsing them told the writer to
+    # write a visa that already stood (live, round 101). The newest of each
+    # cause is what the answer names.
+    stale: str | None = None
+    wrong_round: str | None = None
     for path in sorted(notes_dir.glob("verdict*.md")):
         try:
             text = path.read_text(encoding="utf-8")
@@ -110,12 +117,24 @@ def critic_ack(state_dir: Path, round_number: int, writer: str,
             if writer and role == writer:
                 continue
             ack = ACK_LINE.search(block)
-            if not ack or int(ack.group(1)) != round_number:
+            if not ack:
+                continue
+            if int(ack.group(1)) != round_number:
+                wrong_round = wrong_round or (
+                    f"a critic visa exists ({role}, {stamp}) for round "
+                    f"{ack.group(1)}, not {round_number}")
                 continue
             entry_ts = _parse_entry_ts(stamp)
             if entry_ts is not None and not_before is not None and entry_ts < not_before:
+                stale = stale or (
+                    f"a critic visa exists ({role}, {stamp}) but predates the current plan: "
+                    f"the plan changed after the visa — re-ack, or do not edit the plan")
                 continue
             return {"ack": True, "role": role, "at": stamp, "path": str(path)}
+    if stale:
+        return {"ack": False, "why": stale}
+    if wrong_round:
+        return {"ack": False, "why": wrong_round}
     return {"ack": False, "why": "no critic note with this round plan-ack"}
 
 

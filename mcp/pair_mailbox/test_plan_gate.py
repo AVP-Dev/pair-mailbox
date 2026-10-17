@@ -46,6 +46,52 @@ class TestGateCases(PairTestCase):
     def advance_to_plan(self) -> None:
         self.writer.tool_pair_advance("plan")
 
+    # --- round 104 S2: the why must name the actual state, not collapse three ----
+
+    def test_why_names_absence_not_staleness(self) -> None:
+        """(a) no ack note at all is its own cause, and says so."""
+        self.advance_to_plan()
+        write_plan(self.store.root, 1)
+        error = self.assertRefused(self.writer.tool_pair_advance, "implement")
+        text = str(error)
+        self.assertIn("no critic note", text)
+        self.assertNotIn("predates", text,
+                         "\"nothing\" and \"something old\" are different states")
+
+    def test_why_names_wrong_round_ack(self) -> None:
+        """(b) an ack for another round is its own cause."""
+        self.advance_to_plan()
+        write_plan(self.store.root, 1)
+        write_ack(self.store.notes_root, "opencode", 99)
+        error = self.assertRefused(self.writer.tool_pair_advance, "implement")
+        text = str(error)
+        self.assertIn("a critic visa exists", text)
+        self.assertIn("round 99", text)
+        self.assertIn("not 1", text)
+        self.assertNotIn("no critic note with this round plan-ack", text)
+
+    def test_why_names_stale_ack_not_absence(self) -> None:
+        """(c) THIS round's ack that predates the current plan.
+
+        The live failure (peer's own, round 101): the verdict printed "no critic
+        note with this round plan-ack" while the note existed and named the
+        right round — it was simply older than the plan. Three states, one
+        sentence, and the wrong sentence told the writer to write a visa that
+        already stood. `predates`/`stale` must appear.
+        """
+        self.advance_to_plan()
+        write_plan(self.store.root, 1)
+        write_ack(self.store.notes_root, "opencode", 1)
+        # make the PLAN newer than the ack (mtime is the truth source)
+        import os
+        now = time.time()
+        os.utime(self.store.root / plan_gate.PLAN_FILE, (now + 60, now + 60))
+        error = self.assertRefused(self.writer.tool_pair_advance, "implement")
+        text = str(error)
+        self.assertTrue("predates" in text or "stale" in text,
+                        f"stale ack must be named as stale, got: {text}")
+        self.assertNotIn("no critic note with this round plan-ack", text)
+
     def test_no_plan_refuses(self) -> None:
         self.advance_to_plan()
         error = self.assertRefused(self.writer.tool_pair_advance, "implement")
