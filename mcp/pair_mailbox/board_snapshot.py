@@ -27,6 +27,7 @@ from board_hosts import (clean_pid, mtime_age, pane_status, pilot_section,
                          resolve_pane_title)
 from pairctl_read import human_age
 from server import PHASES, Store, is_pid_alive, utcnow
+from task_subject import subject_line
 
 # How many latest journal records land on the page. The journal grows on its own and
 # on a long round that is hundreds of megabytes; the dashboard shows the picture, not the archive.
@@ -237,7 +238,10 @@ def _round_section(state: dict[str, Any], event_age: float | None) -> dict[str, 
         "autonomy": state.get("autonomy") or "auto",
         "writer": state.get("writer") or "",
         "writer_reason": _clip(state.get("writer_reason")),
-        "task": _clip(state.get("task"), TASK_TEXT_CHARS),
+        # subject_line, not the raw scalar: round 103's pane read "Round 98: …"
+        # while round 103 worked. A stale subject is the agent's first orientation
+        # and the last place it belongs.
+        "task": _clip(subject_line(state), TASK_TEXT_CHARS),
         "updated_at": state.get("updated_at"),
         "state_age_seconds": state_age,
         "state_age": human_age(state_age),

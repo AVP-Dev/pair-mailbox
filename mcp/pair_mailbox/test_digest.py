@@ -140,7 +140,11 @@ class TestDigest(PairTestCase):
         text = self.digest()
         self.assertIn("state.task is stale", text)
         self.assertIn("round 103", text)
-        self.assertNotIn("task: Round 98: explicit rev/head on pair_note", text)
+        # The false claim this closes: the scalar posing as the subject with
+        # nothing marking it. A stale marker after the text is honest; the text
+        # alone on the task line is the lie.
+        task_line = next(line for line in text.splitlines() if line.startswith("task:"))
+        self.assertNotEqual(task_line, "task: Round 98: explicit rev/head on pair_note")
 
     def test_what_did_not_fit_is_said(self) -> None:
         """Trimming must declare itself.

@@ -18,6 +18,7 @@ import json
 import shutil
 import sys
 
+from task_subject import subject_line
 from server import (
     AUTONOMIES,
     MODES,
@@ -80,6 +81,7 @@ def cmd_status(store: Store, args: argparse.Namespace) -> int:
         {
             "state_dir": str(store.root),
             "task": state.get("task", ""),
+            "subject": subject_line(state),
             "mode": state.get("mode", "fix"),
             "autonomy": autonomy_of(state),
             "writer": state.get("writer"),

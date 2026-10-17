@@ -329,6 +329,11 @@ def open_tasks(state: dict[str, Any]) -> list[dict[str, Any]]:
 def next_task_id(state: dict[str, Any]) -> int:
     return max((int(item.get("id", 0)) for item in tasks_of(state)), default=0) + 1
 
+def _subject(state: dict[str, Any]) -> str:
+    """The round's subject — task_subject.py: one rule, four surfaces."""
+    from task_subject import subject_line as impl
+
+    return impl(state)
 
 def human_ok_for_round(state: dict[str, Any]) -> bool:
     """The human word at the checkpoint — and only where it matters.
@@ -1695,7 +1700,7 @@ class PairSession:
         return {
             "you": self.role,
             "you_are_writer": you_are_writer,
-            "task": state.get("task", ""),
+            "task": _subject(state),
             "mode": mode,
             # What the mode means for this role, stated here because it decides what an
             # agent is supposed to do and the standing instructions are written for the

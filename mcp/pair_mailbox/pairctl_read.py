@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import Any
 
 from server import DIGEST_TOKEN_BUDGET, LOG_DEFAULT_LIMIT, Store, build_digest, estimate_tokens
+from task_subject import subject_line
 
 
 def cmd_digest(store: Store, args: argparse.Namespace) -> int:
@@ -308,7 +309,7 @@ def project_row(root: Path, stuck_min: int = 30) -> dict:
     return {
         "path": str(root),
         "project": root.parent.name or str(root),
-        "task": (state.get("task") or "").strip(),
+        "task": subject_line(state),
         "phase": phase,
         "writer": writer,
         "reason": (state.get("writer_reason") or "").strip(),

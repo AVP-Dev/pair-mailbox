@@ -178,6 +178,21 @@ def _open_obligations(store: "Any") -> list[dict[str, Any]]:
     return out
 
 
+def _subject_line(state: dict[str, Any]) -> str:
+    """The round's subject — one rule, four surfaces (task_subject.subject_line)."""
+    from task_subject import subject_line as impl
+
+    return impl(state)
+
+
+def _task_is_stale(state: dict[str, Any]) -> bool:
+    """state["task"] set and naming no current round: it outlived its round."""
+    from task_subject import scalar_names_round as impl
+
+    raw = str(state.get("task") or "").strip()
+    return bool(raw) and not impl(state)
+
+
 def build_digest(store: "Any", role: str = "", budget: int = DIGEST_TOKEN_BUDGET) -> str:
     """The pair-state slice that fits a hard token budget.
 
@@ -237,29 +252,13 @@ def build_digest(store: "Any", role: str = "", budget: int = DIGEST_TOKEN_BUDGET
         return cut != text
 
     # 1. What the work is wrong without. Nothing is cut.
-    # A legacy task string from an old round lies about the subject: when it
-    # names no current round (or stands empty) while open tasks stand, the
-    # first open task says the subject instead — marked, never silent.
-    raw_task = str(state.get("task") or "").strip()
-    open_first = next((str(t.get("text") or "").strip()
-                       for t in (state.get("tasks") or [])
-                       if t.get("status") == "open" and str(t.get("text") or "").strip()), "")
-    round_mark = f"round {state.get('round', 0)}"
-    if raw_task and round_mark in raw_task.lower():
-        # The string names its own round: it is this round's subject.
-        task = raw_task
-    elif open_first:
-        task = f"{open_first} (state.task is stale — subject from open tasks)"
-    elif raw_task:
-        # The string names no current round and nothing is open to speak for the
-        # subject. Round 103 found it the hard way: state.task still carried
-        # "Round 98: …" while the pair worked round 103, and this branch read
-        # it out as the round's subject without a word — the digest pointed the
-        # agent at someone else's work. A stale label is worse than no label,
-        # so it is named stale, exactly as it is when an open task overrides it.
-        task = f"(state.task is stale — no open task for round {state.get('round', 0)}: {raw_task})"
-    else:
-        task = "(task not set)"
+    # subject_line, not the raw state["task"] scalar: round 103's digest read
+    # "Round 98: …" as this round's subject while round 103 worked, because the
+    # guard covered only the open-task branch and nothing was open by then.
+    subject = _subject_line(state)
+    task = subject or "(task not set)"
+    if _task_is_stale(state) and "state.task is stale" not in task:
+        task = f"{task} (state.task is stale — subject from open tasks)"
     cut |= take("ROUND", floor=DIGEST_MIN_LINE)
     cut |= take(f"task: {task}")
     cut |= take(f"mode: {state.get('mode', '?')} · phase: {state.get('phase', '?')} · "
