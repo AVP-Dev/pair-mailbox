@@ -245,11 +245,19 @@ def build_digest(store: "Any", role: str = "", budget: int = DIGEST_TOKEN_BUDGET
                        for t in (state.get("tasks") or [])
                        if t.get("status") == "open" and str(t.get("text") or "").strip()), "")
     round_mark = f"round {state.get('round', 0)}"
-    if raw_task and (not open_first or round_mark in raw_task.lower()
-                     or raw_task.lower() in open_first.lower()):
+    if raw_task and round_mark in raw_task.lower():
+        # The string names its own round: it is this round's subject.
         task = raw_task
     elif open_first:
         task = f"{open_first} (state.task is stale — subject from open tasks)"
+    elif raw_task:
+        # The string names no current round and nothing is open to speak for the
+        # subject. Round 103 found it the hard way: state.task still carried
+        # "Round 98: …" while the pair worked round 103, and this branch read
+        # it out as the round's subject without a word — the digest pointed the
+        # agent at someone else's work. A stale label is worse than no label,
+        # so it is named stale, exactly as it is when an open task overrides it.
+        task = f"(state.task is stale — no open task for round {state.get('round', 0)}: {raw_task})"
     else:
         task = "(task not set)"
     cut |= take("ROUND", floor=DIGEST_MIN_LINE)

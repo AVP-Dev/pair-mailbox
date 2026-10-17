@@ -120,6 +120,28 @@ class TestDigest(PairTestCase):
         self.assertIn("task: Round 98: explicit rev/head on pair_note", text)
         self.assertNotIn("state.task is stale", text)
 
+    def test_stale_task_string_with_nothing_open_says_so(self) -> None:
+        """Round 103: the closed-round branch was the silent one.
+
+        The stale-string guard covered only "an open task says the subject instead".
+        Round 103 finished with every task closed, so nothing spoke for the subject
+        and the guard fell through: `state.task` still read "Round 98: …" while the
+        pair worked round 103, and the digest printed it as the round's subject with
+        no warning. The agent oriented on another round's work.
+
+        A stale label is worse than no label, so it is named stale here too.
+        """
+        self.with_state(task="Round 98: explicit rev/head on pair_note",
+                        writer="omp", mode="fix", phase="done", round=103)
+        self.store.mutate(lambda st: st.setdefault("tasks", []).extend(
+            {"id": 90 + i, "text": f"round-103 slice {i}", "status": "done",
+             "added_at": "then", "added_by": "omp", "round": 103}
+            for i in range(3)))
+        text = self.digest()
+        self.assertIn("state.task is stale", text)
+        self.assertIn("round 103", text)
+        self.assertNotIn("task: Round 98: explicit rev/head on pair_note", text)
+
     def test_what_did_not_fit_is_said(self) -> None:
         """Trimming must declare itself.
 
