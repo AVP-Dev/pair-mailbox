@@ -40,7 +40,14 @@ def _transcript_note_rows(state_dir: Path) -> list[dict[str, Any]]:
     see rather than pretending to a full history.
     """
     rows: list[dict[str, Any]] = []
-    paths = sorted((state_dir / "notes" / "archive").glob("*.jsonl")) if (state_dir / "notes" / "archive").is_dir() else []
+    # Transcript-archive, NOT notes/archive: rotation shifts the active
+    # transcript to `transcript-archive/N.jsonl` (manifest.py:56). Reading the
+    # notes archive instead yields [] silently, and after any rotation every
+    # entry whose journal row rotated reads as an orphan — the leg refuses
+    # closes it should allow, which is the same false-refusal class as the
+    # round-104 false pass. Live-measured by the critic (seq 1597).
+    archive = state_dir / "transcript-archive"
+    paths = sorted(archive.glob("*.jsonl")) if archive.is_dir() else []
     active = state_dir / "transcript.jsonl"
     if active.exists():
         paths.append(active)

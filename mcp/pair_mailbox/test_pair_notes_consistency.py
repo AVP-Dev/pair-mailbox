@@ -101,5 +101,26 @@ class TestNotesConsistency(PairTestCase):
         self.assertTrue(any("cafe1234abcd" in b for b in blockers))
 
 
+    def test_rotated_journal_row_is_not_an_orphan(self) -> None:
+        """The critic's finding (seq 1597): the leg read `notes/archive` where
+        the real archive is `transcript-archive` (manifest.py:56), so after
+        rotation every entry whose journal row had rotated read as an orphan —
+        the leg refused closes it should allow. Rotate for real, assert the
+        entry still matches its now-archived row."""
+        self.writer.tool_pair_note(kind="decision", text="note written before rotation")
+        target = self.store.notes_root / "decision.md"
+        header = target.read_text(encoding="utf-8").splitlines()[1]
+        sha = header.split("note ")[1].split(" ")[0]
+        # rotate: the whole active transcript leaves for transcript-archive/1.jsonl
+        archive = self.store.root / "transcript-archive"
+        archive.mkdir(parents=True, exist_ok=True)
+        active = self.store.root / "transcript.jsonl"
+        (archive / "1.jsonl").write_text(active.read_text(encoding="utf-8"), encoding="utf-8")
+        active.write_text("", encoding="utf-8")
+        ok, why = pnc.check_notes(self.store.root)
+        self.assertTrue(ok, f"an entry whose row rotated must still match: {why}")
+        self.assertIn("checked", why)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
