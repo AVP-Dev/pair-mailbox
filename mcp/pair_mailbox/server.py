@@ -1966,6 +1966,26 @@ class PairSession:
             notes_ok, notes_why = check_notes(self.store.root)
             if not notes_ok:
                 blockers.append(f"the notes disagree with the journal: {notes_why}. ")
+            # Round 106 slice E: the board's own machine leg. Round 105 drifted
+            # three times post-commit and once pre-commit — a row claiming
+            # `delivered <sha>` for another commit's sha, a prerequisite's sha,
+            # or a component without its caller. A human caught each one; the
+            # catch is mechanical, so it stops being a human's job. Fail-open
+            # ONLY when the board is unreadable or git cannot answer: never
+            # block a close on a check that could not run.
+            board = self.store.root / "plan.md"
+            if board.exists():
+                try:
+                    sys.path.insert(0, str(self.store.project_root / "bin"))
+                    import boardcheck as _boardcheck
+                    _ok, _problems = _boardcheck.check(board,
+                                                       require_ancestor=False)
+                    if not _ok:
+                        blockers.append(
+                            "the board claims what the tree cannot show: "
+                            + "; ".join(_problems[:3]) + ". ")
+                except Exception as exc:  # noqa: BLE001 - the leg never drops a close
+                    log(f"board check skipped ({exc})")
             if self.store.obligations_root.is_dir():
                 for path in self.store.obligations_root.glob("*.json"):
                     try:
