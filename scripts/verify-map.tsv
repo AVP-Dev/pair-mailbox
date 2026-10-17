@@ -61,6 +61,8 @@ bin/pairdoctor	doctor
 bin/pairdoctor_test.py	doctor
 bin/pairrestart	pairrestart
 bin/pairrestart_test.py	pairrestart
+mcp/pair_mailbox/restart_trace.py	pairrestart
+mcp/pair_mailbox/test_restart_trace.py	pairrestart
 mcp/pair_mailbox/manifest.py	manifest
 mcp/pair_mailbox/test_manifest.py	manifest
 bin/pairreport	manifest

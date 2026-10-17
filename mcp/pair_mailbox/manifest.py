@@ -119,6 +119,63 @@ def _round_bounds(state_dir: Path, round_number: int, state: dict[str, Any]) -> 
     after = [d for d in dones if d >= stamped[-1]]
     return anchor, (after[0] if after else None)
 
+def _round_merged(state: dict[str, Any], project_root: Path, round_number: int) -> bool | None:
+    """Whether round N is MERGED, three-valued (round 103 S1).
+
+    Two independent sources, in order: recorded commit evidence of this round
+    naming an origin/master advance (the writer's own record, never trusted
+    alone — see below), then git: the evidence tip is reachable from a
+    remote-tracking master ref (LOCAL probe only — never `gh`/network; this
+    runs in derive, which callers run on hot paths).
+
+    Fail direction: unknown (no evidence, git broken) returns None and callers
+    treat None as NOT merged — an unrecorded merge must look open, never the
+    reverse: scoring an unshipped round as merged is the round-102 lie this
+    function exists to refuse.
+    """
+    import re
+    import subprocess
+
+    def _run_git(*args: str) -> int | None:
+        try:
+            proc = subprocess.run(["git", *args], cwd=str(project_root),
+                                  capture_output=True, timeout=5)
+        except Exception:  # noqa: BLE001 - broken git is unknown, never merged
+            return None
+        return proc.returncode
+
+    tip: str | None = None
+    for e in (state.get("evidence") or []):
+        if int(e.get("round", -1)) != round_number:
+            continue
+        if e.get("evidence_kind") not in ("commit",) and e.get("kind") not in ("commit",):
+            continue
+        value = str(e.get("value", ""))
+        # Only an origin/master ADVANCE admits a merge: "origin/master X..Y"
+        # names the tip Y; "origin/master advanced X -> Y" (merge-commit
+        # evidence row, round 102's real shape) names the new tip Y. A bare
+        # sha (the branch-push row) does not.
+        for form in (r"origin/master\s+[0-9a-f]{7,40}\.\.[0-9a-f]{7,40}",
+                     r"origin/master\s+advanced\s+([0-9a-f]{7,40})\s*->\s*([0-9a-f]{7,40})"):
+            for match in re.findall(form, value):
+                tip = match[1] if isinstance(match, tuple) else str(match).rsplit("..", 1)[1].split()[-1]
+                break
+            if tip:
+                break
+        if tip:
+            break
+    if not tip:
+        return None
+    for ref in ("refs/remotes/origin/master", "refs/heads/master"):
+        rc = _run_git("merge-base", "--is-ancestor", tip, ref)
+        if rc == 0:
+            return True
+        if rc == 1:
+            continue  # this ref does not reach it; try the other
+        return None  # broken git: unknown
+    return False
+
+
 def _round_commits_from_evidence(state: dict[str, Any], round_number: int) -> list[dict[str, str]] | None:
     """Closed round's commits from its recorded merge evidence, never the live diff.
 
@@ -203,7 +260,18 @@ def derive_manifest(state_dir: Path, state: dict[str, Any], round_number: int | 
     verdict_notes = _verdict_note_hashes(state_dir)
     rows = _transcript_rows(state_dir)
     project_root = state_dir.parent
-    is_open = round_number == int(state.get("round", 0))
+    counter_match = round_number == int(state.get("round", 0))
+    if not counter_match:
+        is_open = False  # a past round advances away from itself: closed, never re-derived
+    else:
+        # Round 103 S1: the round 102 lie — manifest written AFTER the merge,
+        # state.round still == 102, old predicate kept the live branch (empty
+        # after the merge) and recorded commits [] with the merge evidence
+        # naming six shas, cross_check silent. Open now requires BOTH: this is
+        # still the state's round AND no origin/master advance is recorded.
+        # Confirmed merged = recorded advance whose tip is reachable from the
+        # local master ref (three-valued; see _round_merged).
+        is_open = _round_merged(state, project_root, round_number) is not True
     if is_open:
         commits: list[dict[str, str]] | None = _git_commits(project_root)
         commits_unrecoverable = False
@@ -406,7 +474,18 @@ def cross_check(manifest: dict[str, Any], state: dict[str, Any],
     """
     gaps = []
     round_number = manifest.get("round", 0)
-    is_open = round_number == int(state.get("round", 0))
+    # Round 103 S1: the branch is picked on the SAME predicate as the derive
+    # (counter past + non-merged today). This is the load-bearing call site:
+    # a merged round must never take the live-branch branch, or it records
+    # commits [] forever while its merge evidence names the commits (round 102
+    # crossed the gate exactly so). Unknown (None) reads as OPEN here: an
+    # unverified merge stays guarded by the live-branch check, never scored
+    # closed on a guess.
+    counter_match = round_number == int(state.get("round", 0))
+    if not counter_match:
+        is_open = False
+    else:
+        is_open = _round_merged(state, state_dir.parent, round_number) is not True
     if is_open:
         # OPEN round (C4): the live branch question stays — this is what
         # protects the round being closed right now. Must stay red-proven.

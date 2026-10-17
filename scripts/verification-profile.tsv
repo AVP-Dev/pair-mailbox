@@ -20,6 +20,7 @@ shell-syntax	static	1	bash -n scripts/verify-project.sh scripts/security-scan.sh
 exec-bits	static	1	test -x scripts/file-size-gate_test.sh
 file-size	static	1	./scripts/file-size-gate.sh
 comment-lint	static	1	bash scripts/comment-lint.sh
+staleness-detector	static	1	python3 scripts/staleness-detector.py
 # --- positive: behaviour that must work ---
 # Five suites past moving obligations out of `server.py`: one test file per source.
 # Each launches alone, because `python3 test_protocol.py` no longer runs neighbour
@@ -47,7 +48,7 @@ board-render	positive	1	python3 mcp/pair_mailbox/test_board_render.py
 board-cli	positive	1	python3 bin/pairboard_test.py
 doctor	positive	1	python3 bin/pairdoctor_test.py
 pairup	positive	1	python3 bin/pairup_test.py
-pairrestart	positive	1	python3 bin/pairrestart_test.py
+pairrestart	positive	1	python3 bin/pairrestart_test.py && python3 mcp/pair_mailbox/test_restart_trace.py
 manifest	positive	1	python3 mcp/pair_mailbox/test_manifest.py
 wake	positive	1	python3 mcp/pair_mailbox/test_wake.py
 review	positive	1	python3 mcp/pair_mailbox/test_review.py

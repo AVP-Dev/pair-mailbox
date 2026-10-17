@@ -146,7 +146,7 @@ if [[ -n "$SWAP_CRITIC" ]]; then
   fi
   echo "pair-duo: writer $writer stays, critic -> $SWAP_CRITIC"
   tmux split-window $SPLIT_OPT -c "$PROJECT_ROOT_DIR" \
-    "$SHELL -c \"export PAIR_ROLE='$SWAP_CRITIC' PAIR_STATE='$STATE_PATH'; cd '$PROJECT_ROOT_DIR'; echo '=== PAIR CRITIC: $SWAP_CRITIC (swap) ==='; $critic_cmd\""
+    "$SHELL -c \"export PAIR_STATE='$STATE_PATH'; cd '$PROJECT_ROOT_DIR'; echo '=== PAIR CRITIC: $SWAP_CRITIC (swap) ==='; $critic_cmd\""
   echo "pair-duo: new critic $SWAP_CRITIC in the next pane; close the old critic pane yourself (Ctrl-D)"
   echo "pair-duo: write authority with $writer, untouched (PROTOCOL §2)"
   exit 0
@@ -266,8 +266,8 @@ if [[ -n "${TMUX:-}" ]]; then
 fi
 
 PROJ_NAME="$(basename -- "$PROJECT_ROOT_DIR")"
-WRITER_INIT="export PAIR_ROLE='${WRITER_ROLE}' PAIR_STATE='${STATE_PATH}'; cd '${PROJECT_ROOT_DIR}'; echo '=== PAIR WRITER: ${WRITER_ROLE} ==='; ${WRITER_CMD}"
-CRITIC_INIT="export PAIR_ROLE='${CRITIC_ROLE}' PAIR_STATE='${STATE_PATH}'; cd '${CRITIC_DIR}'; echo '=== PAIR CRITIC: ${CRITIC_ROLE} ==='; ${CRITIC_CMD}"
+WRITER_INIT="export PAIR_STATE='${STATE_PATH}'; cd '${PROJECT_ROOT_DIR}'; echo '=== PAIR WRITER: ${WRITER_ROLE} ==='; ${WRITER_CMD}"
+CRITIC_INIT="export PAIR_STATE='${STATE_PATH}'; cd '${CRITIC_DIR}'; echo '=== PAIR CRITIC: ${CRITIC_ROLE} ==='; ${CRITIC_CMD}"
 TITLE_WRITER="$PROJ_NAME:${WRITER_ROLE} (writer)"
 TITLE_CRITIC="$PROJ_NAME:${CRITIC_ROLE} (critic)"
 

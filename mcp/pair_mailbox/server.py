@@ -1061,6 +1061,11 @@ def is_pid_alive(pid: Any) -> bool:
     return liveness.pid_alive(pid)
 
 
+def _proc_starttime(pid: Any) -> int | None:
+    """`liveness.proc_starttime` wrapper (round 103 S3), same drift rule."""
+    return liveness.proc_starttime(pid)
+
+
 def same_pane(left, right) -> bool:
     """`composer.same_pane` with tmux found. The logic lives in composer, next to
     `pane_identity`: pane comparison belongs to pane parsing, not the protocol. The
@@ -1159,6 +1164,7 @@ class PairSession:
             self.role, {"first_seen": utcnow(), "reads": 0, "sends": 0})
         entry["last_seen"] = utcnow()
         entry["pid"] = os.getpid()
+        entry["pid_start"] = _proc_starttime(os.getpid())
         if self.role == "opencode":
             meta = request_meta if isinstance(request_meta, dict) else {}
             session_id = meta.get("ai.opencode/sessionID")
@@ -1400,6 +1406,7 @@ class PairSession:
         entry = roles.setdefault(self.role, {"first_seen": utcnow(), "reads": 0, "sends": 0})
         entry["last_seen"] = utcnow()
         entry["pid"] = current_pid
+        entry["pid_start"] = _proc_starttime(current_pid)
         if pin and not pin_unverified:
             # The override beats the environment. Exactly this lay broken: hand-editing
             # state.json fixed nothing, because `_register` rewrote `pane` on every call of
@@ -2390,7 +2397,10 @@ class PairSession:
             try:
                 _sp.run([_tmux(), "display-message", "-t", pane,
                          "-d", "4000",
-                         f"[pair] {self.role}: new message in the mailbox, read pair_read"],
+                        # Round 103 S2: the pointer carries its mail seq so a
+                        # reader can tell this pointer's vintage — one stale
+                        # pointer text was indistinguishable from three fresh ones.
+                         f"[pair] {self.role}: new message in the mailbox (seq {seq}), read pair_read"],
                         capture_output=True, text=True, timeout=5)
             except Exception as exc:  # noqa: BLE001 - the pane vanished between checks
                 result["why"] = f"pane unreadable: {exc}"
@@ -2405,7 +2415,9 @@ class PairSession:
             return result
 
         # 2. The pointer. Short on purpose: a line in another TUI, not text.
-        pointer = f"[pair] {self.role}: new message in the mailbox, read pair_read"
+        # Round 103 S2: carries the mail seq — a reader must never need the
+        # filesystem to know this pointer's vintage.
+        pointer = f"[pair] {self.role}: new message in the mailbox (seq {seq}), read pair_read"
         try:
             pointed = deliver(pane, pointer, wait_for_empty=wait_for_empty, submit=submit)
         except ComposerBusy as exc:
@@ -2533,8 +2545,9 @@ class PairSession:
         # the fast-response optimization.
         try:
             from wake import record_wake
+            # Round 103 S2: the wake text carries the seq.
             record_wake(self.store.root, self.store.read(), to, "message",
-                        f"[pair] {self.role}: new message in the mailbox, read pair_read")
+                        f"[pair] {self.role}: new message in the mailbox (seq {result['seq']}), read pair_read")
             self.store.append_transcript("wake_pending", self.role, to=to,
                                          reason="message", seq=result["seq"])
         except Exception:  # noqa: BLE001 - the wake file must never drop the send
@@ -3402,16 +3415,39 @@ class PairSession:
         if not (text or "").strip():
             raise ProtocolError("`text` is required.")
         self.store.notes_root.mkdir(parents=True, exist_ok=True)
+        body = text.strip()
+        normalized = "\n".join(line.rstrip() for line in body.splitlines()).strip()
+        import hashlib as _hashlib
+        body_sha = _hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:12]
+        # Round 103 S6, peer amendment 3: attribution first. Five identical
+        # blocks landed in handoff.md at one ts and the transcript could not
+        # say whether one call appended five times or five calls ran inside a
+        # second — the fields that would tell (tool, call id, attempt) were
+        # never written. A fact nobody can attribute is a fact nobody trusts.
+        attempt: dict[str, int] = {}
+        for row in self.store.read_transcript(limit=50):
+            if row.get("kind") != "note" or row.get("note_kind") != kind \
+                    or row.get("role") != self.role:
+                continue
+            if str(row.get("note_sha", "")) == body_sha:
+                attempt["n"] = int(row.get("note_attempt", 0)) + 1
+        n_attempt = attempt.get("n", 1)
         target = self.store.notes_root / f"{kind}.md"
         with self.store.lock():
             with target.open("a", encoding="utf-8") as stream:
-                stream.write(f"\n## {utcnow()} — {self.role}\n\n{text.strip()}\n")
+                stream.write(f"\n## {utcnow()} — {self.role} (note {body_sha} attempt {n_attempt})\n\n{body}\n")
             # Rotation at 10 KB: notes grow unbounded, and a tail read from a 72 KB file costs
             # ~18000 tokens. Rotation keeps the active part compact, the old leaving for archive/.
-            # leaving for archive/.
             if target.stat().st_size > 10 * 1024:
                 self._rotate_note(kind, target)
-        self.store.append_transcript("note", self.role, note_kind=kind, chars=len(text))
+        # Round 103 S6: normalization closes the one-newline gap (peer
+        # amendment 2: blocks 1-4 sha-equal len 1204, block 5 len 1203 — exact
+        # equality would refuse four and miss the fifth). The row carries the
+        # normalized sha + attempt; repeated content is ATTRIBUTED, not
+        # silently swallowed.
+        self.store.append_transcript("note", self.role, note_kind=kind,
+                                     chars=len(text), note_sha=body_sha,
+                                     note_attempt=n_attempt)
         if kind == "verdict" or kind.startswith("verdict-"):
             # The verdict-to-revision bind lives in review next to snapshot. Silently applying a
             # verdict to a drifted revision beats missing verdict. Fail-open: with no git an empty

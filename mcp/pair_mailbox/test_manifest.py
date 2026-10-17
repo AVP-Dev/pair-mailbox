@@ -409,5 +409,82 @@ class TestRoundWindow96(unittest.TestCase):
         self.assertEqual(m["verdicts"][0]["note"], ".pair/notes/verdict-v-in.md")
 
 
+class TestMergedPredicate103(unittest.TestCase):
+    """Round 103 S1: is_open is DELIVERY, not the state-round counter.
+
+    Real shape, not a fixture: manifest written AFTER the merge,
+    state.round still == manifest.round, merge evidence recorded — the old
+    predicate `round == state.round` kept the live branch (empty after the
+    merge) and recorded commits [] with cross_check silent. Refusal required.
+    """
+
+    MERGE_ROW = {"round": 102, "evidence_kind": "commit",
+                 "value": "PR #47 MERGED: origin/master advanced 4c67e8d -> 19cda5a "
+                          "(9 files, merge commit). Round 102 delivered end-to-end."}
+
+    def test_write_time_refusal_after_merge(self) -> None:
+        """The round-102 refusal that never happened: state.round still equals
+        the manifest round, merge evidence recorded, the manifest written after
+        the merge still carried [] and the old predicate kept the live branch
+        (empty after the merge) — cross_check must refuse via the anchor."""
+        st = _state(round=102, evidence=[self.MERGE_ROW])
+        with mock.patch.object(manifest, "_round_merged", return_value=True):
+            with tempfile.TemporaryDirectory() as tmp:
+                sd = Path(tmp)
+                m = derive_manifest(sd, st, 102)
+                self.assertEqual([c["sha"] for c in m["commits"]], ["4c67e8d", "19cda5a"])
+                bad = dict(m)
+                bad["commits"] = []
+                gaps = cross_check(bad, st, sd)
+        self.assertTrue(any("recorded merge evidence names commits" in g for g in gaps))
+
+    def test_live_derive_on_actual_repo_records_anchor(self) -> None:
+        """Live-shape smoke against this repo: round 102 merged, deriving
+        round 102 with real state must take the evidence anchor, never []."""
+        import json as _json
+        state_path = Path(__file__).resolve().parent.parent.parent / ".pair" / "state.json"
+        if not state_path.exists():
+            self.skipTest("no live .pair in this checkout")
+        live = _json.loads(state_path.read_text(encoding="utf-8"))
+        truth = manifest._round_merged(live, state_path.parent.parent, 102)
+        self.assertIs(truth, True)
+        m = derive_manifest(state_path.parent, live, 102)
+        self.assertEqual([c["sha"] for c in m["commits"]][-1], "19cda5a")
+
+    def test_merge_row_without_git_is_not_merged(self) -> None:
+        """E1 spirit: a written MERGED row with no git to confirm the tip is
+        UNKNOWN (None), never True — derive keeps the open branch when git
+        cannot confirm, and cross_check keeps the live-branch guard."""
+        st = _state(round=102, evidence=[self.MERGE_ROW])
+        with tempfile.TemporaryDirectory() as tmp:
+            got = manifest._round_merged(st, Path(tmp), 102)
+        self.assertIsNone(got)
+
+    def test_merge_row_reachable_tip_is_merged(self) -> None:
+        """The recorded advance with the tip genuinely on master merges."""
+        repo_root = Path(__file__).resolve().parent.parent.parent
+        state_path = repo_root / ".pair" / "state.json"
+        if not state_path.exists():
+            self.skipTest("no live .pair in this checkout")
+        import json as _json
+        live = _json.loads(state_path.read_text(encoding="utf-8"))
+        self.assertIs(manifest._round_merged(live, repo_root, 102), True)
+
+    def test_unmerged_round_stays_open_guarded(self) -> None:
+        """Twin (never regress the C4 guard): no merge evidence -> the open
+        live-branch refusal for [] still holds."""
+        st = _state(round=103)
+        with mock.patch.object(manifest, "_round_merged", return_value=None):
+            with tempfile.TemporaryDirectory() as tmp:
+                sd = Path(tmp)
+                m = derive_manifest(sd, st)
+                bad = dict(m)
+                bad["commits"] = []
+                with mock.patch.object(manifest, "_git_commits",
+                                       return_value=[{"sha": "abc", "subject": "x"}]):
+                    gaps = cross_check(bad, st, sd)
+        self.assertTrue(any("on branch" in g for g in gaps))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

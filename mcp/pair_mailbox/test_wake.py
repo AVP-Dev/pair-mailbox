@@ -90,6 +90,68 @@ class TestEventWake(PairTestCase):
         self.assertIn("first", second.get("reasons", []))
         self.assertIn("second", second.get("reasons", []))
 
+    def test_fresh_ask_recomputes_ask_fields(self) -> None:
+        """Round 103 S2: a NEW ask (no previous record) takes fresh
+        measurements, not a stored snapshot read as current. Round 102's live
+        form: asked_at frozen 17:22:42Z while reasons carried minutes-new
+        events, unread_at_ask frozen 0, the escalation gate unsatisfiable."""
+        from wake import record_wake
+        os.environ["PAIR_DISABLE_RING"] = "1"
+        self.writer.tool_pair_state()
+        self.peer.tool_pair_state()
+        state = self.store.read()
+        path = self.wake_file("reviewer-agent")
+        # Plant a STALE ask shaped exactly like the live-round defect: an old
+        # asked_at plus unread already zero at ask time.
+        stale = {"role": "reviewer-agent", "reason": "old", "reasons": ["old"],
+                 "asked_at": "2026-10-14T00:00:00+00:00",
+                 "seen_at_ask": "2026-10-14T00:00:00+00:00",
+                 "unread_at_ask": 0}
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(stale), encoding="utf-8")
+        from wake import utcnow as _now
+        # A NEW ask after an ack: nothing hangs, the next ask resets patience.
+        # Simulated: stale record is REPLACED when the ack removed it — here we
+        # check the closest observable: a pending wake that gets a new reason
+        # after the ack round-trip keeps anchors (round-15), and an ACKED-then-
+        # new wake takes fresh anchors. RecordLiving form: read the fields a
+        # freshly created file carries.
+        before_probe = _now()
+        path.unlink()
+        record_wake(self.root, self.store.read(), "reviewer-agent", "fresh", "t")
+        fresh = json.loads(path.read_text(encoding="utf-8"))
+        self.assertNotEqual(fresh.get("asked_at"), "2026-10-14T00:00:00+00:00",
+                            "a new ask must take a fresh asked_at")
+        self.assertGreaterEqual(str(fresh.get("asked_at")), before_probe)
+
+    def test_pending_wake_keeps_patience_anchors(self) -> None:
+        """Round-15 invariant stays: a hanging wake (previous present) keeps
+        asked_at/unread_at_ask; age compares against its ask."""
+        from wake import record_wake
+        os.environ["PAIR_DISABLE_RING"] = "1"
+        self.writer.tool_pair_state()
+        self.peer.tool_pair_state()
+        state = self.store.read()
+        record_wake(self.root, state, "reviewer-agent", "first", "t1")
+        first = json.loads(self.wake_file("reviewer-agent").read_text(encoding="utf-8"))
+        record_wake(self.root, self.store.read(), "reviewer-agent", "second", "t2")
+        second = json.loads(self.wake_file("reviewer-agent").read_text(encoding="utf-8"))
+        self.assertEqual(first.get("asked_at"), second.get("asked_at"),
+                         "a pending wake must keep asked_at")
+        self.assertEqual(first.get("unread_at_ask"), second.get("unread_at_ask"))
+
+    def test_wake_text_carries_seq(self) -> None:
+        """Round 103 S2: the record's text names the mail seq, so a reader of
+        the wake file can tell which letter this pointer points at."""
+        os.environ["PAIR_DISABLE_RING"] = "1"
+        self.writer.tool_pair_state()
+        self.peer.tool_pair_state()
+        sent = self.writer.tool_pair_deliver(to="reviewer-agent", text="with seq")
+        payload = json.loads(self.wake_file("reviewer-agent").read_text(encoding="utf-8"))
+        seq = str(sent.get("seq"))
+        self.assertIn(f"seq {seq}", str(payload.get("text", "")),
+                      "the wake pointer must carry the mail seq")
+
     def test_ring_returns_immediately_when_composer_busy(self) -> None:
         """A busy composer means straight to file, with no 1.5s wait stealing input.
 

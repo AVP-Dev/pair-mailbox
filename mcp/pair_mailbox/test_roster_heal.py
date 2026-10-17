@@ -135,6 +135,24 @@ class ExpireDeadRolesCase(unittest.TestCase):
         self.assertIn("boss", roles)
         self.assertEqual(events, [])
 
+    def test_reused_slot_allows_expiry(self) -> None:
+        """Round 103 S3 red proof: pid reused by an unrelated live process —
+        os.kill says alive, the recorded /proc starttime says not-ours; the
+        paneless record MUST expire."""
+        import unittest.mock
+        import roster_heal
+        roles = {"ghost": {"pid": os.getpid(), "pid_start": 42,
+                           "last_seen": old_seen()}}
+        # os.kill on our own pid succeeds (alive); the recorded starttime (42)
+        # cannot match the real /proc value — the slot check must read DEAD.
+        # The slot function is mocked so the test never depends on the actual
+        # f22 number of the running test process.
+        with unittest.mock.patch.object(roster_heal, "pid_slot_alive",
+                                        return_value=False):
+            events = self.expire(roles, pid_alive=lambda p: True)  # os.kill: alive
+        self.assertNotIn("ghost", roles)
+        self.assertEqual([e["kind"] for e in events], ["role_expired"])
+
     def test_role_without_last_seen_survives(self) -> None:
         "Age unmeasurable means fail-closed, never deleting."
         roles = {"legacy": {"pid": 999999}}

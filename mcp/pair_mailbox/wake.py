@@ -64,19 +64,32 @@ def record_wake(state_dir: Path, state: dict[str, Any], role: str,
     seen_reasons = [str(r) for r in prior]
     if reason not in seen_reasons:
         seen_reasons.append(reason)
+    # Round 103 S2: the ask fields are re-asked on a FRESH wake, not inherited
+    # from a stored previous read as if current. `previous.get(K, compute())`
+    # froze asked_at at the first raise (round 102's live form: 17:22:42Z with
+    # minutes-old reasons), froze unread_at_ask at 0 (the escalation gate at
+    # bin/pairpilot unread_now < unread_at_ask went unsatisfiable forever) and
+    # froze seen_at_ask at the first snapshot. The round-15 patience invariant
+    # stays: the fields may NOT refresh while an existing wake hangs — only a
+    # NEW ask (no previous record) or an already-acked/expired record resets
+    # patience. Ageing compares against asked_at, and the fresh ask carries
+    # the mail seq so a reader can tell this pointer's vintage.
+    handoff = not previous  # a new ask: nothing stored to inherit from
+    asked_at = utcnow() if handoff else str(previous.get("asked_at") or utcnow())
+    unread_at_ask = count_unread(state, state_dir, role) if handoff else int(
+        previous.get("unread_at_ask") or 0)
+    seen_at_ask = ((state.get("roles") or {}).get(role, {}) or {}).get("last_seen") \
+        if handoff else previous.get("seen_at_ask")
     payload = dict(previous)
     payload.update({
         "role": role,
         "reason": seen_reasons[-1],
         "reasons": seen_reasons,
-        "asked_at": previous.get("asked_at") or utcnow(),
-        "seen_at_ask": previous.get("seen_at_ask",
-                                    (state.get("roles") or {}).get(role, {}).get("last_seen")),
-        "unread_at_ask": int(previous.get("unread_at_ask",
-                                          count_unread(state, state_dir, role))),
+        "asked_at": asked_at,
+        "seen_at_ask": seen_at_ask,
+        "unread_at_ask": unread_at_ask,
         "text": text,
     })
-    payload.setdefault("asked_at", utcnow())
     try:
         tmp = path.with_suffix(".tmp")
         tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2),
