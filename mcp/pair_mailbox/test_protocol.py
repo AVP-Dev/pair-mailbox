@@ -4550,5 +4550,94 @@ class TestRoundBasePin(PairTestCase):
         self.assertNotEqual(first, moved)
 
 
+class TestOriginTruthCaller(PairTestCase):
+    """Round 105 slice 2b, the caller leg: a function nobody calls is not a slice.
+
+    origin_truth is landed and tested (161e788); these tests pin that the CLOSE
+    actually refuses on it — behind-by-N must BLOCK, not exist. Round 104's shape:
+    the floor answered delivered while origin sat 7 ahead.
+    """
+
+    @staticmethod
+    def git(cwd: Path, *args: str) -> None:
+        subprocess.run(["git", *args], cwd=str(cwd), check=True,
+                       capture_output=True, text=True, timeout=10)
+
+    @staticmethod
+    def rev(cwd: Path, ref: str) -> str:
+        return subprocess.run(["git", "rev-parse", ref], cwd=str(cwd),
+                              capture_output=True, text=True, timeout=10).stdout.strip()
+
+    def _repo(self, tmp: Path) -> Path:
+        proj = tmp / "proj"
+        proj.mkdir()
+        self.git(proj, "init", "-q", "-b", "master")
+        self.git(proj, "config", "user.email", "t@t.t")
+        self.git(proj, "config", "user.name", "t")
+        (proj / "a.py").write_text("x\n", encoding="utf-8")
+        self.git(proj, "add", "-A")
+        self.git(proj, "commit", "-qm", "base")
+        self.git(proj, "remote", "add", "origin", "https://github.com/o/r.git")
+        self.git(proj, "update-ref", "refs/remotes/origin/master", self.rev(proj, "HEAD"))
+        return proj
+
+    def _session(self, tmp: Path, proj: Path) -> tuple[Any, Any]:
+        """A session whose state dir sits OUTSIDE the git tree.
+
+        The repo under test switches branches, and `git checkout` deletes an
+        untracked `.pair/state.json` in the way — which removes the very
+        round_base this test checks, reading as "no base" instead of "behind".
+        Store.project_root is a read-only property, so the override is pinned on
+        the class for the duration of the test, not on the instance.
+        """
+        store = Store(tmp / "state")
+        session = PairSession("omp", store)
+        from unittest import mock as _m
+        patcher = _m.patch.object(type(store), "project_root", property(lambda self: proj))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        return store, session
+
+    def test_close_refuses_when_local_is_behind_origin(self) -> None:
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            proj = self._repo(Path(tmp))
+            store, session = self._session(Path(tmp), proj)
+            self.allow_panes()
+            session.tool_pair_claim(reason="test")
+            base = store.read().get("round_base")
+            self.assertTrue(base, "fixture must have a pinned round_base")
+            # origin advances (someone else merged), local stays at base —
+            # the round-104 shape: floor would answer `delivered` here.
+            # NB: no `reset --hard` in this fixture — it deletes the untracked
+            # .pair/state.json under test, which reads as "no round_base" and
+            # hides the very blocker being checked.
+            self.git(proj, "checkout", "-q", "-b", "elsewhere")
+            (proj / "b.py").write_text("y\n", encoding="utf-8")
+            self.git(proj, "add", "-A")
+            self.git(proj, "commit", "-qm", "origin-only")
+            self.git(proj, "update-ref", "refs/remotes/origin/master", self.rev(proj, "HEAD"))
+            self.git(proj, "checkout", "-q", "master")
+            self.assertEqual(self.rev(proj, "HEAD"), base, "fixture: local must sit at base")
+            self.assertIn("round_base", (Path(tmp) / "state" / "state.json").read_text(encoding="utf-8"),
+                          "fixture guard: the state file must survive the git work")
+            stale = store.read()
+            blockers = session._done_blockers(stale)
+            self.assertTrue(any("not against current origin" in b for b in blockers),
+                            f"behind must block the close; blockers were: {blockers}")
+            self.assertTrue(any("behind origin/master" in b for b in blockers))
+
+    def test_close_passes_when_local_matches_origin(self) -> None:
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            proj = self._repo(Path(tmp))
+            store, session = self._session(Path(tmp), proj)
+            self.allow_panes()
+            session.tool_pair_claim(reason="test")
+            blockers = session._done_blockers(store.read())
+            self.assertFalse([b for b in blockers if "origin" in b],
+                             f"aligned must not block; blockers: {blockers}")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -1920,7 +1920,20 @@ class PairSession:
         # Everything fail-open: with no git and no obligation files the round never holds.
         # holds.
         try:
-            from review import changed_between, dirty_files, git_head, is_stale
+            from review import changed_between, dirty_files, git_head, is_stale, origin_truth
+            # Round 105 slice 2b: the origin-truth comparison, the leg the floor
+            # never had. The floor answers for local head only, so a reset behind
+            # origin read `delivered` (round 104's false pass). Fail-open on
+            # `unknown`: no round_base, no git, no origin/master never holds a
+            # close — the branch that would block is `behind`, because origin
+            # carries commits THIS state does not, so the round would ship a
+            # tree that is not what was reviewed.
+            truth, truth_why = origin_truth(self.store.project_root,
+                                            str(state.get("round_base") or ""))
+            if truth == "behind":
+                blockers.append(f"the round is not against current origin: {truth_why}. ")
+            elif truth == "ahead":
+                blockers.append(f"{truth_why} (delivered means origin carries it) ")
             pending = 0
             if self.store.obligations_root.is_dir():
                 for path in self.store.obligations_root.glob("*.json"):
