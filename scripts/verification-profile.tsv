@@ -17,6 +17,7 @@
 
 # --- static: fast checks before every edit ---
 shell-syntax	static	1	bash -n scripts/verify-project.sh scripts/security-scan.sh scripts/file-size-gate.sh scripts/comment-lint.sh scripts/comment-lint_test.sh scripts/eye-of-sauron.sh scripts/eye-of-sauron_test.sh bin/pair-duo bin/pairup bin/pairctl mcp/pair_mailbox/serve.sh
+python-syntax	static	1	./scripts/python-syntax.sh
 exec-bits	static	1	test -x scripts/file-size-gate_test.sh
 file-size	static	1	./scripts/file-size-gate.sh
 comment-lint	static	1	bash scripts/comment-lint.sh
@@ -68,6 +69,7 @@ ground-truth	positive	1	python3 mcp/pair_mailbox/test_ground_truth.py
 file-size-gate-tests	positive	1	bash scripts/file-size-gate_test.sh
 eye-deadlock	positive	1	bash scripts/eye-of-sauron_test.sh
 i18n-selftest	positive	1	python3 scripts/i18n_self_test.py
+verification-profile	positive	1	python3 mcp/pair_mailbox/test_verification_profile.py
 
 # --- integration: slow but mandatory before finalization ---
 installer	integration	1	python3 install_test.py	serial
