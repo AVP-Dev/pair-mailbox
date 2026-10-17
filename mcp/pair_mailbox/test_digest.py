@@ -138,12 +138,14 @@ class TestDigest(PairTestCase):
              "added_at": "then", "added_by": "omp", "round": 103}
             for i in range(3)))
         text = self.digest()
-        self.assertIn("state.task is stale", text)
-        self.assertIn("round 103", text)
-        # The false claim this closes: the scalar posing as the subject with
-        # nothing marking it. A stale marker after the text is honest; the text
-        # alone on the task line is the lie.
-        task_line = next(line for line in text.splitlines() if line.startswith("task:"))
+        task_line = next(l for l in text.splitlines() if l.startswith("task:"))
+        # One honest marker, whichever wording the shared rule uses: task_subject
+        # marks "(stale — not round N)", digest's own wording is "state.task is
+        # stale". The lie this closes is the marker's absence, not its dialect —
+        # and a doubled marker is the same class of noise, so exactly one stands.
+        self.assertIn("round 103", task_line)
+        markers = [m for m in ("state.task is stale", "stale — not round") if m in task_line]
+        self.assertEqual(len(markers), 1, f"exactly one stale marker, got {markers!r} in {task_line!r}")
         self.assertNotEqual(task_line, "task: Round 98: explicit rev/head on pair_note")
 
     def test_what_did_not_fit_is_said(self) -> None:

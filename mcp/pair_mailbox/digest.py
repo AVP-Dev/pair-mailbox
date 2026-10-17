@@ -257,7 +257,7 @@ def build_digest(store: "Any", role: str = "", budget: int = DIGEST_TOKEN_BUDGET
     # guard covered only the open-task branch and nothing was open by then.
     subject = _subject_line(state)
     task = subject or "(task not set)"
-    if _task_is_stale(state) and "state.task is stale" not in task:
+    if _task_is_stale(state) and "stale" not in task:
         task = f"{task} (state.task is stale — subject from open tasks)"
     cut |= take("ROUND", floor=DIGEST_MIN_LINE)
     cut |= take(f"task: {task}")
