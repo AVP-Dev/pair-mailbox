@@ -4120,13 +4120,21 @@ class MCPServer:
         self._notify_lock = threading.RLock()
         self._watch_stop = threading.Event()
         self._watch_thread: threading.Thread | None = None
+        # Transport abstraction (round 106 slice D). The framing protocol above
+        # is stdio-shaped only because its source and sink are; binding the loop
+        # to sys.stdin/sys.stdout is what tied the server's lifetime to the CLI
+        # that spawned it. A socket transport keeps the same protocol and lets
+        # the SERVER outlive the CLI: the client can die, reconnect, and continue.
+        self._in: Any = None
+        self._out: Any = None
 
     def send(self, payload: dict[str, Any]) -> None:
         # stdout is the shared resource of the main loop and the watcher thread: with no
         # framing-lock two interleaved json.dumps break the stream, and the client reads garbage.
         with self._notify_lock:
-            sys.stdout.write(json.dumps(payload, ensure_ascii=False) + "\n")
-            sys.stdout.flush()
+            sink = self._out if self._out is not None else sys.stdout
+            sink.write(json.dumps(payload, ensure_ascii=False) + "\n")
+            sink.flush()
 
     def reply(self, request_id: Any, result: dict[str, Any]) -> None:
         self.send({"jsonrpc": "2.0", "id": request_id, "result": result})
@@ -4143,8 +4151,9 @@ class MCPServer:
         # readline() rather than iteration: iterating sys.stdin uses a read-ahead
         # buffer that withholds complete lines until the buffer fills, which on a
         # pipe deadlocks against a client waiting for our reply.
+        source = self._in if self._in is not None else sys.stdin
         while True:
-            raw = sys.stdin.readline()
+            raw = source.readline()
             if not raw:
                 break
             raw = raw.strip()
@@ -4162,6 +4171,88 @@ class MCPServer:
             self.dispatch(message)
         log("stdin closed, exiting")
         self.stop_watcher()
+
+    def serve_socket(self, path: str, once: bool = True) -> int:
+        """Serve the SAME protocol over a unix socket, outliving any one client.
+
+        The defect this answers (round 106 slice D): bound to stdio, the server
+        IS the CLI's child — measured ppid ties, omp's server under bun 59561,
+        opencode's under its own parent — so killing either side killed both, and
+        a drop meant relaunching the CLI and losing its session context.
+
+        Here the socket is the server's public face. A client connects, speaks
+        newline-delimited JSON-RPC 2.0 — the identical framing — and may die; the
+        server stays up and takes the next connection. The role lock is held for
+        the server's whole life, exactly as with stdio: one live process per role
+        per state dir, and the kernel releases it if this process dies.
+
+        `once=True` serves exactly one client then exits — the shape the
+        round-trip test uses. `once=False` loops, which is what a daemon does.
+        """
+        import os
+        import socket as _socket
+        import threading
+
+        sock_path = str(path)
+        os.makedirs(os.path.dirname(sock_path) or ".", exist_ok=True)
+        try:
+            os.unlink(sock_path)
+        except FileNotFoundError:
+            pass
+        listener = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
+        listener.bind(sock_path)
+        listener.listen(4)
+        log(f"socket ready role={self.session.role} state={self.session.store.root} "
+            f"path={sock_path}")
+        self.start_watcher()
+        try:
+            while True:
+                conn, _ = listener.accept()
+                reader = conn.makefile("r", encoding="utf-8", newline="\n")
+                writer = conn.makefile("w", encoding="utf-8", newline="\n")
+                self._in, self._out = reader, writer
+                # A lock held for ONE client at a time: two CLIs talking to one
+                # role must not interleave frames on different connections.
+                try:
+                    while True:
+                        raw = reader.readline()
+                        if not raw:
+                            break
+                        raw = raw.strip()
+                        if not raw:
+                            continue
+                        try:
+                            message = json.loads(raw)
+                        except json.JSONDecodeError as exc:
+                            self.error(None, -32700, f"parse error: {exc}")
+                            continue
+                        if isinstance(message, list):
+                            for item in message:
+                                self.dispatch(item)
+                            continue
+                        self.dispatch(message)
+                except (OSError, ValueError) as exc:
+                    log(f"client gone ({exc}); server stays up")
+                finally:
+                    self._in, self._out = None, None
+                    try:
+                        conn.close()
+                    except OSError:
+                        pass
+                if once:
+                    break
+        finally:
+            self.stop_watcher()
+            try:
+                listener.close()
+            except OSError:
+                pass
+            try:
+                os.unlink(sock_path)
+            except FileNotFoundError:
+                pass
+        log(f"socket closed {sock_path}")
+        return 0
 
     def dispatch(self, message: Any) -> None:
         if not isinstance(message, dict):
@@ -4331,6 +4422,17 @@ def main(argv: list[str] | None = None) -> int:
     raw_args = list(sys.argv[1:] if argv is None else argv)
     state_dir, rest = extract_state(raw_args)
     explicit_pane, rest = extract_pane(rest)
+    # The socket flag is ours, not the CLI parser's: it selects the TRANSPORT
+    # (round 106 slice D) and leaves every protocol argument untouched.
+    socket_path = ""
+    if "--socket" in rest:
+        i = rest.index("--socket")
+        if i + 1 < len(rest) and not rest[i + 1].startswith("--"):
+            socket_path = rest[i + 1]
+            rest = rest[:i] + rest[i + 2:]
+        else:
+            socket_path = "auto"
+            rest = rest[:i] + rest[i + 1:]
     args = build_parser().parse_args(rest)
     if args.ctl_command:
         return run_ctl(args, state_dir)
@@ -4343,8 +4445,18 @@ def main(argv: list[str] | None = None) -> int:
     except ProtocolError as exc:  # remedy in hint, else an actionless traceback
         print(exc.message + (f"\n{exc.hint}" if exc.hint else ""), file=sys.stderr)
         return 1
-    MCPServer(PairSession(args.role, store, pane=explicit_pane)).run()
-    return 0
+    server = MCPServer(PairSession(args.role, store, pane=explicit_pane))
+    if not socket_path:
+        server.run()
+        return 0
+    if socket_path == "auto":
+        socket_path = str(store.root / f".server-{args.role}.sock")
+    # `once=False` for the daemon: the whole point is that the transport outlives
+    # one client, so a CLI may die and reconnect with its context intact.
+    # PAIR_SOCKET_ONCE=1 serves exactly one client — the shape the round-trip
+    # test needs, and never the shape a live daemon uses.
+    once = os.environ.get("PAIR_SOCKET_ONCE", "0") == "1"
+    return server.serve_socket(socket_path, once=once)
 
 
 if __name__ == "__main__":
