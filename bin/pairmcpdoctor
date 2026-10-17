@@ -1,0 +1,213 @@
+#!/usr/bin/env python3
+"""One command keeps every role's pair MCP up — single-flight, never a race.
+
+What it is: a doctor over the room. For each role with a live CLI pane it checks
+whether that role's pair server process is alive; a dead one is reconnected
+through the CLI's own /mcp picker (the measured sequence bin/pairmcprestart
+implements). Two guards make it safe to run on a timer, from a cron, from the
+pilot, or by hand at the same moment:
+
+1. PER-ROLE LOCK. `fcntl.flock(LOCK_EX|LOCK_NB)` on `.pair/.server-<role>.lock`,
+   the same file the server itself takes on start (server.py:914-923). A doctor
+   holding it for role X means no second doctor, no pilot, no human script
+   touches X concurrently. The kernel releases it if the holder dies, so a
+   crashed doctor never wedges the role. The lock is held only around the
+   reconnect, never across the checks.
+2. READ-BEFORE-WRITE. The pane is captured before any key is sent: a role whose
+   pair row already reads Connected is left strictly alone. That is the mistake
+   that cost a working context7 its state — space toggles, and toggling a live
+   server off is worse than leaving a dead one down.
+
+Deliberately NOT done here: no CLI relaunch (that loses the neighbour's context),
+no background daemon (an unattended pinger that reconnects on a timer is exactly
+the repeat-press race this file exists to prevent — the lock makes a daemon
+SAFE, but an owner for the peer's server is round 106's ruling, not a guess here).
+
+Usage:
+  bin/pairmcpdoctor            check all, reconnect the dead, report
+  bin/pairmcpdoctor --check    report only, touch nothing
+  bin/pairmcpdoctor --role X   one role
+"""
+from __future__ import annotations
+
+import argparse
+import errno
+import fcntl
+import json
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+STATE = ROOT / ".pair"
+KNOWN_ROLES = ("omp", "opencode", "agy", "claude", "pi", "codex")
+MENU = "/mcp"
+PAIR_ROW_INDEX = 2  # context7 is the first row, pair the second — measured
+
+
+def tmux(*args: str) -> tuple[int, str]:
+    proc = subprocess.run(["tmux", *args], capture_output=True, text=True, timeout=10)
+    return proc.returncode, (proc.stdout or "")
+
+
+def state_roles() -> list[str]:
+    try:
+        data = json.loads((STATE / "state.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return list(KNOWN_ROLES)
+    roles = [r for r in (data.get("roles") or {}) if r in KNOWN_ROLES]
+    return roles or list(KNOWN_ROLES)
+
+
+def pane_of(role: str) -> str:
+    """The pane whose CLI process IS this role (its process name is the CLI)."""
+    code, out = tmux("list-panes", "-a", "-F",
+                     "#{pane_id}|#{session_name}|#{pane_index}|#{pane_current_command}")
+    for line in out.splitlines():
+        pane_id, _session, _index, command = (line.split("|") + [""] * 4)[:4]
+        if command.strip().lower().startswith(role):
+            return pane_id.strip()
+    return ""
+
+
+def server_pid(role: str) -> str:
+    proc = subprocess.run(["pgrep", "-f", f"server.py --role {role}"],
+                          capture_output=True, text=True, timeout=10)
+    return proc.stdout.strip().splitlines()[0] if proc.stdout.strip() else ""
+
+
+def role_lock(role: str):
+    """The per-role singleton lock, the same file the server takes.
+
+    Held LOCK_EX|LOCK_NB: a second taker refuses instead of waiting, because a
+    doctor that blocks on a stuck peer is a doctor that stops checking the others.
+    The kernel releases on process death, so no crash wedges a role.
+    """
+    path = STATE / f".server-{role}.lock"
+    handle = path.open("a+")
+    try:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError as exc:
+        handle.close()
+        if exc.errno in (errno.EACCES, errno.EAGAIN):
+            return None
+        raise
+    return handle
+
+
+def send(pane: str, text: str, enter: bool = False) -> None:
+    if enter:
+        tmux("send-keys", "-t", pane, "-l", text)
+        tmux("send-keys", "-t", pane, "Enter")
+    else:
+        tmux("send-keys", "-t", pane, text)
+
+
+def pair_row_state(pane: str) -> str:
+    """What the picker's pair row reads.
+
+    `connected` — live, never touch (space would turn it off);
+    `failed` — the CLI holds a dead connection and space re-establishes it;
+    `disabled` — switched off, space re-enables;
+    `absent` — the picker is not open.
+    """
+    code, screen = tmux("capture-pane", "-t", pane, "-p")
+    rows = [ln for ln in screen.splitlines() if "pair" in ln.lower()]
+    joined = " ".join(rows).lower()
+    if "connected" in joined and "not connected" not in joined and "not " not in joined:
+        return "connected"
+    if "failed" in joined or "error" in joined:
+        return "failed"
+    if "disabled" in joined:
+        return "disabled"
+    if rows:
+        return "present"
+    return "absent"
+
+
+def reconnect(role: str, pane: str) -> str:
+    """The /mcp picker sequence, inside the per-role lock.
+
+    Reads the row before pressing space: `connected` means do not touch — a
+    toggle would disconnect the very server we came to heal. Disabled/present
+    means press space, then verify the process actually appeared (the handshake
+    is transient; an earlier attempt looked connected and vanished).
+    """
+    send(pane, MENU, enter=True)
+    time.sleep(6)
+    # The picker opens on the SEARCH box with the caret in it — arrows there move
+    # the caret, not the row (measured). So do not fight the focus: USE it. Typing
+    # `pair` filters the list down to the pair row alone and the caret sits on it,
+    # which makes Space land on exactly the row we mean. Tab and Down were tried
+    # first and both left the highlight on context7 — the row Space would DISABLE,
+    # the opposite of healing.
+    send(pane, "pair")
+    time.sleep(2)
+    if pair_row_state(pane) == "connected":
+        return "already-connected"
+    send(pane, "space")
+    # NO Escape after space: quitting the picker aborts a pending handshake — the
+    # successful run never left the picker, and a version that pressed Escape
+    # failed every time. The process appearing is the only honest signal.
+    for _ in range(10):
+        time.sleep(3)
+        if server_pid(role):
+            return "reconnected"
+    return f"failed (row reads {pair_row_state(pane)!r}, no process appeared)"
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(
+        description="Keep every role's pair MCP up, single-flight.")
+    ap.add_argument("--role", default="", help="one role (default: all with panes)")
+    ap.add_argument("--check", action="store_true", help="report only")
+    args = ap.parse_args()
+
+    roles = [args.role] if args.role else [r for r in state_roles() if pane_of(r)]
+    if not roles:
+        print("pairmcpdoctor: no role with a live CLI pane found — nothing to check")
+        return 0
+    healed = held = quiet = 0
+    for role in roles:
+        pane = pane_of(role)
+        pid = server_pid(role)
+        if args.check:
+            print(f"[check] {role} @ {pane or '-'}: server "
+                  f"{'alive pid ' + pid if pid else 'DOWN'}")
+            continue
+        if pid:
+            quiet += 1
+            continue
+        lock = role_lock(role)
+        if lock is None:
+            # Another doctor/pilot holds this role right now: the room already
+            # has a healer on it, and a second one is the race being prevented.
+            held += 1
+            print(f"[held ] {role}: another reconnect is in flight — leaving it to finish")
+            continue
+        try:
+            # Re-read INSIDE the lock: the other healer may have raised it
+            # between our check and our lock, and a reconnect on a live server
+            # is a toggle that turns it off.
+            if server_pid(role):
+                quiet += 1
+                continue
+            print(f"[heal ] {role}: server down, pair row was "
+                  f"{pair_row_state(pane) if pane else 'no-pane'} — reconnecting")
+            outcome = reconnect(role, pane)
+            if outcome in ("reconnected", "already-connected"):
+                healed += 1
+                print(f"[ok   ] {role}: {outcome}")
+            else:
+                print(f"[FAIL ] {role}: {outcome}", file=sys.stderr)
+        finally:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+            lock.close()
+    if not args.check:
+        print(f"pairmcpdoctor: {quiet} alive, {healed} healed, {held} held-by-another")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

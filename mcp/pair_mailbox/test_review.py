@@ -677,5 +677,204 @@ class TestReviewServer(PairTestCase):
                                      head="no-such-rev-xyz")
 
 
+class TestHotfixTrailer(unittest.TestCase):
+    """Round 105 slice 3: a post-merge commit on master names its parent PR.
+
+    The ceiling associates only HEAD (`commits/<oid>/pulls`), so a commit that
+    FOLLOWED the merge is invisible by design — the PR carried the merge, not the
+    hotfix. That blind spot is why round 104's seven direct commits read as no-PR
+    at close. The trailer closes it from the commit side, verified through gh.
+
+    ANTI-PATTERN pinned here so it is not re-learned (round 105 slice 3): mock
+    the DOMAIN boundary (review._run_gh), never the OS boundary
+    (subprocess.run). The first cut mocked subprocess.run globally and this
+    class's own `git log -1 --format=%B` — how the fixture reads a commit body —
+    runs through subprocess too, so it swallowed the gh JSON and every case
+    failed for the wrong reason. Same class as S1/S2: a shared blind spot,
+    not a shared fixture.
+    """
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.repo = Path(self._tmp.name)
+        git(self.repo, "init", "-q", "-b", "master")
+        git(self.repo, "config", "user.email", "t@t.t")
+        git(self.repo, "config", "user.name", "t")
+        (self.repo / "a.py").write_text("x=1\n", encoding="utf-8")
+        git(self.repo, "add", "-A")
+        git(self.repo, "commit", "-qm", "base")
+        git(self.repo, "remote", "add", "origin", "https://github.com/o/r.git")
+        base = subprocess.run(["git", "rev-parse", "HEAD"], cwd=str(self.repo),
+                              capture_output=True, text=True).stdout.strip()
+        self.base = base
+        git(self.repo, "update-ref", "refs/remotes/origin/master", base)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _hotfix(self, message: str) -> str:
+        (self.repo / "h.py").write_text("y=2\n", encoding="utf-8")
+        git(self.repo, "add", "-A")
+        git(self.repo, "commit", "-qm", message)
+        import review
+        git(self.repo, "update-ref", "refs/remotes/origin/master", review.git_head(self.repo))
+        return review.git_head(self.repo)
+
+    def test_tagged_hotfix_passes(self) -> None:
+        import review
+        self._hotfix("post-merge hotfix\n\nfollows: PR #49\n")
+        with mock.patch.object(review, "_repo_slug", return_value="o/r"), \
+                mock.patch.object(review, "_run_gh",
+                                  return_value=(0, __import__("json").dumps(
+                                      {"number": 49, "state": "MERGED",
+                                       "mergedAt": "2026-10-17T18:00:00Z"}))):
+            ok, detail = review.hotfix_trailer_check(self.repo, self.base)
+        self.assertTrue(ok, detail)
+        self.assertIn("verified merged PR", detail)
+
+    def test_untagged_hotfix_is_named(self) -> None:
+        import review
+        self._hotfix("post-merge hotfix with no parent PR")
+        ok, detail = review.hotfix_trailer_check(self.repo, self.base)
+        self.assertFalse(ok)
+        self.assertIn("naming no parent PR", detail)
+
+    def test_untagged_refuses_without_assigning_a_number(self) -> None:
+        """The point of the slice: it must not invent a PR for itself."""
+        import review
+        sha = self._hotfix("silent hotfix")
+        ok, detail = review.hotfix_trailer_check(self.repo, self.base)
+        self.assertFalse(ok)
+        self.assertIn(sha[:8], detail)
+        for token in ("#", "PR "):
+            # the refusal names the defect and the commit; any PR number in the
+            # message would be the hook fabricating one.
+            self.assertNotIn(token, detail.split("naming no parent PR")[-1])
+
+    def test_unmerged_named_pr_refuses(self) -> None:
+        import review
+        self._hotfix("hotfix\n\nfollows: PR #7\n")
+        with mock.patch.object(review, "_repo_slug", return_value="o/r"), \
+                mock.patch.object(review, "_run_gh",
+                                  return_value=(0, __import__("json").dumps(
+                                      {"number": 7, "state": "OPEN", "mergedAt": None}))):
+            ok, detail = review.hotfix_trailer_check(self.repo, self.base)
+        self.assertFalse(ok)
+        self.assertIn("not merged", detail)
+
+    def test_gh_unknown_pr_refuses_loudly(self) -> None:
+        import review
+        self._hotfix("hotfix\n\nfollows: PR #999\n")
+        with mock.patch.object(review, "_repo_slug", return_value="o/r"), \
+                mock.patch.object(review, "_run_gh", return_value=(1, "")):
+            ok, detail = review.hotfix_trailer_check(self.repo, self.base)
+        self.assertFalse(ok)
+        self.assertIn("gh does not know", detail)
+
+    def test_nothing_after_base_passes(self) -> None:
+        import review
+        ok, detail = review.hotfix_trailer_check(self.repo, self.base)
+        self.assertTrue(ok)
+        self.assertIn("no commits after the round base", detail)
+
+    def test_unresolvable_base_refuses(self) -> None:
+        """F1: `git log base..origin/master` fails on a broken base and answers
+        empty — and an empty list reads as 'nothing to check', a PASS. The one
+        direction the slice did not test. Refuse loud, never pass on silence."""
+        import review
+        ok, detail = review.hotfix_trailer_check(self.repo, "no-such-base-xyz")
+        self.assertFalse(ok)
+        self.assertIn("does not resolve", detail)
+
+    def test_missing_origin_master_refuses(self) -> None:
+        """Same seam from the other side: no origin/master ref, silent empty."""
+        import review
+        git(self.repo, "update-ref", "-d", "refs/remotes/origin/master")
+        ok, detail = review.hotfix_trailer_check(self.repo, self.base)
+        self.assertFalse(ok)
+        self.assertIn("origin/master does not resolve", detail)
+
+
+class TestOriginTruth(unittest.TestCase):
+    """Round 105 slice 2b: local head vs what origin carries.
+
+    The floor answered `delivered` from any remote-tracking ref, so a local reset
+    7 behind origin still read delivered (round 104's measured false pass).
+    These tests reduce that case to a scratch repo and assert the COUNT is named.
+    """
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.repo = Path(self._tmp.name)
+        git(self.repo, "init", "-q", "-b", "master")
+        git(self.repo, "config", "user.email", "t@t.t")
+        git(self.repo, "config", "user.name", "t")
+        (self.repo / "a.py").write_text("x=1\n", encoding="utf-8")
+        git(self.repo, "add", "-A")
+        git(self.repo, "commit", "-qm", "base")
+        self.base = subprocess.run(["git", "rev-parse", "HEAD"], cwd=str(self.repo),
+                                   capture_output=True, text=True).stdout.strip()
+        git(self.repo, "remote", "add", "origin", "https://github.com/o/r.git")
+        git(self.repo, "update-ref", "refs/remotes/origin/master", self.base)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _commit(self, name: str) -> str:
+        (self.repo / name).write_text("y\n", encoding="utf-8")
+        git(self.repo, "add", "-A")
+        git(self.repo, "commit", "-qm", name)
+        return subprocess.run(["git", "rev-parse", "HEAD"], cwd=str(self.repo),
+                              capture_output=True, text=True).stdout.strip()
+
+    def _push_origin(self, target: str) -> None:
+        git(self.repo, "update-ref", "refs/remotes/origin/master", target)
+
+    def test_reset_behind_origin_names_the_count(self) -> None:
+        """The round-104 false pass, reproduced: local reset behind origin must
+        read BEHIND with a number, never 'delivered'."""
+        import review
+        tip = self._commit("origin-only-1")
+        tip = self._commit("origin-only-2")
+        self._push_origin(tip)
+        git(self.repo, "reset", "-q", "--hard", self.base)
+        status, detail = review.origin_truth(self.repo, self.base)
+        self.assertEqual(status, "behind", detail)
+        self.assertIn("2 commits behind", detail)
+
+    def test_ahead_of_origin_says_push(self) -> None:
+        import review
+        self._commit("local-only")
+        status, detail = review.origin_truth(self.repo, self.base)
+        self.assertEqual(status, "ahead", detail)
+        self.assertIn("push first", detail)
+
+    def test_equal_heads_are_aligned(self) -> None:
+        import review
+        tip = self._commit("landed")
+        self._push_origin(tip)
+        status, detail = review.origin_truth(self.repo, self.base)
+        self.assertEqual(status, "aligned", detail)
+
+    def test_no_round_base_is_unknown_not_a_pass(self) -> None:
+        import review
+        status, detail = review.origin_truth(self.repo, "")
+        self.assertEqual(status, "unknown")
+        self.assertIn("nothing to diff against", detail)
+
+    def test_no_origin_master_is_unknown(self) -> None:
+        import review
+        git(self.repo, "update-ref", "-d", "refs/remotes/origin/master")
+        status, detail = review.origin_truth(self.repo, self.base)
+        self.assertEqual(status, "unknown")
+        self.assertIn("origin/master does not resolve", detail)
+
+    def test_unresolvable_base_is_unknown(self) -> None:
+        import review
+        status, detail = review.origin_truth(self.repo, "no-such-ref-xyz")
+        self.assertEqual(status, "unknown")
+        self.assertIn("does not resolve", detail)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

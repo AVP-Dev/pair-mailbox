@@ -433,6 +433,27 @@ def write_native_permissions(name):
         return None
 
 
+def wire_git_lane_guard():
+    """Point core.hooksPath at bin/git-hooks so the pre-push master guard
+    (round 105 slice 2a) travels with the repo instead of being copied into
+    .git/hooks — a copied hook is one clone away from silence."""
+    if not (ROOT / "bin" / "git-hooks" / "pre-push").exists():
+        return
+    try:
+        cur = subprocess.run(["git", "-C", str(ROOT), "config", "core.hooksPath"],
+                             capture_output=True, text=True).stdout.strip()
+    except OSError:
+        cur = ""
+    if cur == "bin/git-hooks":
+        return
+    r = subprocess.run(["git", "-C", str(ROOT), "config", "core.hooksPath", "bin/git-hooks"],
+                       capture_output=True, text=True)
+    if r.returncode == 0:
+        print("[pair] core.hooksPath -> bin/git-hooks (pre-push master guard)")
+    else:
+        print("[pair] WARNING: could not set core.hooksPath: " + r.stderr.strip())
+
+
 def main():
 
     # The Python version checks BEFORE install, not as a test batch at the end.
@@ -463,6 +484,9 @@ def main():
 
     check_only = "--check" in sys.argv
     targets = args or [k for k, v in PROFILES.items() if not k.startswith("_") and present(v)]
+
+    if not check_only:
+        wire_git_lane_guard()
 
     if not targets:
         print("no known CLI found")

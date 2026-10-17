@@ -145,6 +145,41 @@ class TestNegativeAndMethod(unittest.TestCase):
             from manifest import transcript_closed_ids
             self.assertIn(107, transcript_closed_ids(sd))
 
+    def test_closed_ids_scoped_by_close_round(self) -> None:
+        """A task closed AFTER its round's `done` belongs to ITS round, not to
+        the window it happens to fall in (round-104 live case: 103's #121-123
+        closed at 10:49-11:49, after 104 opened at 08:52, landed in 104's
+        window and refused the manifest as a gap)."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            sd = Path(tmp)
+            (sd / "transcript.jsonl").write_text(
+                '{"ts": "2026-10-14T20:00:00+00:00", "kind": "advance",'
+                ' "phase": "done"}\n'
+                '{"ts": "2026-10-14T21:01:45+00:00", "kind": "task_closed",'
+                ' "task_id": 121, "status": "dropped"}\n'
+                '{"ts": "2026-10-14T21:03:00+00:00", "kind": "task_closed",'
+                ' "task_id": 122, "status": "dropped"}\n'
+                '{"ts": "2026-10-14T21:04:00+00:00", "kind": "task_closed",'
+                ' "task_id": 124, "status": "done"}\n'
+                '{"ts": "2026-10-14T21:05:00+00:00", "kind": "evidence",'
+                ' "evidence_kind": "test", "ok": true, "round": 104}\n', encoding="utf-8")
+            st = _state(round=104, tasks=[
+                {"id": 121, "text": "old", "status": "dropped",
+                 "round": 103, "closed_round": 103},
+                {"id": 122, "text": "old-2", "status": "dropped",
+                 "round": 103, "closed_round": 103},
+                {"id": 124, "text": "current", "status": "done",
+                 "round": 104, "closed_round": 104}])
+            from manifest import transcript_closed_ids
+            ids = transcript_closed_ids(sd, 104, st["tasks"], st)
+            self.assertNotIn(121, ids)
+            self.assertIn(124, ids)
+            m = derive_manifest(sd, st)
+            with mock.patch.object(manifest, "_git_commits", return_value=[]):
+                gaps = cross_check(m, st, sd)
+            self.assertEqual([g for g in gaps if "#12" in g], [])
+
     def test_window_anchor_survives_rotation(self) -> None:
         """The last done lives in the archive: the window still starts there,
         not at the rotation cut."""

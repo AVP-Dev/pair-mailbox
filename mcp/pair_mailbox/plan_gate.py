@@ -100,8 +100,14 @@ def critic_ack(state_dir: Path, round_number: int, writer: str,
     # with three different actions, and collapsing them told the writer to
     # write a visa that already stood (live, round 101). The newest of each
     # cause is what the answer names.
-    stale: str | None = None
-    wrong_round: str | None = None
+    #
+    # "Newest" is by stamp, and it is the fix for a real defect (round 105 4a):
+    # with two stale visas the driver answered the FIRST one seen, so the
+    # message named a visa that was superseded inside the same file — the
+    # reader re-acked a plan whose newer visa was already named stale. The
+    # cause keeps its newest instance, not its first.
+    stale: tuple[str, str] | None = None
+    wrong_round: tuple[str, str] | None = None
     for path in sorted(notes_dir.glob("verdict*.md")):
         try:
             text = path.read_text(encoding="utf-8")
@@ -120,21 +126,25 @@ def critic_ack(state_dir: Path, round_number: int, writer: str,
             if not ack:
                 continue
             if int(ack.group(1)) != round_number:
-                wrong_round = wrong_round or (
+                candidate = (
                     f"a critic visa exists ({role}, {stamp}) for round "
-                    f"{ack.group(1)}, not {round_number}")
+                    f"{ack.group(1)}, not {round_number}", stamp)
+                if wrong_round is None or candidate[1] > wrong_round[1]:
+                    wrong_round = candidate
                 continue
             entry_ts = _parse_entry_ts(stamp)
             if entry_ts is not None and not_before is not None and entry_ts < not_before:
-                stale = stale or (
+                candidate = (
                     f"a critic visa exists ({role}, {stamp}) but predates the current plan: "
-                    f"the plan changed after the visa — re-ack, or do not edit the plan")
+                    f"the plan changed after the visa — re-ack, or do not edit the plan", stamp)
+                if stale is None or candidate[1] > stale[1]:
+                    stale = candidate
                 continue
             return {"ack": True, "role": role, "at": stamp, "path": str(path)}
     if stale:
-        return {"ack": False, "why": stale}
+        return {"ack": False, "why": stale[0]}
     if wrong_round:
-        return {"ack": False, "why": wrong_round}
+        return {"ack": False, "why": wrong_round[0]}
     return {"ack": False, "why": "no critic note with this round plan-ack"}
 
 

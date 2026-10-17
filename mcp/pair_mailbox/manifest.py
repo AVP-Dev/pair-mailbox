@@ -381,13 +381,26 @@ def transcript_closed_ids(state_dir: Path, round_number: int | None = None,
         return {int(r.get("task_id", 0)) for r in _transcript_rows(state_dir)
                 if r.get("kind") == "task_closed" and _in_round_window(state_dir, r)}
     anchor, ceiling = _round_bounds(state_dir, round_number, state or {"tasks": tasks})
+    # A task_closed row carries no round tag, so the window alone mis-binds
+    # tasks closed AFTER their round's `done` — round 103's #121-123 were
+    # closed at 10:49-11:49, after round 104 had already opened at 08:52, and
+    # landed in 104's window. The task's own closed_round (its state record)
+    # decides membership; the window stays as the outer bound.
+    by_id = {int(t.get("id", 0)): t for t in (tasks or [])}
     out = set()
     for r in _transcript_rows(state_dir):
         if r.get("kind") != "task_closed":
             continue
         ts = str(r.get("ts", ""))
-        if ts >= anchor and (ceiling is None or ts < ceiling):
-            out.add(int(r.get("task_id", 0)))
+        if not (ts >= anchor and (ceiling is None or ts < ceiling)):
+            continue
+        tid = int(r.get("task_id", 0))
+        item = by_id.get(tid)
+        if item is not None:
+            own = item.get("closed_round", item.get("round"))
+            if own is not None and int(own) != round_number:
+                continue
+        out.add(tid)
     return out
 
 

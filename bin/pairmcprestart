@@ -1,0 +1,173 @@
+#!/usr/bin/env python3
+"""Reconnect a role's pair MCP inside its own CLI pane — one command.
+
+The known-good sequence, measured live: `/mcp` opens the picker, the `pair`
+entry is selected, and SPACE reconnects it. The server process dies and nothing
+client-side raises it again, so a drop means either this sequence by hand in the
+peer's composer, or this tool.
+
+Why not just relaunch the CLI: a relaunch starts a blank session and loses the
+peer's context; this touches nothing but the transport.
+
+Why not a background autoraise: nothing in the loop owns the peer's server —
+the writer's pairrestart kills it by design (root cause in notes/finding.md),
+the pilot raises panes not servers, and the CLI does not know how to launch it.
+A command any side can run is the honest v1; an owner is round 106.
+
+Usage:
+  bin/pairmcprestart                 the peer of this state dir (the one dropped)
+  bin/pairmcprestart --role opencode one role explicitly
+  bin/pairmcprestart --pane %2223     one pane explicitly
+  bin/pairmcprestart --check          report only, touch nothing
+"""
+from __future__ import annotations
+
+import argparse
+import subprocess
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+STATE = ROOT / ".pair"
+KNOWN_ROLES = ("omp", "opencode", "agy", "claude", "pi", "codex")
+# opencode's picker keys, measured: /mcp opens it, arrows move, space toggles
+# the selected entry (reconnect when it is down), enter/esc closes.
+MENU = "/mcp"
+PAIR_INDEX = 2  # context7 is first, pair second — read from the live menu
+
+
+def tmux(*args: str) -> tuple[int, str]:
+    proc = subprocess.run(["tmux", *args], capture_output=True, text=True, timeout=10)
+    return proc.returncode, (proc.stdout or "")
+
+
+def pane_of(role: str) -> str:
+    """The pane this state dir's server of `role` was launched with."""
+    code, out = tmux("list-panes", "-a", "-F",
+                     "#{pane_id}|#{session_name}|#{pane_index}|#{pane_current_command}")
+    role_panes = [ln for ln in out.splitlines() if ln.strip()]
+    # The pane running the CLI of that role (its process name IS the CLI)
+    for line in role_panes:
+        pane_id, session, index, command = (line.split("|") + [""] * 4)[:4]
+        if command.strip().lower().startswith(role):
+            return pane_id.strip()
+    return ""
+
+
+def state_roles() -> list[str]:
+    import json
+    try:
+        data = json.loads((STATE / "state.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return ["opencode"]
+    return [r for r in (data.get("roles") or {}) if r in KNOWN_ROLES]
+
+
+def server_pid(role: str) -> str:
+    code, out = tmux("list-panes", "-a", "-F", "#{pane_id}")
+    _ = code
+    proc = subprocess.run(["pgrep", "-f", f"server.py --role {role}"],
+                          capture_output=True, text=True, timeout=10)
+    return proc.stdout.strip().splitlines()[0] if proc.stdout.strip() else ""
+
+
+def send(pane: str, text: str, enter: bool = False) -> None:
+    args = ["send-keys", "-t", pane]
+    if enter:
+        args += ["-l", text]
+        tmux(*args)
+        tmux("send-keys", "-t", pane, "Enter")
+    else:
+        args.append(text)
+        tmux(*args)
+
+
+def reconnect(role: str, pane: str, check: bool) -> int:
+    label = f"{role} @ {pane}"
+    pid = server_pid(role)
+    if check:
+        print(f"[check] {label}: server {'alive pid ' + pid if pid else 'DOWN'}")
+        return 0
+    if not pane:
+        print(f"pairmcprestart: no pane found for role {role!r} — "
+              f"it may not be running a CLI in any session", file=sys.stderr)
+        return 1
+    # The measured sequence, in the picker's own keys: /mcp opens the picker with
+    # the FIRST row focused (context7 in this CLI), Down moves to `pair`, Space
+    # toggles the row (connect when it is off, disconnect when it is on), Escape
+    # closes. Delays are this CLI's own render/handshake times, measured live:
+    # ~2s to draw, ~6s for a toggle to complete, and the server process only
+    # appears AFTER the toggle — it was transient during earlier attempts.
+    send(pane, MENU, enter=True)
+    subprocess.run(["sleep", "6"], check=False)
+    # Filter, do not navigate: the picker opens on the SEARCH caret, and arrows
+    # move the caret, not the row (measured — Tab and Down both left the
+    # highlight on context7, the row Space would DISABLE). Typing `pair` leaves
+    # that one row under the caret, so Space lands on the row we mean.
+    send(pane, "pair")
+    subprocess.run(["sleep", "2"], check=False)
+    _code, screen = tmux("capture-pane", "-t", pane, "-p")
+    row = [ln for ln in screen.splitlines() if "pair" in ln.lower()]
+    joined = " ".join(row).lower()
+    if "pair" in joined and "connected" in joined and "not connected" not in joined:
+        tmux("send-keys", "-t", pane, "Escape")
+        print(f"pairmcprestart: {label} already Connected — nothing to toggle")
+        return 0
+    send(pane, "space")
+    # No Escape: quitting the picker aborts a pending handshake. Wait on the
+    # process, the only honest signal that the reconnect landed.
+    new_pid = ""
+    for _ in range(10):
+        subprocess.run(["sleep", "3"], check=False)
+        new_pid = server_pid(role)
+        if new_pid:
+            break
+    if new_pid:
+        print(f"pairmcprestart: {label} reconnected — server pid {new_pid} "
+              f"(was {'DOWN' if not pid else pid})")
+        return 0
+    print(f"pairmcprestart: {label} still DOWN after the /mcp toggle — "
+          f"check the composer manually: /mcp, select pair, space, and WAIT for the "
+          f"handshake without leaving the picker", file=sys.stderr)
+    return 1
+
+
+def main() -> int:
+    import json
+    ap = argparse.ArgumentParser(
+        description="Reconnect a role's pair MCP inside its own CLI pane — one command.")
+    ap.add_argument("--role", default="", help="role to reconnect (default: the peer)")
+    ap.add_argument("--pane", default="", help="pane id explicitly (e.g. %%2223)")
+    ap.add_argument("--check", action="store_true", help="report only")
+    args = ap.parse_args()
+
+    role = args.role
+    if not role:
+        # The peer: another role of this state dir that actually has a pane
+        # running its CLI. Roster entries without a pane (claude/pi/agy not
+        # launched here) are not reconnectable and must never be the default —
+        # the first such name used to win and the command failed on it.
+        try:
+            mine = str(json.loads((STATE / "state.json").read_text(encoding="utf-8")).get("writer") or "")
+        except (OSError, ValueError):
+            mine = ""
+        for candidate in state_roles():
+            if candidate != mine and pane_of(candidate):
+                role = candidate
+                break
+        if not role:
+            print("pairmcprestart: no peer role with a live CLI pane found — "
+                  "name it explicitly with --role (needs its CLI running in a pane)",
+                  file=sys.stderr)
+            return 1
+    pane = args.pane or pane_of(role)
+    if not args.check and not pane:
+        print(f"pairmcprestart: no live pane for {role!r}; "
+              f"a dropped server with no CLI behind it needs the CLI raised first "
+              f"(tmux send-keys -t <pane> '<launch cmd>' Enter)", file=sys.stderr)
+        return 1
+    return reconnect(role, pane, args.check)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

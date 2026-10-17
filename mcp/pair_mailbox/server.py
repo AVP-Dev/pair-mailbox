@@ -1920,8 +1920,31 @@ class PairSession:
         # Everything fail-open: with no git and no obligation files the round never holds.
         # holds.
         try:
-            from review import changed_between, dirty_files, git_head, is_stale
+            from review import changed_between, dirty_files, git_head, is_stale, origin_truth
+            # Round 105 slice 2b: the origin-truth comparison, the leg the floor
+            # never had. The floor answers for local head only, so a reset behind
+            # origin read `delivered` (round 104's false pass). Fail-open on
+            # `unknown`: no round_base, no git, no origin/master never holds a
+            # close — the branch that would block is `behind`, because origin
+            # carries commits THIS state does not, so the round would ship a
+            # tree that is not what was reviewed.
+            truth, truth_why = origin_truth(self.store.project_root,
+                                            str(state.get("round_base") or ""))
+            if truth == "behind":
+                blockers.append(f"the round is not against current origin: {truth_why}. ")
+            elif truth == "ahead":
+                blockers.append(f"{truth_why} (delivered means origin carries it) ")
             pending = 0
+            # Round 105 slice 4b: notes consistency, the leg the kind-file card
+            # needed to be enforceable. A note is two writes that must agree —
+            # the entry in notes/<kind>.md and pair_note's transcript row. An
+            # entry with no journal row is a hand-edit, and a foreign agent's
+            # write into our kind file is exactly that shape hiding. Refuses at
+            # close, never repaired here: the writer sees their own edit.
+            from pair_notes_consistency import check_notes
+            notes_ok, notes_why = check_notes(self.store.root)
+            if not notes_ok:
+                blockers.append(f"the notes disagree with the journal: {notes_why}. ")
             if self.store.obligations_root.is_dir():
                 for path in self.store.obligations_root.glob("*.json"):
                     try:
@@ -2066,6 +2089,7 @@ class PairSession:
             if designated and designated == self.role and not state.get("writer"):
                 state["writer"] = self.role
                 state["writer_reason"] = "assigned by role policy"
+                self._pin_round_base(state)
                 return {
                     "already_writer": False,
                     "writer": self.role,
@@ -2087,6 +2111,7 @@ class PairSession:
                     )
                 state["writer"] = self.role
                 state["round"] = int(state.get("round", 0)) + 1
+                self._pin_round_base(state)
                 if by_policy_takeover:
                     state["writer_reason"] = "assigned by role policy (holder dead)"
                 elif reason.strip():
@@ -2108,10 +2133,12 @@ class PairSession:
                     state.pop("closed_at", None)
                     state["phase"] = "implement"
                     state["round"] = int(state.get("round", 0)) + 1
+                    self._pin_round_base(state)
                     return {"already_writer": False, "writer": self.role, "round": state["round"], "took_over": False}
                 return {"already_writer": True, "writer": self.role, "round": int(state.get("round", 0)), "took_over": False}
             state["writer"] = self.role
             state["round"] = int(state.get("round", 0)) + 1
+            self._pin_round_base(state)
             if reason.strip():
                 state["writer_reason"] = reason.strip()
             if was_closed:
@@ -2669,6 +2696,31 @@ class PairSession:
     def _drain(self, limit: int) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
         return read_delivery.drain(self, limit)
 
+    def _pin_round_base(self, state: dict[str, Any]) -> None:
+        """Stamp the round's own base: the head origin/master carries right now.
+
+        Round 104's delivery floor answered `delivered` from refs/remotes/* while
+        origin sat 7 ahead — there was no recorded base to diff against, so "ahead
+        of what?" had no answer. Pinned at round OPEN (every path that increments
+        the round), it gives the origin-truth comparison (round 105 slice 2b) a
+        number instead of a guess.
+
+        Best-effort by design: a state dir with no git, or no origin/master yet,
+        leaves the field unset rather than blocking the round — the comparison then
+        reports its own inability, it does not invent a base.
+        """
+        if state.get("round_base"):
+            return
+        try:
+            from review import unanchored_master_commits, _run_git
+            root = self.store.project_root
+            head = _run_git(root, "rev-parse", "--verify", "origin/master")
+        except Exception:  # noqa: BLE001 - a missing base never blocks an open
+            head = None
+        if head:
+            state["round_base"] = head.strip()
+        return None
+
     def tool_pair_advance(self, phase: str) -> dict[str, Any]:
         """Move the shared phase.
 
@@ -2777,6 +2829,7 @@ class PairSession:
                 state.pop("closed_at", None)
                 state["reopened_by"] = self.role
                 state["round"] = int(state.get("round", 0)) + 1
+                self._pin_round_base(state)
             elif phase == "done":
                 import traceback
                 state["closed_at"] = utcnow()

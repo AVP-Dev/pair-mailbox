@@ -287,6 +287,138 @@ def pr_ceiling(root: Path, autonomy: str) -> tuple[str, str]:
             "HEAD merged by no PR and carried by no open PR: "
             "merge first — autonomy is auto, which means end to end")
 
+def unanchored_master_commits(root: Path, base: str) -> list[str]:
+    """Commits on origin/master after `base` — the close-side leg of the lane.
+
+    The ceiling associates only HEAD (`commits/<oid>/pulls`), so a post-merge
+    commit on master is invisible by design: the PR carried the merge, not the
+    hotfix that followed it. That blind spot is why round 104's seven direct
+    commits read as no-PR at close.
+    """
+    if not base:
+        return []
+    out = _run_git(root, "log", "--format=%H", f"{base}..origin/master")
+    return [line.strip() for line in out.splitlines() if line.strip()] if out else []
+
+
+def hotfix_trailer_check(root: Path, base: str) -> tuple[bool, str]:
+    """Every commit after `base` on origin/master must name its parent PR.
+
+    Trailer `follows: PR #N`, verified merged through `gh`. An unknown or
+    unmerged N REFUSES — the leg never assigns itself a number, because the
+    defect it exists to catch is work reaching master without review.
+
+    Returns `(ok, detail)`; `ok=True` only when every commit names a verified
+    merged PR, or when nothing sits after base (nothing to name).
+    """
+    import json
+    import re
+
+    # F1 (critic finding-slice3): an empty commit list is ambiguous between
+    # "nothing after base" (a pass) and "git could not answer" (a refusal).
+    # The rule this slice exists for is loud refusal, never a pass — so the
+    # two inputs are resolved BEFORE the list is read, and a failure refuses
+    # instead of silently reading as an empty history.
+    if not base or not _run_git(root, "rev-parse", "--verify", f"{base}^{{commit}}"):
+        return False, (f"round base '{base or 'unset'}' does not resolve: "
+                       f"cannot locate the commits to check")
+    head_ref = _run_git(root, "rev-parse", "--verify", "origin/master")
+    if not head_ref:
+        return False, "origin/master does not resolve: cannot locate the commits to check"
+
+    commits = unanchored_master_commits(root, base)
+    if not commits:
+        return True, "no commits after the round base on origin/master"
+
+    trailer_re = re.compile(r"^follows:\s*PR\s*#(\d+)\s*$", re.IGNORECASE | re.MULTILINE)
+    slug = _repo_slug(root)
+    unnamed: list[str] = []
+    unverified: list[str] = []
+    for sha in commits:
+        body = _run_git(root, "log", "-1", "--format=%B", sha) or ""
+        m = trailer_re.search(body)
+        if not m:
+            unnamed.append(sha[:8])
+            continue
+        number = m.group(1)
+        if not slug:
+            unverified.append(
+                f"{sha[:8]} names PR #{number} but the repo slug is unreadable: cannot verify it merged")
+            continue
+        code, out = _run_gh(root, "pr", "view", number, "--json", "number,state,mergedAt")
+        if code != 0:
+            unverified.append(f"{sha[:8]} names PR #{number}, which gh does not know")
+            continue
+        try:
+            pr = json.loads(out or "{}")
+        except ValueError:
+            pr = {}
+        if not pr.get("mergedAt"):
+            unverified.append(f"{sha[:8]} names PR #{number} which is not merged")
+    if unnamed or unverified:
+        parts = []
+        if unnamed:
+            parts.append("commit(s) on master naming no parent PR: " + ", ".join(unnamed))
+        parts.extend(unverified)
+        return False, "; ".join(parts)
+    return True, f"{len(commits)} commit(s) after base, each naming a verified merged PR"
+
+
+def _run_gh(root: Path, *args: str) -> tuple[int, str]:
+    """One `gh` call, or (1, "") when the binary or the network is absent."""
+    import subprocess
+    try:
+        proc = subprocess.run(["gh", *args], cwd=str(root),
+                              capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.TimeoutExpired):
+        return 1, ""
+    return proc.returncode, (proc.stdout or "").strip()
+
+
+def origin_truth(root: Path, round_base: str) -> tuple[str, str]:
+    """Round 105 slice 2b: does the LOCAL head match what origin carries?
+
+    The floor answers for local head only — "HEAD is reachable from some
+    remote-tracking ref" — so a reset backwards read `delivered` while origin sat
+    7 ahead (round 104's measured false pass). This comparison asks the other
+    question: how far is LOCAL from where the round started and what origin has.
+
+    Returns `(status, detail)`:
+    - `"aligned"`: local head is an ancestor-or-equal of origin/master — nothing
+      of ours is missing from origin, and nothing on origin is missing locally.
+    - `"behind"`: origin/master carries commits local does not; the count is
+      named, because "behind" with no number is not actionable.
+    - `"ahead"`: local head carries commits origin does not (push first).
+    - `"unknown"`: no round_base recorded (a fresh round: nothing to diff
+      against), no git, no origin/master, or a probe that failed mid-way —
+      loud, never scored as a pass.
+    """
+    if not round_base:
+        return "unknown", "no round_base recorded: nothing to diff against (pin it at round open)"
+    head = git_head(root)
+    if not head:
+        return "unknown", "not a git repository: origin truth cannot be checked"
+    if not _run_git(root, "rev-parse", "--verify", f"{round_base}^{{commit}}"):
+        return "unknown", f"round base {round_base[:12]} does not resolve: cannot compare"
+    if not _run_git(root, "rev-parse", "--verify", "origin/master"):
+        return "unknown", "origin/master does not resolve: cannot compare"
+
+    behind = _run_git(root, "rev-list", "--count", f"HEAD..origin/master")
+    ahead = _run_git(root, "rev-list", "--count", f"origin/master..HEAD")
+    if behind is None or ahead is None:
+        return "unknown", "rev-list failed mid-check (timeout, lock, or damage): origin truth cannot be checked"
+    behind = behind.strip()
+    ahead = ahead.strip()
+    if not behind.isdigit() or not ahead.isdigit():
+        return "unknown", "rev-list answered unreadable counts: origin truth cannot be checked"
+    n_behind, n_ahead = int(behind), int(ahead)
+    if n_behind:
+        return "behind", f"{n_behind} commits behind origin/master: pull/rebase before the round can ship"
+    if n_ahead:
+        return "ahead", f"{n_ahead} commits ahead of origin/master: push first (`git push -u origin <branch>`)"
+    return "aligned", "local head equals origin/master"
+
+
 def snapshot(root: Path) -> dict[str, Any]:
     """A revision snapshot binding a request/verdict.
 
