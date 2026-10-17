@@ -2058,6 +2058,47 @@ class TestPhasesAndNotes(PairTestCase):
         self.assertEqual(len(shas), 1, "all three normalize to one sha")
         self.assertEqual(rows[-1].get("note_attempt"), 3)
 
+    # --- round 104 S3: a verdict note does not owe the writer an answer -------
+
+    def _open_obligations(self) -> list[dict]:
+        try:
+            return [json.loads(p.read_text(encoding="utf-8"))
+                    for p in self.store.obligations_root.glob("*.json")]
+        except OSError:
+            return []
+
+    def test_an_approve_note_opens_no_review_queue(self) -> None:
+        """A critic's FINAL VERDICT — approve — is not a request for an answer.
+
+        server.py:3478 opens an obligation for every kind that starts with
+        "verdict", including the final approve and the review-ack. Live case
+        (peer, round 103/104): the approve left pending_reviews=1 and the round
+        could not close until the writer posted ANOTHER note — the queue held
+        the round hostage over a completed review.
+        """
+        self.peer.tool_pair_note(kind="verdict", text="verdict-approve 9d2ca75 — fine as is")
+        self.assertEqual(self._open_obligations(), [],
+                         "a completed review owes nobody an answer")
+
+    def test_a_review_ack_note_opens_no_review_queue(self) -> None:
+        """A review-ack is a courtesy, not a request (peer's own live case)."""
+        self.peer.tool_pair_note(
+            kind="verdict-round104-s1",
+            text="S1 reviewed and accepted; no objection")
+        self.assertEqual(self._open_obligations(), [])
+
+    def test_a_needs_work_note_still_opens_the_queue(self) -> None:
+        """The opposite invariant: a real review REQUEST still creates work.
+
+        A round may not close over an unread needs-work, so the obligation for
+        that case must survive — the fix removes the flood, not the signal.
+        """
+        self.peer.tool_pair_send(to="writer-agent", expects_reply=True,
+                                 text="NEEDS WORK on 9d2ca75: the why still collapses one state")
+        opened = self._open_obligations()
+        self.assertEqual(len(opened), 1)
+        self.assertEqual(opened[0]["to"], "writer-agent")
+
 class TestHeartbeatIsEveryCall(PairTestCase):
     """Every call moves `last_seen` (heartbeat in invoke)."""
 

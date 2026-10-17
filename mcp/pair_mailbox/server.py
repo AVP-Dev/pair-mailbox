@@ -329,6 +329,36 @@ def open_tasks(state: dict[str, Any]) -> list[dict[str, Any]]:
 def next_task_id(state: dict[str, Any]) -> int:
     return max((int(item.get("id", 0)) for item in tasks_of(state)), default=0) + 1
 
+
+def _verdict_owes_review(text: str) -> bool:
+    """Does this verdict still leave the writer work to answer?
+
+    Round 104 S3. `kind=verdict*` used to mean yes by itself, so a critic's FINAL
+    VERDICT — approve, or a plain review-ack — opened a review obligation on the
+    writer anyway. Live cost (peer, rounds 103/104): the approve left
+    pending_reviews=1 and the round could not close until the writer posted
+    ANOTHER note; the queue held a completed round hostage over a review that
+    was already done.
+
+    The signal is the content, and it is deliberately conservative: a
+    needs-work / objection / reopen phrased anywhere opens the queue; approve,
+    accepted and ack do not. When in doubt it opens — a missed real request
+    blocking a round is the failure the protocol prefers over a silent pass,
+    and the close gate refuses either way until the work is genuinely done.
+    """
+    low = (text or "").lower()
+    if any(marker in low for marker in (
+        "verdict-approve", "verdict approve", "accepted", "approved",
+        "no objection", "no open items", "acknowledged",
+    )):
+        return False
+    return any(marker in low for marker in (
+        "needs work", "needs-work", "reopen", "re-open", "hold s",
+        "not approved", "refus", "reject", "objection", "i object",
+        "must be fixed", "fix this", "re-review", "rereview", "redo",
+    ))
+    return max((int(item.get("id", 0)) for item in tasks_of(state)), default=0) + 1
+
 def _subject(state: dict[str, Any]) -> str:
     """The round's subject — task_subject.py: one rule, four surfaces."""
     from task_subject import subject_line as impl
@@ -3473,7 +3503,7 @@ class PairSession:
             # to watch, no obligation file.
             try:
                 writer = (self.store.read().get("writer") or "").strip()
-                if writer and writer != self.role:
+                if writer and writer != self.role and _verdict_owes_review(body):
                     self._open_obligation(
                         self.role, writer, int(self.store.read().get("seq", 0)),
                         subject=f"verdict {kind} — take it and close the round")
