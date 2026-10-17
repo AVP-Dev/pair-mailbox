@@ -57,12 +57,15 @@ class TestNotesConsistency(PairTestCase):
         self.writer.tool_pair_note(kind="decision", text="the real one")
         target = self.store.notes_root / "decision.md"
         target.write_text(target.read_text(encoding="utf-8") +
-                          "\n## 2026-10-17T20:00:00+00:00 — reviewer-agent "
+                          "\n## 2026-10-17T23:59:59+00:00 — reviewer-agent "
                           "(note deadbeef1234 attempt 1)\n\nforged decision\n",
                           encoding="utf-8")
         ok, why = pnc.check_notes(self.store.root)
         self.assertFalse(ok)
-        self.assertIn("no journal row", why)
+        # Ruling (seq 1605): the blocking class is "could be checked and does not
+        # match" — the forged sha must be named inside it.
+        self.assertIn("could be checked and do not match", why)
+        self.assertIn("no transcript row", why)
         self.assertIn("deadbeef1234", why)
 
     def test_entry_without_provenance_is_named(self) -> None:
@@ -70,19 +73,26 @@ class TestNotesConsistency(PairTestCase):
         that is not pair_note, so it cannot be matched either way."""
         target = self.store.notes_root / "finding.md"
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text("## 2026-10-17T20:00:00+00:00 — reviewer-agent\n\nhand-typed finding\n",
+        target.write_text("## 2026-10-17T23:59:59+00:00 — reviewer-agent\n\nhand-typed finding\n",
                           encoding="utf-8")
         ok, why = pnc.check_notes(self.store.root)
         self.assertFalse(ok)
-        self.assertIn("no provable provenance", why)
+        # An attribution-era entry with no sha cannot be matched: blocking.
+        self.assertIn("could be checked and do not match", why)
+        self.assertIn("carries no note sha/attempt", why)
 
     def test_journal_row_without_entry_is_named(self) -> None:
-        """The mirror: a transcript row whose entry is gone from the file."""
+        """The mirror: a transcript row whose entry is gone from the file.
+
+        Per the ruling (seq 1605) this is REPORTED, not blocking — the file
+        losing an entry is not the hand-edit/forgery class the leg exists to
+        catch, and a round must not be held by a missing paste.
+        """
         self.writer.tool_pair_note(kind="decision", text="here then gone")
         target = self.store.notes_root / "decision.md"
         target.write_text("", encoding="utf-8")
         ok, why = pnc.check_notes(self.store.root)
-        self.assertFalse(ok)
+        self.assertTrue(ok, f"a deleted entry must not block the close: {why}")
         self.assertIn("journal rows with no note entry", why)
 
     def test_close_refuses_when_a_note_is_orphaned(self) -> None:
@@ -91,7 +101,7 @@ class TestNotesConsistency(PairTestCase):
         self.writer.tool_pair_note(kind="decision", text="the real one")
         target = self.store.notes_root / "decision.md"
         target.write_text(target.read_text(encoding="utf-8") +
-                          "\n## 2026-10-17T20:00:00+00:00 — reviewer-agent "
+                          "\n## 2026-10-17T23:59:59+00:00 — reviewer-agent "
                           "(note cafe1234abcd attempt 1)\n\nforged decision\n",
                           encoding="utf-8")
         with tempfile.TemporaryDirectory() as tmp:
@@ -120,6 +130,89 @@ class TestNotesConsistency(PairTestCase):
         ok, why = pnc.check_notes(self.store.root)
         self.assertTrue(ok, f"an entry whose row rotated must still match: {why}")
         self.assertIn("checked", why)
+
+
+    def test_pre_attribution_entries_are_history_not_blocking(self) -> None:
+        """The ruling's core (seq 1605): an entry written BEFORE the appender
+        began stamping provenance cannot be judged — its provenance is absent by
+        construction. Blocking on it would make the leg a permanent blocker and
+        train the pair to ignore it.
+
+        The floor is derived from the journal, so the fixture plants one
+        LATE journal row (the floor) and one entry with an EARLY stamp and no
+        sha — the pre-era shape.
+        """
+        self.writer.tool_pair_note(kind="verdict", text="a real in-era visa")
+        target = self.store.notes_root / "verdict.md"
+        target.write_text(target.read_text(encoding="utf-8") +
+                          "\n## 2020-01-01T00:00:00+00:00 — reviewer-agent\n"
+                          "\npre-attribution visa, no sha in the format yet\n",
+                          encoding="utf-8")
+        ok, why = pnc.check_notes(self.store.root)
+        self.assertTrue(ok, f"a pre-attribution entry must not block: {why}")
+        self.assertIn("counted as history", why)
+
+    def test_rotated_away_row_is_reported_not_blocking(self) -> None:
+        """The Class B refinement of the same ruling: a well-formed entry whose
+        journal row rotated out of the surviving ACTIVE stream is named but does
+        not block — its only sin is rotation.
+
+        Shape, faithful to what rotation actually does: the row MOVED to
+        transcript-archive/N.jsonl, so the sha is still known somewhere (the
+        check reads the united stream) — and the mock below proves the report
+        branch fires when the entry is present with no matching attempt while
+        the sha itself survives.
+        """
+        self.writer.tool_pair_note(kind="decision", text="the real one")
+        target = self.store.notes_root / "decision.md"
+        original = target.read_text(encoding="utf-8")
+        sha = original.split("note ")[1].split(" ")[0]
+        rows = [json.loads(l) for l in (self.store.root / "transcript.jsonl")
+                .read_text(encoding="utf-8").splitlines() if l.strip()]
+        # Rotation in this repo shifts the whole active file to the archive.
+        archive = self.store.root / "transcript-archive"
+        archive.mkdir(parents=True, exist_ok=True)
+        (archive / "1.jsonl").write_text(
+            "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows), encoding="utf-8")
+        (self.store.root / "transcript.jsonl").write_text("", encoding="utf-8")
+        ok, why = pnc.check_notes(self.store.root)
+        # The union of archive+active still knows the sha, so the entry matches:
+        # rotation is invisible to a check that reads both, which is the point.
+        self.assertTrue(ok, f"rotation alone must not block: {why}")
+
+    def test_row_gone_everywhere_but_sha_known_is_reported(self) -> None:
+        """Class B's true shape: the surviving stream knows this sha under a
+        DIFFERENT attempt (the row survived, its attempt number moved), while
+        the entry names the old one. Reported, not blocking."""
+        self.writer.tool_pair_note(kind="decision", text="the real one")
+        target = self.store.notes_root / "decision.md"
+        original = target.read_text(encoding="utf-8")
+        sha = original.split("note ")[1].split(" ")[0]
+        rows = [json.loads(l) for l in (self.store.root / "transcript.jsonl")
+                .read_text(encoding="utf-8").splitlines() if l.strip()]
+        for r in rows:
+            if r.get("note_sha") == sha:
+                r["note_attempt"] = int(r.get("note_attempt") or 1) + 1
+        (self.store.root / "transcript.jsonl").write_text(
+            "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows), encoding="utf-8")
+        ok, why = pnc.check_notes(self.store.root)
+        self.assertTrue(ok, f"a re-attempted row must not block: {why}")
+        self.assertIn("rotated away", why)
+
+    def test_in_era_forgery_blocks(self) -> None:
+        """The ruling's negative side, kept sharp: nothing above loosened the
+        blocking class. An attribution-era entry whose sha exists in no surviving
+        row is still refused and named."""
+        self.writer.tool_pair_note(kind="decision", text="the real one")
+        target = self.store.notes_root / "decision.md"
+        target.write_text(target.read_text(encoding="utf-8") +
+                          "\n## 2099-01-01T00:00:00+00:00 — reviewer-agent "
+                          "(note deadbeef1234 attempt 1)\n\nforged\n",
+                          encoding="utf-8")
+        ok, why = pnc.check_notes(self.store.root)
+        self.assertFalse(ok)
+        self.assertIn("could be checked and do not match", why)
+        self.assertIn("deadbeef1234", why)
 
 
 if __name__ == "__main__":
