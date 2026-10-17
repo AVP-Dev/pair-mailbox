@@ -2046,6 +2046,12 @@ def main() -> int:
     allow = load_allow_patterns(args.allow)[0] if args.allow else None
 
     state_dir = Path(args.state).resolve()
+    # Own pid, for pair-duo's liveness check (pair-duo:108-124): a stale
+    # record there makes it raise a SECOND pilot.
+    _pid_file = state_dir / "pilot.pid"
+    if not _pid_file.exists() or _pid_file.read_text(encoding="utf-8") != f"{os.getpid()}\n":
+        _pid_file.write_text(f"{os.getpid()}\n", encoding="utf-8")
+
     pilot = Pilot(state_dir, silence=args.silence, interval=args.interval,
                   reply_grace=args.reply_grace, reply_hard=args.reply_hard,
                   reply_repeat=args.reply_repeat,
