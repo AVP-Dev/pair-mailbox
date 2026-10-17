@@ -62,6 +62,86 @@ def newest_source_mtime(paths: list[Path]) -> float | None:
     return newest
 
 
+def runtime_code_mtime(project_root: Path = ROOT) -> float | None:
+    """Newest mtime among RUNTIME sources — never test files (round 106 slice A, rider b).
+
+    Measured root cause of the 24h outage pattern: `server_code_mtime()` took the
+    newest mtime across ALL `mcp/pair_mailbox/*.py`, tests included, so every
+    commit touching a test file made EVERY role's server stale, and `--yes` then
+    killed the peer's server too. One agent's hygiene became the other's outage.
+
+    A test commit must not invalidate a runtime server. True when nothing runtime
+    changed at all: then the newest runtime mtime is older than any server start
+    and every server reads FRESH.
+    """
+    pkg = project_root / "mcp" / "pair_mailbox"
+    if not pkg.is_dir():
+        return None
+    runtime = [p for p in pkg.glob("*.py")
+               if not p.name.startswith("test_")
+               and p.name != "serve.sh"
+               and p.is_file()]
+    return newest_source_mtime(runtime)
+
+
+def scope_rows(rows: list[dict], role: str = "", writer: str = "",
+               room: bool = False) -> list[dict]:
+    """Which servers this restart is allowed to kill (round 106 slice A).
+
+    The defect being fixed: `pairrestart` used to plan every STALE server in the
+    state dir, so a writer-side restart killed the peer's server — measured as
+    four of twelve restarts in 24h, each taking the neighbour's pair tools down.
+
+    Rules, in order, all fail-closed:
+    - `room=True` (an explicit room-wide request) selects every stale role row.
+    - otherwise only the NAMED role's rows: `role` if given, else the caller's own
+      role as derived by `caller_role()`.
+    - a role that has no row yields [] — never a silent fall back to everything.
+    - FRESH rows are never in scope, not even room-wide: a fresh server is not
+      mine to disturb.
+    """
+    stale = [r for r in rows if r.get("kind") == "role"
+             and r.get("verdict") == "STALE" and r.get("pid")]
+    if room:
+        return stale
+    target = (role or "").strip() or caller_role(writer=writer)
+    if not target:
+        return []
+    return [r for r in stale if r.get("name") == target]
+
+
+def caller_role(state_dir: Path | None = None, env: dict | None = None) -> str:
+    """The role this invocation belongs to — fail-closed, never guessed.
+
+    Chain, per the peer's ruling (seq 1613): PAIR_ROLE from the environment;
+    then TMUX_PANE resolved against the roster's pane fields. Outside any pane
+    and with no env, the answer is EMPTY and the caller must be told to name a
+    role — the state's writer is a ROLE, not necessarily the caller, and
+    defaulting to it is exactly the guess that turns one agent's restart into
+    another agent's outage.
+    """
+    import os
+    environ = env if env is not None else os.environ
+    env_role = (environ.get("PAIR_ROLE") or "").strip()
+    if env_role:
+        return env_role
+    pane = (environ.get("TMUX_PANE") or "").strip()
+    if pane and state_dir is not None:
+        try:
+            state = json.loads((state_dir / "state.json").read_text(encoding="utf-8")) \
+                if (state_dir / "state.json").exists() else {}
+        except (OSError, ValueError):
+            state = {}
+        for name, info in (state.get("roles") or {}).items():
+            if not isinstance(info, dict):
+                continue
+            for field in ("pane", "pane_provisional"):
+                value = str(info.get(field) or "")
+                if value and value in (pane, "%" + pane.lstrip("%")):
+                    return name
+    return ""
+
+
 def server_code_mtime() -> float | None:
     return newest_source_mtime(list((ROOT / "mcp" / "pair_mailbox").glob("*.py")))
 

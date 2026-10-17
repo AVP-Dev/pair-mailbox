@@ -315,6 +315,72 @@ writer_cmd="$(launch_for "$writer")"
 critic_cmd="$(launch_for "$critic")"
 proj_name="$(basename -- "$PROJECT_DIR")"
 title_for() { printf '%s:%s (%s)' "$proj_name" "$1" "$2"; }
+
+# Per-project tmux server: `pair-<basename>-<hash8>`, the hash AUTHORITATIVE
+# (round 106 slice D conditions, critic seq 1610). Derived STATELESSLY from the
+# RESOLVED root — never read from state.json, because binding the tree to the
+# socket needs the state file the socket was meant to protect.
+#
+# Why a socket, not just a name: one tmux server (`/tmp/tmux-1000/default`)
+# serves every project on the box, so sessions of DIFFERENT projects are visible
+# and addressable to each other. That is how a message landed in galatour's pane
+# and how two `session name = basename` projects collide. A socket makes them
+# different servers: gala's panes stop existing in this project's namespace.
+#
+# Two clones of one repo share both basename and origin — the hash is what keeps
+# them apart. Readability is for the operator, never the key.
+_RESOLVED="$(cd -- "$PROJECT_DIR" 2>/dev/null && pwd -P)"
+if [ -z "$_RESOLVED" ]; then _RESOLVED="$PROJECT_DIR"; fi
+_HASH="$(printf '%s' "$_RESOLVED" | sha256sum 2>/dev/null | cut -c1-8)"
+[ -z "$_HASH" ] && _HASH="$(printf '%s' "$_RESOLVED" | cksum | cut -d' ' -f1)"
+if [ -n "${PAIR_TMUX_SOCKET:-}" ]; then
+  PAIR_SOCKET="$PAIR_TMUX_SOCKET"          # explicit override, for tests and for the operator
+else
+  PAIR_SOCKET="pair-${proj_name}-${_HASH}"
+fi
+session="$PAIR_SOCKET"                      # deterministic: same tree, same session name
+t() { tmux -L "$PAIR_SOCKET" "$@"; }        # every call below goes through the project's server
+
+# THREE probes, in this order, and each one answers a different question:
+#   1. OUR OWN socket — has this project already migrated and has a live session
+#      there? Then REUSE it. Without this probe a second `pairup` on a migrated
+#      project raises a second session on the same socket: the idempotence hole
+#      (D1), and the very collision rename was meant to fix.
+#   2. The DEFAULT socket — has the LEGACY session (bare $proj_name) there? Then
+#      keep using it, because the roster's pane pointers already name a session
+#      the shared server can see. Transition condition (b): never blind the
+#      running pair mid-round.
+#   3. Neither — this project has no pair yet: raise on its own socket.
+# PAIR_FORCE_SOCKET=1 skips 1 and 2 for tests and for forcing the migration.
+_EXISTING=""
+if command -v tmux >/dev/null 2>&1; then
+  if [ -z "${PAIR_FORCE_SOCKET:-}" ]; then
+    if t has-session -t "$session" 2>/dev/null; then
+      _EXISTING="own-socket:$session"
+    elif tmux has-session -t "$proj_name" 2>/dev/null; then
+      _EXISTING="default:$proj_name"
+    fi
+  fi
+fi
+if [ -n "$_EXISTING" ]; then
+  _WHERE="${_EXISTING%%:*}"
+  _NAME="${_EXISTING#*:}"
+  if [ "$_WHERE" = "default" ]; then
+    PAIR_SOCKET="default"
+    session="$_NAME"
+    t() { tmux "$@"; }
+    echo "pairup: live pair found on the DEFAULT socket as session '$_NAME' — using it" >&2
+    echo "pairup: (transition: a project mid-migration keeps its running pair until it exits)" >&2
+  else
+    echo "pairup: pair already live on this project's socket as session '$_NAME' — attaching" >&2
+  fi
+fi
+
+# The socket name travels into the panes' environment and the state, so every
+# later tool (pairpilot, composer, pairrestart inventory) addresses the SAME
+# server instead of the shared default. PAIR_PANE_SOCKET is read by
+# composer._tmux() — one resolver for all call sites, condition (c).
+export PAIR_PANE_SOCKET="$PAIR_SOCKET"
 writer_init="export PAIR_STATE='$STATE_DIR'; cd '$PROJECT_DIR'; echo '=== PAIR WRITER: $writer ==='; [ -f '$STATE_DIR/task-banner.txt' ] && cat '$STATE_DIR/task-banner.txt'; $writer_cmd"
 critic_init="export PAIR_STATE='$STATE_DIR'; cd '$PROJECT_DIR'; echo '=== PAIR CRITIC: $critic ==='; [ -f '$STATE_DIR/task-banner.txt' ] && cat '$STATE_DIR/task-banner.txt'; $critic_cmd"
 title_writer="$(title_for "$writer" writer)"

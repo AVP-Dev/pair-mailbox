@@ -1101,6 +1101,27 @@ def _proc_starttime(pid: Any) -> int | None:
     return liveness.proc_starttime(pid)
 
 
+def tmux_command() -> str:
+    """tmux, prefixed with this project's socket when one is named.
+
+    Condition (c) of the per-project-socket slice (round 106 slice C): ONE
+    resolver for every tmux call site in the tree. A single tmux server serves
+    every project on the box, so plain `tmux` makes another project's panes
+    visible and addressable here — measured as a message landing in galatour's
+    pane, and as two same-basename projects colliding on session name.
+
+    The socket comes from PAIR_PANE_SOCKET (pairup exports it from the resolved
+    project root) and is never read from state.json, so binding needs no state
+    file. With no socket named — a legacy pair on the default server — plain
+    tmux, so the transition never blinds a running pair.
+    """
+    exe = shutil.which("tmux") or "tmux"
+    socket = (os.environ.get("PAIR_PANE_SOCKET") or "").strip()
+    if socket and socket != "default":
+        return f"{exe} -L {socket}"
+    return exe
+
+
 def same_pane(left, right) -> bool:
     """`composer.same_pane` with tmux found. The logic lives in composer, next to
     `pane_identity`: pane comparison belongs to pane parsing, not the protocol. The
@@ -1115,7 +1136,7 @@ def same_pane(left, right) -> bool:
         return False
     if str(left) == str(right):
         return True
-    tmux = shutil.which("tmux")
+    tmux = tmux_command()
     if not tmux:
         return False
     from composer import same_pane as _same
@@ -1144,7 +1165,7 @@ def pane_exists(pane: str) -> bool:
     `pairpilot` called the composer's copy. One implementation, two names kept
     for their existing callers.
     """
-    tmux = shutil.which("tmux")
+    tmux = tmux_command()
     if not tmux:
         return False
     from composer import pane_alive
@@ -1212,7 +1233,7 @@ class PairSession:
         roles = state.setdefault("roles", {})
         current_pid = os.getpid()
         entry = roles.setdefault(self.role, {"first_seen": utcnow(), "reads": 0, "sends": 0})
-        tmux = shutil.which("tmux")
+        tmux = tmux_command()
 
         # The human override resolves first, because it decides WHOSE pane this is, while
         # everything else in this function looks at the pane derived from the process
@@ -2236,7 +2257,7 @@ class PairSession:
         # ring leaves for our own pane.
         if same_pane(pane, os.environ.get("TMUX_PANE")):
             return self._ring_refused(target, kind, pane, "never ring our own pane")
-        tmux = shutil.which("tmux")
+        tmux = tmux_command()
         if not tmux:
             return self._ring_refused(target, kind, pane, "tmux not found in PATH")
         try:
@@ -2292,7 +2313,7 @@ class PairSession:
             prompt += f" ({detail})"
         first = subprocess.run([tmux, "send-keys", "-t", pane, "-l", prompt],
                                capture_output=True, text=True, timeout=5)
-        second = subprocess.run(["tmux", "send-keys", "-t", pane, "Enter"],
+        second = subprocess.run(tmux_command().split() + ["send-keys", "-t", pane, "Enter"],
                                 capture_output=True, text=True, timeout=5)
         if first.returncode != 0 or second.returncode != 0:
             reason = (f"send-keys text rc={first.returncode} enter rc={second.returncode}"

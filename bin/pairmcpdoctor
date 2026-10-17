@@ -46,8 +46,23 @@ MENU = "/mcp"
 PAIR_ROW_INDEX = 2  # context7 is the first row, pair the second — measured
 
 
+def _tmux_cmd():
+    """The ONE resolver (round 106 slice C): tmux plus this project's socket.
+
+    Reads PAIR_PANE_SOCKET the same way composer._tmux() does — a second
+    convention here would be the "most call sites" trap.
+    """
+    import os
+    import shutil
+    exe = shutil.which("tmux") or "tmux"
+    socket = (os.environ.get("PAIR_PANE_SOCKET") or "").strip()
+    if socket and socket != "default":
+        return [exe, "-L", socket]
+    return [exe]
+
+
 def tmux(*args: str) -> tuple[int, str]:
-    proc = subprocess.run(["tmux", *args], capture_output=True, text=True, timeout=10)
+    proc = subprocess.run(_tmux_cmd() + list(args), capture_output=True, text=True, timeout=10)
     return proc.returncode, (proc.stdout or "")
 
 
