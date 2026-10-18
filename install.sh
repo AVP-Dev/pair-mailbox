@@ -248,6 +248,26 @@ def splice_json_block(text, root_key, server_key, entry_json):
     sep = "" if not head[inner_start + 1:].strip() else ","
     return (head + "%s\n    \"%s\": %s\n" % (sep, server_key, entry_json) + text[inner_end:], "inserted")
 
+def persist_transport(project_root: str, transport: str) -> None:
+    """Record the transport mode in the project's state, so a later pairup
+    (which reads state, not env) raises the daemon for a flipped project."""
+    state_dir = Path(project_root) / ".pair"
+    state_path = state_dir / "state.json"
+    if not state_dir.is_dir():
+        return
+    try:
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return
+    state["transport"] = ("socket" if transport in ("socket", "client", "sock")
+                          else "child")
+    try:
+        state_path.write_text(json.dumps(state, ensure_ascii=False, indent=1) + "\n",
+                              encoding="utf-8")
+    except OSError:
+        pass
+
+
 def write_mcp(profile, role):
     spec = profile["mcp"]
     path = expand(spec["path"])
@@ -262,6 +282,12 @@ def write_mcp(profile, role):
     # raised by pairup/pairrestart; the client connects or refuses naming the
     # remedy, and never spawns.
     transport = (os.environ.get("PAIR_TRANSPORT") or os.environ.get("PAIR_SOCKET_CLIENT") or "").strip().lower()
+    # The mode is PERSISTED into the project's state, not left in the installer's
+    # environment: a human restart has no memory of an env var, and pairup raises
+    # the daemon by reading state (round 111's flip, measured: env-only transport
+    # left the daemon unraised and the thin client refusing exit 4 at the next
+    # restart — the pair would have been dead).
+    persist_transport(str(ROOT), transport)
     if transport in ("socket", "client", "sock"):
         argv = [sys.executable, str(ROOT / "mcp" / "pair_mailbox" / "mcp_socket_client.py"), role]
         transport_note = "thin socket client (daemon raised by pairup)"

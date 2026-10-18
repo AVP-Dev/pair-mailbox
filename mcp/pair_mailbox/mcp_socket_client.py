@@ -82,7 +82,42 @@ def _connect(path: str, deadline: float = 10.0) -> socket.socket:
     raise (last or OSError(f"cannot connect to {path}"))
 
 
-def pump(sock: socket.socket, stdin, stdout) -> int:
+def _redial(path: str, deadline: float):
+    """Re-connect to the daemon within a bounded window (round 113 slice 1).
+
+    Why: the limitation measured live on the flipped pair — the client dialled
+    ONCE, a dying daemon left it reporting `pair Failed` for the rest of the
+    session, and reconnect granularity was the SESSION rather than the event.
+
+    Why bounded and not a supervisor: the client must never spawn a daemon, never
+    manage a role, never outlive its CLI. It dials, and if nothing answers inside
+    the window it reports the same failure it reports today — with the same
+    remedy. The window is seconds, not forever: an operator needs to know.
+    """
+    end = time.time() + deadline
+    while time.time() < end:
+        time.sleep(0.2)
+        try:
+            fresh = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            fresh.settimeout(2.0)
+            fresh.connect(path)
+            fresh.settimeout(None)
+            return fresh
+        except OSError:
+            continue
+    return None
+
+
+def _redial_seconds() -> float:
+    """PAIR_SOCKET_REDIAL seconds, 0 by default (today's behaviour)."""
+    raw = (os.environ.get("PAIR_SOCKET_REDIAL") or "0").strip()
+    try:
+        return max(0.0, float(raw))
+    except ValueError:
+        return 0.0
+
+
+def pump(sock: socket.socket, stdin, stdout, path: str) -> int:
     """Frames in both directions until the CLI closes stdin.
 
     One line in, one line out: the daemon's framing IS the CLI's framing, so the
@@ -98,11 +133,50 @@ def pump(sock: socket.socket, stdin, stdout) -> int:
             line = raw.strip()
             if not line:
                 continue
-            writer.write(line + "\n")
-            writer.flush()
-            reply = reader.readline()
+            try:
+                writer.write(line + "\n")
+                writer.flush()
+            except (BrokenPipeError, ConnectionResetError, OSError):
+                # The daemon died under us and the socket says so at the WRITE,
+                # which is the same fact as an empty reply — treat them alike.
+                reply = ""
+            else:
+                reply = reader.readline()
             if not reply:
                 # the daemon died under us: not a protocol error, a dead transport
+                window = _redial_seconds()
+                if window > 0:
+                    print(f"pair client: daemon closed the connection; "
+                          f"re-dialing for {window:g}s", file=sys.stderr)
+                    fresh = _redial(path, window)
+                    if fresh is not None:
+                        try:
+                            reader.close()
+                            writer.close()
+                            sock.close()
+                        except OSError:
+                            pass
+                        sock = fresh
+                        reader = sock.makefile("r", encoding="utf-8", newline="\n")
+                        writer = sock.makefile("w", encoding="utf-8", newline="\n")
+                        # The frame is NOT lost: it was in the lost writer, and the
+                        # new daemon is waiting for it while we wait on stdin —
+                        # a deadlock neither side can see. Re-send it, so exactly
+                        # one frame is in flight after a re-dial, never zero.
+                        try:
+                            writer.write(line + "\n")
+                            writer.flush()
+                            reply = reader.readline()
+                        except (BrokenPipeError, ConnectionResetError, OSError):
+                            reply = ""
+                        if reply:
+                            stdout.write(reply if reply.endswith("\n") else reply + "\n")
+                            stdout.flush()
+                            continue
+                        continue
+                    print("pair client: no daemon answered inside the window",
+                          file=sys.stderr)
+                    return 3
                 print("pair client: daemon closed the connection", file=sys.stderr)
                 return 3
             stdout.write(reply if reply.endswith("\n") else reply + "\n")
@@ -145,7 +219,7 @@ def main(argv: list[str]) -> int:
               f"every connection: {exc}) — pairup raises it, "
               f"pairrestart --role <role> refreshes it", file=sys.stderr)
         return 4
-    return pump(sock, sys.stdin, sys.stdout)
+    return pump(sock, sys.stdin, sys.stdout, path)
 
 
 if __name__ == "__main__":

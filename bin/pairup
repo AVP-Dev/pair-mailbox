@@ -381,13 +381,24 @@ fi
 # server instead of the shared default. PAIR_PANE_SOCKET is read by
 # composer._tmux() — one resolver for all call sites, condition (c).
 export PAIR_PANE_SOCKET="$PAIR_SOCKET"
-# Round 106 slice G: raise the socket daemon BEFORE the CLI starts (only when the
-# project is on the socket transport — PAIR_TRANSPORT=socket). The daemon is a
-# LONG-LIVED process, not a child of the CLI: killing or restarting the CLI then
-# costs a reconnect, not the server. pairrestart refreshes the transport; the CLI
-# never spawns it (the thin client refuses rather than spawns, by design).
+# Round 106 slice G: raise the socket daemon BEFORE the CLI starts, when the
+# project is on the socket transport. The daemon is a LONG-LIVED process, not a
+# child of the CLI: killing or restarting the CLI then costs a reconnect, not the
+# server. pairrestart refreshes the transport; the CLI never spawns it (the thin
+# client refuses rather than spawns, by design).
+#
+# The mode is PERSISTED in state (`.pair/state.json` -> `transport: "socket"`),
+# because a human restart has no memory of PAIR_TRANSPORT (the env variable the
+# installer used once). Measured: flipping the entries while the mode lived only
+# in env left the daemon unraised at the next human-driven restart, and the thin
+# client then refused with exit 4 — the pair would have been dead.
 raise_daemon() {
-  [ "${PAIR_TRANSPORT:-}" = "socket" ] || return 0
+  _mode="$(python3 -c '
+import json, sys
+st = json.loads(open(sys.argv[1], encoding="utf-8").read() or "{}")
+print(st.get("transport") or "")
+' "$STATE_DIR/state.json" 2>/dev/null || echo "")"
+  [ "$_mode" = "socket" ] || return 0
   _role="$1"
   _sock="$STATE_DIR/.server-${_role}.sock"
   if [ -S "$_sock" ] && python3 -c "
