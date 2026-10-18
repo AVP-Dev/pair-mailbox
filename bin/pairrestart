@@ -62,6 +62,86 @@ def newest_source_mtime(paths: list[Path]) -> float | None:
     return newest
 
 
+def runtime_code_mtime(project_root: Path = ROOT) -> float | None:
+    """Newest mtime among RUNTIME sources — never test files (round 106 slice A, rider b).
+
+    Measured root cause of the 24h outage pattern: `server_code_mtime()` took the
+    newest mtime across ALL `mcp/pair_mailbox/*.py`, tests included, so every
+    commit touching a test file made EVERY role's server stale, and `--yes` then
+    killed the peer's server too. One agent's hygiene became the other's outage.
+
+    A test commit must not invalidate a runtime server. True when nothing runtime
+    changed at all: then the newest runtime mtime is older than any server start
+    and every server reads FRESH.
+    """
+    pkg = project_root / "mcp" / "pair_mailbox"
+    if not pkg.is_dir():
+        return None
+    runtime = [p for p in pkg.glob("*.py")
+               if not p.name.startswith("test_")
+               and p.name != "serve.sh"
+               and p.is_file()]
+    return newest_source_mtime(runtime)
+
+
+def scope_rows(rows: list[dict], role: str = "", state_dir: Path | None = None,
+               room: bool = False, env: dict | None = None) -> list[dict]:
+    """Which servers this restart is allowed to kill (round 106 slice A).
+
+    The defect being fixed: `pairrestart` used to plan every STALE server in the
+    state dir, so a writer-side restart killed the peer's server — measured as
+    four of twelve restarts in 24h, each taking the neighbour's pair tools down.
+
+    Rules, in order, all fail-closed:
+    - `room=True` (an explicit room-wide request) selects every stale role row.
+    - otherwise only the NAMED role's rows: `role` if given, else the caller's own
+      role as derived by `caller_role()`.
+    - a role that has no row yields [] — never a silent fall back to everything.
+    - FRESH rows are never in scope, not even room-wide: a fresh server is not
+      mine to disturb.
+    """
+    stale = [r for r in rows if r.get("kind") == "role"
+             and r.get("verdict") == "STALE" and r.get("pid")]
+    if room:
+        return stale
+    target = (role or "").strip() or caller_role(state_dir, env)
+    if not target:
+        return []
+    return [r for r in stale if r.get("name") == target]
+
+
+def caller_role(state_dir: Path | None = None, env: dict | None = None) -> str:
+    """The role this invocation belongs to — fail-closed, never guessed.
+
+    Chain, per the peer's ruling (seq 1613): PAIR_ROLE from the environment;
+    then TMUX_PANE resolved against the roster's pane fields. Outside any pane
+    and with no env, the answer is EMPTY and the caller must be told to name a
+    role — the state's writer is a ROLE, not necessarily the caller, and
+    defaulting to it is exactly the guess that turns one agent's restart into
+    another agent's outage.
+    """
+    import os
+    environ = env if env is not None else os.environ
+    env_role = (environ.get("PAIR_ROLE") or "").strip()
+    if env_role:
+        return env_role
+    pane = (environ.get("TMUX_PANE") or "").strip()
+    if pane and state_dir is not None:
+        try:
+            state = json.loads((state_dir / "state.json").read_text(encoding="utf-8")) \
+                if (state_dir / "state.json").exists() else {}
+        except (OSError, ValueError):
+            state = {}
+        for name, info in (state.get("roles") or {}).items():
+            if not isinstance(info, dict):
+                continue
+            for field in ("pane", "pane_provisional"):
+                value = str(info.get(field) or "")
+                if value and value in (pane, "%" + pane.lstrip("%")):
+                    return name
+    return ""
+
+
 def server_code_mtime() -> float | None:
     return newest_source_mtime(list((ROOT / "mcp" / "pair_mailbox").glob("*.py")))
 
@@ -156,7 +236,12 @@ def proc_start_ts(pid: int) -> float | None:
 def diagnose(state_dir: Path) -> list[dict]:
     """One row per checked thing: kind, name, pid, started, code, verdict."""
     rows: list[dict] = []
-    code_server = server_code_mtime()
+    # Rider (b), round 106 slice A: staleness is judged on RUNTIME sources only.
+    # The old rule took the newest mtime across ALL pair_mailbox/*.py, tests
+    # included, so a test commit made every role's server stale and a single
+    # `--yes` killed them all — four of twelve restarts in 24 hours, each taking
+    # the neighbour's pair tools down.
+    code_server = runtime_code_mtime()
     code_pilot = pilot_code_mtime()
     # All servers of this state, grouped by role: one row each, never a
     # dict-by-role that silently keeps only the last line and hides the rest.
@@ -306,27 +391,94 @@ def verify(state_dir: Path) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser = argparse.ArgumentParser(
+        description="Restart pair servers that run stale code — per role by default.")
     parser.add_argument("--state", default=None, help="explicit state dir")
     parser.add_argument("--dry-run", action="store_true", help="plan only, change nothing")
     parser.add_argument("--yes", action="store_true", help="skip the question (unattended)")
+    parser.add_argument("--role", default="", help="this role only (default: the caller's own)")
+    parser.add_argument("--room", action="store_true",
+                        help="every stale role — MUST print them all before any kill")
     args = parser.parse_args(argv)
     state_dir = resolve_state(args.state)
     if not (state_dir / "state.json").exists():
         print(f"pairrestart: no state.json in {state_dir} — cd into a project first", file=sys.stderr)
         return 2
     rows = diagnose(state_dir)
-    killable = print_plan(rows)
+    scope = scope_rows(rows, role=args.role, state_dir=state_dir, room=args.room)
+    # Fail-closed (round 106 slice A): `pairrestart --yes` used to mean "kill
+    # every stale server in the room", which is how my restart became your
+    # outage four times in 24 hours. Without a resolvable caller and without
+    # --room, the honest answer is a REFUSAL naming what to pass — never a
+    # silent fall back to the whole room.
+    if not args.room and not (args.role or "").strip():
+        if not scope:
+            print("pairrestart: no role resolved for this invocation.", file=sys.stderr)
+            print("pairrestart: name it — pairrestart --role <omp|opencode|agy|claude|pi|codex>",
+                  file=sys.stderr)
+            print("pairrestart: or run it inside the role's pane (PAIR_ROLE/TMUX_PANE),",
+                  file=sys.stderr)
+            print("pairrestart: or --room to restart every stale role, listed before any kill.",
+                  file=sys.stderr)
+            return 2
+    killable = print_plan(rows, only=scope)
     if args.dry_run:
         print("(dry-run: changed nothing)")
         return 0
     if killable == 0:
         return 0
-    if not ask(args.yes):
+    if not ask_room(args, scope, state_dir):
         print("Aborted. Changed nothing.")
         return 0
-    act(rows, state_dir)
+    act(scope, state_dir)
     return verify(state_dir)
+
+
+def ask_room(args, scope: list[dict], state_dir: Path) -> bool:
+    """Confirm a restart, with the room's roles named before any kill.
+
+    `--yes` on a SCOPED restart still asks — a single-role kill is cheap and
+    reversible, so it waits for the word. `--yes` with `--room` requires the
+    list: every role it will disturb is printed FIRST, never after.
+    """
+    if args.room and args.yes:
+        names = ", ".join(r["name"] for r in scope) or "(none stale)"
+        print(f"Room-wide restart confirmed by --yes; roles that may be disturbed: {names}")
+        return True
+    return ask(args.yes)
+
+
+def print_plan(rows: list[dict], only: list[dict] | None = None) -> int:
+    """The plan, and how many rows it will kill. With `only`, the caller sees
+    WHICH of the stale room's rows are in scope — a scoped restart must not print
+    a room-wide plan and kill a scoped subset (the two truths diverge)."""
+    shown = rows if only is None else [r for r in rows if r in only]
+    stale = [r for r in shown if r["verdict"] == "STALE" and r.get("pid")]
+    print(f"pairrestart — {len(shown)} things checked")
+    print()
+    for row in shown:
+        pid = str(row["pid"]) if row.get("pid") else "—"
+        extra = f"started {row.get('started')} code {row.get('code')}" if row.get("started") else ""
+        print(f"[{row['verdict']:<6}] {row['kind']:<5} {row['name']:<8} pid {pid:<7} {extra} → {row['detail']}")
+    print()
+    if only is not None and rows:
+        out_of_scope = [r["name"] for r in rows
+                       if r.get("kind") == "role" and r not in only
+                       and r["verdict"] == "STALE" and r.get("pid")]
+        if out_of_scope:
+            print(f"Left out of scope (not yours to disturb): {', '.join(out_of_scope)}")
+            print("A scoped restart never touches a peer's server — it reconnects on its own schedule.")
+            print()
+    if not stale:
+        print("Nothing stale in scope. Changes nothing.")
+        return 0
+    doomed_roles = [r["name"] for r in stale if r["kind"] == "role"]
+    if doomed_roles:
+        print("Note: killing a role's server drops that session's pair tools until it")
+        print("reconnects its MCP (/mcp, or restart the CLI).")
+        print(f"Killing {', '.join(doomed_roles)}'s server is in this plan — confirm it is yours to disturb.")
+    print(f"Will kill {len(stale)} process(es). Fresh servers are NOT in this plan.")
+    return len(stale)
 
 
 if __name__ == "__main__":

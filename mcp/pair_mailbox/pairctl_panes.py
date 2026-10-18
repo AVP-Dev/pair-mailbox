@@ -67,6 +67,16 @@ def pin_verdict(tmux, pin: str, project_root: Path) -> tuple[str, str]:
     if not tmux:
         return PIN_UNKNOWN, "tmux unreachable, nothing to check with"
     from composer import pane_alive, pane_is_foreign
+    # Condition (c): composer.pane_alive/pane_is_foreign already resolve through
+    # composer._tmux(), which reads the socket — so this module must HAND them a
+    # socket-aware tmux, not the bare binary, or another project's pane would
+    # read as ours (round 106 slice C). The import sits at function level to keep
+    # the module's import graph as it was, but it must be REAL: a missing one
+    # broke eight tests under verify-project while a direct pytest run passed
+    # only because the name resolved from a partially imported server module.
+    from server import tmux_command
+    import shlex as _shlex
+    tmux = " ".join(_shlex.split(tmux_command()))
     if not pane_alive(tmux, pin):
         return PIN_BAD, "no pane left at this address"
     try:

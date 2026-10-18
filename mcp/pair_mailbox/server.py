@@ -872,6 +872,15 @@ class Store:
                 "reason": "", "closed_at": None, "closed_by": None,
             }]
         state.setdefault("tasks", [])
+        # Round 106 slice B: the hot file is bounded, so this load must hand back
+        # the UNION of the active window and the state archive. A rotated record
+        # becomes invisible only to the writer's memory, never to a reader — the
+        # same invariant the transcript union carries, and the one a shrunken file
+        # would otherwise break.
+        try:
+            state = _state_rotation_load(self.root, state)
+        except Exception as exc:  # noqa: BLE001 - an unreadable archive never hides the active window
+            log(f"state archive unreadable ({exc}); serving the active window alone")
         return state
 
     def _save(self, state: dict[str, Any]) -> None:
@@ -1101,6 +1110,34 @@ def _proc_starttime(pid: Any) -> int | None:
     return liveness.proc_starttime(pid)
 
 
+def _state_rotation_load(root: Path, state: dict[str, Any]) -> dict[str, Any]:
+    """Store._load's rotation merge, imported lazily (server imports state_rotation,
+    never the reverse — a top-level import would close a cycle)."""
+    from state_rotation import load_state
+    return load_state(root, state)
+
+
+def tmux_command() -> str:
+    """tmux, prefixed with this project's socket when one is named.
+
+    Condition (c) of the per-project-socket slice (round 106 slice C): ONE
+    resolver for every tmux call site in the tree. A single tmux server serves
+    every project on the box, so plain `tmux` makes another project's panes
+    visible and addressable here — measured as a message landing in galatour's
+    pane, and as two same-basename projects colliding on session name.
+
+    The socket comes from PAIR_PANE_SOCKET (pairup exports it from the resolved
+    project root) and is never read from state.json, so binding needs no state
+    file. With no socket named — a legacy pair on the default server — plain
+    tmux, so the transition never blinds a running pair.
+    """
+    exe = shutil.which("tmux") or "tmux"
+    socket = (os.environ.get("PAIR_PANE_SOCKET") or "").strip()
+    if socket and socket != "default":
+        return f"{exe} -L {socket}"
+    return exe
+
+
 def same_pane(left, right) -> bool:
     """`composer.same_pane` with tmux found. The logic lives in composer, next to
     `pane_identity`: pane comparison belongs to pane parsing, not the protocol. The
@@ -1115,7 +1152,7 @@ def same_pane(left, right) -> bool:
         return False
     if str(left) == str(right):
         return True
-    tmux = shutil.which("tmux")
+    tmux = tmux_command()
     if not tmux:
         return False
     from composer import same_pane as _same
@@ -1144,7 +1181,7 @@ def pane_exists(pane: str) -> bool:
     `pairpilot` called the composer's copy. One implementation, two names kept
     for their existing callers.
     """
-    tmux = shutil.which("tmux")
+    tmux = tmux_command()
     if not tmux:
         return False
     from composer import pane_alive
@@ -1212,7 +1249,7 @@ class PairSession:
         roles = state.setdefault("roles", {})
         current_pid = os.getpid()
         entry = roles.setdefault(self.role, {"first_seen": utcnow(), "reads": 0, "sends": 0})
-        tmux = shutil.which("tmux")
+        tmux = tmux_command()
 
         # The human override resolves first, because it decides WHOSE pane this is, while
         # everything else in this function looks at the pane derived from the process
@@ -1945,6 +1982,26 @@ class PairSession:
             notes_ok, notes_why = check_notes(self.store.root)
             if not notes_ok:
                 blockers.append(f"the notes disagree with the journal: {notes_why}. ")
+            # Round 106 slice E: the board's own machine leg. Round 105 drifted
+            # three times post-commit and once pre-commit — a row claiming
+            # `delivered <sha>` for another commit's sha, a prerequisite's sha,
+            # or a component without its caller. A human caught each one; the
+            # catch is mechanical, so it stops being a human's job. Fail-open
+            # ONLY when the board is unreadable or git cannot answer: never
+            # block a close on a check that could not run.
+            board = self.store.root / "plan.md"
+            if board.exists():
+                try:
+                    sys.path.insert(0, str(self.store.project_root / "bin"))
+                    import boardcheck as _boardcheck
+                    _ok, _problems = _boardcheck.check(board,
+                                                       require_ancestor=False)
+                    if not _ok:
+                        blockers.append(
+                            "the board claims what the tree cannot show: "
+                            + "; ".join(_problems[:3]) + ". ")
+                except Exception as exc:  # noqa: BLE001 - the leg never drops a close
+                    log(f"board check skipped ({exc})")
             if self.store.obligations_root.is_dir():
                 for path in self.store.obligations_root.glob("*.json"):
                     try:
@@ -2236,7 +2293,7 @@ class PairSession:
         # ring leaves for our own pane.
         if same_pane(pane, os.environ.get("TMUX_PANE")):
             return self._ring_refused(target, kind, pane, "never ring our own pane")
-        tmux = shutil.which("tmux")
+        tmux = tmux_command()
         if not tmux:
             return self._ring_refused(target, kind, pane, "tmux not found in PATH")
         try:
@@ -2292,7 +2349,7 @@ class PairSession:
             prompt += f" ({detail})"
         first = subprocess.run([tmux, "send-keys", "-t", pane, "-l", prompt],
                                capture_output=True, text=True, timeout=5)
-        second = subprocess.run(["tmux", "send-keys", "-t", pane, "Enter"],
+        second = subprocess.run(tmux_command().split() + ["send-keys", "-t", pane, "Enter"],
                                 capture_output=True, text=True, timeout=5)
         if first.returncode != 0 or second.returncode != 0:
             reason = (f"send-keys text rc={first.returncode} enter rc={second.returncode}"
@@ -4079,13 +4136,21 @@ class MCPServer:
         self._notify_lock = threading.RLock()
         self._watch_stop = threading.Event()
         self._watch_thread: threading.Thread | None = None
+        # Transport abstraction (round 106 slice D). The framing protocol above
+        # is stdio-shaped only because its source and sink are; binding the loop
+        # to sys.stdin/sys.stdout is what tied the server's lifetime to the CLI
+        # that spawned it. A socket transport keeps the same protocol and lets
+        # the SERVER outlive the CLI: the client can die, reconnect, and continue.
+        self._in: Any = None
+        self._out: Any = None
 
     def send(self, payload: dict[str, Any]) -> None:
         # stdout is the shared resource of the main loop and the watcher thread: with no
         # framing-lock two interleaved json.dumps break the stream, and the client reads garbage.
         with self._notify_lock:
-            sys.stdout.write(json.dumps(payload, ensure_ascii=False) + "\n")
-            sys.stdout.flush()
+            sink = self._out if self._out is not None else sys.stdout
+            sink.write(json.dumps(payload, ensure_ascii=False) + "\n")
+            sink.flush()
 
     def reply(self, request_id: Any, result: dict[str, Any]) -> None:
         self.send({"jsonrpc": "2.0", "id": request_id, "result": result})
@@ -4102,8 +4167,9 @@ class MCPServer:
         # readline() rather than iteration: iterating sys.stdin uses a read-ahead
         # buffer that withholds complete lines until the buffer fills, which on a
         # pipe deadlocks against a client waiting for our reply.
+        source = self._in if self._in is not None else sys.stdin
         while True:
-            raw = sys.stdin.readline()
+            raw = source.readline()
             if not raw:
                 break
             raw = raw.strip()
@@ -4121,6 +4187,88 @@ class MCPServer:
             self.dispatch(message)
         log("stdin closed, exiting")
         self.stop_watcher()
+
+    def serve_socket(self, path: str, once: bool = True) -> int:
+        """Serve the SAME protocol over a unix socket, outliving any one client.
+
+        The defect this answers (round 106 slice D): bound to stdio, the server
+        IS the CLI's child — measured ppid ties, omp's server under bun 59561,
+        opencode's under its own parent — so killing either side killed both, and
+        a drop meant relaunching the CLI and losing its session context.
+
+        Here the socket is the server's public face. A client connects, speaks
+        newline-delimited JSON-RPC 2.0 — the identical framing — and may die; the
+        server stays up and takes the next connection. The role lock is held for
+        the server's whole life, exactly as with stdio: one live process per role
+        per state dir, and the kernel releases it if this process dies.
+
+        `once=True` serves exactly one client then exits — the shape the
+        round-trip test uses. `once=False` loops, which is what a daemon does.
+        """
+        import os
+        import socket as _socket
+        import threading
+
+        sock_path = str(path)
+        os.makedirs(os.path.dirname(sock_path) or ".", exist_ok=True)
+        try:
+            os.unlink(sock_path)
+        except FileNotFoundError:
+            pass
+        listener = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
+        listener.bind(sock_path)
+        listener.listen(4)
+        log(f"socket ready role={self.session.role} state={self.session.store.root} "
+            f"path={sock_path}")
+        self.start_watcher()
+        try:
+            while True:
+                conn, _ = listener.accept()
+                reader = conn.makefile("r", encoding="utf-8", newline="\n")
+                writer = conn.makefile("w", encoding="utf-8", newline="\n")
+                self._in, self._out = reader, writer
+                # A lock held for ONE client at a time: two CLIs talking to one
+                # role must not interleave frames on different connections.
+                try:
+                    while True:
+                        raw = reader.readline()
+                        if not raw:
+                            break
+                        raw = raw.strip()
+                        if not raw:
+                            continue
+                        try:
+                            message = json.loads(raw)
+                        except json.JSONDecodeError as exc:
+                            self.error(None, -32700, f"parse error: {exc}")
+                            continue
+                        if isinstance(message, list):
+                            for item in message:
+                                self.dispatch(item)
+                            continue
+                        self.dispatch(message)
+                except (OSError, ValueError) as exc:
+                    log(f"client gone ({exc}); server stays up")
+                finally:
+                    self._in, self._out = None, None
+                    try:
+                        conn.close()
+                    except OSError:
+                        pass
+                if once:
+                    break
+        finally:
+            self.stop_watcher()
+            try:
+                listener.close()
+            except OSError:
+                pass
+            try:
+                os.unlink(sock_path)
+            except FileNotFoundError:
+                pass
+        log(f"socket closed {sock_path}")
+        return 0
 
     def dispatch(self, message: Any) -> None:
         if not isinstance(message, dict):
@@ -4290,6 +4438,17 @@ def main(argv: list[str] | None = None) -> int:
     raw_args = list(sys.argv[1:] if argv is None else argv)
     state_dir, rest = extract_state(raw_args)
     explicit_pane, rest = extract_pane(rest)
+    # The socket flag is ours, not the CLI parser's: it selects the TRANSPORT
+    # (round 106 slice D) and leaves every protocol argument untouched.
+    socket_path = ""
+    if "--socket" in rest:
+        i = rest.index("--socket")
+        if i + 1 < len(rest) and not rest[i + 1].startswith("--"):
+            socket_path = rest[i + 1]
+            rest = rest[:i] + rest[i + 2:]
+        else:
+            socket_path = "auto"
+            rest = rest[:i] + rest[i + 1:]
     args = build_parser().parse_args(rest)
     if args.ctl_command:
         return run_ctl(args, state_dir)
@@ -4302,8 +4461,18 @@ def main(argv: list[str] | None = None) -> int:
     except ProtocolError as exc:  # remedy in hint, else an actionless traceback
         print(exc.message + (f"\n{exc.hint}" if exc.hint else ""), file=sys.stderr)
         return 1
-    MCPServer(PairSession(args.role, store, pane=explicit_pane)).run()
-    return 0
+    server = MCPServer(PairSession(args.role, store, pane=explicit_pane))
+    if not socket_path:
+        server.run()
+        return 0
+    if socket_path == "auto":
+        socket_path = str(store.root / f".server-{args.role}.sock")
+    # `once=False` for the daemon: the whole point is that the transport outlives
+    # one client, so a CLI may die and reconnect with its context intact.
+    # PAIR_SOCKET_ONCE=1 serves exactly one client — the shape the round-trip
+    # test needs, and never the shape a live daemon uses.
+    once = os.environ.get("PAIR_SOCKET_ONCE", "0") == "1"
+    return server.serve_socket(socket_path, once=once)
 
 
 if __name__ == "__main__":

@@ -320,7 +320,28 @@ def project_row(root: Path, stuck_min: int = 30) -> dict:
         "silence": human_age(age),
         "closed": closed,
         "stuck": age is not None and not closed and age > stuck_min * 60,
+        # Round 106 slice C (D3): the human arriving cold needs the exact command,
+        # not a hunt across sockets. Derivable statelessly from the resolved root,
+        # the same shape pairup uses — no state file needed.
+        "tmux_socket": tmux_socket(root.parent),
+        "attach": (f"tmux -L {tmux_socket(root.parent)} attach -t "
+                   f"{tmux_socket(root.parent)}"),
     }
+
+
+def tmux_socket(project_root: Path) -> str:
+    """`pair-<basename>-<hash8>`, hash over the RESOLVED root path.
+
+    The same derivation pairup uses, so a printed line names the server the pair
+    actually runs on. Never read from state.json.
+    """
+    import hashlib
+    try:
+        resolved = str(Path(project_root).resolve())
+    except OSError:
+        resolved = str(project_root)
+    digest = hashlib.sha256(resolved.encode("utf-8")).hexdigest()[:8]
+    return f"pair-{Path(resolved).name}-{digest}"
 
 
 def render_table(rows: list[dict]) -> str:

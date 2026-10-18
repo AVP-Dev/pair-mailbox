@@ -283,7 +283,15 @@ print("\n[5] delivery")
 try:
     sys.path.insert(0, str(ROOT / "mcp" / "pair_mailbox"))
     import composer as _composer
-    _tmux = __import__("shutil").which("tmux")
+    # Condition (c): honour the project's socket instead of plain tmux (round 106
+    # slice C). composer._tmux() is the ONE resolver; a second one here would be
+    # the "most call sites" trap the critic named.
+    sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parent.parent / "mcp" / "pair_mailbox"))
+    try:
+        from composer import _tmux as _ctmux
+        _tmux = _ctmux()
+    except Exception:
+        _tmux = __import__("shutil").which("tmux")
     for _sd in targets:
         try:
             _st = json.loads((_sd / "state.json").read_text(encoding="utf-8"))

@@ -103,9 +103,24 @@ class ComposerBusy(Exception):
 
 
 def _tmux() -> str:
+    """tmux, prefixed with the project's socket when one is named.
+
+    Condition (c) of the per-project-socket slice (round 106): ONE resolver for
+    every tmux call site. A single tmux server serves every project on the box,
+    so plain `tmux` makes another project's panes visible and addressable here —
+    that is how a message once landed in galatour's pane. The socket name comes
+    from PAIR_PANE_SOCKET (exported by pairup from the resolved project root) and
+    is never read from state.json, so binding needs no state file.
+
+    Legacy fallback: with no socket named, plain tmux — the live pair on the
+    default socket stays reachable, and the transition never blinds it.
+    """
     exe = shutil.which("tmux")
     if not exe:
         raise ComposerBusy("tmux not found in PATH")
+    socket = (os.environ.get("PAIR_PANE_SOCKET") or "").strip()
+    if socket and socket != "default":
+        return f"{exe} -L {socket}"
     return exe
 
 
