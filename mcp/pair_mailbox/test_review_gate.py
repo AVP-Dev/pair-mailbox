@@ -6,6 +6,7 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 from pair_test_base import PairTestCase
@@ -558,6 +559,111 @@ class TestReviewGate(PairTestCase):
             ok, reason = review_gate.check_pr_merge(store, tmp_path)
             self.assertFalse(ok)
             self.assertIn("does not match current HEAD", reason)
+
+
+    def test_merge_record_writes_event_with_real_merge_commit(self) -> None:
+        """The audit repair names GitHub's merge commit, not the writer's claim.
+
+        Round 115 merged with a hand-run `gh pr merge`, so the merge happened
+        and the transcript never learned of it. The repair reads the remote.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            store, _ = self._store_with(tmp)
+            args = argparse.Namespace(
+                pr_action="merge-record", pr_id="61", head="", base="master"
+            )
+            with patch.object(
+                review_gate,
+                "run_gh_view",
+                return_value=(0, "MERGED 80fe82259cd9 2336d091870b"),
+            ):
+                code = review_gate.cmd_pr(store, args)
+            self.assertEqual(code, 0)
+            row = self._last_kind(store, "pr_merge_repaired")
+            self.assertEqual(row["merge_commit"], "80fe82259cd9")
+            self.assertEqual(row["head_oid"], "2336d091870b")
+            self.assertEqual(row["base"], "master")
+
+    def test_merge_record_refuses_head_that_github_did_not_merge(self) -> None:
+        """A wrong --head must refuse: a trail repaired by hand is still a claim."""
+        with tempfile.TemporaryDirectory() as tmp:
+            store, _ = self._store_with(tmp)
+            args = argparse.Namespace(
+                pr_action="merge-record", pr_id="61", head="deadbeef", base="master"
+            )
+            with patch.object(
+                review_gate,
+                "run_gh_view",
+                return_value=(0, "MERGED 80fe82259cd9 2336d091870b"),
+            ):
+                code = review_gate.cmd_pr(store, args)
+            self.assertEqual(code, 1)
+            self.assertIsNone(self._last_kind(store, "pr_merge_repaired"))
+
+    def test_merge_record_refuses_open_pr(self) -> None:
+        """An unmerged PR gets no repaired event — nothing was hidden."""
+        with tempfile.TemporaryDirectory() as tmp:
+            store, _ = self._store_with(tmp)
+            args = argparse.Namespace(
+                pr_action="merge-record", pr_id="62", head="", base="master"
+            )
+            with patch.object(
+                review_gate,
+                "run_gh_view",
+                return_value=(0, "OPEN NONE 26a3acb2643e"),
+            ):
+                code = review_gate.cmd_pr(store, args)
+            self.assertEqual(code, 1)
+            self.assertIsNone(self._last_kind(store, "pr_merge_repaired"))
+
+    def test_merge_record_refuses_when_gh_fails(self) -> None:
+        """No remote answer, no repair: fail-closed beats a guessed event."""
+        with tempfile.TemporaryDirectory() as tmp:
+            store, _ = self._store_with(tmp)
+            args = argparse.Namespace(
+                pr_action="merge-record", pr_id="61", head="", base="master"
+            )
+            with patch.object(
+                review_gate, "run_gh_view", return_value=(1, "gh not authenticated")
+            ):
+                code = review_gate.cmd_pr(store, args)
+            self.assertEqual(code, 1)
+            self.assertIsNone(self._last_kind(store, "pr_merge_repaired"))
+
+    def test_merge_record_needs_a_pr_id(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store, _ = self._store_with(tmp)
+            args = argparse.Namespace(
+                pr_action="merge-record", pr_id=None, head="", base="master"
+            )
+            self.assertEqual(review_gate.cmd_pr(store, args), 2)
+
+    @staticmethod
+    def _last_kind(store: Any, kind: str) -> dict[str, Any] | None:
+        """The newest transcript row of `kind`, or None. Test-side reader."""
+        import json
+
+        path = store.project_root / ".pair" / "transcript.jsonl"
+        if not path.exists():
+            return None
+        for line in path.read_text(encoding="utf-8").splitlines()[::-1]:
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            if row.get("kind") == kind:
+                return row
+        return None
+
+    def _store_with(self, tmp: str) -> tuple[Any, Path]:
+        """A store whose project_root is `tmp`, as `run_gh_view`'s cwd."""
+        from store_core import Store
+
+        base = Path(tmp)
+        (base / ".pair").mkdir(parents=True, exist_ok=True)
+        (base / ".pair" / "state.json").write_text("{}", encoding="utf-8")
+        store = Store(base / ".pair", allow_create=True)
+        return store, base
 
 
 if __name__ == "__main__":

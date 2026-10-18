@@ -272,10 +272,27 @@ def build_parser() -> argparse.ArgumentParser:
     wt_p.add_argument("--json", action="store_true", help="print as json")
 
     pr_p = sub.add_parser("pr", help="human/writer: PR merge machine gate (merge)")
-    pr_p.add_argument("pr_action", nargs="?", choices=["merge"], default="merge")
+    pr_p.add_argument(
+        "pr_action",
+        nargs="?",
+        choices=["merge", "merge-record"],
+        default="merge",
+        help="merge-record: audit-repair for a merge that bypassed "
+        "this gate (PROTOCOL §10g) — records the pr_merged event after the fact",
+    )
     pr_p.add_argument("pr_id", nargs="?", help="PR number or branch name")
     pr_p.add_argument("--force", action="store_true", help="skip checks (needs --reason)")
     pr_p.add_argument("--reason", default="", help="forced-merge reason with --force")
+    pr_p.add_argument(
+        "--head",
+        default="",
+        help="merged head sha for merge-record (verified against the remote)",
+    )
+    pr_p.add_argument(
+        "--base",
+        default="master",
+        help="base branch for merge-record (default master)",
+    )
 
     return parser
 

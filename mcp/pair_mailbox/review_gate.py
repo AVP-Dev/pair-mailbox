@@ -217,9 +217,88 @@ def run_gh_merge(repo_dir: Path, pr_id: str | None) -> tuple[int, str]:
         return 1, "gh pr merge timed out"
 
 
+def run_gh_view(repo_dir: Path, pr_id: str) -> tuple[int, str]:
+    """Ask GitHub for a PR's real merge state (audit-repair path only)."""
+    cmd = [
+        "gh",
+        "pr",
+        "view",
+        pr_id,
+        "--json",
+        "state,mergeCommit,headRefOid",
+        "--jq",
+        r'"\(.state) \(.mergeCommit.oid // "NONE") \(.headRefOid)"',
+    ]
+    try:
+        proc = subprocess.run(
+            cmd,
+            cwd=str(repo_dir),
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        return proc.returncode, (proc.stdout + "\n" + proc.stderr).strip()
+    except OSError as err:
+        return 1, f"failed to execute gh: {err}"
+    except subprocess.TimeoutExpired:
+        return 1, "gh pr view timed out"
+
+
+def _cmd_pr_merge_record(store: Any, args: argparse.Namespace) -> int:
+    """Audit repair: record a merge that bypassed this gate (PROTOCOL §10g).
+
+    Round 115 closed a PR with a hand-run `gh pr merge`, so the merge happened
+    and the transcript never learned of it — 456 rows with zero merge events.
+    The repair writes the missing event and names the real merge commit GitHub
+    reports, refusing when `--head` disagrees: a trail repaired by hand is still
+    a claim, and this way the claim is checkable against the remote.
+    """
+    pr_id = getattr(args, "pr_id", None)
+    if not pr_id:
+        print("error: pr merge-record needs a PR id", file=sys.stderr)
+        return 2
+    base = getattr(args, "base", None) or "master"
+    repo_dir = store.project_root
+    code, out = run_gh_view(repo_dir, str(pr_id))
+    if code != 0:
+        print(f"cannot verify PR {pr_id} on the remote:\n{out}", file=sys.stderr)
+        return 1
+    parts = out.split()
+    if len(parts) < 3:
+        print(f"unparseable gh output for PR {pr_id}: {out.strip()}", file=sys.stderr)
+        return 1
+    state, merge_sha, head_oid = parts[0], parts[1], parts[2]
+    if state != "MERGED":
+        print(f"refusing: PR {pr_id} is {state}, not MERGED", file=sys.stderr)
+        return 1
+    claimed = str(getattr(args, "head", "") or "")
+    if claimed and claimed != merge_sha:
+        print(
+            "refusing: head mismatch — you gave "
+            f"{claimed[:12]}, GitHub merged {merge_sha[:12]}",
+            file=sys.stderr,
+        )
+        return 1
+    store.append_transcript(
+        "pr_merge_repaired",
+        getattr(args, "role", "") or "writer",
+        pr_id=pr_id,
+        merge_commit=merge_sha,
+        head_oid=head_oid,
+        base=base,
+    )
+    print(
+        f"audit repaired: PR {pr_id} merged as {merge_sha[:12]} into {base}; "
+        "transcript now knows what a hand-run merge hid"
+    )
+    return 0
+
+
 def cmd_pr(store: Any, args: argparse.Namespace) -> int:
     """Handler for the `pairctl pr` subcommands."""
     action = getattr(args, "pr_action", None)
+    if action == "merge-record":
+        return _cmd_pr_merge_record(store, args)
     if action != "merge":
         print(f"unknown pr action: {action!r}", file=sys.stderr)
         return 2

@@ -816,6 +816,14 @@ PR merging is gated by machine rules rather than prompt agreements:
    `pairctl ok` for the round, and is recorded in `transcript.jsonl` as
    `pr_merge_forced`. Loud instead of convenient: a forced merge is visible in the
    audit trail by construction, never a flag somebody discovers quietly.
+6. **The repair for a merge that already happened outside the gate:**
+   `pairctl pr merge-record <pr_id> [--head SHA] [--base BRANCH]`. It reads the
+   remote's real state, refuses an unmerged PR, refuses a `--head` that disagrees
+   with the `mergeCommit` GitHub reports, and refuses to guess when `gh` itself
+   fails. On a real merge it appends `pr_merge_repaired` naming the merge commit.
+   A repair that cannot name what the remote merged is not a repair. Round 115
+   needed it: a hand-run `gh pr merge` closed PR #61 and the transcript, at 456
+   rows, carried zero merge events — the merge existed, the repo's audit did not.
 
 ### 10h. Server Runtime Freshness & Supervisor Parking
 
@@ -1116,3 +1124,45 @@ Rules that follow, each paid for once:
 
 A card filed from this class is worse than no card: it spends the next agent's
 time on the phantom it manufactured.
+
+## 19. One trunk, short round branches, and a round card a stranger can read
+
+Decided by both agents 2026-10-18 (omp proposed, agy verdicted), after the human
+asked two questions the repo could not answer: *which branch do rounds target*,
+and *why do merged round branches stay on the remote*. Both were asked because a
+fresh clone kept receiving a repo nobody had curate.
+
+### The branch model: trunk-based
+
+1. **`master` is the only long-lived branch.** There is no `develop`, no `dev`,
+   no release branch. A branch that outlives its round is a branch that will rot
+   silently: `origin/dev` was created in round 113, never mentioned in a single
+   document under `docs/`, and by round 115 its five touched files were
+   byte-identical to `master`'s — a dead duplicate, not a queue of work.
+2. **A round branch lives as long as the round.** It exists from the first commit
+   of a round to its merge, and no longer. Naming stays `round-<N>-<slug>`.
+3. **Merging deletes the branch — through the sanctioned path.** §10g already
+   names `bin/pairctl pr merge` as the only protocol-compliant merge; it merges
+   with `--delete-branch`, so a merged `round-*` branch disappears by construction
+   rather than by somebody remembering. A hand-run `gh pr merge` that leaves the
+   branch behind has taken on a cleanup obligation it cannot see.
+4. **The audit trail is git, not the branch list.** Round history lives in the
+   commit messages and the PRs; the remote branch list carries no information
+   that the log does not. Two merged branches left on `origin` are two lies about
+   where the work is.
+
+### The round card: memory survives the clone
+
+1. **Each closed round leaves one tracked file: `docs/rounds/<N>.md`.** Not twenty:
+   one. It records what was wrong, what was done with measured numbers, what broke
+   and what it cost, and the follow-ups that stayed open.
+2. **This exists because `.pair/` is git-ignored, and must stay so.** It carries
+   runtime state — mailbox, patches, budget, six dozen receipts — all of it
+   disposable and none of it a stranger's business. But that means the *reasoning*
+   of a round is invisible in a clone. The round card is the slice of that
+   reasoning worth keeping, moved to a tracked path by hand, at close.
+3. **The receipt points to the card, not away from it.** §10e's automatic
+   `RECEIPT-<round>.md` stays machine-generated in `.pair/`; the round card is its
+   public face. Link both ways.
+4. **A round that closes without a card is not finished.** This is the
+   close-checklist item §10e owes and never had.
