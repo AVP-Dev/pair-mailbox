@@ -120,15 +120,46 @@ if [ -z "$STATE_DIR" ]; then
     cp "$PAIRUP_ROOT/anti-mock.json" "$_root/anti-mock.json"
   fi
   if [ ! -f "$_root/.pair/state.json" ]; then
-    python3 - "$_root/.pair" <<'EOF'
+    python3 - "$_root/.pair" "$PAIRUP_ROOT" <<'EOF'
 import json, sys, datetime
-root = sys.argv[1]
+root, engine_root = sys.argv[1], sys.argv[2]
 now = datetime.datetime.now(datetime.timezone.utc).isoformat()
 st = {"task": "", "mode": "fix", "autonomy": "auto", "writer": None,
       "phase": "scoping", "round": 0, "created_at": now, "updated_at": now,
       "roles": {}, "seen": {}, "patches": {}, "evidence": [],
-      "human_ok": [], "tasks": []}
+      "human_ok": [], "tasks": [], "engine_root": engine_root}
 open(root + "/state.json", "w", encoding="utf-8").write(json.dumps(st, ensure_ascii=False, indent=2))
+# The engine sanction, read by serve.sh's origin guard: this project runs the
+# engine from another tree (bin/pairup is the shim, ~/.local/bin/pairup -> the
+# autonomy repo), so the code root differs from this repo by design. Without a
+# record naming it, round 108's guard refuses every multi-project launch.
+open(root + "/engine", "w", encoding="utf-8").write(engine_root)
+EOF
+  elif [ -f "$_root/.pair/state.json" ]; then
+    # An existing project: refresh the sanction when the engine moved, otherwise
+    # a relocated or recloned engine keeps every pane refusing to start.
+    python3 - "$_root/.pair" "$PAIRUP_ROOT" <<'EOF'
+import json, sys
+root, engine_root = sys.argv[1], sys.argv[2]
+eng = root + "/engine"
+recorded = None
+try:
+    recorded = json.loads(open(root + "/state.json", encoding="utf-8").read())
+except (OSError, ValueError):
+    recorded = None
+if recorded is None:
+    sys.exit(0)
+if recorded.get("engine_root") != engine_root:
+    recorded["engine_root"] = engine_root
+    open(root + "/state.json", "w", encoding="utf-8").write(json.dumps(recorded, ensure_ascii=False, indent=2))
+    print("pairup: engine_root updated -> %s (the pair-mailbox tree moved)" % engine_root)
+try:
+    current = open(eng, encoding="utf-8").read().strip()
+except OSError:
+    current = None
+if current != engine_root:
+    open(eng, "w", encoding="utf-8").write(engine_root)
+    print("pairup: engine sanction refreshed: %s" % engine_root)
 EOF
   fi
   STATE_DIR="$_root/.pair"
