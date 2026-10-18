@@ -84,11 +84,16 @@ proj_root="$(dirname -- "$state")"; case "$(pwd)/" in "$proj_root"/*) ;; *) echo
 _code_top=""
 _d="$(cd -- "$(dirname -- "$0")" && pwd -P)"
 while [ -n "$_d" ] && [ "$_d" != "/" ]; do
-  _top="$(cd -- "$_d" 2>/dev/null && git rev-parse --show-toplevel 2>/dev/null)"
+  # `|| true` is not decoration: under `set -e` a failing command substitution
+  # in an assignment EXITS the shell, and `2>/dev/null` hides only the message,
+  # never the exit status (peer's find, seq 1625, measured: rc=128 from a
+  # non-git --state, silently, before the handshake). With it, an unanswered
+  # git rev-parse yields "" — which is what fail-open means.
+  _top="$(cd -- "$_d" 2>/dev/null && git rev-parse --show-toplevel 2>/dev/null || true)"
   if [ -n "$_top" ]; then _code_top="$_top"; break; fi
   _d="$(dirname -- "$_d")"
 done
-_state_top="$(cd -- "$proj_root" 2>/dev/null && git rev-parse --show-toplevel 2>/dev/null)"
+_state_top="$(cd -- "$proj_root" 2>/dev/null && git rev-parse --show-toplevel 2>/dev/null || true)"
 if [ -n "$_code_top" ] && [ -n "$_state_top" ] && [ "$_code_top" != "$_state_top" ]; then
   echo "pair-mailbox: REFUSING: the server code lives in a foreign tree." >&2
   echo "pair-mailbox:   code repo:  $_code_top" >&2

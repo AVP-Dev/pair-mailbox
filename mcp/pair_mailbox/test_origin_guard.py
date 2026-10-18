@@ -187,6 +187,30 @@ class OriginGuardCase(unittest.TestCase):
         finally:
             self.state = old_state
 
+
+    def test_non_git_state_dir_fails_open_and_serves(self) -> None:
+        """The regression the peer caught (seq 1625): under `set -e` an unguarded
+        command substitution in an assignment EXITS the shell, and `2>/dev/null`
+        hides the message but not the status — so a server raised with a state
+        dir outside any git repo died rc=128 BEFORE the handshake, silently.
+        The installer's verify path uses exactly that shape (temp state), which
+        is how it surfaced. Fail-open must mean 'no identity -> serve'."""
+        outside = Path(self._tmp.name) / "plain-dir"
+        outside.mkdir(parents=True, exist_ok=True)
+        plain_state = outside / ".pair"
+        plain_state.mkdir(parents=True, exist_ok=True)
+        plain_state.joinpath("state.json").write_text(json.dumps(
+            {"round": 903, "mode": "fix", "roles": {}, "phase": "implement",
+             "seq": 0}), encoding="utf-8")
+        old_state = self.state
+        self.state = plain_state
+        try:
+            rc, out, served = self._converse(outside)
+            self.assertEqual(rc, 0, f"a non-git state must fail open, not die: {out[:300]}")
+            self.assertTrue(served, f"and it must answer the protocol: {out[:300]}")
+        finally:
+            self.state = old_state
+
     def test_no_tree_state_refuses_without_creating_a_stray(self) -> None:
         """serve.sh already refuses a stray state; the guard must not turn that
         into a serve-from-anywhere hole. A cwd outside any project with the state
