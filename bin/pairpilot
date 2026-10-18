@@ -224,6 +224,15 @@ class Pilot:
         # skipping omp via own_pane-skip). Launching from an agent pane without
         # scrubbing the environment quietly stops supervision of that role.
         self.own_pane = os.environ.get("PAIR_PILOT_PANE") or None
+        # Deliberately NOT guessed. A fallback that resolves the pilot's own pane
+        # by pid chain was tried and REJECTED: the 2026-10-07 skip-forever bug
+        # was the same shape by another route (a pytest parent sits inside the
+        # agent's bun process, whose parent is the agent pane), and the test
+        # test_daemon_ignores_inherited_tmux_pane pins the rule — no env var, no
+        # own pane. The real fix for "the guard never fires" is on the LAUNCHER
+        # side: pairup/pair-duo must pass PAIR_PILOT_PANE when it raises the
+        # pilot (round 113, measured: without it the pilot sent send-keys into
+        # the bun pane, timed out, and eight rounds closed without a report).
         self._explicit_launch = dict(launch or {})
 
     # ------------------------------------------------------------- restart map
