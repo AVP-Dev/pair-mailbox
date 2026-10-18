@@ -174,6 +174,26 @@ class TestRuntimeOnlyStaleness(unittest.TestCase):
         path.write_text("# touched\n", encoding="utf-8")
         os.utime(path, (ts, ts))
 
+    def test_stale_list_ignores_test_files(self) -> None:
+        """Round 120, measured live: the two rules disagreed. `latest_code_mtime`
+        excluded test files while `list_stale_files` did not, so editing
+        test_origin_guard.py mid-round made `pair_state` report
+        server_fresh=false with server_stale_files=["test_origin_guard.py"] —
+        which gates pair_advance (server.py:2364) over a runtime nobody touched.
+        The gate was correct about RUNTIME only; the list that fed it was not."""
+        past = time.time() - 600
+        os.utime(self.dir / "server.py", (past, past))
+        os.utime(self.dir / "composer.py", (past, past))
+        self._touch("test_origin_guard.py", time.time())
+        stale = server_freshness.list_stale_files(code_dir=self.dir,
+                                                  process_start_ts=time.time() - 5)
+        self.assertNotIn("test_origin_guard.py", stale,
+                         "a newer test file is not a stale server")
+        verdict = server_freshness.check_server_freshness(
+            code_dir=self.dir, process_start_ts=time.time() - 5)
+        self.assertTrue(verdict["fresh"],
+                        f"a test-only commit must not read as stale: {verdict}")
+
     def test_newer_test_file_does_not_stale_the_server(self) -> None:
         past = time.time() - 600
         os.utime(self.dir / "server.py", (past, past))
