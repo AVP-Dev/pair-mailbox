@@ -77,3 +77,5 @@ installer	integration	1	python3 install_test.py	serial
 # --- security: the baseline with no outside deps ---
 secret-baseline	security	1	./scripts/security-scan.sh
 wake-api	positive	1	python3 mcp/pair_mailbox/test_wake_opencode.py
+branch-class	positive	1	python3 scripts/branch_class_check_test.py
+pre-push-guard	positive	1	python3 bin/pre_push_guard_test.py

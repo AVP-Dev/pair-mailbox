@@ -34,7 +34,11 @@ def _git(cwd: Path, *args: str, env: dict | None = None) -> subprocess.Completed
 
 class TestPrePushLaneGuard(unittest.TestCase):
     def _repo_with_hook(self, tmp: Path) -> tuple[Path, Path]:
-        """A work repo on both master and dev, hook installed, bare origin."""
+        """A work repo on master, hook installed, bare origin.
+
+        §19: master is the only long-lived branch — there is no dev to
+        accumulate into, so the fixture does not build one.
+        """
         origin = tmp / "origin.git"
         _git(tmp, "init", "-q", "--bare", str(origin))
         work = tmp / "work"
@@ -43,10 +47,6 @@ class TestPrePushLaneGuard(unittest.TestCase):
         (work / "f.txt").write_text("1", encoding="utf-8")
         _git(work, "add", "-A")
         _git(work, "commit", "-q", "-m", "base")
-        _git(work, "checkout", "-q", "-b", "dev")
-        (work / "g.txt").write_text("2", encoding="utf-8")
-        _git(work, "add", "-A")
-        _git(work, "commit", "-q", "-m", "dev work")
         hooks = work / ".git" / "hooks"
         hooks.mkdir(parents=True, exist_ok=True)
         dest = hooks / "pre-push"
@@ -66,16 +66,6 @@ class TestPrePushLaneGuard(unittest.TestCase):
             self.assertIn("ONLY by PR merge", r.stderr)
             listed = _git(work, "ls-remote", "--heads", "origin", "master")
             self.assertEqual(listed.stdout.strip(), "", "master reached origin")
-
-    def test_accumulator_branch_push_passes(self) -> None:
-        """dev is the lane: same hook, same repo, push succeeds in silence."""
-        with tempfile.TemporaryDirectory() as tmp:
-            work, _ = self._repo_with_hook(Path(tmp))
-            r = _git(work, "push", "-q", "origin", "dev")
-            self.assertEqual(r.returncode, 0, r.stderr)
-            self.assertNotIn("REFUSED", r.stderr)
-            listed = _git(work, "ls-remote", "--heads", "origin", "dev")
-            self.assertIn("refs/heads/dev", listed.stdout)
 
     def test_refspec_form_also_refused(self) -> None:
         """HEAD:refs/heads/master updates master and must be caught too —
@@ -103,14 +93,14 @@ class TestPrePushLaneGuard(unittest.TestCase):
         the suite exercises (master advanced past origin by one commit)."""
         with tempfile.TemporaryDirectory() as tmp:
             work, origin = self._repo_with_hook(Path(tmp))
-            # Seed only dev: pushing master to seed origin is itself the banned
-            # direction, so the fixture must not train itself on it.
-            seeded = _git(work, "push", "-q", "origin", "dev")
+            # Seed a non-master branch only: pushing master to seed origin is
+            # itself the banned direction, so the fixture must not train itself on it.
+            seeded = _git(work, "push", "-q", "origin", "HEAD:refs/heads/round-seed")
             self.assertEqual(seeded.returncode, 0, seeded.stderr)
             # origin/master exists via refspec-free ls-remote? No: construct it
             # directly so the local repo sees origin/master WITHOUT a banned
             # push — the merge that would normally be the only legal way in.
-            _git(work, "fetch", "-q", "origin", "dev")
+            _git(work, "fetch", "-q", "origin", "round-seed")
             _git(work, "update-ref", "refs/remotes/origin/master", "HEAD")
             origin_master = _git(work, "rev-parse", "refs/remotes/origin/master").stdout.strip()
             # now diverge: a commit on master that origin does not have

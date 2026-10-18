@@ -1166,3 +1166,99 @@ fresh clone kept receiving a repo nobody had curate.
    public face. Link both ways.
 4. **A round that closes without a card is not finished.** This is the
    close-checklist item §10e owes and never had.
+
+## 20. Branch classes, and a janitor that may only delete what is proven merged
+
+Decided by both agents 2026-10-18 (omp proposed, agy corrected and verdicted),
+after the human asked the question §19 could not answer: *this branch model was
+written for two agents sharing one repo — how does it scale to a repo where
+reviewers, team leads and ordinary developers work too?* §19 names one trunk and
+one mortal round branch. A human repo needs verdicts about branches whose names
+are not `round-*` and which outlive one PR on purpose.
+
+§19 stays. §20 refines it: it says what makes a branch class readable by a
+machine, and what a cleanup job is allowed to do on the strength of that class
+alone.
+
+### Why the class must come from the name
+
+1. **On GitHub the only machine-readable class discriminator is an fnmatch name
+   pattern.** Branch protection and rulesets match names (`master`, `release-*`,
+   `users/*`). Labels and PR state are additional, not simpler: reading them
+   turns every check into a network call, which is exactly what our hot paths
+   forbid (`mcp/pair_mailbox/review.py` reaches for local refs only, and says so).
+2. **`Automatically delete head branches` is a repository setting, and it is
+   blind to names.** It deletes any head branch after its PR merges — including a
+   strategic one, unless that branch is protected with `do not allow
+   deletions`. So the setting is safe only when the strategic class is protected
+   by name, which returns the reasoning to rule 1.
+3. **Therefore: a branch whose class cannot be read from its name is a branch no
+   rule can protect.** That is not a naming preference; it is the price of any
+   automated cleanup at all. An unnamed class is a janitor that guesses.
+4. **`dev`, `develop`, `integration`, `staging` — accumulators — are an
+   antipattern here, named as one.** A branch whose job is to collect other
+   branches is a branch that will rot silently: `origin/dev` sat from round 113
+   with five files byte-identical to `master` and not one mention under `docs/`.
+   There is no "but it is our integration branch" exemption; §19 rule 1 already
+   deleted it once.
+
+### The classes
+
+| class | name | lifetime | robot may delete? | protection |
+|---|---|---|---|---|
+| trunk | `master` | forever | **never** | protected; no direct push (local hook, `bin/git-hooks/pre-push`) |
+| strategic | `release/*`, `support/*` | longer than one PR | **never** | `do not allow deletions`; delete only by hand, with a reason, recorded |
+| ephemeral | `round-*`, `feature/*`, `fix/*`, `hotfix/*`, `chore/*` | one PR, dies with the merge | **only when its PR is MERGED** | none needed |
+| personal | `users/<name>/*` | the author's, no trunk merge | **never** — TTL sweep reports, humans decide | none |
+| anomaly | anything else | — | **never** | reported |
+
+Two corrections to first instinct, both from the critic:
+
+- **`hotfix/*` is ephemeral, not strategic.** A hotfix fixes one incident and
+  closes through a PR; `review.py`'s `hotfix_trailer_check` already demands
+  `follows: PR #N` on every commit after the round base on `origin/master`,
+  which is the lifecycle of a mortal branch written down in code. Strategic
+  means a *support line*: a release that keeps receiving cherry-picks for
+  months.
+- **Personal branches never merge to trunk, so they are never a cleanup target.**
+  A sweep may report them as stale by age; it may not delete them, because
+  "stale" is a statement about somebody's unfinished thought.
+
+### The janitor contract (fail-closed, in every branch)
+
+1. **A janitor may delete only what it has proven merged.** The proof is `gh pr
+   view` state == MERGED (or reachability from the trunk ref), never the name,
+   never the branch's age, never "the PR looks closed". The shape is
+   `pairctl pr merge-record`'s: read the remote, refuse a mismatch, refuse when
+   `gh` fails — `mcp/pair_mailbox/review_gate.py`.
+2. **trunk and strategic are never deleted by a robot.** No exception, no
+   `--force`, no "just this once".
+3. **An ephemeral branch that is not proven merged is reported, not deleted.**
+   CLOSED-unmerged and abandoned branches come back as STALE in a human report.
+   Deleting a closed-but-unmerged branch destroys the only copy of work the
+   repo never accepted.
+4. **An unrecognised name is an ANOMALY, never a deletion candidate.** An
+   anomaly means the naming contract was broken upstream; a janitor that
+   "helpfully" tidies anomalies teaches everyone to name badly.
+5. **Every deletion the janitor performs is recorded with what it knew: branch
+   name, head SHA, PR id, and the proof it relied on.** No silent sweeps. The
+   transcript row is the reason the deletion is defensible a month later.
+
+### Checklist for a repo that adopts this
+
+- [ ] `master` protected: required review, required checks, `do not allow
+      force pushes`, `do not allow deletions`, and the restrictions applied to
+      admins too (`Do not allow bypassing the above settings`), because a
+      protection admins skip is a protection for everybody else.
+- [ ] `release/*` and `support/*` protected with `do not allow deletions`.
+- [ ] `Automatically delete head branches` enabled — safe now, because the
+      classes that must survive are protected by name rather than by the setting.
+- [ ] Personal branches live under `users/`, so no sweep can mistake them for a
+      deliverable.
+- [ ] `bin/pairctl branch audit` (the janitor) runs on a schedule and reports
+      STALE and ANOMALY; it deletes only proven-merged ephemeral branches, and
+      writes a row per deletion.
+
+§19 said a merged round branch dies by construction. §20 says the same for every
+mortal class, and says what may never die: the trunk, the support lines, and a
+branch nobody has proven merged.
