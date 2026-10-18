@@ -358,7 +358,11 @@ class TestSingleLiveProcessPerRole(PairTestCase):
         with contextlib.redirect_stderr(err):
             code = main(["--role", "agy", "--state", str(self.root)])
         self.assertEqual(code, 1)
-        self.assertIn("already held", err.getvalue())
+        # Round 111 slice 1: the refusal DIAGNOSES the holder (a live pid, or a
+        # corpse to reap) instead of asserting "already held by a live server" —
+        # a socket daemon outliving its agent by design made that a guess.
+        self.assertIn("held by a LIVE process", err.getvalue())
+        self.assertRegex(err.getvalue(), r"pid \d+")
         self.assertIn("kill the double", err.getvalue())
         first.close() if hasattr(first, "close") else None
 

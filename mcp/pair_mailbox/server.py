@@ -925,7 +925,14 @@ class Store:
         a silent pid collision. Non-blocking LOCK_EX|LOCK_NB: blocking here means
         standing dead, while a refusal shows at once and writes into the journal.
         The handle lives while the process lives: close means release, a dead lock
-        never sticks by construction (the kernel releases for the dead)."""
+        never sticks by construction (the kernel releases for the dead).
+
+        Round 111 slice 1: the refusal now DIAGNOSES instead of asserting. "Held
+        by a live server" was a claim — a socket daemon outliving its agent by
+        design (slice D) and a corpse holding a pid record both read "held", and
+        the operator needs to know which of the three they have: kill it, reap a
+        record, or start it. Liveness is proved by the lock's own fd-scan, never
+        by pgrep (three false DOWN verdicts in one hour, round 108)."""
         path = self.role_lock_path(role)
         handle = path.open("a+")
         try:
@@ -933,12 +940,17 @@ class Store:
         except OSError as exc:
             handle.close()
             if exc.errno in (errno.EACCES, errno.EAGAIN):
-                raise ProtocolError(
-                    f"role {role!r} is already held by a live server; "
-                    "a second process on the same role never launches.",
-                    "One live role means one live process: kill the double and "
-                    "restart. A move is the human will.",
-                )
+                try:
+                    from lock_reaper import describe
+                    detail = describe(self.root, role)
+                    hint = ("One live role means one live process: kill the double and "
+                            "restart. A move is the human will. The daemon now outlives "
+                            "its agent by design (slice D), so a held lock may be a "
+                            "healthy daemon with no agent beside it — check before killing.")
+                except Exception:
+                    detail = f"role {role!r} is held by another process"
+                    hint = "One live role means one live process."
+                raise ProtocolError(f"{detail}; a second process never launches.", hint)
             raise
         return handle
 

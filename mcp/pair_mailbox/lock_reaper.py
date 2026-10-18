@@ -52,6 +52,60 @@ def _pid_alive(pid: int) -> bool:
     return True
 
 
+def pid_alive(pid: int) -> bool:
+    """Public alias: `os.kill(pid, 0)` still lies for a short window after death
+    on a busy box, so callers that need certainty pair this with the fd-scan."""
+    return _pid_alive(pid)
+
+
+def holder_pid(state_dir: Path, role: str) -> int:
+    """The pid of the process holding this role's flock, by fd-scan of /proc.
+
+    THE only liveness proof here (round 108's invariant, measured three false
+    DOWNs in an hour): pgrep -f 'role <name>' returned EMPTY for live servers —
+    their command line is truncated in ps — so a probe built on it declares dead
+    servers dead. The lock's own fd is the kernel's answer: any process whose fds
+    include `.server-<role>.lock` and holds it is the holder.
+    """
+    target = str(Path(lock_file(state_dir, role)).resolve())
+    for entry in os.listdir("/proc"):
+        if not entry.isdigit():
+            continue
+        fd_dir = Path("/proc") / entry / "fd"
+        try:
+            fds = os.listdir(fd_dir)
+        except OSError:
+            continue
+        for fd in fds:
+            try:
+                linked = os.readlink(fd_dir / fd)
+            except OSError:
+                continue
+            if linked == target:
+                return int(entry)
+    return 0
+
+
+def describe(state_dir: Path, role: str) -> str:
+    """One sentence an operator can act on: who holds the role and whether that
+    holder lives. The old refusal said 'already held by a live server', which is
+    a guess; this says what the lock and the process actually show."""
+    state = role_state(state_dir, role)
+    if state == "live":
+        holder = holder_pid(state_dir, role)
+        if holder and pid_alive(holder):
+            return f"role {role!r} is held by a LIVE process (pid {holder})"
+        return (f"role {role!r} is held, but the holder is not identifiable "
+                f"or already gone — treat as a corpse and reap")
+    if state == "stale":
+        pid = _recorded_pid(pid_file(state_dir, role))
+        if pid:
+            return (f"role {role!r} is FREE at the kernel level, but a pid record "
+                    f"names dead pid {pid} — reap it")
+        return f"role {role!r} has a stale record — reap it"
+    return f"role {role!r} is free"
+
+
 def flock_free(path: Path) -> bool:
     """The kernel's answer: can this lock be taken right now?"""
     if not path.exists():
