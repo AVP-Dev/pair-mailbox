@@ -110,7 +110,12 @@ if [ -n "$_code_top" ] && [ -n "$_state_top" ] && [ "$_code_top" != "$_state_top
   # foreign code root is allowed ONLY when the state's project has sanctioned
   # it AND carries no package of its own AND the code is not in scratch space.
   _state_own_pkg="$_state_top/mcp/pair_mailbox/serve.sh"
-  _engine_file="$proj_root/.pair/engine"
+  # The sanction lives in the STATE dir itself, not derived by assuming the
+  # state dir is called .pair: `--state custom_dir` is a legal invocation
+  # (the installer's verify path, bin/pairdoctor), and a hardcodedname would
+  # have looked for the record in a directory that was never used (critic's
+  # find, round 120). $state is already resolved and absolute at this point.
+  _engine_file="$state/engine"
   _engine_root=""
   [ -f "$_engine_file" ] && _engine_root="$(cat -- "$_engine_file" 2>/dev/null || true)"
   # The sanction's identity is the engine's git-toplevel, never the path string:
