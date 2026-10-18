@@ -381,6 +381,34 @@ fi
 # server instead of the shared default. PAIR_PANE_SOCKET is read by
 # composer._tmux() — one resolver for all call sites, condition (c).
 export PAIR_PANE_SOCKET="$PAIR_SOCKET"
+# Round 106 slice G: raise the socket daemon BEFORE the CLI starts (only when the
+# project is on the socket transport — PAIR_TRANSPORT=socket). The daemon is a
+# LONG-LIVED process, not a child of the CLI: killing or restarting the CLI then
+# costs a reconnect, not the server. pairrestart refreshes the transport; the CLI
+# never spawns it (the thin client refuses rather than spawns, by design).
+raise_daemon() {
+  [ "${PAIR_TRANSPORT:-}" = "socket" ] || return 0
+  _role="$1"
+  _sock="$STATE_DIR/.server-${_role}.sock"
+  if [ -S "$_sock" ] && python3 -c "
+import socket,sys
+s=socket.socket(socket.AF_UNIX, socket.SOCK_STREAM); s.settimeout(0.5)
+try:
+    s.connect('$_sock'); print('live')
+except OSError:
+    sys.exit(1)
+finally:
+    s.close()
+" >/dev/null 2>&1; then
+    echo "pairup: daemon for $_role already live at $_sock — reusing (idempotent)"
+    return 0
+  fi
+  python3 "$PAIRUP_ROOT/mcp/pair_mailbox/server.py" --role "$_role" --state "$STATE_DIR" --socket "$_sock" \
+    >>"$STATE_DIR/daemon-$_role.log" 2>&1 &
+  echo "pairup: daemon for $_role raised at $_sock (pid $!)"
+}
+raise_daemon "$writer"
+
 writer_init="export PAIR_STATE='$STATE_DIR'; cd '$PROJECT_DIR'; echo '=== PAIR WRITER: $writer ==='; [ -f '$STATE_DIR/task-banner.txt' ] && cat '$STATE_DIR/task-banner.txt'; $writer_cmd"
 critic_init="export PAIR_STATE='$STATE_DIR'; cd '$PROJECT_DIR'; echo '=== PAIR CRITIC: $critic ==='; [ -f '$STATE_DIR/task-banner.txt' ] && cat '$STATE_DIR/task-banner.txt'; $critic_cmd"
 title_writer="$(title_for "$writer" writer)"
