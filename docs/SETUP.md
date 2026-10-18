@@ -129,6 +129,36 @@ Normal collaboration from here. The things worth doing deliberately:
   new writer it is the writer and the old one is read-only. Doing this in both sessions is not
   optional bookkeeping; it is how each agent learns the change.
 
+## Several projects, one engine
+
+The MCP entry points at the pair-mailbox tree you ran `install.sh` from. That tree is the
+**engine**; the project your `pairup` command ran in is the **target**. They are different
+repositories on purpose, and the server works across them: `galatour` runs
+`/mnt/storage/work/umputum/mcp/pair_mailbox/serve.sh` against `/mnt/storage/work/galatour/.pair`,
+one server per project, each holding its own state and role locks. Nothing is copied into the
+target, so one engine serves every project you install into.
+
+`serve.sh`'s origin guard makes this explicit rather than trusting it. The target project records
+which engine it allows in `.pair/engine` (and `engine_root` in `state.json`); `bin/pairup` writes
+that record when it first creates the state and refreshes it when the engine tree moves. The
+guard then refuses to serve when the code root is
+
+- in scratch space (`/tmp`, `/var/tmp`, `/dev/shm`) — the round-108 defect: a config left pointing
+  at a scratch clone served a role from stale code while everything looked correct;
+- not the engine this project sanctioned — a stale record or a wrong entry, never a silent mix;
+- landing in a project that has its own `mcp/pair_mailbox/` — there the entry must point at the
+  project's own copy, and a foreign root is exactly the scratch-clone shape.
+
+The refusal names both trees and the cure, so the fix is a command, not an investigation.
+Empirical: `mcp/pair_mailbox/test_origin_guard.py` raises the real `serve.sh` in real trees —
+sanctioned engine serves, scratch refuses, unsanctioned refuses, own-package refuses.
+
+## New project
+
+```sh
+cd ~/work/<project> && pairup --writer <role>     # writes .pair/engine and raises the pair
+```
+
 ## Layout
 
 ```

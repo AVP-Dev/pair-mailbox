@@ -80,13 +80,23 @@ def latest_code_mtime(code_dir: Path | None = None) -> tuple[float, str]:
 def list_stale_files(code_dir: Path | None = None,
                      process_start_ts: float | None = None,
                      tolerance: float = 2.0) -> list[str]:
-    "Return the *.py file names with mtime past the process start, tolerance in."
+    """Return the RUNTIME *.py file names with mtime past the process start.
+
+    Test files are excluded, and this is the same rule `latest_code_mtime` and
+    `pairrestart` apply: a commit touching only tests must not read as a stale
+    server. Measured live on round 120 — editing test_origin_guard.py while the
+    server ran made `pair_state` report server_fresh=false with
+    server_stale_files=["test_origin_guard.py"], which gates pair_advance
+    (server.py:2364) for a runtime that was never touched.
+    """
     start_ts = process_start_ts if process_start_ts is not None else get_process_start_time()
     target_dir = code_dir if code_dir is not None else server_code_dir()
     cutoff = start_ts + tolerance
     stale: list[str] = []
     try:
         for p in sorted(target_dir.glob("*.py")):
+            if p.name.startswith("test_"):
+                continue
             try:
                 if p.stat().st_mtime > cutoff:
                     stale.append(p.name)

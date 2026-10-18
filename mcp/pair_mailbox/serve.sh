@@ -95,14 +95,87 @@ while [ -n "$_d" ] && [ "$_d" != "/" ]; do
 done
 _state_top="$(cd -- "$proj_root" 2>/dev/null && git rev-parse --show-toplevel 2>/dev/null || true)"
 if [ -n "$_code_top" ] && [ -n "$_state_top" ] && [ "$_code_top" != "$_state_top" ]; then
-  echo "pair-mailbox: REFUSING: the server code lives in a foreign tree." >&2
-  echo "pair-mailbox:   code repo:  $_code_top" >&2
-  echo "pair-mailbox:   state repo: $_state_top" >&2
-  echo "pair-mailbox: an MCP entry pointing at a scratch clone would serve this role" >&2
-  echo "pair-mailbox: from stale code while everything looked correct (measured)." >&2
-  echo "pair-mailbox: fix the entry to point at $_state_top/mcp/pair_mailbox/serve.sh" >&2
-  echo "pair-mailbox: (or rerun ./install.sh in the correct tree)." >&2
-  exit 5
+  # Two projects, one server code. The multi-project model: the autonomy repo
+  # (pair-mailbox itself, the engine) is install.sh's ROOT, and the target
+  # project is wherever pairup raised .pair. The engine is NOT copied into every
+  # target — bin/pairup is the shim (~/.local/bin/pairup), state resolves by
+  # walk-up from cwd, and the MCP entry points at the engine's serve.sh for
+  # every project. So code-from-elsewhere is the NORMAL case: a galatour pane
+  # runs /mnt/storage/work/umputum/mcp/pair_mailbox/serve.sh with galatour state.
+  # Assuming the code must live inside the state's repo broke that (round 108's
+  # guard: e4e0550 wrote a remedy pointing at $_state_top/mcp/pair_mailbox/serve.sh
+  # — a path that does not exist in a target project).
+  #
+  # What the guard must still catch: a scratch clone taking a role. So the
+  # foreign code root is allowed ONLY when the state's project has sanctioned
+  # it AND carries no package of its own AND the code is not in scratch space.
+  _state_own_pkg="$_state_top/mcp/pair_mailbox/serve.sh"
+  # The sanction lives in the STATE dir itself, not derived by assuming the
+  # state dir is called .pair: `--state custom_dir` is a legal invocation
+  # (the installer's verify path, bin/pairdoctor), and a hardcodedname would
+  # have looked for the record in a directory that was never used (critic's
+  # find, round 120). $state is already resolved and absolute at this point.
+  _engine_file="$state/engine"
+  _engine_root=""
+  [ -f "$_engine_file" ] && _engine_root="$(cat -- "$_engine_file" 2>/dev/null || true)"
+  # The sanction's identity is the engine's git-toplevel, never the path string:
+  # one engine, several reachable paths (bind mounts, symlinks) — same check as
+  # above, and a string comparison would refuse the live pair. Written by
+  # bin/pairup, refreshed when the engine moves.
+  _engine_top=""
+  if [ -n "$_engine_root" ] && [ -d "$_engine_root/mcp/pair_mailbox" ]; then
+    _et="$(cd -- "$_engine_root" 2>/dev/null && git rev-parse --show-toplevel 2>/dev/null || true)"
+    if [ -n "$_et" ] && [ -d "$_et/mcp/pair_mailbox" ]; then _engine_top="$_et"; fi
+  fi
+  _scratch=""
+  case "$_code_top" in
+    /tmp|/tmp/*|/var/tmp|/var/tmp/*|/dev/shm|/dev/shm/*) _scratch="$_code_top";;
+  esac
+  # Round 108's scar, unconditional: the measured defect was a config left
+  # pointing at /tmp/wire_test, and a scratch root can NEVER serve a role —
+  # no sanction, project layout or plea changes that. It stands first, so a
+  # forged sanction in a scratch clone buys nothing.
+  if [ -n "$_scratch" ]; then
+    echo "pair-mailbox: REFUSING: the server code lives in a scratch tree." >&2
+    echo "pair-mailbox:   code repo:  $_code_top (scratch space)" >&2
+    echo "pair-mailbox:   state repo: $_state_top" >&2
+    echo "pair-mailbox: a leftover from an installer test served this role from stale" >&2
+    echo "pair-mailbox: code while everything looked correct (round 108, measured)." >&2
+    echo "pair-mailbox: fix the MCP entry to the real engine root recorded in" >&2
+    echo "pair-mailbox:   $proj_root/.pair/engine" >&2
+    exit 5
+  fi
+  if [ -f "$_state_own_pkg" ]; then
+    # The project HAS its own engine: then the entry must point at it, and a
+    # foreign root here is exactly the scratch-clone case round 108 caught.
+    echo "pair-mailbox: REFUSING: the server code lives in a foreign tree." >&2
+    echo "pair-mailbox:   code repo:  $_code_top" >&2
+    echo "pair-mailbox:   state repo: $_state_top (own mcp/pair_mailbox/ found)" >&2
+    echo "pair-mailbox: this project carries its own pair-mailbox package, so the" >&2
+    echo "pair-mailbox: MCP entry must point at that one:" >&2
+    echo "pair-mailbox:   $_state_top/mcp/pair_mailbox/serve.sh" >&2
+    echo "pair-mailbox: (or rerun ./install.sh in the correct tree)." >&2
+    exit 5
+  fi
+  if [ -z "$_engine_top" ] || [ "$_engine_top" != "$_code_top" ]; then
+    echo "pair-mailbox: REFUSING: the server code lives in a foreign tree." >&2
+    echo "pair-mailbox:   code repo:  $_code_top" >&2
+    echo "pair-mailbox:   state repo: $_state_top" >&2
+    echo "pair-mailbox: the state's project ($_state_top) has no own pair-mailbox" >&2
+    echo "pair-mailbox: package, so it runs an engine from another tree — but that" >&2
+    echo "pair-mailbox: engine is not sanctioned here." >&2
+    if [ -z "$_engine_root" ]; then
+      echo "pair-mailbox:   no engine sanction in $proj_root/.pair/engine" >&2
+      echo "pair-mailbox: fix it: cd $_state_top && <engine-root>/bin/pairup" >&2
+    else
+      echo "pair-mailbox:   sanctioned engine: $_engine_root" >&2
+      echo "pair-mailbox: fix it: cd $_state_top && bin/pairup  (refreshes the sanction from this $(basename -- "$_code_top") engine), or" >&2
+      echo "pair-mailbox:        change the MCP entry to the sanctioned engine's serve.sh:" >&2
+      echo "pair-mailbox:        $_engine_root/mcp/pair_mailbox/serve.sh" >&2
+    fi
+    exit 5
+  fi
+  echo "pair-mailbox: NOTE: serving state from $_state_top with engine code from $_code_top (sanctioned)" >&2
 fi
 if [ -n "${PAIR_ROLE:-}" ] && [ "${PAIR_ROLE}" != "$role" ]; then
   echo "pair-mailbox: refusing: PAIR_ROLE=${PAIR_ROLE} != argv role $role (role comes from config, never from env)" >&2

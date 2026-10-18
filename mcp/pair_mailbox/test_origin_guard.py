@@ -56,7 +56,19 @@ def _lock_holder(state_dir: Path, role: str) -> str:
 
 class OriginGuardCase(unittest.TestCase):
     def setUp(self) -> None:
-        self._tmp = tempfile.TemporaryDirectory()
+        # NOT under TMPDIR: serve.sh refuses a code root in /tmp outright (round
+        # 108's scar — a config left pointing at /tmp/wire_test served a role
+        # from stale code). The pre-round-120 suite built its whole fixture in
+        # tempfile's default space, so every legitimate tree looked like scratch;
+        # the trees now live beside the repo, and only the scratch test uses
+        # /tmp on purpose. Verified the repo's own tree is not under /tmp.
+        repo = ROOT.resolve()
+        if str(repo).startswith("/tmp") or str(repo).startswith("/var/tmp"):
+            self.skipTest(f"the repo itself lives in scratch space ({repo}); "
+                          "the guard would refuse to run here")
+        base = repo.parent / ".pair-guard-tests"
+        base.mkdir(parents=True, exist_ok=True)
+        self._tmp = tempfile.TemporaryDirectory(dir=str(base))
         # the state must sit in a git repo: the guard's identity is
         # `git rev-parse --show-toplevel`, so a plain /tmp dir cannot carry one
         self.state = _git_repo(Path(self._tmp.name) / "proj") / ".pair"
@@ -72,6 +84,15 @@ class OriginGuardCase(unittest.TestCase):
             subprocess.run(["kill", holder], capture_output=True, timeout=10)
             time.sleep(0.3)
         self._tmp.cleanup()
+        # Leave the tree clean (house rule): the hidden base beside the repo
+        # survives when the last TemporaryDirectory goes. rmtree ignores a
+        # keeper another concurrent run may have created.
+        base = ROOT.resolve().parent / ".pair-guard-tests"
+        try:
+            if base.is_dir():
+                shutil.rmtree(base, ignore_errors=True)
+        except OSError:
+            pass
 
     def _raise(self, cwd: Path, serve: Path | None = None) -> subprocess.Popen:
         """Raise the server the way the MCP entry does: a chosen CWD and a chosen
@@ -97,6 +118,17 @@ class OriginGuardCase(unittest.TestCase):
             cwd=str(cwd), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
             stderr=subprocess.PIPE, text=True, env=env)
         return proc
+
+    def _sanction(self, engine_root: str | None) -> None:
+        """Write (or clear) .pair/engine: the record by which a target project
+        names the pair-mailbox tree its engine code legitimately comes from.
+        Cleared by engine_root=None, which is the pre-round-120 world."""
+        path = Path(self.state) / "engine"
+        if engine_root is None:
+            if path.exists():
+                path.unlink()
+        else:
+            path.write_text(engine_root, encoding="utf-8")
 
     def test_foreign_tree_refuses_and_names_both_roots(self) -> None:
         """A server raised from a FOREIGN REPO must refuse, not serve. The
@@ -226,6 +258,138 @@ class OriginGuardCase(unittest.TestCase):
         # whichever way it refuses, no role lock may be held by a foreign cwd
         self.assertEqual(_lock_holder(self.state, self.role), "",
                          "a foreign cwd must never hold the role")
+
+    def test_sanctioned_engine_serves_a_foreign_state(self) -> None:
+        """The multi-project case, which round 108's guard broke: a target
+        project with NO package of its own runs the engine from the autonomy
+        repo, and pairup sanctions that root in .pair/engine. Proven by the
+        protocol answering, not by a pid surviving."""
+        engine = _git_repo(Path(self._tmp.name) / "engine-tree")
+        self._sanction(str(engine))
+        try:
+            rc, out, served = self._converse(engine)
+            self.assertTrue(
+                served,
+                "a sanctioned engine must answer the protocol for a foreign "
+                f"state repo: {out[:400]}")
+            self.assertEqual(rc, 0, out[:200])
+        finally:
+            self._sanction(None)
+
+    def test_sanction_identity_is_the_toplevel_not_the_path(self) -> None:
+        """The same engine, reached through an alias, must serve: one repo, two
+        paths (bind mount, symlink) — the live pair runs the code under
+        /home/alexios/work/umputum while state sits at /mnt/storage/work/umputum.
+        The sanction names the git toplevel, and a path compare would refuse."""
+        engine = _git_repo(Path(self._tmp.name) / "engine-real")
+        self._sanction(str(engine))
+        alias = Path(self._tmp.name) / "engine-alias"
+        alias.symlink_to(engine, target_is_directory=True)
+        try:
+            rc, out, served = self._converse(alias)
+            self.assertTrue(served, f"an aliased sanctioned engine must serve: {out[:400]}")
+        finally:
+            self._sanction(None)
+
+    def test_scratch_code_root_refuses_even_with_a_sanction(self) -> None:
+        """Round 108's scar: a config left pointing at a scratch clone served a
+        role from /tmp/wire_test. A sanction must never open that hole, so code
+        under /tmp refuses no matter what the state says, and names the reason."""
+        scratch = Path("/tmp/pair-guard-scratch-" + os.urandom(4).hex())
+        try:
+            engine = _git_repo(scratch)
+            self._sanction(str(engine))
+            try:
+                proc = self._raise(engine)
+                try:
+                    out, err = proc.communicate(timeout=60)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    out, err = proc.communicate()
+                    self.fail("a scratch-clone server must refuse, not run")
+                combined = (err or "") + (out or "")
+                self.assertNotEqual(proc.returncode, 0)
+                self.assertIn("scratch", combined.lower(),
+                              "a scratch code root must be named as the reason")
+                self.assertEqual(_lock_holder(self.state, self.role), "",
+                                 "a scratch clone must never hold the role")
+            finally:
+                self._sanction(None)
+        finally:
+            shutil.rmtree(scratch, ignore_errors=True)
+
+    def test_mismatched_sanction_refuses(self) -> None:
+        """A state that sanctions one engine while the entry points at another
+        must refuse: that is a stale sanction or a wrong entry, and either way
+        the role must not be served from an unsanctioned tree."""
+        engine = _git_repo(Path(self._tmp.name) / "engine-right")
+        other = _git_repo(Path(self._tmp.name) / "engine-wrong")
+        self._sanction(str(engine))          # sanctioned: engine
+        try:
+            proc = self._raise(other)        # entry actually points here
+            try:
+                out, err = proc.communicate(timeout=60)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                out, err = proc.communicate()
+                self.fail("an unsanctioned engine must refuse, not run")
+            combined = (err or "") + (out or "")
+            self.assertNotEqual(proc.returncode, 0)
+            self.assertIn("sanction", combined.lower(),
+                          "the refusal must name the sanction as the failing check")
+            self.assertIn(str(engine), combined,
+                          "the refusal must name the engine this state sanctions")
+            self.assertEqual(_lock_holder(self.state, self.role), "",
+                             "an unsanctioned engine must never hold the role")
+        finally:
+            self._sanction(None)
+
+    def test_project_with_own_package_refuses_a_foreign_engine(self) -> None:
+        """Round 108's live case, now narrowed: a project that HAS its own
+        mcp/pair_mailbox/ must run it, so a foreign code root there is exactly
+        the scratch-clone shape that guard was written for."""
+        project = Path(self.state).parent
+        pkg = project / "mcp" / "pair_mailbox"
+        pkg.mkdir(parents=True, exist_ok=True)
+        (pkg / "serve.sh").write_text("#!/bin/sh\nexit 9\n", encoding="utf-8")
+        engine = _git_repo(Path(self._tmp.name) / "engine-not-needed")
+        self._sanction(str(engine))
+        try:
+            proc = self._raise(engine)
+            try:
+                out, err = proc.communicate(timeout=60)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                out, err = proc.communicate()
+                self.fail("a project with its own package must refuse a foreign engine")
+            combined = (err or "") + (out or "")
+            self.assertNotEqual(proc.returncode, 0)
+            self.assertIn(str(project.resolve()), combined,
+                          "the refusal must name this project's own engine path")
+            self.assertEqual(_lock_holder(self.state, self.role), "",
+                             "the foreign engine must never hold the role here")
+        finally:
+            self._sanction(None)
+            shutil.rmtree(project / "mcp", ignore_errors=True)
+
+    def test_no_sanction_still_refuses(self) -> None:
+        """Round 108's contract, unchanged: a foreign code root with NO sanction
+        on record refuses. Removing the guard's presumption must not delete the
+        refusal — the pre-round-120 world (a project that never ran pairup)
+        installs nothing by itself."""
+        engine = _git_repo(Path(self._tmp.name) / "engine-unsanctioned")
+        self._sanction(None)
+        proc = self._raise(engine)
+        try:
+            out, err = proc.communicate(timeout=60)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            out, err = proc.communicate()
+            self.fail("an unsanctioned foreign engine must refuse, not run")
+        self.assertNotEqual(proc.returncode, 0)
+        combined = (err or "") + (out or "")
+        self.assertIn("engine", combined.lower())
+        self.assertIn("foreign", combined.lower())
 
 
 if __name__ == "__main__":
