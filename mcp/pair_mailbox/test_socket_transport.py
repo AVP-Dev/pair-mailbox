@@ -168,7 +168,12 @@ class SocketTransportCase(unittest.TestCase):
                 combined = (out or "") + (err or "")
                 self.assertNotEqual(second.returncode, 0,
                                     "a second server on a held role must refuse")
-                self.assertIn("already held", combined)
+                # Round 111 slice 1 changed the phrasing from a claim
+                # ("already held by a live server") to a DIAGNOSIS ("held by a
+                # LIVE process (pid N)"); this assertion followed the words rather
+                # than the contract. Contract: refusal + named holder + remedy.
+                self.assertIn("held by a LIVE process", combined)
+                self.assertRegex(combined, r"pid \d+")
                 refused = True
             except subprocess.TimeoutExpired:
                 second.kill()
