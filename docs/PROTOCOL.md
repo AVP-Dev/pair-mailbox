@@ -10,6 +10,13 @@ must not drift apart from the code.
 
 > Language: this is the English original. The Russian mirror is
 > [`PROTOCOL.ru.md`](./PROTOCOL.ru.md).
+>
+> **English is the default for everything the system writes** — code, comments,
+> docstrings, commit messages, PR bodies, round cards, backlog cards. Russian
+> (or any other language) is used only where the human explicitly asked for it,
+> or where a file is already a deliberate mirror, like `PROTOCOL.ru.md` and the
+> `*.ru.md` docs. Human-facing conversation stays in the human's language; a
+> track-only file never does by default.
 
 ---
 
