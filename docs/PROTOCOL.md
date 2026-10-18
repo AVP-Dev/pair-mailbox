@@ -816,6 +816,14 @@ PR merging is gated by machine rules rather than prompt agreements:
    `pairctl ok` for the round, and is recorded in `transcript.jsonl` as
    `pr_merge_forced`. Loud instead of convenient: a forced merge is visible in the
    audit trail by construction, never a flag somebody discovers quietly.
+6. **The repair for a merge that already happened outside the gate:**
+   `pairctl pr merge-record <pr_id> [--head SHA] [--base BRANCH]`. It reads the
+   remote's real state, refuses an unmerged PR, refuses a `--head` that disagrees
+   with the `mergeCommit` GitHub reports, and refuses to guess when `gh` itself
+   fails. On a real merge it appends `pr_merge_repaired` naming the merge commit.
+   A repair that cannot name what the remote merged is not a repair. Round 115
+   needed it: a hand-run `gh pr merge` closed PR #61 and the transcript, at 456
+   rows, carried zero merge events — the merge existed, the repo's audit did not.
 
 ### 10h. Server Runtime Freshness & Supervisor Parking
 
