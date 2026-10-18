@@ -64,6 +64,41 @@ case "$state" in -*) echo "pair-mailbox: refusing flag-like state $state (a flag
 # confusion across projects. Legit subdir launches never break.
 # Stands PAST resolving, catching both walk-up and explicit --state/PAIR_STATE.
 proj_root="$(dirname -- "$state")"; case "$(pwd)/" in "$proj_root"/*) ;; *) echo "pair-mailbox: NOTE: state from $state, but cwd $(pwd) — the pane will read foreign" >&2;; esac
+
+# Round 108 slice 1: the origin guard. That NOTE used to be all we had, and a
+# scratch clone took it at its word — measured: a config left pointing at
+# /tmp/wire_test would have served a role from a foreign tree on the next restart,
+# the role lock free at that moment, so nothing refused. A record naming
+# something other than what is there is a defect (round 104's class), so the
+# tree the CODE came from must be the project the STATE belongs to.
+#
+# The identity is `git rev-parse --show-toplevel`, NOT the path string: the same
+# tree is reachable through bind mounts and symlinks (/home/alexios/work/umputum
+# and /mnt/storage/work/umputum are one repo), and a path comparison would have
+# refused the live pair. The toplevel is canonical for both, and a scratch clone
+# is a DIFFERENT toplevel — which is exactly the distinction we need.
+# Walk up from the script's own directory until git answers, so the check works
+# for a script copied into a repo root as well as one in its canonical
+# mcp/pair_mailbox/ place (measured: a fixed ../.. found nothing when the script
+# sits at the root, and a silent empty identity would have meant fail-open).
+_code_top=""
+_d="$(cd -- "$(dirname -- "$0")" && pwd -P)"
+while [ -n "$_d" ] && [ "$_d" != "/" ]; do
+  _top="$(cd -- "$_d" 2>/dev/null && git rev-parse --show-toplevel 2>/dev/null)"
+  if [ -n "$_top" ]; then _code_top="$_top"; break; fi
+  _d="$(dirname -- "$_d")"
+done
+_state_top="$(cd -- "$proj_root" 2>/dev/null && git rev-parse --show-toplevel 2>/dev/null)"
+if [ -n "$_code_top" ] && [ -n "$_state_top" ] && [ "$_code_top" != "$_state_top" ]; then
+  echo "pair-mailbox: REFUSING: the server code lives in a foreign tree." >&2
+  echo "pair-mailbox:   code repo:  $_code_top" >&2
+  echo "pair-mailbox:   state repo: $_state_top" >&2
+  echo "pair-mailbox: an MCP entry pointing at a scratch clone would serve this role" >&2
+  echo "pair-mailbox: from stale code while everything looked correct (measured)." >&2
+  echo "pair-mailbox: fix the entry to point at $_state_top/mcp/pair_mailbox/serve.sh" >&2
+  echo "pair-mailbox: (or rerun ./install.sh in the correct tree)." >&2
+  exit 5
+fi
 if [ -n "${PAIR_ROLE:-}" ] && [ "${PAIR_ROLE}" != "$role" ]; then
   echo "pair-mailbox: refusing: PAIR_ROLE=${PAIR_ROLE} != argv role $role (role comes from config, never from env)" >&2
   exit 3
