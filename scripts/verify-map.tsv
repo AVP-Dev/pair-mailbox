@@ -96,3 +96,15 @@ follow:mcp/pair_mailbox/digest.py	protocol
 follow:mcp/pair_mailbox/pairctl_authority.py	protocol
 follow:mcp/pair_mailbox/pairctl_read.py	protocol
 follow:mcp/pair_mailbox/pairctl_panes.py	protocol
+mcp/pair_mailbox/test_protocol_authority.py	protocol
+mcp/pair_mailbox/test_protocol_gates.py	protocol
+mcp/pair_mailbox/test_protocol_messaging.py	protocol
+mcp/pair_mailbox/test_protocol_tui.py	protocol
+mcp/pair_mailbox/test_protocol_liveness.py	protocol
+mcp/pair_mailbox/test_protocol_notes.py	protocol
+mcp/pair_mailbox/test_protocol_delivery.py	protocol
+mcp/pair_mailbox/test_protocol_mailbox.py	protocol
+mcp/pair_mailbox/test_protocol_permissions.py	protocol
+mcp/pair_mailbox/test_protocol_panes.py	protocol
+mcp/pair_mailbox/test_protocol_pins.py	protocol
+mcp/pair_mailbox/test_protocol_transport.py	protocol
