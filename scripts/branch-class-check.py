@@ -27,27 +27,11 @@ import subprocess
 import sys
 from pathlib import Path
 
-# §20 class table. Order does not matter: patterns are disjoint by construction.
-TRUNK = re.compile(r"^master$")
-STRATEGIC = re.compile(r"^(release|support)/.+$")
-EPHEMERAL = re.compile(r"^(round|epic|feature|fix|hotfix|chore)[-/].+$")
-PERSONAL = re.compile(r"^users/[^/]+/.+$")
-
-# §20 rule 4: accumulators are an antipattern, named as one.
-ACCUMULATORS = ("dev", "develop", "integration", "staging", "main", "trunk")
-
-
-def classify(ref: str) -> str:
-    """The §20 class of a remote branch ref, or `anomaly`."""
-    if TRUNK.match(ref):
-        return "trunk"
-    if STRATEGIC.match(ref):
-        return "strategic"
-    if EPHEMERAL.match(ref):
-        return "ephemeral"
-    if PERSONAL.match(ref):
-        return "personal"
-    return "anomaly"
+# §20 class table lives in one place, shared with the janitor
+# (mcp/pair_mailbox/branch_classes.py): two copies of the table would drift, and
+# the drift would let the janitor delete what this checker calls legal.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "mcp" / "pair_mailbox"))
+from branch_classes import ACCUMULATORS, TRUNK, classify  # noqa: E402
 
 
 def remote_branches(root: Path) -> list[str]:

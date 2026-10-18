@@ -74,6 +74,7 @@ def _commands() -> dict[str, str]:
         "budget": "budget",
         "worktree": "worktree",
         "pr": "review_gate",
+        "branch": "branch_audit",
     }
 
 def run_ctl(args: argparse.Namespace, state_dir: Path) -> int:
@@ -293,6 +294,23 @@ def build_parser() -> argparse.ArgumentParser:
         default="master",
         help="base branch for merge-record (default master)",
     )
+
+    br_p = sub.add_parser(
+        "branch",
+        help="the §20 janitor: audit branch classes (audit)",
+    )
+    br_p.add_argument(
+        "branch_action",
+        nargs="?",
+        choices=["audit"],
+        default="audit",
+        help="audit: classify every remote branch under PROTOCOL §20 and report "
+        "STALE/ANOMALY; pass --delete to remove proven-merged ephemeral branches",
+    )
+    br_p.add_argument("--delete", action="store_true",
+                      help="delete MERGE rows (proven merged, with a transcript row)")
+    br_p.add_argument("--repo", default=".",
+                      help="repository root to audit (default: this project)")
 
     return parser
 

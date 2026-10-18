@@ -114,3 +114,5 @@ bin/pre_push_guard_test.py	pre-push-guard
 bin/git-hooks/pre-push	pre-push-guard
 docs/PROTOCOL.md	branch-class
 docs/PROTOCOL.ru.md	branch-class
+mcp/pair_mailbox/branch_audit.py	branch-audit
+mcp/pair_mailbox/branch_classes.py	branch-audit
