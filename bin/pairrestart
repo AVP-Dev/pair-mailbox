@@ -405,6 +405,20 @@ def main(argv: list[str] | None = None) -> int:
         print(f"pairrestart: no state.json in {state_dir} — cd into a project first", file=sys.stderr)
         return 2
     rows = diagnose(state_dir)
+    # Round 108 slice 2: a stale role record (a `.server-<role>.pid` whose process
+    # is dead) wedges nothing at the kernel level but reads as "held" to every
+    # naive tool and to a human reading `ls`. Reap it BEFORE planning, so the
+    # row this restart would show is what the system actually is. A LIVE holder's
+    # record is kept by construction.
+    try:
+        sys.path.insert(0, str(ROOT / "mcp" / "pair_mailbox"))
+        import lock_reaper as _reaper
+        reaped = _reaper.reap(state_dir)
+        for name in reaped:
+            print(f"pairrestart: reaped a stale lock record for role {name} "
+                  f"(its process is gone; the role is free again)")
+    except Exception as exc:  # noqa: BLE001 - a reaper failure never blocks the restart
+        print(f"pairrestart: lock reaper skipped ({exc})", file=sys.stderr)
     scope = scope_rows(rows, role=args.role, state_dir=state_dir, room=args.room)
     # Fail-closed (round 106 slice A): `pairrestart --yes` used to mean "kill
     # every stale server in the room", which is how my restart became your
