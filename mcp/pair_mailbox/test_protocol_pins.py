@@ -70,7 +70,7 @@ class TestRoundBasePin(PairTestCase):
         proj = Path(tmp.name) / "proj"
         # Store.project_root is root.parent when the dir is named .pair — the
         # same derivation the server uses, so the fixture must sit in one.
-        store = Store(proj / ".pair")
+        store = Store(proj / ".pair", allow_create=True)
         return store, proj
 
     def test_round_open_stamps_the_head_origin_carries(self) -> None:
@@ -177,7 +177,7 @@ class TestOriginTruthCaller(PairTestCase):
         Store.project_root is a read-only property, so the override is pinned on
         the class for the duration of the test, not on the instance.
         """
-        store = Store(tmp / "state")
+        store = Store(tmp / "state", allow_create=True)
         session = PairSession("omp", store)
         from unittest import mock as _m
         patcher = _m.patch.object(type(store), "project_root", property(lambda self: proj))

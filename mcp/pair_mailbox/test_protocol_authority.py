@@ -431,7 +431,7 @@ class TestPatchFlow(PairTestCase):
         subprocess.run(["git", "add", "note.txt"], cwd=str(repo), check=True)
         subprocess.run(["git", "commit", "-qm", "base"], cwd=str(repo), check=True)
         target.write_text("two\n", encoding="utf-8")
-        store_repo = __import__("server").Store(repo / ".pair")
+        store_repo = __import__("server").Store(repo / ".pair", allow_create=True)
         critic = PairSession("reviewer-agent", store_repo)
         writer = PairSession("writer-agent", store_repo)
         critic.tool_pair_state()

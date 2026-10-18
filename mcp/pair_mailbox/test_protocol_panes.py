@@ -550,7 +550,7 @@ class TestPaneIdentityIsNotLiveness(PairTestCase):
         import composer
         state_dir = Path(tempfile.mkdtemp(prefix="pairtest-")) / ".pair"
         state_dir.mkdir(parents=True)
-        store = Store(state_dir)
+        store = Store(state_dir, allow_create=True)
         self.assertEqual(store.root, state_dir)
         self.assertEqual(store.project_root, state_dir.parent,
                          "the project root is the state-dir parent")
@@ -568,7 +568,7 @@ class TestPaneIdentityIsNotLiveness(PairTestCase):
     def test_a_state_dir_that_is_not_pair_is_its_own_project_root(self) -> None:
         """.pair` is no dir — meaning this IS the root, parent stands extra."""
         state_dir = Path(tempfile.mkdtemp(prefix="pairtest-"))
-        store = Store(state_dir)
+        store = Store(state_dir, allow_create=True)
         self.assertEqual(store.project_root, state_dir)
 
     def test_a_shared_parent_directory_is_refused(self) -> None:

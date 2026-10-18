@@ -260,7 +260,13 @@ def build_snapshot(state_dir: Path, *, limit: int = DEFAULT_EVENTS,
     So every parse forgives with None, and the snapshot marks itself partial.
     """
     state_dir = Path(state_dir)
-    store = Store(state_dir)
+    # Round 115 S4: the dashboard opens when something BREAKE, and "could not read
+    # state.json" is the worst possible answer — that is this function's whole reason
+    # to exist (see the docstring above). So it is the ONE reader allowed to build a
+    # Store on a state that may not be there: `allow_create=True` keeps the empty
+    # state and `read_error` carries the reason. Everywhere else the default
+    # `allow_create=False` refuses.
+    store = Store(state_dir, allow_create=True)
     read_error = _state_read_error(state_dir)
     try:
         state = store.read()

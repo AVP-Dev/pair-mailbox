@@ -1081,3 +1081,38 @@ the main working tree, git worktrees provide filesystem isolation.
   Cleans stale worktree administrative records (`git worktree prune`).
 - `pairctl worktree remove [--target <path/branch>] [--force]`:
   Removes an allocated worktree.
+## 18. Diagnose against the tree, not against your own harness
+
+A diagnosis that cannot be wrong is not a measurement. Round 115 put a price on
+ignoring that: omp spent two hours chasing a defect that did not exist, and
+wrote a backlog card asking the next agent to hunt the same phantom.
+
+What happened. Diagnosing an ack refusal, omp built `Store(Path('.'))` where the
+intended root was `Path('.pair')`. `state_path` became `./state.json`, which
+does not exist, so `_load` returned `default_state()` — an empty `seen`, an
+empty `pending_reads`. A `.get()` chain returned `None` where a value was
+expected, and that `None` got read as a finding. Two direct runs then
+contradicted the card on screen — both green — and both were read as "the file
+changed under me" rather than "I passed the wrong path".
+
+Rules that follow, each paid for once:
+
+1. **A wrong root is a caller error, not an empty pair.** `Store.__init__`
+   refuses a state dir with no `state.json`, naming the path it tried and the
+   `.pair` neighbour that was almost certainly meant (`store_core.py`). The
+   seed of the mistake is nearly always a missing suffix, so say it.
+2. **`dict.get()` returning `None` where a value was expected ends the
+   experiment, not starts one.** Make it raise. A `None` you did not predict has
+   already destroyed what the run meant.
+3. **When two paths give different answers, diff their inputs before
+   theorising** — path, object, class. Not caching, not races: paths first.
+4. **A green run that contradicts a hypothesis is evidence about the
+   hypothesis.** Two green results with the "wrong" answer mean the harness is
+   wrong, not the tree. Re-read the harness before filing anything.
+5. **Suite scope is part of the claim.** `pytest mcp/pair_mailbox/` is not the
+   project. Round 115 was green locally and red in CI because the CI runs
+   `scripts/verify-project.sh`, which covers install, pilot and supervisor
+   suites the narrower path never touches. Run what ships.
+
+A card filed from this class is worse than no card: it spends the next agent's
+time on the phantom it manufactured.

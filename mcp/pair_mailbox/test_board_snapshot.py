@@ -26,6 +26,7 @@ from pair_test_base import PairTestCase
 import board_snapshot
 from board_snapshot import (DEFAULT_STALE_AFTER, _age, _clip, build_snapshot,
                             snapshot_json, summarise_event)
+from store_core import Store
 
 
 def _iso(delta_seconds: float = 0) -> str:
@@ -146,10 +147,25 @@ class SnapshotRefusesToLieTest(PairTestCase):
         self.assertIsInstance(snap["tasks"], list)
 
     def test_missing_state_file_is_not_an_error(self):
-        # `Store` creates state.json on first write, not on directory creation,
-        # so a fresh store may hold no file at all — and that is no error either.
-        # that is no error either.
+        # Round 115 S4 rewrote this contract: a state dir with no state.json used to
+        # read as an empty-but-valid pair. Measured 2026-10-18, that silence cost two
+        # hours of phantom diagnosis (`Store(Path('.'))` instead of `Path('.pair')`:
+        # `_load` returned default_state, `.get()` chains returned None, and two green
+        # results were read as "the file changed under me"). `Store.__init__` now
+        # refuses a root with no state.json.
+        #
+        # The dashboard is the exception the SAME round measured and kept: it opens
+        # when something broke, so `build_snapshot` builds its Store with the
+        # bootstrap flag and still shows a blank-but-honest board instead of a crash.
+        # What this test pins now is the refusal itself — the loud failure — plus the
+        # dashboard's tolerance: the refusal names the path and the `.pair` neighbour.
         (self.root / "state.json").unlink(missing_ok=True)
+        # The refusal is what a plain reader gets...
+        with self.assertRaises(FileNotFoundError) as caught:
+            Store(self.root)
+        self.assertIn("No state.json", str(caught.exception))
+        self.assertIn(str(self.root), str(caught.exception))
+        # ...while the dashboard still renders a board through the bootstrap flag.
         snap = build_snapshot(self.root)
         self.assertEqual(snap["read_error"], "")
         self.assertEqual(snap["round"]["phase"], "scoping")

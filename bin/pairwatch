@@ -18,7 +18,7 @@ except Exception as error:  # noqa: BLE001 - the reason must show
 
 state_dir = Path(os.environ.get("PAIR_STATE") or ".pair").resolve()
 # The Store root is the state dir itself (.pair), not its parent.
-store = Store(state_dir) if Store else None
+store = Store(state_dir, allow_create=True) if Store else None  # round 115 S4: raised beside the pilot, may precede the server
 limit = 300
 if "--limit" in sys.argv:
     limit = int(sys.argv[sys.argv.index("--limit") + 1])

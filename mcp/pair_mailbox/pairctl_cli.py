@@ -24,7 +24,7 @@ from __future__ import annotations
 import argparse
 import sys
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 
 from server import (
     AUTONOMIES,
@@ -91,7 +91,31 @@ def run_ctl(args: argparse.Namespace, state_dir: Path) -> int:
         return 2
     module = __import__(module_name)
     handler: Command = getattr(module, "cmd_" + command.replace("-", "_"))
-    return handler(Store(state_dir), args)
+    # Round 115 S4: `Store` is built LAZILY, and only the commands that touch a
+    # state directory pay for it. `cmd_all` deliberately ignores the store —
+    # "all" walks several projects on purpose (pairctl_read.py:101-103) — so it
+    # must not need one, and a checkout with no pair at all (CI) must still run
+    # `pairctl all`. Measured: with a Store built for every command, CI failed
+    # `pairctl-read` on `FileNotFoundError: No state.json in .../.pair`, because
+    # `walk_up_to_state` falls back to `cwd/.pair` and CI's cwd has no pair.
+    # `task` writes the first state of a fresh project, so it is the one command
+    # allowed to create; the rest read a pair that must already exist, and a
+    # typo'd `--state` stays a loud refusal — the whole point of the gate.
+    class _LazyStore:
+        """The Store, built on first use. A command that never touches it (all,
+        and any future cross-project one) never triggers the refusal."""
+
+        def __init__(self, root: Path, allow_create: bool) -> None:
+            self._root = root
+            self._allow = allow_create
+            self._store: Store | None = None
+
+        def __getattr__(self, name: str) -> Any:
+            if self._store is None:
+                self._store = Store(self._root, allow_create=self._allow)
+            return getattr(self._store, name)
+
+    return handler(_LazyStore(state_dir, command == "task"), args)
 
 
 def build_parser() -> argparse.ArgumentParser:

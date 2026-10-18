@@ -49,7 +49,12 @@ class PairTestCase(unittest.TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
         self.root = Path(self._tmp.name) / "state"
-        self.store = Store(self.root)
+        # Round 115 S4: this setUp BOOTSTRAPS a fresh state dir, which is exactly
+        # the one lawful case for `allow_create=True` (bin/pairup does the same in
+        # shell before any Store exists). Everything else in the tree reads an
+        # existing state, so the default `allow_create=False` keeps the loud-fail
+        # guard that turned a wrong root into two hours of phantom diagnosis.
+        self.store = Store(self.root, allow_create=True)
         self.writer = PairSession("writer-agent", self.store)
         self.peer = PairSession("reviewer-agent", self.store)
         self._orig_tmux_pane = os.environ.pop("TMUX_PANE", None)

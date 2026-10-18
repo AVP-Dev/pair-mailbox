@@ -202,7 +202,9 @@ class Pilot:
         self._screen_hashes: dict[str, tuple[str, float]] = {}
         # Store knows root — the state directory itself: server.py does exactly
         # the same. With state_dir.parent we would read a missing state.json.
-        self.store = Store(state_dir)
+        # Bootstrap door (round 115 S4): pairup raises the pilot on a fresh project,
+        # so a state.json may not exist yet — see store_core.Store.__init__.
+        self.store = Store(state_dir, allow_create=True)
         self.outbox = state_dir / "pilot"
         self.outbox.mkdir(parents=True, exist_ok=True)
         self.wake_root = state_dir / "wake"

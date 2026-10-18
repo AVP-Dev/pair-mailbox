@@ -361,5 +361,5 @@ class TestAuditTrail(PairTestCase):
         self.writer.tool_pair_state()
         self.writer.tool_pair_claim()
         before = len(self.store.read_transcript())
-        reopened = Store(self.root)
+        reopened = Store(self.root, allow_create=True)
         self.assertGreaterEqual(len(reopened.read_transcript()), before)
