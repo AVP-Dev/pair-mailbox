@@ -120,7 +120,18 @@ if [[ "$WANT_PILOT" -eq 1 || -n "$SWAP_CRITIC" ]]; then
       echo "pair-duo: no state at $STATE_PATH — nothing for the pilot to watch" >&2
       exit 1
     fi
-    nohup python3 "$HERE/pairpilot" --state "$STATE_PATH" >>"$STATE_PATH/pairpilot.log" 2>&1 &
+    # The pilot gets its own pane explicitly. Without it the pilot is blind to
+    # the pane it was raised beside and types nudge lines into the agent's own
+    # TUI (measured round 113: send-keys into the bun pane timed out, the tick
+    # died before report_once, and eight rounds closed with no report).
+    # TMUX_PANE is correct HERE and only here: this is the launching session's
+    # own pane, not an inherited daemon address — the pilot scrubs the env, so
+    # the value crosses as an explicit variable, not as an inheritance.
+    if [ -n "${TMUX_PANE:-}" ]; then
+      PAIR_PILOT_PANE="$TMUX_PANE" nohup python3 "$HERE/pairpilot" --state "$STATE_PATH" >>"$STATE_PATH/pairpilot.log" 2>&1 &
+    else
+      nohup python3 "$HERE/pairpilot" --state "$STATE_PATH" >>"$STATE_PATH/pairpilot.log" 2>&1 &
+    fi
     echo "$!" >"$STATE_PATH/pilot.pid"
     echo "pair-duo: supervisor up (pid $(cat "$STATE_PATH/pilot.pid"))"
   fi

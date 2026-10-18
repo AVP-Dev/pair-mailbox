@@ -2743,6 +2743,80 @@ class TestDoneParking(PilotCase):
         self.assertIn("You have 1 unread messages", pilot.pending("agy"))
 
 
+class TestOwnPaneIsPassedNotGuessed(PilotCase):
+    """The pilot's own pane arrives EXPLICITLY, never by guessing (round 113).
+
+    Measured live: pairup/pair-duo never set PAIR_PILOT_PANE, so own_pane stayed
+    None and the guard never fired; the pilot then sent `send-keys` into the bun
+    pane that hosts it, the call timed out after 5 s, the tick died BEFORE
+    report_once, and eight rounds closed without a report.
+
+    The fix is on the LAUNCHER side (pair-duo passes PAIR_PILOT_PANE), not in the
+    pilot: a resolver that guesses its own pane was tried and REJECTED — the
+    2026-10-07 skip-forever bug was the same shape by another route (the pytest
+    parent sits inside the agent's bun process, whose parent is the agent pane),
+    and the guard test test_daemon_ignores_inherited_tmux_pane pins the rule.
+    These tests pin BOTH halves: the pilot reads only the explicit variable, and
+    the launcher passes what it was given."""
+
+    def _pilot(self, env: dict | None = None):
+        """A pilot with an explicit env; inherited pane variables scrubbed."""
+        clean = dict(os.environ)
+        clean.pop("PAIR_PILOT_PANE", None)
+        clean.pop("TMUX_PANE", None)
+        clean.pop("TMUX", None)
+        clean.update(env or {})
+        with mock.patch.dict(os.environ, clean, clear=True):
+            return pairpilot.Pilot(self.state_dir, silence=600.0, interval=1)
+
+    def test_env_var_is_the_only_source(self) -> None:
+        pilot = self._pilot({"PAIR_PILOT_PANE": "%42"})
+        self.assertEqual(pilot.own_pane, "%42",
+                         "an explicit PAIR_PILOT_PANE is the pilot's own pane")
+
+    def test_inherited_tmux_pane_is_not_own_pane(self) -> None:
+        """TMUX_PANE in the environment must NOT be read as the pilot's own pane:
+        the 2026-10-07 bug skipped a live role forever that way."""
+        pilot = self._pilot({"TMUX_PANE": "%7"})
+        self.assertIsNone(pilot.own_pane,
+                          "an inherited TMUX_PANE is not the pilot's own pane")
+
+    def test_no_env_means_no_own_pane_never_guessed(self) -> None:
+        """The rule the rejected resolver broke: without the variable there is no
+        own pane — the pilot must not walk a parent chain to invent one."""
+        pilot = self._pilot()
+        self.assertIsNone(pilot.own_pane,
+                          "a missing variable must not be filled by a guess")
+        self.assertFalse(hasattr(pilot, "_parent_pane"),
+                         "the resolver must stay out of the tree")
+
+    def test_guard_skips_the_role_on_the_own_pane(self) -> None:
+        """The tick-time guard, the line that never ran before: a role recorded
+        on the pilot's own pane is skipped, so no check types into it."""
+        (self.state_dir / "state.json").write_text(json.dumps(
+            {"round": 913, "mode": "fix", "phase": "implement",
+             "roles": {"omp": {"pane": "%7", "last_seen": None}},
+             "writer": "omp", "seq": 1}), encoding="utf-8")
+        pilot = self._pilot({"PAIR_PILOT_PANE": "%7"})
+        state = pilot.state()
+        pilot.skip = {role for names in pilot.shared_panes(state).values() for role in names}
+        own_key = pilot.pane_key(pilot.own_pane)
+        for role, info in (state.get("roles") or {}).items():
+            if pilot.pane_key(info.get("pane")) == own_key:
+                pilot.skip.add(role)
+        self.assertIn("omp", pilot.skip,
+                      "the role on the pilot's own pane must be skipped")
+
+    def test_launcher_passes_the_pane_it_was_given(self) -> None:
+        """pair-duo forwards TMUX_PANE as PAIR_PILOT_PANE when raising the pilot —
+        the launcher half of the same fix. The pane arrives as an explicit env
+        assignment on the command line, not inherited."""
+        duo = (ROOT / "bin" / "pair-duo").read_text(encoding="utf-8")
+        self.assertIn('PAIR_PILOT_PANE="$TMUX_PANE"', duo,
+                      "pair-duo must pass its own pane to the pilot")
+        self.assertIn('pilot.pid', duo, "and keep recording the pid")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
 
