@@ -55,7 +55,7 @@ class TestDiagnose(unittest.TestCase):
             with mock.patch.object(PR, "live_servers",
                                    return_value=[{"pid": 1, "role": "omp", "start": "x"}]), \
                  mock.patch.object(PR, "proc_start_ts", return_value=9e9), \
-                 mock.patch.object(PR, "server_code_mtime", return_value=1.0), \
+                 mock.patch.object(PR, "runtime_code_mtime", return_value=1.0), \
                  mock.patch.object(PR, "pilot_procs", return_value=[]):
                 rows = PR.diagnose(sd)
         self.assertEqual(rows[0]["verdict"], "FRESH")
@@ -68,7 +68,7 @@ class TestDiagnose(unittest.TestCase):
             with mock.patch.object(PR, "live_servers",
                                    return_value=[{"pid": 4242, "role": "omp", "start": "x"}]), \
                  mock.patch.object(PR, "proc_start_ts", return_value=1.0), \
-                 mock.patch.object(PR, "server_code_mtime", return_value=9e9), \
+                 mock.patch.object(PR, "runtime_code_mtime", return_value=9e9), \
                  mock.patch.object(PR, "pilot_procs", return_value=[]):
                 rows = PR.diagnose(sd)
         self.assertEqual(rows[0]["verdict"], "STALE")
@@ -81,12 +81,30 @@ class TestDiagnose(unittest.TestCase):
             with mock.patch.object(PR, "live_servers",
                                    return_value=[{"pid": 4242, "role": "omp", "start": "x"}]), \
                  mock.patch.object(PR, "proc_start_ts", return_value=1.0), \
-                 mock.patch.object(PR, "server_code_mtime", return_value=9e9), \
+                 mock.patch.object(PR, "runtime_code_mtime", return_value=9e9), \
                  mock.patch.object(PR, "pilot_procs", return_value=[]), \
                  mock.patch.object(PR, "act") as do_act:
-                code = PR.main(["--state", str(sd), "--dry-run"])
+                code = PR.main(["--state", str(sd), "--role", "omp", "--dry-run"])
         self.assertEqual(code, 0)
         do_act.assert_not_called()
+
+    def test_bare_invocation_without_a_role_refuses(self) -> None:
+        """Slice A: `pairrestart` used to kill EVERY stale server in the room. Now
+        a bare invocation with no resolvable role refuses rc=2 and names the
+        flag, the pane route, and --room. Tested with the env cleared so it
+        cannot lean on the running pair's PAIR_ROLE/TMUX_PANE (that leak is what
+        let it pass locally while CI failed)."""
+        import os
+        with tempfile.TemporaryDirectory() as tmp:
+            sd = self._state(Path(tmp), ["omp"])
+            with mock.patch.object(PR, "live_servers",
+                                   return_value=[{"pid": 4242, "role": "omp", "start": "x"}]), \
+                 mock.patch.object(PR, "proc_start_ts", return_value=1.0), \
+                 mock.patch.object(PR, "runtime_code_mtime", return_value=9e9), \
+                 mock.patch.object(PR, "pilot_procs", return_value=[]), \
+                 mock.patch.dict(os.environ, {}, clear=True):
+                code = PR.main(["--state", str(sd), "--dry-run"])
+        self.assertEqual(code, 2, "a room-wide kill must never be the default")
 
     def test_abort_changes_nothing(self) -> None:
         """Anything but explicit 'yes' aborts without acting."""
@@ -95,13 +113,12 @@ class TestDiagnose(unittest.TestCase):
             with mock.patch.object(PR, "live_servers",
                                    return_value=[{"pid": 4242, "role": "omp", "start": "x"}]), \
                  mock.patch.object(PR, "proc_start_ts", return_value=1.0), \
-                 mock.patch.object(PR, "server_code_mtime", return_value=9e9), \
+                 mock.patch.object(PR, "runtime_code_mtime", return_value=9e9), \
                  mock.patch.object(PR, "pilot_procs", return_value=[]), \
                  mock.patch.object(PR, "act") as do_act, \
                  mock.patch("builtins.input", return_value="y"):
-                code = PR.main(["--state", str(sd)])
-        self.assertEqual(code, 0)
-        do_act.assert_not_called()
+                code = PR.main(["--state", str(sd), "--role", "omp"])
+                do_act.assert_not_called()
 
     # --- round 104 S0: the inventory belongs to one state dir ---------------
 
@@ -152,7 +169,7 @@ class TestDiagnose(unittest.TestCase):
                    {"pid": 22, "role": "omp", "start": "x"}]
             with mock.patch.object(PR, "live_servers", return_value=two), \
                  mock.patch.object(PR, "proc_start_ts", return_value=1.0), \
-                 mock.patch.object(PR, "server_code_mtime", return_value=9e9), \
+                 mock.patch.object(PR, "runtime_code_mtime", return_value=9e9), \
                  mock.patch.object(PR, "pilot_procs", return_value=[]):
                 rows = PR.diagnose(sd)
         pids = sorted(r["pid"] for r in rows if r["kind"] == "role")
