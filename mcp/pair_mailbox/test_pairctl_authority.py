@@ -276,11 +276,11 @@ class TestStateFlagPlacement(PairTestCase):
 
     def test_ctl_writes_land_in_the_requested_directory(self) -> None:
         main(["--state", str(self.root), "task", "resolve the retry storm"])
-        self.assertEqual(Store(self.root).read()["task"], "resolve the retry storm")
+        self.assertEqual(Store(self.root, allow_create=True).read()["task"], "resolve the retry storm")
         other = Path(self._tmp.name) / "elsewhere"
         main(["--state", str(other), "task", "unrelated"])
-        self.assertEqual(Store(other).read()["task"], "unrelated")
-        self.assertEqual(Store(self.root).read()["task"], "resolve the retry storm")
+        self.assertEqual(Store(other, allow_create=True).read()["task"], "unrelated")
+        self.assertEqual(Store(self.root, allow_create=True).read()["task"], "resolve the retry storm")
 
 class TestKeysCommand(PairTestCase):
     """`pairctl keys gen` gives the role a stable signer instead of pid/pane."""
@@ -449,7 +449,7 @@ class TestRoundMode(PairTestCase):
         # `pairctl all` is where a human looks when they have forgotten which kind of
         # round a project is in. A mode nobody can see is a mode somebody forgets and
         # then wonders why the server refused a patch.
-        store = Store(self.root)
+        store = Store(self.root, allow_create=True)
         store.mutate(lambda state: state.update({"phase": "implement", "writer": "opencode"}))
         self.assertEqual(project_row(self.root)["mode"], "fix")
 

@@ -383,7 +383,8 @@ def cmd_reset(store: Store, args: argparse.Namespace) -> int:
     for path in (store.mailbox_root, store.notes_root, store.patches_root):
         shutil.rmtree(path, ignore_errors=True)
     store.state_path.unlink(missing_ok=True)
-    fresh = Store(store.root)
+    # Reset just deleted state.json: bootstrap again, not a read (round 115 S4).
+    fresh = Store(store.root, allow_create=True)
     # Wiping state must not raise rights — but rights count against the default,
     # and the default is now auto: exactly what the human set as norm. Setting
     # observe here would contradict: wipe would stop the pair against "work alone,

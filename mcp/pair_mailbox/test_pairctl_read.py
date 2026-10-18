@@ -40,7 +40,7 @@ class TestMultiProject(PairTestCase):
 
     def _project(self, name: str, *, phase: str = "scoping", writer=None, events: int = 0):
         root = Path(self._tmp.name) / name / ".pair"
-        store = Store(root)
+        store = Store(root, allow_create=True)
         store.mutate(lambda state: state.update({"phase": phase, "writer": writer,
                                                  "task": f"task {name}"}))
         for _ in range(events):
@@ -117,7 +117,7 @@ class TestMultiProject(PairTestCase):
         # writing state.json with zero events: the pair never moved, so silence must
         # not read as fresh activity
         root = self._project("idle", events=1)
-        Store(root).mutate(lambda state: state.update({"task": "touching state"}))
+        Store(root, allow_create=True).mutate(lambda state: state.update({"task": "touching state"}))
         self.assertLess(silence_seconds(root), 60.0)
 
     def test_a_finished_project_is_never_reported_as_stuck(self) -> None:

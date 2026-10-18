@@ -29,7 +29,7 @@ from state_rotation import archive_dir  # noqa: E402
 
 
 def _seed(root: Path, tasks: int = 5) -> Store:
-    store = Store(root / ".pair")
+    store = Store(root / ".pair", allow_create=True)
     store.mutate(lambda s: s.update({
         "round": 42, "mode": "fix", "phase": "implement",
         "tasks": [{"id": i + 1, "text": f"task {i + 1}", "status": "closed",
@@ -95,7 +95,7 @@ class StateRotationCase(unittest.TestCase):
     def test_empty_state_rotates_to_nothing(self) -> None:
         import shutil
         shutil.rmtree(self.root / ".pair" / "archive", ignore_errors=True)
-        store = Store(self.root / "empty" / ".pair")
+        store = Store(self.root / "empty" / ".pair", allow_create=True)
         store.mutate(lambda s: s.update({"tasks": [], "evidence": []}))
         moved_tasks, moved_evidence = state_rotation.rotate(store.root)
         self.assertEqual(moved_tasks, 0)
@@ -114,6 +114,67 @@ class StateRotationCase(unittest.TestCase):
         after = self.store.read()
         self.assertEqual(len(after["tasks"]), 5)
         self.assertEqual(len(after["evidence"]), 5)
+
+
+class StoreRootRefusalCase(unittest.TestCase):
+    """A root with no state.json is a caller error, never an empty pair (round 115 S4).
+
+    The regression these pin exactly, from 2026-10-18: diagnosing an ack refusal, omp
+    built `Store(Path('.'))` where the intended root was `Path('.pair')`.
+    `state_path` became `./state.json`, which does not exist, so `_load` returned
+    `default_state()` — empty `seen`, empty `pending_reads`. Downstream `.get()`
+    chains returned `None`, which was read as a MEASUREMENT; two green direct
+    results on screen were read as "the file changed under me"; two hours went into
+    a defect that did not exist. A loud refusal at construction would have ended it
+    in one second.
+    """
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.project = Path(self._tmp.name)
+        self.pair = self.project / ".pair"
+        Store(self.pair, allow_create=True).mutate(lambda s: s.update({"task": "live"}))
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def test_a_root_with_no_state_json_is_refused(self):
+        with self.assertRaises(FileNotFoundError) as caught:
+            Store(self.project / "state")  # empty dir, no state.json
+        message = str(caught.exception)
+        self.assertIn("No state.json", message)
+        self.assertIn(str(self.project / "state"), message,
+                      "the refusal must name the path it actually tried")
+
+    def test_the_refusal_names_the_pair_neighbour(self):
+        """The mistake is almost always the missing `.pair` suffix, so say it."""
+        with self.assertRaises(FileNotFoundError) as caught:
+            Store(self.project)  # project root, where the pair lives one level down
+        self.assertIn(str(self.pair), str(caught.exception))
+        self.assertIn("did you mean", str(caught.exception))
+
+    def test_the_exact_measurement_that_cost_two_hours(self):
+        """`cwd`-relative `.`-as-root, the literal mistake, refuses instead of
+        reading as an empty-but-valid state whose `seen` and `pending_reads` are
+        silently None — which is what got read as a measurement."""
+        import os
+        previous = os.getcwd()
+        os.chdir(self.project)
+        try:
+            with self.assertRaises(FileNotFoundError):
+                Store(Path("."))
+        finally:
+            os.chdir(previous)
+
+    def test_the_live_state_still_opens(self):
+        store = Store(self.pair)
+        self.assertEqual(store.read()["task"], "live")
+
+    def test_bootstrap_still_creates(self):
+        """`allow_create` stays the first-run door: pairup and reset both need it."""
+        fresh = self.project / "elsewhere"
+        store = Store(fresh / ".pair", allow_create=True)
+        self.assertEqual(store.read()["task"], "")
 
 
 if __name__ == "__main__":

@@ -20,6 +20,7 @@ from shutil import which as shutil_which
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import store_core  # noqa: E402 - round 115: the transcript cap lives here, not in server
 from pair_test_base import PAIRCHAT, SERVER, PairTestCase  # noqa: E402
 from pairctl_read import project_row, render_table  # noqa: E402
 from server import (  # noqa: E402
@@ -440,7 +441,7 @@ class TestTranscriptWindow(PairTestCase):
     def test_rotation_carries_the_chain_across_the_marker(self) -> None:
         """Rotation is the verification horizon: the live file starts at a marker, the tail
         before it leaves for the archive, the live-tail chain verifies from the marker."""
-        with mock.patch.object(self.server, "TRANSCRIPT_MAX_BYTES", 20_000):
+        with mock.patch.object(store_core.Store, "TRANSCRIPT_MAX_BYTES", 20_000):
             self.fill(400, payload="y" * 40)
         entries = self.store.read_transcript(0)
         markers = [e for e in entries if e.get("kind") == "transcript_rotated"]
@@ -499,7 +500,7 @@ class TestTranscriptWindow(PairTestCase):
         History never deletes silent: a lost `role_collision` record cost us a night.
         Rotation must move, never dispose.
         """
-        with mock.patch.object(self.server, "TRANSCRIPT_MAX_BYTES", 20_000):
+        with mock.patch.object(store_core.Store, "TRANSCRIPT_MAX_BYTES", 20_000):
             self.fill(400, payload="y" * 40)
         active = self.store.read_transcript(0)
         self.assertLess(len(active), 400, "the live file must shrink")
@@ -520,7 +521,7 @@ class TestTranscriptWindow(PairTestCase):
         Or the journal lands shorter one day for no visible reason, and "where did the
         events go" turns unanswerable.
         """
-        with mock.patch.object(self.server, "TRANSCRIPT_MAX_BYTES", 20_000):
+        with mock.patch.object(store_core.Store, "TRANSCRIPT_MAX_BYTES", 20_000):
             self.fill(400, payload="y" * 40)
         kinds = [e.get("kind") for e in self.store.read_transcript(0)]
         self.assertIn("transcript_rotated", kinds)
@@ -531,7 +532,7 @@ class TestTranscriptWindow(PairTestCase):
         Journal order matters, record integrity matters more. So a rotation failure
         survives, never turns into a lost event.
         """
-        with mock.patch.object(self.server, "TRANSCRIPT_MAX_BYTES", 10):
+        with mock.patch.object(store_core.Store, "TRANSCRIPT_MAX_BYTES", 10):
             with mock.patch("os.replace", side_effect=OSError("disk full")):
                 self.store.append_transcript("test", "writer", i=7)
         self.assertIn("i", self.store.read_transcript(1)[0],

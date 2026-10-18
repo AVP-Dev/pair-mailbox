@@ -446,7 +446,7 @@ class TestDeliveryGaps(PairTestCase):
         git(work, "add", "f.txt")
         git(work, "commit", "-qm", "advance")
         for mode, wants_blocker in (("audit", False), ("fix", True)):
-            store = _server.Store(work / f".pair-{mode}")
+            store = _server.Store(work / f".pair-{mode}", allow_create=True)
             writer = _server.PairSession("writer-agent", store)
             store.mutate(lambda s, m=mode: (
                 s.__setitem__("writer", "writer-agent"),
@@ -500,7 +500,7 @@ class TestDeliveryGaps(PairTestCase):
         git(work, "commit", "-qm", "advance")
         # Re-home: Store(root) treats root as the project and root/.pair as
         # state (project_root property) — so the floor reads this repo.
-        store = _server.Store(work / ".pair")
+        store = _server.Store(work / ".pair", allow_create=True)
         writer = _server.PairSession("writer-agent", store)
         store.mutate(lambda s: s.__setitem__("writer", "writer-agent"))
         os.environ.pop(statecache.CACHE_DISABLED_ENV, None)
@@ -554,7 +554,7 @@ class TestDeliveryGaps(PairTestCase):
         (work / "f.txt").write_text("y\n", encoding="utf-8")
         git(work, "add", "f.txt")
         git(work, "commit", "-qm", "advance")
-        store = _server.Store(work / ".pair")
+        store = _server.Store(work / ".pair", allow_create=True)
         writer = _server.PairSession("writer-agent", store)
         store.mutate(lambda s: (s.__setitem__("writer", "writer-agent"),
                                 s.__setitem__("autonomy", "observe")))
