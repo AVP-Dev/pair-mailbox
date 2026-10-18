@@ -27,7 +27,7 @@ staleness-detector	static	1	python3 scripts/staleness-detector.py
 # Each launches alone, because `python3 test_protocol.py` no longer runs neighbour
 # module tests, and a silently excluded suite would read as green.
 #
-protocol	positive	1	python3 mcp/pair_mailbox/test_protocol.py	serial
+protocol	positive	1	python3 mcp/pair_mailbox/test_protocol.py python3 mcp/pair_mailbox/test_protocol_authority.py python3 mcp/pair_mailbox/test_protocol_gates.py python3 mcp/pair_mailbox/test_protocol_notes.py python3 mcp/pair_mailbox/test_protocol_delivery.py python3 mcp/pair_mailbox/test_protocol_mailbox.py python3 mcp/pair_mailbox/test_protocol_tui.py python3 mcp/pair_mailbox/test_protocol_permissions.py python3 mcp/pair_mailbox/test_protocol_panes.py python3 mcp/pair_mailbox/test_protocol_pins.py python3 mcp/pair_mailbox/test_protocol_transport.py	serial
 task-banner	positive	1	python3 mcp/pair_mailbox/test_task_banner.py
 autoperms	positive	1	python3 mcp/pair_mailbox/test_autoperms.py
 intent-gate	positive	1	python3 mcp/pair_mailbox/test_intent_gate.py
