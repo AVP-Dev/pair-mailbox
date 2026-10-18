@@ -64,6 +64,16 @@ class PilotCase(unittest.TestCase):
             os.environ.pop("TMUX_PANE", None)
         self.tmp.cleanup()
 
+    def allow_push(self) -> None:
+        """Give the pilot the trigger to speak into a CLI.
+
+        Round 114 changed the contract: without a trigger the supervisor
+        reports once and stays quiet, so a test that expects a nudge must say
+        why the nudge is due. This file, written by the test, IS that reason —
+        the same one the human or a hook writes.
+        """
+        (self.state_dir / "ask").write_text("test trigger", encoding="utf-8")
+
     def pilot(self, silence: float = 600.0) -> "pairpilot.Pilot":
         # tmux switches off: tests must never touch live windows.
         # Profiles isolate too: the dynamic `launch_command` reads the real
@@ -371,6 +381,7 @@ class TestWakeFileIntegrity(PilotCase):
         self.inbox("agy", 3)
         self.write_state(writer="agy", roles={"agy": {"last_seen": ago(3600), "pid": 1, "pane": "%1"}})
         pilot = self.pilot()
+        self.allow_push()
         pilot.wake_grace = 0.0
         pilot.tick()
         pilot.tick()
@@ -531,6 +542,7 @@ class TestLiveness(PilotCase):
         """
         self.write_state(writer="agy", roles={"agy": {"last_seen": ago(3600), "pid": 1, "pane": "%1"}})
         pilot = self.pilot()
+        self.allow_push()
         pilot.tick()
         wake = self.wake(pilot, "agy")
         self.assertTrue(wake, "a silent writer must take a wake")
@@ -550,6 +562,7 @@ class TestLiveness(PilotCase):
         self.write_state(writer="agy", roles={"agy": {"last_seen": ago(3600), "pid": 1, "pane": "%1"}})
         self.inbox("agy", 2)
         pilot = self.pilot()
+        self.allow_push()
         pilot.tick()
         self.assertTrue(self.wake(pilot, "agy"))
         # The role consumes one letter: unread 2 -> 1.
@@ -571,6 +584,7 @@ class TestLiveness(PilotCase):
         """
         self.write_state(writer="agy", roles={"agy": {"last_seen": ago(3600), "pid": 1, "pane": "%1"}})
         pilot = self.pilot()
+        self.allow_push()
         pilot.wake_grace = 0.0
         pilot.tick()
         pilot.tick()
@@ -595,6 +609,7 @@ class TestLiveness(PilotCase):
         """
         self.write_state(writer="agy", roles={"agy": {"last_seen": ago(3600), "pid": 1, "pane": "%1"}})
         pilot = self.pilot()
+        self.allow_push()
         pilot.wake_grace = 0.0
         pilot.tick()
         pilot.tick()
@@ -649,6 +664,7 @@ class TestLiveness(PilotCase):
         """
         self.write_state(writer="agy", roles={"agy": {"last_seen": ago(3600), "pid": 1, "pane": "%1"}})
         pilot = self.pilot()
+        self.allow_push()
         pilot.wake_grace = 0.0
         pilot.tick()
         pilot.tick()
@@ -685,6 +701,7 @@ class TestLiveness(PilotCase):
         self.write_state(writer="agy", roles={"agy": {"last_seen": ago(30), "pane": "%1"},
                                               "codex": {"last_seen": ago(3600), "pane": "%2"}})
         pilot = self.pilot()
+        self.allow_push()
         pilot.tick()
         self.assertTrue(self.wake(pilot, "codex"), "a silent role with no incoming wakes")
         self.assertTrue(pilot.pending("codex"), "the push at once, as with an unread")
@@ -714,6 +731,7 @@ class TestLiveness(PilotCase):
         self.write_state(writer="agy", roles={"codex": {"last_seen": ago(3600), "pane": "%1"}},
                          seen={"codex": 0})
         pilot = self.pilot()
+        self.allow_push()
         pilot.tick()
         self.assertIn("pilot_unread_nudge", self.transcript_kinds())
         self.assertNotIn("pilot_idle_role", self.transcript_kinds())
@@ -726,6 +744,7 @@ class TestLiveness(PilotCase):
         self.write_state(writer="agy", roles={"codex": {"last_seen": ago(60), "pane": "%1"}},
                          seen={"codex": 0})
         pilot = self.pilot()
+        self.allow_push()
         pilot.tick()
         self.assertTrue(self.wake(pilot, "codex"))
         pilot.tick()
@@ -755,6 +774,7 @@ class TestLiveness(PilotCase):
         self.write_state(writer="agy", roles={"codex": {"last_seen": ago(60), "pane": "%1"}},
                          seen={"codex": 0})
         pilot = self.pilot()
+        self.allow_push()
         pilot.tick()
         first = [e for e in self.transcript_entries() if e.get("kind") == "pilot_unread_nudge"]
         self.assertEqual(1, len(first))
@@ -789,6 +809,7 @@ class TestLiveness(PilotCase):
                  "agy": {"last_seen": ago(60), "pane": "%2"}}
         self.write_state(writer="agy", roles=roles)
         pilot = self.pilot()
+        self.allow_push()
         pilot.reply_grace = 0
         pilot.reply_repeat = 3600.0
         root = self.state_dir / "obligations"
@@ -825,6 +846,7 @@ class TestUnread(PilotCase):
         self.inbox("agy", 3)
         self.write_state(roles={"agy": {"last_seen": ago(60), "pane": "%1"}}, seen={"agy": 0})
         pilot = self.pilot()
+        self.allow_push()
         pilot.tick()
         wake = self.wake(pilot, "agy")
         self.assertTrue(wake, "an unread letter must leave a trace")
@@ -869,8 +891,14 @@ class TestOutboxStaleness(PilotCase):
     def _queue(self, pilot, role: str, text: str, age_seconds: float = 0.0) -> Path:
         pilot.enqueue(role, text)
         path = pilot.outbox / f"{role}.txt"
+        # The age lives on the queue-time marker since round 114: aging only
+        # the nudge file would leave `queued_age` reading "just queued",
+        # which is the exact defect the marker exists to remove.
         when = time.time() - age_seconds
         os.utime(path, (when, when))
+        marker = pilot.queued_at_path(role)
+        if marker.exists():
+            os.utime(marker, (when, when))
         return path
 
     def test_fresh_nudge_is_delivered(self) -> None:
@@ -1016,6 +1044,7 @@ class TestOutboxStaleness(PilotCase):
         translation cannot silently disarm it.
         """
         p = self.pilot()
+        self.allow_push()
         self.inbox("agy", 1)
         state = self.write_state(roles={"agy": {"pane": "%1", "pid": os.getpid()}}, seen={})
         p.unread_peers(state)
@@ -1038,6 +1067,7 @@ class TestOutboxStaleness(PilotCase):
         same text must drop.
         """
         p = self.pilot()
+        self.allow_push()
         p.reply_grace = 0
         root = self.state_dir / "obligations"
         root.mkdir(parents=True, exist_ok=True)
@@ -1952,6 +1982,7 @@ class TestStalledPatches(PilotCase):
 
     def pilot_with_grace(self, grace: float) -> "pairpilot.Pilot":
         pilot = self.pilot()
+        self.allow_push()
         pilot.patch_grace = grace
         return pilot
 
@@ -2391,11 +2422,19 @@ class TestVisibleWork(PilotCase):
         """
         self.silent_writer_state()
         pilot = self.pilot()
+        self.allow_push()
         pilot.tmux = "/usr/bin/true"
         self.patch_composer(">", empty=True)
         pilot.tick()
         self.assertTrue(self.wake(pilot, "agy"), "an empty composer — exactly the defect")
-        self.assert_enqueued_for_push(pilot, "agy")
+        # The stale-writer nudge is not printed here and that is correct: the
+        # composer is EMPTY (the defect under test), so the push target question
+        # is answered by `deliver`, not by `nudge`. Round 114's gate refuses a
+        # push when the role's own server is not proven in the pane — with
+        # tmux stubbed to /usr/bin/true nobody is proven, and silence is the
+        # outcome the brief asked for: the wake file carries the fact.
+        self.assertEqual("", pilot.pending("agy"),
+                         "no proven CLI in the pane — the wake file is the whole trace")
 
     def test_missing_composer_counts_as_busy(self) -> None:
         """The TUI redraws, no composer in sight. Striking now means sending keys into
@@ -2620,6 +2659,7 @@ class TestObligations(PilotCase):
         self.obligation(1, "opencode", "agy", age=60)
         self.write_state(roles={"agy": {"last_seen": ago(30), "pane": "%20"}})
         pilot = self.pilot()
+        self.allow_push()
         pilot.tick()
         self.assertEqual("", pilot.pending("agy"), "just asked — awaiting")
 
@@ -2628,6 +2668,7 @@ class TestObligations(PilotCase):
         self.obligation(8, "opencode", "agy", age=60)
         self.write_state(roles={"agy": {"last_seen": ago(30), "pane": "%20"}})
         pilot = self.pilot()
+        self.allow_push()
         pilot.tick()
         self.assertEqual("", pilot.pending("agy"), "a minute means awaiting still")
         self.obligation(9, "opencode", "agy", age=200)
@@ -2638,6 +2679,7 @@ class TestObligations(PilotCase):
         self.obligation(7, "opencode", "agy", age=1000)
         self.write_state(roles={"agy": {"last_seen": ago(30), "pane": "%20"}})
         pilot = self.pilot()
+        self.allow_push()
         pilot.tick()
         self.assertIn("mailbox holds no answer", pilot.pending("agy"))
         self.assertEqual("", pilot.pending("opencode"), "the author never learned yet, too early")
@@ -2646,6 +2688,7 @@ class TestObligations(PilotCase):
         self.obligation(7, "opencode", "agy", age=3000)
         self.write_state(roles={"agy": {"last_seen": ago(30), "pane": "%20"}})
         pilot = self.pilot()
+        self.allow_push()
         pilot.tick()
         self.assertIn("mailbox holds no answer", pilot.pending("agy"))
         self.assertIn("Do not wait forever", pilot.pending("opencode"))
@@ -2728,6 +2771,7 @@ class TestDoneParking(PilotCase):
                                 "omp": {"last_seen": ago(1200), "pane": "%2"}})
         pilot = self.pilot()
         self.assertFalse(pilot.is_done_parked(pilot.state()))
+        self.allow_push()
         pilot.tick()
         self.assertIn("mailbox holds no answer", pilot.pending("agy"))
 
@@ -2739,6 +2783,7 @@ class TestDoneParking(PilotCase):
                                 "omp": {"last_seen": ago(30), "pane": "%2"}})
         pilot = self.pilot()
         self.assertFalse(pilot.is_done_parked(pilot.state()))
+        self.allow_push()
         pilot.tick()
         self.assertIn("You have 1 unread messages", pilot.pending("agy"))
 
@@ -2815,6 +2860,185 @@ class TestOwnPaneIsPassedNotGuessed(PilotCase):
         self.assertIn('PAIR_PILOT_PANE="$TMUX_PANE"', duo,
                       "pair-duo must pass its own pane to the pilot")
         self.assertIn('pilot.pid', duo, "and keep recording the pid")
+
+
+class TestPushGates(PilotCase):
+    """Round 114: the supervisor must not type into a CLI that is not there,
+    and must not type at all without a reason to.
+
+    Measured live 2026-10-18 in galatour: all three agent pids were dead and
+    both panes carried on as plain bash. `role_pushable` answered True for the
+    pane, the pilot typed nudge text into a shell, and the shell ran it as a
+    command — 1314 `pilot_deliver_unverified` rows and 97
+    `[pairpilot]: команда не найдена` lines on screen. Nobody read any of it.
+    The same pilot, in umputum, opened a stream of nudges on session start
+    with nothing behind it, and the human could not tell a stuck round from a
+    glitch. So the pair of gates here: a live CLI, and a trigger.
+    """
+
+    def _pilot_with_tmux(self, role_server_in_pane: int = 0) -> "pairpilot.Pilot":
+        """A pilot whose pane verdicts are stubbed: the pane is alive as a shell.
+
+        The stub answers the two facts the pilot needs and nothing else, so the
+        test cannot pass by touching a real window.
+        """
+        pilot = self.pilot()
+        pilot.tmux = "/usr/bin/tmux"
+        orig_role_pid = pairpilot.pane_role_pid
+        pairpilot.pane_role_pid = lambda tmux, pane, role: role_server_in_pane
+        self.addCleanup(setattr, pairpilot, "pane_role_pid", orig_role_pid)
+        return pilot
+
+    def test_dead_cli_in_a_live_pane_gets_no_text(self) -> None:
+        """The galatour shape: pane alive, role server gone. Nothing is typed."""
+        self.write_state(writer="agy",
+                         roles={"agy": {"last_seen": ago(3600), "pid": 999999, "pane": "%1"}})
+        pilot = self._pilot_with_tmux(role_server_in_pane=0)
+        self.allow_push()
+        pilot.tick()
+        self.assertEqual("", pilot.pending("agy"),
+                         "a bash shell must never receive nudge text")
+        self.assertIn("pilot_push_dead_role", self.transcript_kinds())
+
+    def test_live_cli_in_the_pane_gets_the_text(self) -> None:
+        """The healthy shape: the role's own server sits in its pane."""
+        self.write_state(writer="agy",
+                         roles={"agy": {"last_seen": ago(3600), "pid": os.getpid(), "pane": "%1"}})
+        pilot = self._pilot_with_tmux(role_server_in_pane=os.getpid())
+        self.allow_push()
+        pilot.tick()
+        self.assertIn("write", pilot.pending("agy"))
+
+    def test_no_trigger_means_silence_with_one_journal_row(self) -> None:
+        """Opening a session types nothing, and says why once."""
+        self.write_state(writer="agy",
+                         roles={"agy": {"last_seen": ago(3600), "pid": os.getpid(), "pane": "%1"}})
+        pilot = self.pilot()
+        pilot.tick()
+        pilot.tick()
+        pilot.tick()
+        self.assertEqual("", pilot.pending("agy"), "no trigger, no typing")
+        quiet = [e for e in self.transcript_entries() if e.get("kind") == "pilot_push_quiet"]
+        self.assertEqual(1, len(quiet),
+                         "one row names the silence, not one per tick")
+
+    def test_the_trigger_file_makes_the_pilot_speak_once(self) -> None:
+        """The ask file is the human's switch: present, one report, then quiet."""
+        self.write_state(writer="agy",
+                         roles={"agy": {"last_seen": ago(3600), "pid": os.getpid(), "pane": "%1"}})
+        pilot = self.pilot()
+        self.allow_push()
+        pilot.tick()
+        self.assertTrue(pilot.pending("agy"), "the trigger lets the pilot speak")
+        pilot.consume_trigger()
+        pilot.drop_outbox("agy")
+        pilot.tick()
+        self.assertEqual("", pilot.pending("agy"),
+                         "a spent trigger must not re-arm itself")
+
+    def test_queued_age_ignores_the_rewrite_that_reset_the_ttl(self) -> None:
+        """The queue lifetime is about the text, not about the last write.
+
+        Round 114 measured: `enqueue` rewrote the file, mtime moved, and the
+        outbox never went stale — so the mailbox fallback (the path that always
+        works) never fired and a dead pointer lived forever.
+        """
+        pilot = self.pilot()
+        pilot.enqueue("agy", "the very same reminder")
+        marker = pilot.queued_at_path("agy")
+        self.assertTrue(marker.exists(), "the first queueing must be stamped")
+        old = time.time() - pilot.outbox_ttl - 5
+        os.utime(pilot.outbox / "agy.txt", (old, old))
+        os.utime(marker, (old, old))
+        pilot.enqueue("agy", "the very same reminder")  # a rewrite, same text
+        self.assertGreater(pilot.queued_age("agy"), pilot.outbox_ttl,
+                           "a rewrite must not reset a queued item's lifetime")
+
+    def test_drop_outbox_takes_its_stamp_with_it(self) -> None:
+        """A stamp without its file would age a nudge that is not there."""
+        pilot = self.pilot()
+        pilot.enqueue("agy", "a reminder")
+        pilot.drop_outbox("agy")
+        self.assertFalse(pilot.queued_at_path("agy").exists())
+        self.assertIsNone(pilot.queued_age("agy"))
+
+    def test_wake_escalation_cannot_bypass_the_trigger(self) -> None:
+        """A wake file raised long ago must not force printing on its own.
+
+        Found by the critic in round 114 review: `poll_wakes` called `enqueue`
+        directly, so once `wake_grace` passed, a wake raised before the trigger
+        existed printed into the CLI with no reason behind it — the exact spam
+        the gate exists to stop, arriving through a side door.
+        """
+        self.write_state(writer="agy",
+                         roles={"agy": {"last_seen": ago(60), "pid": os.getpid(), "pane": "%1"}})
+        pilot = self.pilot()
+        pilot.wake_grace = 0.0
+        # A wake raised by an unread, with its grace already past.
+        pilot.mark_wake(pilot.state(), "agy", "3 unread", "you have unread mail")
+        wake = pilot.wake_root / "agy.json"
+        wake.write_text(json.dumps({"reason": "3 unread", "text": "you have unread mail",
+                                    "asked_at": ago(600)}), encoding="utf-8")
+        pilot.tick()
+        self.assertEqual("", pilot.pending("agy"),
+                         "an escalation with no trigger stays silent")
+        pilot.consume_trigger()
+        self.assertFalse(pilot.ask_file.exists(),
+                         "nothing was delivered, so nothing consumed the trigger")
+
+    def test_the_trigger_survives_until_the_nudge_actually_lands(self) -> None:
+        """A queued nudge keeps its trigger, and spending it stops new ones.
+
+        Two facts, in order. First: while text waits in the queue the ask file
+        is still there — consuming it on queueing would silence a nudge that has
+        not reached anybody. Second: once the trigger is gone, a NEW reason does
+        not produce a new nudge; the one already queued stays, because a queue
+        is not revoked by a spent trigger (that would drop text mid-flight).
+        """
+        self.write_state(writer="agy",
+                         roles={"agy": {"last_seen": ago(3600), "pid": os.getpid(), "pane": "%1"}})
+        pilot = self.pilot()
+        self.allow_push()
+        pilot.tick()
+        self.assertTrue(pilot.ask_file.exists(),
+                        "a queued-but-undelivered nudge keeps its trigger")
+        pilot.consume_trigger()
+        pilot.tick()
+        pushed_again = [e for e in self.transcript_entries()
+                        if e.get("kind") in ("pilot_unread_nudge", "pilot_idle_role")]
+        self.assertEqual([], pushed_again,
+                         "a spent trigger produces no new nudge of any kind")
+
+    def test_no_wake_file_for_a_process_that_is_gone(self) -> None:
+        """A dead pid on a live pane gets no wake file at all.
+
+        The second half of the critic's round-114 finding: `mark_wake` ran
+        before the nudge gate, so a wake was raised for a role with no CLI, and
+        poll_wakes then had to drop it again every wake_grace. Refusing at the
+        source removes that round trip.
+        """
+        self.write_state(writer="agy",
+                         roles={"agy": {"last_seen": ago(3600), "pid": 999999, "pane": "%1"}})
+        pilot = self.pilot()
+        pilot.tmux = "/usr/bin/tmux"
+        orig = pairpilot.pane_alive
+        pairpilot.pane_alive = lambda tmux, pane: True
+        self.addCleanup(setattr, pairpilot, "pane_alive", orig)
+        pilot.mark_wake(pilot.state(), "agy", "silent 60 min", "you are silent")
+        self.assertEqual({}, self.wake(pilot, "agy"),
+                         "a wake for a process that no longer exists is never raised")
+        self.assertIn("pilot_wake_dead_target", self.transcript_kinds())
+
+    def test_a_live_process_with_a_moved_record_still_wakes(self) -> None:
+        """The refusal is narrow on purpose: 'not proven alive' is not 'dead'."""
+        self.write_state(writer="agy",
+                         roles={"agy": {"last_seen": ago(3600), "pid": os.getpid(), "pane": "%1"}})
+        pilot = self.pilot()
+        pilot.tmux = "/usr/bin/tmux"
+        pilot.mark_wake(pilot.state(), "agy", "silent 60 min", "you are silent")
+        self.assertTrue(self.wake(pilot, "agy"),
+                        "a live process whose probe could not run must still be woken")
+        self.assertNotIn("pilot_wake_dead_target", self.transcript_kinds())
 
 
 if __name__ == "__main__":

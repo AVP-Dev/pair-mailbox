@@ -211,6 +211,15 @@ class Pilot:
         self.reported: set[str] = set()
         self.skip: set[str] = set()
         self._default_list_named = False
+        # The human's switch: without it the supervisor reports once and then
+        # stays quiet. Requirement from round 114: opening a pair session must
+        # not start a stream of nudges into the CLI; an interrupted round is
+        # said ONCE, and after that every push waits for an explicit reason.
+        # The reason is a file in the state dir (`ask` by default) that anyone
+        # with write access may create: the human, an agent, a hook. Its
+        # presence IS the trigger, and consuming it is what keeps it from
+        # firing twice. See `push_allowed` and `consume_trigger`.
+        self.ask_file = state_dir / "ask"
         try:
             self.tmux: str | None = _tmux()
         except Exception:
@@ -358,6 +367,37 @@ class Pilot:
     # (opencode's amendment, seq 1505).
     LEGACY_STAMP_FLOOR = 7 * 86400.0
 
+    def push_allowed(self) -> bool:
+        """Whether the supervisor may TYPE into a CLI right now: a trigger exists.
+
+        Round 114 requirement, from the human: "Должна быть какая-то защита…
+        это должно срабатывать только после какого-то триггера". The failure
+        it answers is not "the message was wrong" — it is that opening a pair
+        session started an endless stream of nudges nobody asked for, and the
+        human could not tell a stuck round from a glitch.
+
+        So the default is silence. The trigger is a file: the human writes
+        `.pair/ask` (or passes `--ask FILE`), an agent or a hook may do the
+        same, and the pilot then has permission for exactly one report. Reading
+        a fact into memory (`pair_state`, digest, unread counters) is not a
+        push and needs no permission — this gate is only about typing text into
+        somebody's composer, which is the irreversible part.
+        """
+        return self.ask_file.exists()
+
+    def consume_trigger(self) -> bool:
+        """Take the trigger away after it was spent. False when there was none."""
+        if not self.ask_file.exists():
+            return False
+        try:
+            self.ask_file.unlink()
+        except OSError as error:
+            # Keeping the file is the safe failure: an unconsumed trigger
+            # costs one extra report, a lost one costs the whole mechanism.
+            log(f"could not consume {self.ask_file}: {error}")
+            return False
+        return True
+
     def remember(self, key: str, ttl: float | None = DEFAULT_STAMP_TTL) -> bool:
         """True if we have not done this yet. Stops repeat writes.
 
@@ -493,6 +533,67 @@ class Pilot:
             return True
         return False
 
+    def push_target_alive(self, state: dict, role: str, info: dict) -> bool:
+        """Whether the role's OWN CLI is still in its pane, not just a shell.
+
+        Measured 2026-10-18 (round 114): galatour lost all three agents
+        (pids 2139922/2139660/1552973 dead) and their panes stayed alive as
+        plain bash. `role_pushable` answered True for omp — pane_alive is
+        about the pane, never about the role — and the pilot typed nudge
+        text into a shell, which ran it as a command: 1314
+        `pilot_deliver_unverified` rows and 97 `[pairpilot]: команда не
+        найдена` lines on screen. Nobody read a single one.
+
+        So the push question is not "someone sits there" but "the role's
+        server is reachable in that pane", and that is exactly
+        `pane_role_pid`: it looks for `server.py --role <role>` among the
+        pane's descendants. A shell, a vim, a build output — none of them
+        answer. Fail-open only when the roster pid is alive: an agent whose
+        pane moved but whose process lives still gets its push, and flush
+        judges the ownership question it already owns.
+        """
+        pid = info.get("pid")
+        if isinstance(pid, int) and pid > 0 and is_pid_alive(pid):
+            return True
+        if not info:
+            # A role past the roster (an obligation naming a peer that never
+            # registered here) is UNPROVEN, not dead: there is no pid to kill
+            # and no pane to search, so refusing would silence a nudge whose
+            # target the pilot simply cannot see. `flush_outbox` judges the
+            # pane itself, which is where that verdict belongs.
+            return True
+        if self.tmux is None:
+            # No tmux means no pane verdict at all (the test path, and a
+            # tmux-less host): the pid above is then the only evidence we
+            # have, and refusing on absence-of-evidence would make the pilot
+            # permanently mute for a role the scheduler itself considers live.
+            return bool(info.get("pane"))
+        pane = info.get("pane")
+        if not pane:
+            return False
+        try:
+            return pane_role_pid(self.tmux, pane, role) > 0
+        except Exception:
+            return False
+
+    def role_is_shell_only(self, state: dict, role: str, info: dict) -> bool:
+        """The pane is alive but the role's CLI is gone from it — a bare shell.
+
+        Reportable on its own, and the report is cheap: one journal row, so
+        the human sees a dead neighbour instead of guessing why the nudge
+        never lands. Never raises: a missing pane is "not provable", not
+        "shell only".
+        """
+        if self.tmux is None or self.push_target_alive(state, role, info):
+            return False
+        pane = info.get("pane")
+        if not pane or not is_pid_alive(info.get("pid") or 0):
+            return False
+        try:
+            return pane_alive(self.tmux, pane)
+        except Exception:
+            return False
+
 
     def shared_panes(self, state: dict) -> dict[str, list[str]]:
         return {pane: names for pane, names in self.panes(state).items() if len(names) > 1}
@@ -586,9 +687,34 @@ class Pilot:
         without a single action of its own.
         """
         path = self.wake_root / f"{role}.json"
+        info = (state.get("roles") or {}).get(role) or {}
+        # A role whose process is provably gone and whose pane holds a shell
+        # will never read a wake file: raising one only starts a wake that
+        # poll_wakes later drops again (round 114, the second half of the
+        # critic's finding). Refuse here, once, with a record.
+        #
+        # The rule is deliberately narrow: the roster pid must be dead AND the
+        # pane must still be alive (so someone — a shell — is sitting there).
+        # Anything weaker would refuse a live role whose `pane_role_pid` probe
+        # simply could not run: a stubbed tmux in tests, a restarted pane, an
+        # agent whose record moved. "Not proven alive" is not "proven dead".
+        pid = info.get("pid")
+        pane = info.get("pane")
+        if (isinstance(pid, int) and pid > 0 and not is_pid_alive(pid)
+                and pane and self.tmux is not None and not path.exists()):
+            try:
+                pane_lives = pane_alive(self.tmux, pane)
+            except Exception:
+                pane_lives = False
+            if pane_lives:
+                if self.remember(f"wake-dead-{role}-{stable_tag(reason)}",
+                                 ttl=self.outbox_ttl):
+                    self.store.append_transcript(
+                        "pilot_wake_dead_target", "pairpilot", target=role, reason=reason)
+                    log(f"{role}: pid {pid} is gone and its pane is a shell — no wake")
+                return
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
-            info = (state.get("roles") or {}).get(role) or {}
             # A hanging wake-up is amended, not overwritten.
             #
             # Two wake-up reasons (`unread_peers` and `stale_writer`), but one file
@@ -784,24 +910,34 @@ class Pilot:
             # The pause between repeats and its reason live in may_escalate_again.
             if not self.may_escalate_again(wake, now):
                 continue
-            if not self.role_pushable(info):
-                # Dead process, no live pane: escalation would enqueue into
-                # a file flush can never deliver. Drop the wake file with a
-                # record instead of re-arming it forever (round 99).
+            if not self.push_target_alive(state, role, info):
+                # No live role server in the pane: escalation would enqueue
+                # into text nobody can read. Drop the wake file with a record
+                # instead of re-arming it forever (rounds 99 and 114).
                 path.unlink(missing_ok=True)
                 self.store.append_transcript("pilot_wake_dead_role", "pairpilot",
                                              target=role, reason=wake.get("reason"))
-                log(f"{role}: dead, no live pane — wake dropped, not escalated")
+                log(f"{role}: its CLI is gone from the pane — wake dropped, not escalated")
+                continue
+            # Round 114: the escalation goes through nudge, the same door every
+            # other spontaneous push passes. It used to call enqueue directly,
+            # which bypassed the trigger gate — a wake file raised minutes
+            # earlier then forced printing long after every reason expired.
+            # The journal row and the `escalated` stamp move INSIDE the branch:
+            # a refused escalation is not an escalation, and claiming one every
+            # tick made the journal say the role was told while it was not.
+            if not self.nudge(role, str(wake.get("text") or ""), state,
+                              reason=f"wake escalation after {int(age // 60)} min"):
                 continue
             self.store.append_transcript("pilot_wake_escalated", "pairpilot",
                                          target=role, reason=wake.get("reason"),
                                          age_seconds=int(age),
                                          repeat=bool(wake.get("escalated")))
             log(f"{role}: silent {int(age // 60)} min past the wake-up — printing")
-            self.enqueue(role, str(wake.get("text") or ""))
             wake["escalated"] = True
             wake["escalated_at"] = utcnow()
-            path.write_text(json.dumps(wake, ensure_ascii=False, indent=2), encoding="utf-8")
+            path.write_text(json.dumps(wake, ensure_ascii=False, indent=2),
+                            encoding="utf-8")
 
     def may_escalate_again(self, wake: dict, now: float) -> bool:
         """Whether an escalation repeat is due: the role is silent and the pause passed.
@@ -824,8 +960,61 @@ class Pilot:
 
     # --------------------------------------------------------------- outbox
 
-    def enqueue(self, role: str, text: str) -> None:
+    def nudge(self, role: str, text: str, state: dict, reason: str = "") -> bool:
+        """Type a nudge into a CLI — behind BOTH gates, and only here.
+
+        This is the single door a spontaneous nudge passes. Round 114 made it
+        necessary twice over, and both reasons are measured, not hypothesised:
+
+        1. `role_pushable` answered "someone sits in the pane" for galatour's
+           omp — and a bash shell is someone. The pilot typed the nudge into
+           that shell, which ran it as a command: 97 `[pairpilot]: команда не
+           найдена` lines and 1314 `pilot_deliver_unverified` rows. So the
+           first gate is `push_target_alive`: the role's own server must be
+           reachable in its pane, or nothing is typed.
+        2. Opening a pair session started an endless nudge stream with no
+           trigger behind it, and the human could not tell a stuck round from
+           a glitch. The requirement was explicit: it must fire only after a
+           trigger. So the second gate is `push_allowed()` — the `.pair/ask`
+           file a human or a hook creates, consumed once it is spent.
+
+        Returns True when the nudge was queued. False is silent-but-recorded:
+        one journal row per distinct text per TTL, never a repeat every tick.
+        """
+        if not self.push_target_alive(state, role, (state.get("roles") or {}).get(role) or {}):
+            if self.remember(f"push-dead-{role}-{stable_tag(text)}", ttl=self.outbox_ttl):
+                self.store.append_transcript(
+                    "pilot_push_dead_role", "pairpilot", to=role,
+                    reason="no live role server in the role's pane — the CLI is gone",
+                    text=text[:120])
+                log(f"not queueing for {role}: its CLI is gone from the pane")
+            return False
+        if not self.push_allowed():
+            if self.remember(f"push-quiet-{role}-{stable_tag(text)}", ttl=self.outbox_ttl):
+                self.store.append_transcript(
+                    "pilot_push_quiet", "pairpilot", to=role,
+                    reason=reason or "no trigger — create the ask file to let the pilot speak",
+                    text=text[:120])
+            return False
+        self.enqueue(role, text, state)
+        return True
+
+    def enqueue(self, role: str, text: str, state: dict | None = None) -> None:
+        """Queue a nudge for printing — used by `nudge` and by direct callers.
+
+        `nudge` is the gate; this is the queue itself, and it stays free of
+        policy so that a caller which already decided (a human-requested
+        restart, a permission prompt the human asked about, a test proving the
+        queue's own behaviour) can put text into it without re-answering
+        "may we speak".
+
+        The queue age is measured from the FIRST time this exact text was
+        queued, not from the last write: rewriting the file used to reset
+        mtime, so `--outbox-ttl` never expired, the mailbox fallback never
+        fired, and a dead pointer lived forever (round 114).
+        """
         path = self.outbox / f"{role}.txt"
+        queued_at = self.queued_at_path(role)
         if path.exists():
             try:
                 old = path.read_text(encoding="utf-8")
@@ -836,7 +1025,69 @@ class Pilot:
                 # "never was". Write the replacement into the journal (round 43).
                 self.store.append_transcript("pilot_outbox_replaced", "pairpilot",
                                              to=role, old=old[:120], new=text[:120])
+                queued_at.unlink(missing_ok=True)
         path.write_text(text, encoding="utf-8")
+        if not queued_at.exists():
+            try:
+                queued_at.write_text(str(time.time()), encoding="utf-8")
+            except OSError:
+                pass
+
+    def drop_outbox(self, role: str) -> None:
+        """Remove a queued nudge together with its queue-time stamp.
+
+        A stamp without its file would make the next `queued_age` read
+        "waiting since N minutes ago" for a nudge that is not there, and
+        `flush_outbox` would mirror that ghost into the mailbox.
+        """
+        (self.outbox / f"{role}.txt").unlink(missing_ok=True)
+        self.queued_at_path(role).unlink(missing_ok=True)
+
+    def queued_at_path(self, role: str) -> Path:
+        """Where the first-queue timestamp of a queued nudge lives."""
+        return self.outbox / f".{role}.txt.queued-at"
+
+    def queued_age(self, role: str, now: float | None = None) -> float | None:
+        """How long the CURRENT text has been waiting, ignoring rewrites.
+
+        Round 114 measured: `enqueue` rewrote the outbox file every tick, so
+        `path.stat().st_mtime` answered "just now" forever and `--outbox-ttl`
+        could never expire. A nudge nobody could deliver then lived
+        indefinitely, and the mailbox fallback — the path that always works —
+        never fired.
+
+        The marker is written once per distinct text (see `enqueue`), so the
+        age is about the content, not about the last write. A missing marker
+        (queue from an older version) falls back to the file mtime, which is
+        still the second-best answer rather than "never expires".
+        """
+        path = self.outbox / f"{role}.txt"
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:
+            # No file: the nudge is not queued, so its age has no answer.
+            # `flush_outbox` and `drop_stale_outbox` both treat None as
+            # "nothing to look at", and a stamp left behind by a deleted file
+            # cannot make them age a nudge that is not there.
+            return None
+        marker = self.queued_at_path(role)
+        try:
+            # The marker's OWN mtime is the first-queue time. Its content is a
+            # human-readable copy for debugging, and reading it instead would
+            # make `os.utime` on the marker a no-op — which is exactly what a
+            # test and a human adjusting a queue by hand expect to move.
+            stamped = marker.stat().st_mtime
+        except OSError:
+            # Queue from before this fix: the second-best answer is the
+            # file's own mtime, never "does not expire".
+            return max(0.0, (now or time.time()) - mtime)
+        # The marker is authoritative for the age of the CURRENT text:
+        # `enqueue` writes it once per distinct text and deletes it the moment
+        # the text changes, so it can only describe what is on disk now. A
+        # rewrite of the SAME text moves the nudge file's mtime — which is
+        # exactly what made the old reading answer "just queued" forever —
+        # while the marker stays put, on purpose.
+        return max(0.0, (now or time.time()) - stamped)
 
     def mailbox_fallback(self, role: str, text: str) -> int | None:
         """Mirror the pointer into the recipient mailbox as a pilot letter.
@@ -910,12 +1161,11 @@ class Pilot:
             if not text or role in self.skip:
                 continue
             path = self.outbox / f"{role}.txt"
-            try:
-                age = now - path.stat().st_mtime
-            except OSError:
+            age = self.queued_age(role, now)
+            if age is None:
                 continue
             if age > self.outbox_ttl:
-                path.unlink(missing_ok=True)
+                self.drop_outbox(role)
                 seq = self.mailbox_fallback(role, text)
                 self.store.append_transcript(
                     "pilot_nudge_expired", "pairpilot", to=role,
@@ -928,7 +1178,7 @@ class Pilot:
                 # [R101d] Parked close: the round is done and nothing is open -
                 # a queued pointer would land as fresh mail about a finished
                 # round. Drop now with a record, never hang to TTL.
-                path.unlink(missing_ok=True)
+                self.drop_outbox(role)
                 self.store.append_transcript(
                     "pilot_outbox_parked_drop", "pairpilot", to=role,
                     text=text[:120])
@@ -948,7 +1198,7 @@ class Pilot:
             if not ours and alive and not check_failed:
                 # Proven foreign: the pane is alive AND the check itself ran
                 # and refused. Never print into it; drop with a record.
-                path.unlink(missing_ok=True)
+                self.drop_outbox(role)
                 self.store.append_transcript(
                     "pilot_pane_foreign", "pairpilot", to=role,
                     pane=pane, reason=why, text=text[:120])
@@ -959,7 +1209,7 @@ class Pilot:
                     # Dead process, no live pane: keeping the file means
                     # re-logging unproven every TTL forever, and no future
                     # tick can deliver it. Drop with a record (round 99).
-                    path.unlink(missing_ok=True)
+                    self.drop_outbox(role)
                     self.store.append_transcript(
                         "pilot_outbox_dead_role", "pairpilot", to=role,
                         pane=pane, text=text[:120])
@@ -989,9 +1239,15 @@ class Pilot:
                 log(f"composer retained the text for {role} — kept for mailbox")
                 continue
             if result.get("delivered"):
-                path.unlink(missing_ok=True)
+                self.drop_outbox(role)
                 self.store.append_transcript("pilot_deliver", "pairpilot", to=role, text=text[:120])
                 log(f"delivered the queued item for {role}")
+                # The trigger is spent when its reason is actually delivered, not
+                # when the file is read: consuming it early would silence the
+                # pilot while a queued nudge was still waiting for the composer.
+                if self.consume_trigger():
+                    log("the ask trigger is spent — the pilot is quiet again until "
+                        "a new one is created")
 
     def drop_stale_outbox(self, state: dict) -> None:
         """Drop what went stale in queue before trying to print (#18).
@@ -1006,14 +1262,12 @@ class Pilot:
             text = self.pending(role)
             if not text:
                 continue
-            path = self.outbox / f"{role}.txt"
-            try:
-                age = now - path.stat().st_mtime
-            except OSError:
+            age = self.queued_age(role, now)
+            if age is None:
                 continue
             if self.nudge_still_true(state, role, text):
                 continue
-            path.unlink(missing_ok=True)
+            self.drop_outbox(role)
             self.store.append_transcript(
                 "pilot_nudge_stale", "pairpilot", to=role,
                 age_seconds=int(age), text=text[:120])
@@ -1133,10 +1387,10 @@ class Pilot:
                         f"Call pair_read and answer your neighbour. If all is done — "
                         f"suggest the next chunk via pair_note.")
                 self.mark_wake(state, role, f"{missing} unread", text)
-                self.enqueue(role, text)
-                self.store.append_transcript("pilot_unread_nudge", "pairpilot",
-                                             target=role, unread=missing)
-                log(f"{role}: {missing} unread, pushing at once")
+                if self.nudge(role, text, state, reason=f"{missing} unread messages"):
+                    self.store.append_transcript("pilot_unread_nudge", "pairpilot",
+                                                 target=role, unread=missing)
+                    log(f"{role}: {missing} unread, pushing at once")
         return out
 
     def stale_writer(self, state: dict) -> None:
@@ -1169,9 +1423,10 @@ class Pilot:
                 f"or write to the note what blocks and how. Marking “doing” "
                 f"does not count: a real step or an explicit block is needed.")
         self.mark_wake(state, writer, f"silent {int(age // 60)} min holding the phase", text)
-        self.enqueue(writer, text)
-        log(f"{writer} silent {int(age // 60)} min holding phase {state.get('phase')!r} "
-            f"— pushing at once")
+        if self.nudge(writer, text, state,
+                      reason=f"writer silent {int(age // 60)} min holding the phase"):
+            log(f"{writer} silent {int(age // 60)} min holding phase {state.get('phase')!r} "
+                f"— pushing at once")
 
     def idle_roles(self, state: dict) -> None:
         """A silent role with no incoming is not "nothing to say" but lost contact.
@@ -1222,10 +1477,11 @@ class Pilot:
                     f"Take the next chunk or write to the note what blocks you — "
                     f"“doing” does not count, a step or an explicit block is needed.")
             self.mark_wake(state, role, f"silent {int(age // 60)} min with no incoming", text)
-            self.enqueue(role, text)
-            self.store.append_transcript("pilot_idle_role", "pairpilot", target=role,
-                                         minutes=int(age // 60))
-            log(f"{role} silent {int(age // 60)} min with no incoming — pushing at once")
+            if self.nudge(role, text, state,
+                          reason=f"role silent {int(age // 60)} min with no incoming"):
+                self.store.append_transcript("pilot_idle_role", "pairpilot", target=role,
+                                             minutes=int(age // 60))
+                log(f"{role} silent {int(age // 60)} min with no incoming — pushing at once")
 
     def check_stalled_busy(self, state: dict) -> None:
         """Stuck-agent detection in ‘Working...’ state (> stall_timeout zero-delta).
@@ -1387,9 +1643,10 @@ class Pilot:
                             f"already {int(age // 60)} min{f': {subject}' if subject else ''}. "
                             f"This is a request with expects_reply, and its mailbox holds no answer. "
                             f"Answer it or say it is no longer needed.")
-                    self.enqueue(receiver, text)
-                    log(f"{receiver} did not answer request {seq} from {sender} "
-                        f"({int(age // 60)} min)")
+                    if self.nudge(receiver, text, state,
+                                  reason=f"request {seq} unanswered for {int(age // 60)} min"):
+                        log(f"{receiver} did not answer request {seq} from {sender} "
+                            f"({int(age // 60)} min)")
 
             if sender and age >= self.reply_hard and sender not in self.skip:
                 key = f"waiting-{seq}-{sender}"
@@ -1399,8 +1656,10 @@ class Pilot:
                             f"already {int(age // 60)} min{f': {subject}' if subject else ''}. "
                             f"No answer. Do not wait forever: take the next step yourself, "
                             f"note that the request hung unanswered, and move on.")
-                    self.enqueue(sender, text)
-                    log(f"{sender} waits for an answer to request {seq} already {int(age // 60)} min")
+                    if self.nudge(sender, text, state,
+                                  reason=f"request {seq} unanswered for {int(age // 60)} min"):
+                        log(f"{sender} waits for an answer to request {seq} already "
+                            f"{int(age // 60)} min")
 
     def live_project_panes(self, state: dict, role: str = "") -> list[str]:
         """Live panes of this project, unclaimed by roles — wake candidates.
@@ -1674,8 +1933,9 @@ class Pilot:
                             f"Tell the neighbour: applied or rejected, and record it via "
                             f"pair_patch_applied or pair_patch_release. Silence here "
                             f"reads as readiness, and there is none.")
-                self.enqueue(name, text)
-                log(f"patch {path} hangs unapplied, {name} is notified")
+                if self.nudge(name, text, state,
+                              reason=f"patch {path} sealed and unapplied"):
+                    log(f"patch {path} hangs unapplied, {name} is notified")
 
     def allowlist(self) -> list[str]:
         """Permission allowlist: explicit argument first, then the human file.
@@ -1814,6 +2074,52 @@ class Pilot:
                                      journal=str(journal))
         log(f"round {state.get('round')} closed, report: {path}, journal: {journal}")
 
+    def startup_brief(self, state: dict) -> str | None:
+        """Say ONCE what the session walks into, then stop.
+
+        Round 114 requirement: on opening a pair session the human must not
+        receive an endless nudge stream, but must also not be left to guess
+        whether a round is stuck or the system is glitching. So the pilot
+        reads the state and states the facts one time per round and project:
+        phase, writer, open tasks, unread mail, anything left unapplied. That
+        is a report about the state, not a command to an agent, so it needs
+        no trigger and never gets typed into a composer — it goes to the
+        console and the journal, where a human looks.
+
+        Returns the brief text, or None when it was already said this round.
+        """
+        key = f"brief-{state.get('round')}-{state.get('phase')}"
+        if not self.remember(key):
+            return None
+        roles = state.get("roles") or {}
+        unread_total = 0
+        for role in roles:
+            try:
+                unread_total += max(0, self.unread(state, role))
+            except Exception:
+                continue
+        lines = [
+            f"pair session state — round {state.get('round')} is in phase "
+            f"{state.get('phase')!r} ({state.get('mode')})",
+            f"  writer: {state.get('writer') or 'UNASSIGNED'}",
+            f"  task: {state.get('task') or 'NOT SET'}",
+            f"  unread across roles: {unread_total}",
+        ]
+        open_tasks_list = [t for t in tasks_of(state) if t.get("status") == "open"]
+        if open_tasks_list:
+            lines.append("  open tasks: " + ", ".join(f"#{t.get('id')}" for t in open_tasks_list))
+        stalled = [p for p, rec in (state.get("patches") or {}).items()
+                   if rec.get("sealed") and not rec.get("applied")]
+        if stalled:
+            lines.append("  sealed but unapplied patches: " + ", ".join(sorted(stalled)))
+        lines.append("  the supervisor is quiet by default: create "
+                     f"{self.ask_file.name} to let it report into a CLI")
+        brief = "\n".join(lines)
+        self.store.append_transcript("pilot_startup_brief", "pairpilot",
+                                     round=state.get("round"),
+                                     phase=state.get("phase"))
+        return brief
+
     # ------------------------------------------------------------------ tick
 
     def tick(self) -> dict:
@@ -1854,6 +2160,9 @@ class Pilot:
         self.preventive_compact(state)
         self.check_server_freshness(state)
         self.checkpoint(state)
+        brief = self.startup_brief(state)
+        if brief:
+            log(brief)
         self.report_once(state)
         # Sweeper LAST (opencode seq 1505): before the work it could delete a
         # stamp a check in this same tick was about to consult — a duplicate
@@ -2016,6 +2325,11 @@ def write_report(state_dir: Path, state: dict) -> Path:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Pair-work supervisor")
     parser.add_argument("--state", default=os.environ.get("PAIR_STATE", ".pair"))
+    parser.add_argument("--ask", default=None,
+                        help="the trigger file that lets the pilot type into a CLI "
+                             "(default: <state>/ask). Presence means 'speak', consuming "
+                             "it spends one report. Without it the pilot stays quiet "
+                             "and only logs the startup brief.")
     parser.add_argument("--interval", type=float, default=DEFAULT_INTERVAL)
     parser.add_argument("--silence", type=float, default=DEFAULT_SILENCE)
     parser.add_argument("--outbox-ttl", type=float, default=DEFAULT_OUTBOX_TTL,
@@ -2062,6 +2376,10 @@ def main() -> int:
                   patch_grace=args.patch_grace, launch=launch, allow=allow,
                   restart_limit=args.restart_limit, restart_window=args.restart_window,
                   outbox_ttl=args.outbox_ttl, stall_timeout=args.stall_timeout)
+    if args.ask:
+        # A named trigger file instead of <state>/ask: useful when several
+        # supervisors watch one state dir and only one of them may speak.
+        pilot.ask_file = Path(args.ask).expanduser().resolve()
 
     if args.once:
         # A short-lived pass leaves the pid record alone: it would overwrite the live supervisor's record with a dead pid.

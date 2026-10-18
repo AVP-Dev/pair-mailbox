@@ -392,6 +392,41 @@ next letter wakes again; a hanging `expects_reply` repeats every 2h until answer
 nudge goes through the same unreliable delivery, so treat it as best-effort. The pull is
 what actually works.
 
+### 7c. Two gates in front of the supervisor's typing
+
+A push is the one irreversible thing the supervisor does: it types text into another
+window. Round 114 measured what happens without a gate in front of it — galatour lost all
+three agents, their panes lived on as plain bash, and the pilot typed the same "you have
+unread mail" nudge into that shell every 15 seconds for 19 hours: 1314
+`pilot_deliver_unverified` rows, 97 `[pairpilot]: команда не найдена` lines on screen, and
+not one nudge anyone could read. The human's verdict on that state was that the system was
+broken, and a state nobody can read and nobody can disprove is exactly that.
+
+So `Pilot.nudge` is the single door every spontaneous push passes, and it holds two gates
+(`bin/pairpilot`):
+
+1. **The role's own CLI is there.** `push_target_alive` asks `pane_role_pid` — is
+   `server.py --role <role>` running among the pane's descendants. A live pane proves a
+   shell sits in it, never that the role does. False means one `pilot_push_dead_role` row
+   and silence: text typed into a shell is executed, not read.
+2. **There is a reason.** `push_allowed` reads the `.pair/ask` file. Creating it is the
+   trigger: a human who wants the pair woken, a hook, an agent. Consumed once spent
+   (`consume_trigger`), so it cannot re-arm itself. No file means quiet by default.
+
+The mailbox path needs neither gate and is unaffected: the pull is the guarantee, the push
+is the accelerator.
+
+Reading a fact is not a push. `startup_brief` runs once per round and phase and states what
+the session walks into — phase, writer, open tasks, unread count, sealed-but-unapplied
+patches — to the console and the journal, never into a composer. An interrupted round is
+therefore said exactly once, in words a human can read, instead of arriving as an
+endless stream of nudges about nothing.
+
+A queue's lifetime is about its text, not about the last write. `enqueue` stamps the first
+queueing of each distinct text in `pilot/.<role>.txt.queued-at`, and `queued_age` reads
+that stamp, so a rewrite cannot keep a dead pointer alive forever and the mailbox fallback
+fires exactly once.
+
 Two ways to send, then:
 
 `pair_read(wait_seconds=N)` is the normal way to hear from your peer. Empty — call
