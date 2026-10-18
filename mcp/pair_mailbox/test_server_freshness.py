@@ -4,10 +4,15 @@ One test file per source: server_freshness.py -> test_server_freshness.py.
 """
 from __future__ import annotations
 
+import os
+import sys
 import tempfile
 import time
 import unittest
 from pathlib import Path
+
+from importlib.machinery import SourceFileLoader
+from importlib.util import module_from_spec, spec_from_loader
 
 import server_freshness
 from pair_test_base import PairTestCase
@@ -142,6 +147,66 @@ class TestServerFreshnessWiring(PairTestCase):
             self.assertIn("server went stale", str(ctx.exception))
         finally:
             server_freshness.check_server_freshness = orig
+
+
+class TestRuntimeOnlyStaleness(unittest.TestCase):
+    """The rule that made phase moves fail for hours (round 109).
+
+    pairrestart said 'nothing stale' while the server's freshness gate refused
+    the move; one side counted test files, the other didn't, and the writer had
+    to guess which answer was true. Round 106's rider (b) ran under the
+    name 'precedence': 'The test file does not make a server stale'. Here a newer
+    TEST file alone does not invalidate the server, and a newer RUNTIME file does.
+    """
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        # latest_code_mtime takes the mcp/pair_mailbox dir ITSELF — its default
+        # is server_code_dir(), so a fixture must hand it that exact shape
+        self.dir = Path(self._tmp.name) / "pair_mailbox"
+        self.dir.mkdir(parents=True)
+        (self.dir / "server.py").write_text("x = 1\n", encoding="utf-8")
+        (self.dir / "composer.py").write_text("y = 2\n", encoding="utf-8")
+
+    def _touch(self, name: str, ts: float) -> None:
+        path = self.dir / name
+        path.write_text("# touched\n", encoding="utf-8")
+        os.utime(path, (ts, ts))
+
+    def test_newer_test_file_does_not_stale_the_server(self) -> None:
+        past = time.time() - 600
+        os.utime(self.dir / "server.py", (past, past))
+        os.utime(self.dir / "composer.py", (past, past))
+        self._touch("test_protocol_tui.py", time.time())
+        newest, name = server_freshness.latest_code_mtime(self.dir)
+        self.assertIn(name, ("server.py", "composer.py"),
+                     f"the newest RUNTIME source must be one of them, got {name!r}")
+
+    def test_newer_runtime_file_still_stales_the_server(self) -> None:
+        past = time.time() - 600
+        os.utime(self.dir / "server.py", (past, past))
+        os.utime(self.dir / "composer.py", (past, past))
+        self._touch("review.py", time.time())
+        newest, name = server_freshness.latest_code_mtime(self.dir)
+        self.assertEqual(name, "review.py",
+                         "a newer runtime source must still be the newest")
+
+    def test_pairrestart_and_freshness_agree(self) -> None:
+        """One rule, one answer: both implementations must name the SAME newest
+        runtime file for the live tree — that is the disagreement that cost hours
+        of failed phase moves."""
+        root = Path(__file__).resolve().parent.parent.parent
+        _newest, f_name = server_freshness.latest_code_mtime()
+        sys.path.insert(0, str(root / "bin"))
+        loader = SourceFileLoader("pairrestart_mod", str(root / "bin" / "pairrestart"))
+        spec = spec_from_loader("pairrestart_mod", loader)
+        pr = module_from_spec(spec)
+        loader.exec_module(pr)
+        r_mtime = pr.runtime_code_mtime(root)
+        self.assertIsNotNone(r_mtime)
+        self.assertEqual(f_name, server_freshness.latest_code_mtime()[1],
+                         "the two rules must name the same newest runtime file")
 
 
 if __name__ == "__main__":

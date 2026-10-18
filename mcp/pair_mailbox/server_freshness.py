@@ -47,15 +47,24 @@ def server_code_dir() -> Path:
 
 
 def latest_code_mtime(code_dir: Path | None = None) -> tuple[float, str]:
-    """Find the max mtime across the server-dir *.py source files.
+    """Find the max mtime across the server-dir RUNTIME source files.
 
-    Returns (max_mtime, path_of_newest_file).
+    Test files are excluded, and this is the same rule `pairrestart`
+    (bin/pairrestart.runtime_code_mtime) uses — round 106 slice A's rider (b),
+    measured as the cause of the 24h outage pattern: a commit touching only
+    tests made every role's server stale, and `--yes` then killed them all.
+
+    Before this, the two rules disagreed: `pairrestart` said "nothing stale"
+    while the server's own freshness gate refused the phase move, and the
+    writer could not tell which answer was true. One rule, one answer.
     """
     target_dir = code_dir if code_dir is not None else server_code_dir()
     newest_mtime = 0.0
     newest_file = ""
     try:
         for p in target_dir.glob("*.py"):
+            if p.name.startswith("test_"):
+                continue
             try:
                 st = p.stat()
                 if st.st_mtime > newest_mtime:
