@@ -36,11 +36,6 @@ Human override, echoed so it is never silent:
 MSG
             exit 1
             ;;
-    refs/heads/dev)
-            # dev is the accumulator: any push allowed here. The hook stays
-            # quiet on purpose — a guard that narrates every legal push is noise.
-            continue
-            ;;
     esac
 done
 exit 0

@@ -108,3 +108,9 @@ mcp/pair_mailbox/test_protocol_permissions.py	protocol
 mcp/pair_mailbox/test_protocol_panes.py	protocol
 mcp/pair_mailbox/test_protocol_pins.py	protocol
 mcp/pair_mailbox/test_protocol_transport.py	protocol
+scripts/branch-class-check.py	branch-class
+scripts/branch_class_check_test.py	branch-class
+bin/pre_push_guard_test.py	pre-push-guard
+bin/git-hooks/pre-push	pre-push-guard
+docs/PROTOCOL.md	branch-class
+docs/PROTOCOL.ru.md	branch-class
