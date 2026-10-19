@@ -19,16 +19,46 @@ role="$1"
 shift
 state=""
 pane=""
+_state_from_argv=""
 while [ "$#" -gt 0 ]; do
     case "$1" in
-        --state) state="${2:-}"; shift 2;;
-        --state=*) state="${1#--state=}"; shift;;
+        --state) state="${2:-}"; _state_from_argv=1; shift 2;;
+        --state=*) state="${1#--state=}"; _state_from_argv=1; shift;;
         --pane) pane="${2:-}"; shift 2;;
         --pane=*) pane="${1#--pane=}"; shift;;
-        *) if [ -z "$state" ]; then case "$1" in --*) ;; *) state="$1";; esac; fi; shift;;
+        *) if [ -z "$state" ]; then case "$1" in --*) ;; *) state="$1"; _state_from_argv=1;; esac; fi; shift;;
     esac
 done
 state="${state:-${PAIR_STATE:-}}"
+# Round 121: an env-sourced PAIR_STATE is NOT self-authoritative, and the check
+# MUST run before the walk-up, never after it.
+#
+# Measured live in the nyx room: the operator opened `tmux new -s nyx`, ran
+# `pairup`, and the "pair" served the foreign galatour room from both panes
+# (`ps`: --state /mnt/storage/work/galatour/.pair from nyx:0.0 and nyx:0.1),
+# while /mnt/storage/work/nyx-system/.pair was served by nobody. The NOTE that
+# used to sit below only NAMED the mismatch and the server went on serving the
+# foreign room: the guard that protects the room never triggered from env.
+#
+# Rule: argv `--state` stays explicit and trusted (an MCP config or an operator
+# naming exactly which room). A PAIR_STATE from the ENVIRONMENT must name THIS
+# project's own state dir — the toplevel of `dirname $state` must equal the
+# toplevel of `pwd`. Anything else is dropped here so the walk-up below serves
+# the project the server was launched in, not the room its shell remembered.
+# Escape hatch is explicit: PAIR_TRUST_ENV=1, for tests and for an operator who
+# knows exactly which room they want. Placing this after the walk-up is the bug
+# it replaces — measured: the env value was already proven and the walk-up never
+# ran again, so the mismatch survived to the answer.
+if [ -n "$state" ] && [ -z "${_state_from_argv:-}" ] && [ "${PAIR_TRUST_ENV:-}" != "1" ]; then
+    _state_top="$(cd -- "$(dirname -- "$state")" 2>/dev/null && git rev-parse --show-toplevel 2>/dev/null || true)"
+    _cwd_top="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+    if [ -n "$_state_top" ] && [ -n "$_cwd_top" ] && [ "$_state_top" != "$_cwd_top" ]; then
+        echo "pair-mailbox: ignoring PAIR_STATE=$state: it belongs to project $_state_top," >&2
+        echo "pair-mailbox: but this server was launched from $_cwd_top. Serving this project's own .pair." >&2
+        echo "pair-mailbox: (to serve the other room on purpose: PAIR_TRUST_ENV=1, or pass --state explicitly)" >&2
+        state=""
+    fi
+fi
 if [ -z "$state" ]; then
     # The same walk-up as the plugin and extract_state: launching from a subdir
     # creates no second state. Shared configs carry no pin by design.
@@ -47,10 +77,6 @@ if [ -z "$state" ]; then
         done
     fi
 fi
-# An empty state comes before any warnings: or `dirname -- ""` gives `.`, junk
-# `state from ,` flying into the log. Refusing a stray state reads honest (a probe
-# from $HOME must never raise the server on junk), but the message must tell "no
-# git" from "no .pair" apart, saying what to do next (pairup).
 if [ -z "$state" ]; then
     if git rev-parse --show-toplevel >/dev/null 2>&1; then
         echo "pair-mailbox: refusing: no .pair/state.json in $(pwd) or above (git root $(git rev-parse --show-toplevel 2>/dev/null)) — create it: cd <project> && pairup [--writer <role>] [--duo <cli>]" >&2

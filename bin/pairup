@@ -24,21 +24,50 @@ done
 PAIRUP_ROOT="$(cd -- "$(dirname -- "$_src")/.." && pwd)"
 HERE_STATE=""
 STATE_DIR=""
-if [ -n "${PAIR_STATE:-}" ]; then
-  STATE_DIR="$PAIR_STATE"
-else
-  # Boundary is git-top, not the FS root: otherwise someone else's ~/work/.pair
-  # (the projects dir, not a project) latches on from galatour, and the pair
-  # runs on the wrong state. Same limit as in serve.sh and walk_up_to_state.
-  _top="$(git rev-parse --show-toplevel 2>/dev/null || true)"
-  dir="$(pwd -P)"
-  for _ in 1 2 3 4 5 6 7 8 9 10 11 12; do
-    if [ -f "$dir/.pair/state.json" ]; then STATE_DIR="$dir/.pair"; break; fi
-    if [ -n "$_top" ] && [ "$dir" = "$_top" ]; then break; fi
-    parent="$(dirname -- "$dir")"
-    if [ "$parent" = "$dir" ]; then break; fi
-    dir="$parent"
-  done
+# Round 121: the PROJECT ROOT owns the state, never the inherited environment.
+#
+# Measured live: the operator opened `tmux new -s nyx` inside a session whose
+# shell already carried PAIR_STATE of another project, ran `pairup`, and got a
+# "pair" whose two panes both served the FOREIGN room (`ps` showed
+# --state /mnt/storage/work/galatour/.pair from nyx:0.0 and nyx:0.1), while
+# /mnt/storage/work/nyx-system/.pair was served by no live server at all. The
+# old code took `PAIR_STATE` on its face, so an environment inherited from an
+# unrelated pane silently repointed the whole launch.
+#
+# The root is resolved FIRST and is authoritative: a walk-up from cwd, bounded
+# by git-top (otherwise someone else's ~/work/.pair latches on from a subdir —
+# same limit as serve.sh and walk_up_to_state). An inherited PAIR_STATE is
+# honoured only when it names THIS project's own state dir. Anything else is
+# refused unless the operator explicitly trusts the environment
+# (PAIR_TRUST_ENV=1 — deliberate escapes: tests, an operator who knows exactly
+# which room they want). Silence here is the defect being fixed: a mismatch
+# must be loud, because a quiet repoint is how the pair above lost its project.
+_INHERITED_STATE="${PAIR_STATE:-}"
+_resolved_top="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+_dir="$(pwd -P)"
+for _ in 1 2 3 4 5 6 7 8 9 10 11 12; do
+  if [ -f "$_dir/.pair/state.json" ]; then STATE_DIR="$_dir/.pair"; break; fi
+  if [ -n "$_resolved_top" ] && [ "$_dir" = "$_resolved_top" ]; then break; fi
+  _parent="$(dirname -- "$_dir")"
+  if [ "$_parent" = "$_dir" ]; then break; fi
+  _dir="$_parent"
+done
+if [ -n "$_INHERITED_STATE" ]; then
+  _want="$(cd -- "$_INHERITED_STATE" 2>/dev/null && pwd -P || true)"
+  if [ "$_want" = "$STATE_DIR" ]; then
+    :  # the inherited state IS this project's own: nothing to complain about
+  elif [ -n "${PAIR_TRUST_ENV:-}" ] && [ "${PAIR_TRUST_ENV}" = "1" ]; then
+    STATE_DIR="$_INHERITED_STATE"
+  elif [ -n "$STATE_DIR" ]; then
+    echo "pairup: refusing: PAIR_STATE=$_INHERITED_STATE belongs to another project," >&2
+    echo "pairup: this launch roots at $(dirname -- "$STATE_DIR"). Using $STATE_DIR." >&2
+    echo "pairup: (to run another room on purpose, export PAIR_TRUST_ENV=1)" >&2
+  else
+    echo "pairup: refusing: PAIR_STATE=$_INHERITED_STATE is not this project's state" >&2
+    echo "pairup: and no .pair was found by walking up from $(pwd -P)." >&2
+    echo "pairup: cd to the project you mean, or PAIR_TRUST_ENV=1 to keep the room." >&2
+    exit 1
+  fi
 fi
 
 usage() {
@@ -451,8 +480,17 @@ finally:
 }
 raise_daemon "$writer"
 
-writer_init="export PAIR_STATE='$STATE_DIR'; cd '$PROJECT_DIR'; echo '=== PAIR WRITER: $writer ==='; [ -f '$STATE_DIR/task-banner.txt' ] && cat '$STATE_DIR/task-banner.txt'; $writer_cmd"
-critic_init="export PAIR_STATE='$STATE_DIR'; cd '$PROJECT_DIR'; echo '=== PAIR CRITIC: $critic ==='; [ -f '$STATE_DIR/task-banner.txt' ] && cat '$STATE_DIR/task-banner.txt'; $critic_cmd"
+# Round 121: the pane starts from a CLEAN pair environment, never from whatever
+# the launching shell carried. Measured in the nyx room: a session spawned
+# inside another project's pane inherited its PAIR_STATE, and BOTH panes served
+# the foreign room while the project's own .pair was served by nobody. Exporting
+# the right value afterwards is not enough — every intermediate shell in the
+# chain still sees the stale one, and the CLI reads it before pairup's export
+# lands. So drop the inherited PAIR_* first, then pin this project's own room.
+# PAIR_TRUST_ENV is not honoured here: a pane is spawned by pairup, which has
+# already resolved the room deliberately.
+writer_init="env -u PAIR_STATE -u PAIR_ROLE -u PAIR_TRUST_ENV PAIR_STATE='$STATE_DIR'; cd '$PROJECT_DIR'; echo '=== PAIR WRITER: $writer ==='; [ -f '$STATE_DIR/task-banner.txt' ] && cat '$STATE_DIR/task-banner.txt'; $writer_cmd"
+critic_init="env -u PAIR_STATE -u PAIR_ROLE -u PAIR_TRUST_ENV PAIR_STATE='$STATE_DIR'; cd '$PROJECT_DIR'; echo '=== PAIR CRITIC: $critic ==='; [ -f '$STATE_DIR/task-banner.txt' ] && cat '$STATE_DIR/task-banner.txt'; $critic_cmd"
 title_writer="$(title_for "$writer" writer)"
 title_critic="$(title_for "$critic" critic)"
 

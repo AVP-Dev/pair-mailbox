@@ -391,6 +391,106 @@ class OriginGuardCase(unittest.TestCase):
         self.assertIn("engine", combined.lower())
         self.assertIn("foreign", combined.lower())
 
+    def _raise_with_env(self, cwd: Path, env_state: str, env_pin: str = "PAIR_STATE") \
+            -> subprocess.Popen:
+        """Raise the server the way a PANE does: no argv --state, only the
+        inherited environment. That is the shape the nyx defect ran in (round
+        121): both panes of a hand-made session served a foreign room because
+        nothing checked what the shell remembered."""
+        pkg = Path(cwd) / "mcp" / "pair_mailbox"
+        if pkg.is_dir():
+            shutil.rmtree(pkg)
+        shutil.copytree(ROOT / "mcp" / "pair_mailbox", pkg,
+                        ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+        env = dict(os.environ)
+        env.pop("PAIR_ROLE", None)
+        env.pop("PAIR_STATE", None)
+        env.pop("PAIR_TRUST_ENV", None)
+        env[env_pin] = env_state
+        return subprocess.Popen(
+            ["sh", str(pkg / "serve.sh"), self.role],
+            cwd=str(cwd), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, text=True, env=env)
+
+    def test_inherited_pairstate_of_a_foreign_project_is_ignored(self) -> None:
+        """Round 121's live defect, end to end.
+
+        Measured: the operator opened `tmux new -s nyx` inside another project's
+        session, ran pairup, and BOTH nyx panes served the foreign galatour room
+        (`ps`: --state .../galatour/.pair), while .../nyx-system/.pair was served
+        by no live server at all. The old serve.sh took PAIR_STATE from the
+        environment on its face, so a stale shell repointed the whole launch —
+        and the NOTE it printed named the mismatch without ever refusing it.
+
+        Contract now: an env PAIR_STATE naming another project's room is ignored,
+        the server serves the room of the tree it was launched in, and it says so
+        on stderr.
+        """
+        other = _git_repo(Path(self._tmp.name) / "other-project")
+        self._sanction(str(ROOT.resolve()))
+        proc = self._raise_with_env(Path(self._tmp.name) / "proj",
+                                    str(other / ".pair"))
+        try:
+            out, err = proc.communicate(timeout=60)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            out, err = proc.communicate()
+            self.fail("the server must serve this project's own room, not hang")
+        combined = (err or "") + (out or "")
+        self.assertIn("ignoring PAIR_STATE", combined,
+                      "a foreign env room must be named and dropped, not silently used")
+        drop_line = [ln for ln in combined.splitlines() if "launched from" in ln]
+        self.assertTrue(drop_line,
+                        "the drop must say which project the server is serving instead")
+        self.assertIn(str(Path(self._tmp.name) / "proj"), drop_line[0])
+        self.assertIn("own", combined.lower(),
+                      "the answer must promise this project's own room")
+
+    def test_argv_state_is_still_explicit_and_trusted(self) -> None:
+        """The escape hatch and the MCP config path stay: argv `--state` names
+        exactly which room to serve, and it is honoured even from a foreign cwd.
+        The guard drops the ENVIRONMENT, never the operator's explicit word."""
+        other = _git_repo(Path(self._tmp.name) / "explicit-other")
+        (other / ".pair").mkdir(parents=True, exist_ok=True)
+        (other / ".pair" / "state.json").write_text(json.dumps(
+            {"round": 904, "mode": "fix", "writer": "omp", "roles": {},
+             "phase": "implement", "seq": 0}), encoding="utf-8")
+        (other / ".pair" / "engine").write_text(str(ROOT.resolve()), encoding="utf-8")
+        pkg = Path(self._tmp.name) / "proj" / "mcp" / "pair_mailbox"
+        shutil.copytree(ROOT / "mcp" / "pair_mailbox", pkg,
+                        ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+        env = dict(os.environ)
+        env.pop("PAIR_ROLE", None)
+        env.pop("PAIR_STATE", None)
+        proc = subprocess.Popen(
+            ["sh", str(pkg / "serve.sh"), self.role, "--state", str(other / ".pair")],
+            cwd=str(Path(self._tmp.name) / "proj"),
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True, env=env)
+        try:
+            out, err = proc.communicate(timeout=60)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            out, err = proc.communicate()
+            self.fail("an explicit --state must serve, not hang")
+        combined = (err or "") + (out or "")
+        self.assertNotIn("ignoring PAIR_STATE", combined,
+                         "argv --state is the operator's word; it is never overridden")
+
+    def test_paired_pane_init_never_inherits_a_foreign_room(self) -> None:
+        """pairup's pane init strings, checked as source: a pane must start from
+        a cleaned pair environment. Exporting the right PAIR_STATE after the fact
+        is not enough — every intermediate shell still sees the stale value, and
+        the CLI reads it before the export lands.
+        """
+        source = (ROOT / "bin" / "pairup").read_text(encoding="utf-8")
+        for marker in ("writer_init=", "critic_init="):
+            self.assertIn("env -u PAIR_STATE", source,
+                          f"{marker} must drop the inherited room before starting the CLI")
+        self.assertNotIn("export PAIR_STATE='$STATE_DIR'; cd",
+                         source,
+                         "exporting over a possibly stale value is the round-121 defect")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
