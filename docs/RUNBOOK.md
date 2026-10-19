@@ -89,9 +89,9 @@ bin/pairctl roles --writer opencode --global   # set it once
 pairup                                         # honours it, from the project folder
 ```
 
-Authority moves only through the human. The pair is always two *different*
-CLIs: two copies of one CLI fight over the MCP role lock and both fail,
-so there is no duo mode.
+Authority moves only through the human. The standard `pairup` pairs two
+*different* CLIs. To run two copies of the same CLI, use
+`bin/pair-duo <cli>` (`<cli>-writer` and `<cli>-critic`).
 
 ## The step-by-step path, when you need it
 

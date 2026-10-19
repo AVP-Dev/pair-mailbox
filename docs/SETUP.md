@@ -53,7 +53,9 @@ agy                                   # pane 2
 ```
 
 Any two different CLIs, in any order. Roles come from the standing arrangement if you set
-one, and only otherwise from a claim:
+one, and only otherwise from a claim. For two copies of the SAME CLI in one project,
+use `bin/pair-duo <cli>` instead — it derives the roles `<cli>-writer` and
+`<cli>-critic`:
 
 ```sh
 bin/pairctl roles --writer opencode --global   # set it once (writer-pin: critic is any second live role)

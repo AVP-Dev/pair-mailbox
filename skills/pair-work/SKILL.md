@@ -269,8 +269,9 @@ Storage is `Store` in `.pair/`: `mailbox/`, `notes/`, `patches/`,
 (`server.py:726`). Not `.pair/` under another name and not `pair-transcript.jsonl`.
 
 Six roles (`cli-profiles.json`: opencode, agy, codex, claude, pi, omp);
-`pair-duo` raises a double session only for the first four
-(`bin/pair-duo:75`). Default autonomy is `auto`
+`pair-duo` raises a double session for any of the six
+(`bin/pair-duo:180`), deriving the roles `<cli>-writer` and `<cli>-critic`.
+Default autonomy is `auto`
 (`resolve_autonomy`, `server.py:321`); `finish.sh` takes the task only
 via the `--task` flag (no positional argument, `finish.sh:131`).
 

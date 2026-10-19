@@ -39,7 +39,9 @@ role on the other CLI, and your value is entirely in finding things and proving 
 
 A role **is the CLI's name**. It is baked into that CLI's MCP config by `install.sh` and cannot be
 chosen per call. That is deliberate: the server must know which process is which, and a role a
-process can set for itself is not an identity.
+process can set for itself is not an identity. Duo mode may *derive* an instance of that name
+(`agy` → `agy-writer`) — the server refuses any role that is not an instance of the configured
+one.
 
 `cli-profiles.json` lists every CLI that can take part (6 profiles):
 
@@ -57,9 +59,10 @@ Any two **different** names can pair up. So `codex` + `claude` works exactly lik
 own role name in `pair_state` under `you`, and your peer's in `writer` or `peers`.
 
 `pairup --swap` supports all six profiles (`opencode`, `agy`, `codex`, `claude`,
-`pi`, `omp`). The pair is always two *different* CLIs: two copies of one CLI
-fight over the MCP role lock and both fail. `install.sh` wires the bare CLI
-name as the role.
+`pi`, `omp`). By default `pairup` pairs two *different* CLIs. For two copies of
+the SAME CLI in one project, use `bin/pair-duo <cli>` (e.g. `bin/pair-duo agy`),
+which derives distinct roles (`<cli>-writer` and `<cli>-critic`). `install.sh`
+wires the bare CLI name as the role.
 
 To add a CLI: append an object to `cli-profiles.json` and run `./install.sh <name>`.
 

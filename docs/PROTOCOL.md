@@ -37,7 +37,8 @@ peer's refusal** — the peer sees the other argument and may disagree with it.
 
 Role names in the examples are the concrete pair `opencode` + `agy`. In any other
 pair the names carry the same meaning but are their own: writer — `<writer>`, second
-— `<critic>`. A role equals the CLI name and is baked in at install time.
+— `<critic>`. A role equals the CLI name and is baked in at install time; duo mode
+derives an instance of it (`agy` → `agy-writer`) and refuses anything else.
 
 ```
 <writer>:  pair_claim(reason="I already found where to fix it: retry in the client")
@@ -100,7 +101,7 @@ bin/pairctl why          # across all projects
 bin/pairctl status       # in the current project, JSON
 ```
 
-A script may not do this. `bin/pair-duo` used to run `pairctl assign` on its own, silently moving the trust boundary on every run; now it leaves authority alone unless no standing arrangement and no current writer exist, and says so out loud. The pair is always two *different* CLIs.
+A script may not do this. `bin/pair-duo` used to run `pairctl assign` on its own, silently moving the trust boundary on every run; now it leaves authority alone unless no standing arrangement and no current writer exist, and says so out loud. The default pair is two *different* CLIs; `bin/pair-duo <cli>` runs two copies of the SAME CLI under derived roles (`<cli>-writer`, `<cli>-critic`).
 
 Swapping the critic's CLI (`pairup --swap <cli>`, `pair-duo --swap-critic`) is not
 moving authority: the writer keeps writing, only the reviewer's process changes.

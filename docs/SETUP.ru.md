@@ -51,7 +51,8 @@ agy                                   # pane 2
 ```
 
 Любые два разных CLI, в любом порядке. Роли берутся из постоянной договорённости, если вы её
-задали, и только иначе — из клейма:
+задали, и только иначе — из клейма. Для двух копий ОДНОГО CLI в одном проекте
+используй `bin/pair-duo <cli>` — он выводит роли `<cli>-writer` и `<cli>-critic`:
 
 ```sh
 bin/pairctl roles --writer opencode --global   # set it once (writer-pin: critic is any second live role)
