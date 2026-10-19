@@ -391,6 +391,141 @@ class OriginGuardCase(unittest.TestCase):
         self.assertIn("engine", combined.lower())
         self.assertIn("foreign", combined.lower())
 
+    def _raise_with_env(self, cwd: Path, env_state: str, env_pin: str = "PAIR_STATE") \
+            -> subprocess.Popen:
+        """Raise the server the way a PANE does: no argv --state, only the
+        inherited environment. That is the shape the nyx defect ran in (round
+        121): both panes of a hand-made session served a foreign room because
+        nothing checked what the shell remembered."""
+        pkg = Path(cwd) / "mcp" / "pair_mailbox"
+        if pkg.is_dir():
+            shutil.rmtree(pkg)
+        shutil.copytree(ROOT / "mcp" / "pair_mailbox", pkg,
+                        ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+        env = dict(os.environ)
+        env.pop("PAIR_ROLE", None)
+        env.pop("PAIR_STATE", None)
+        env.pop("PAIR_TRUST_ENV", None)
+        env[env_pin] = env_state
+        return subprocess.Popen(
+            ["sh", str(pkg / "serve.sh"), self.role],
+            cwd=str(cwd), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, text=True, env=env)
+
+    def test_inherited_pairstate_of_a_foreign_project_is_ignored(self) -> None:
+        """Round 121's live defect, end to end.
+
+        Measured: the operator opened `tmux new -s nyx` inside another project's
+        session, ran pairup, and BOTH nyx panes served the foreign galatour room
+        (`ps`: --state .../galatour/.pair), while .../nyx-system/.pair was served
+        by no live server at all. The old serve.sh took PAIR_STATE from the
+        environment on its face, so a stale shell repointed the whole launch —
+        and the NOTE it printed named the mismatch without ever refusing it.
+
+        Contract now: an env PAIR_STATE naming another project's room is ignored,
+        the server serves the room of the tree it was launched in, and it says so
+        on stderr.
+        """
+        other = _git_repo(Path(self._tmp.name) / "other-project")
+        self._sanction(str(ROOT.resolve()))
+        proc = self._raise_with_env(Path(self._tmp.name) / "proj",
+                                    str(other / ".pair"))
+        try:
+            out, err = proc.communicate(timeout=60)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            out, err = proc.communicate()
+            self.fail("the server must serve this project's own room, not hang")
+        combined = (err or "") + (out or "")
+        self.assertIn("ignoring PAIR_STATE", combined,
+                      "a foreign env room must be named and dropped, not silently used")
+        drop_line = [ln for ln in combined.splitlines() if "launched from" in ln]
+        self.assertTrue(drop_line,
+                        "the drop must say which project the server is serving instead")
+        self.assertIn(str(Path(self._tmp.name) / "proj"), drop_line[0])
+        self.assertIn("own", combined.lower(),
+                      "the answer must promise this project's own room")
+
+    def test_argv_state_is_still_explicit_and_trusted(self) -> None:
+        """The escape hatch and the MCP config path stay: argv `--state` names
+        exactly which room to serve, and it is honoured even from a foreign cwd.
+        The guard drops the ENVIRONMENT, never the operator's explicit word."""
+        other = _git_repo(Path(self._tmp.name) / "explicit-other")
+        (other / ".pair").mkdir(parents=True, exist_ok=True)
+        (other / ".pair" / "state.json").write_text(json.dumps(
+            {"round": 904, "mode": "fix", "writer": "omp", "roles": {},
+             "phase": "implement", "seq": 0}), encoding="utf-8")
+        (other / ".pair" / "engine").write_text(str(ROOT.resolve()), encoding="utf-8")
+        pkg = Path(self._tmp.name) / "proj" / "mcp" / "pair_mailbox"
+        shutil.copytree(ROOT / "mcp" / "pair_mailbox", pkg,
+                        ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+        env = dict(os.environ)
+        env.pop("PAIR_ROLE", None)
+        env.pop("PAIR_STATE", None)
+        proc = subprocess.Popen(
+            ["sh", str(pkg / "serve.sh"), self.role, "--state", str(other / ".pair")],
+            cwd=str(Path(self._tmp.name) / "proj"),
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True, env=env)
+        try:
+            out, err = proc.communicate(timeout=60)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            out, err = proc.communicate()
+            self.fail("an explicit --state must serve, not hang")
+        combined = (err or "") + (out or "")
+        self.assertNotIn("ignoring PAIR_STATE", combined,
+                         "argv --state is the operator's word; it is never overridden")
+
+    def test_paired_pane_init_never_inherits_a_foreign_room(self) -> None:
+        """pairup's pane init strings, EXECUTED rather than grepped.
+
+        The first cut of this test only grepped for "env -u PAIR_STATE" in the
+        source, and it stayed green on a broken fix: the critic measured in
+        review that `env -u A -u B VAR=; cd ...` is a program invocation, not a
+        shell directive — the `;` ends the command, no executable follows the
+        assignment, so `env` dumps the whole environment (79 lines) and the
+        shell keeps its old values (probe printed state=old role=foo). A source
+        grep cannot tell those apart; running the init string can.
+
+        So: take the real init string out of pairup, run it under a hostile
+        environment, and demand the pane's environment ends up right.
+        """
+        source = (ROOT / "bin" / "pairup").read_text(encoding="utf-8")
+        for marker in ("writer_init=", "critic_init="):
+            line = [ln for ln in source.splitlines() if ln.startswith(marker)]
+            self.assertTrue(line, f"{marker} is gone — the pane would start with no room")
+            init = line[0].split('="', 1)[1].rsplit('"', 1)[0]
+            # pairup writes these INIT strings as source lines: $STATE_DIR and
+            # $PROJECT_DIR are pairup's own variables, expanded at LAUNCH time.
+            # The probe must substitute them itself — a literal `$STATE_DIR` in
+            # the string would just expand to empty and the assert would pass
+            # for the wrong reason (measured in this round's first cut).
+            head = init.split("; echo '=== ", 1)[0]
+            for name, value in (("STATE_DIR", str(self.state)),
+                                ("PROJECT_DIR", str(Path(self._tmp.name)))):
+                head = head.replace(f"${name}", value)
+            probe = head + "; printf '%s|%s|%s|%s' \"${PAIR_STATE:-}\" \"${PAIR_ROLE:-}\" \"${PAIR_TRUST_ENV:-}\" \"$(pwd -P)\""
+            env = dict(__import__("os").environ)
+            env["PAIR_STATE"] = "/foreign/project/.pair"
+            env["PAIR_ROLE"] = "stale-role"
+            env["PAIR_TRUST_ENV"] = "1"
+            proc = subprocess.run(["sh", "-c", probe], capture_output=True,
+                                  text=True, env=env, timeout=60,
+                                  cwd=str(Path(self._tmp.name)))
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            got_state, got_role, got_trust, got_cwd = proc.stdout.split("|", 3)
+            self.assertEqual(got_state, str(self.state),
+                             f"{marker}: the pane must serve THIS project's room")
+            self.assertEqual(got_role, "",
+                             f"{marker}: a stale role must be unset, not inherited")
+            self.assertEqual(got_trust, "",
+                             f"{marker}: PAIR_TRUST_ENV must not leak into the pane")
+            self.assertEqual(got_cwd, str(Path(self._tmp.name)),
+                             f"{marker}: the shell must change into its cwd")
+            self.assertLess(len(proc.stdout), 200,
+                            f"{marker}: the init must not dump the environment")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

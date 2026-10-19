@@ -129,5 +129,77 @@ class PairupTemplateCase(unittest.TestCase):
                          '{"patterns": []}')
 
 
+class PairupStateOwnershipCase(unittest.TestCase):
+    """Round 121: the project root owns the state dir, never the shell's env.
+
+    Measured live: `tmux new -s nyx` inside another project's session, then
+    `pairup` — both panes served the foreign galatour room (`ps` showed
+    --state .../galatour/.pair from both), while .../nyx-system/.pair was served
+    by no live server. The old code took PAIR_STATE on its face
+    (`STATE_DIR="$PAIR_STATE"`), so a stale shell repointed the whole launch.
+    """
+
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp(prefix="pairup-own-"))
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.proj = self.tmp / "proj"
+        self.proj.mkdir()
+        subprocess.run(["git", "init", "-q", str(self.proj)], check=True)
+        (self.proj / ".pair" / "mailbox").mkdir(parents=True)
+        (self.proj / ".pair" / "state.json").write_text(
+            json.dumps({"round": 1, "phase": "implement"}), encoding="utf-8")
+
+    def _resolve(self, env_state: str | None) -> subprocess.CompletedProcess:
+        """Run only the state-resolution head of pairup: the part that decides
+        which room this launch belongs to. It exits before the pilot, so the
+        probe is hermetic — no roles, no tmux, no daemon."""
+        # Anchors bracket the resolution head of pairup — the part that decides
+        # which room this launch belongs to. The head ends at `usage()`, and the
+        # rule under test is the block that starts at HERE_STATE (round 121's
+        # rewrite: the root is resolved first and the env is judged against it).
+        text = PAIRUP.read_text(encoding="utf-8")
+        start = text.index('HERE_STATE=""')
+        end = text.index('usage() {', start)
+        script = "PAIRUP_ROOT=%s\n%s\n" % (ROOT, text[start:end])
+        env = dict(__import__("os").environ)
+        env["PAIRUP_ROOT"] = str(ROOT)
+        env.pop("PAIR_STATE", None)
+        env.pop("PAIR_TRUST_ENV", None)
+        env.pop("TMUX", None)
+        if env_state is not None:
+            env["PAIR_STATE"] = env_state
+        return subprocess.run(["sh", "-c", script + '\nprintf "%s" "$STATE_DIR"'],
+                              capture_output=True, text=True, env=env, timeout=60,
+                              cwd=str(self.proj))
+
+    def test_own_project_wins_over_a_foreign_inherited_room(self) -> None:
+        other = self.tmp / "other"
+        (other / ".pair").mkdir(parents=True)
+        proc = self._resolve(str(other / ".pair"))
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.stdout.strip(), str(self.proj / ".pair"),
+                         "the root's own .pair is authoritative")
+
+    def test_explicit_trust_env_keeps_the_room_it_names(self) -> None:
+        """The escape hatch stays: an operator who KNOWS which room they want can
+        say so. Refusing every non-matching env would break deliberate use."""
+        other = self.tmp / "other"
+        (other / ".pair").mkdir(parents=True)
+        text = PAIRUP.read_text(encoding="utf-8")
+        start = text.index('HERE_STATE=""')
+        end = text.index('usage() {', start)
+        script = ("PAIR_TRUST_ENV=1\nPAIR_STATE=%s\nPAIRUP_ROOT=%s\n%s\n"
+                  % (other / ".pair", ROOT, text[start:end]))
+        env = dict(__import__("os").environ)
+        env["PAIRUP_ROOT"] = str(ROOT)
+        env.pop("PAIR_STATE", None)
+        env.pop("TMUX", None)
+        proc = subprocess.run(["sh", "-c", script + '\nprintf "%s" "$STATE_DIR"'],
+                              capture_output=True, text=True, env=env,
+                              timeout=60, cwd=str(self.proj))
+        self.assertEqual(proc.stdout.strip(), str(other / ".pair"),
+                         "PAIR_TRUST_ENV=1 is the operator's deliberate override")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
