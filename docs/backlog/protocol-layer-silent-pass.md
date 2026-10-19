@@ -3,7 +3,9 @@ title: 10 of 11 test files in the `protocol` verification layer run zero tests
 found: 2026-10-18
 severity: high
 round: 120
-status: open
+status: fixed
+fixed: 2026-10-19
+fixed_by: round 123
 ---
 
 ## Where
@@ -50,3 +52,27 @@ Pick one and apply it to the row, then prove it by breaking a test on purpose:
 Verification: after the fix, `python3 <file>` must print `Ran N tests` with
 N > 0 for every file in the row, and `scripts/verify-project.sh --only protocol`
 must fail when one test is deliberately broken.
+
+## Fixed (2026-10-19, round 123)
+
+Option 2 was applied: the row now launches through the loader, so one process
+runs all eleven files and the layer's exit code means something.
+
+```
+protocol	positive	1	PYTHONPATH=mcp/pair_mailbox python3 -m unittest test_protocol test_protocol_authority ... test_protocol_transport	serial
+```
+
+The per-file `unittest.main()` blocks were NOT added: the loader needs none of
+them, and ten extra blocks would have been ten more places to forget.
+
+Measured after the fix:
+- `PYTHONPATH=mcp/pair_mailbox python3 -m unittest test_protocol ...` →
+  `Ran 297 tests ... OK (skipped=2)`, rc=0. Before: rc=0 with zero output and
+  zero tests run.
+- The layer goes red on a deliberately broken test: injecting one failing test
+  into `test_protocol_pins.py` gave `FAILED (failures=1, skipped=2)`, rc=1. The
+  broken test was removed again; the tree carries no trace of it.
+
+While here: `mcp/pair_mailbox/test_read_delivery.py` had a `unittest.main()`
+block but was in no profile row at all, so it never ran either. It now has the
+`read-delivery` suite, and the map points both it and `read_delivery.py` at it.

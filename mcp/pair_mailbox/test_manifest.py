@@ -473,17 +473,32 @@ class TestMergedPredicate103(unittest.TestCase):
                 gaps = cross_check(bad, st, sd)
         self.assertTrue(any("recorded merge evidence names commits" in g for g in gaps))
 
+    def _live_state_with_its_merge_row(self) -> tuple[dict, Path]:
+        """The live state — but only while it still carries the pinned round.
+
+        The live state rotates its evidence: round 102's merge row is long gone
+        from this checkout, and a test pinned to it then fails about a fixture
+        that decayed, not about the code. The synthetic rows around it cover the
+        predicate; these two cover the live SHAPE, and the shape is available
+        only while the row is.
+        """
+        repo_root = Path(__file__).resolve().parent.parent.parent
+        state_path = repo_root / ".pair" / "state.json"
+        if not state_path.exists():
+            self.skipTest("no live .pair in this checkout")
+        import json as _json
+        live = _json.loads(state_path.read_text(encoding="utf-8"))
+        if not any(int(e.get("round", -1)) == 102 for e in (live.get("evidence") or [])):
+            self.skipTest("the live state no longer carries round 102's merge evidence")
+        return live, repo_root
+
     def test_live_derive_on_actual_repo_records_anchor(self) -> None:
         """Live-shape smoke against this repo: round 102 merged, deriving
         round 102 with real state must take the evidence anchor, never []."""
-        import json as _json
-        state_path = Path(__file__).resolve().parent.parent.parent / ".pair" / "state.json"
-        if not state_path.exists():
-            self.skipTest("no live .pair in this checkout")
-        live = _json.loads(state_path.read_text(encoding="utf-8"))
-        truth = manifest._round_merged(live, state_path.parent.parent, 102)
+        live, repo_root = self._live_state_with_its_merge_row()
+        truth = manifest._round_merged(live, repo_root, 102)
         self.assertIs(truth, True)
-        m = derive_manifest(state_path.parent, live, 102)
+        m = derive_manifest(repo_root / ".pair", live, 102)
         self.assertEqual([c["sha"] for c in m["commits"]][-1], "19cda5a")
 
     def test_merge_row_without_git_is_not_merged(self) -> None:
@@ -497,12 +512,7 @@ class TestMergedPredicate103(unittest.TestCase):
 
     def test_merge_row_reachable_tip_is_merged(self) -> None:
         """The recorded advance with the tip genuinely on master merges."""
-        repo_root = Path(__file__).resolve().parent.parent.parent
-        state_path = repo_root / ".pair" / "state.json"
-        if not state_path.exists():
-            self.skipTest("no live .pair in this checkout")
-        import json as _json
-        live = _json.loads(state_path.read_text(encoding="utf-8"))
+        live, repo_root = self._live_state_with_its_merge_row()
         self.assertIs(manifest._round_merged(live, repo_root, 102), True)
 
     def test_unmerged_round_stays_open_guarded(self) -> None:

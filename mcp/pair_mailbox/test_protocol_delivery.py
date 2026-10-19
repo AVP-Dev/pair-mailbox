@@ -523,6 +523,93 @@ class TestDeliveryRollback(PairTestCase):
 
 
 
+class TestOwnPointerResidue(PairTestCase):
+    """Our own leftover pointer must not wedge the neighbour's pane.
+
+    Measured 2026-10-19: 7 `deliver_pointer_busy` and 10 `doorbell_refused`
+    rows, every one of them naming the leftover pointer in its reason. The
+    pointer was OURS — typed into the neighbour's composer and never accepted —
+    so the sender cleans up after itself, and only after itself: the human's
+    typing in the same composer is never touched.
+    """
+
+    def _leftover_pane(self, pointer: str) -> tuple[list[int], dict]:
+        """A pane whose composer holds exactly this text, and the erase log.
+
+        The capture answers with the leftover until it is erased, and with an
+        empty composer after — the same sequence a real pane shows.
+        """
+        import composer
+        import pointers
+
+        erased: list[int] = []
+        screen = {"lines": ["╰─ " + pointer]}
+
+        def fake_capture(_tmux, _pane):
+            return screen["lines"]
+
+        def fake_erase(_tmux, _pane, count):
+            erased.append(count)
+            screen["lines"] = ["╰─ "]
+
+        orig_capture, orig_erase = pointers.capture, pointers.erase
+        orig_line = composer.composer_line
+        pointers.capture = fake_capture
+        pointers.erase = fake_erase
+        composer.composer_line = lambda lines: screen["lines"][0]
+        self.addCleanup(setattr, pointers, "capture", orig_capture)
+        self.addCleanup(setattr, pointers, "erase", orig_erase)
+        self.addCleanup(setattr, composer, "composer_line", orig_line)
+        return erased, screen
+
+    def test_a_pane_holding_our_own_pointer_accepts_the_next_delivery(self) -> None:
+        import composer
+        import pointers
+
+        self.store.mutate(lambda s: s.setdefault("roles", {})
+                          .setdefault("reviewer-agent", {})
+                          .update({"pid": os.getpid(), "pane": "%45"}))
+        self.allow_panes()
+        leftover = "╰─ " + pointers.mailbox_pointer("writer-agent", 1559)
+        erased, _screen = self._leftover_pane(leftover)
+        calls: list[str] = []
+
+        def fake_deliver(_pane, text, wait_for_empty=0.0, submit=True):
+            calls.append(text)
+            if len(calls) == 1:
+                raise composer.ComposerBusy("composer busy: the leftover pointer")
+            return {"delivered": True}
+
+        orig_deliver = composer.deliver
+        composer.deliver = fake_deliver
+        self.addCleanup(setattr, composer, "deliver", orig_deliver)
+        result = self.writer.tool_pair_deliver(to="reviewer-agent", text="the letter")
+        self.assertTrue(result["in_pane"], "the delivery must land")
+        self.assertEqual(2, len(calls), "the pointer is typed once, after the cleanup")
+        self.assertEqual([len(pointers.mailbox_pointer("writer-agent", 1559))], erased,
+                         "exactly our own pointer goes, by its own length")
+
+    def test_the_human_typing_in_the_composer_is_never_erased(self) -> None:
+        import composer
+        import pointers
+
+        self.store.mutate(lambda s: s.setdefault("roles", {})
+                          .setdefault("reviewer-agent", {})
+                          .update({"pid": os.getpid(), "pane": "%45"}))
+        self.allow_panes()
+        erased, _screen = self._leftover_pane("╰─ the human wrote this")
+        orig_deliver = composer.deliver
+
+        def busy_deliver(_pane, _text, wait_for_empty=0.0, submit=True):
+            raise composer.ComposerBusy("composer busy: the human's text")
+
+        composer.deliver = busy_deliver
+        self.addCleanup(setattr, composer, "deliver", orig_deliver)
+        result = self.writer.tool_pair_deliver(to="reviewer-agent", text="the letter")
+        self.assertFalse(result["in_pane"], "a busy composer is still a refusal")
+        self.assertEqual([], erased, "the human's typing is never erased")
+
+
 class TestRingAndUnblock(PairTestCase):
     def test_permission_prompt_detection(self) -> None:
         from composer import detect_permission_prompt

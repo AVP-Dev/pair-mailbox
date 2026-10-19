@@ -27,7 +27,12 @@ staleness-detector	static	1	python3 scripts/staleness-detector.py
 # Each launches alone, because `python3 test_protocol.py` no longer runs neighbour
 # module tests, and a silently excluded suite would read as green.
 #
-protocol	positive	1	python3 mcp/pair_mailbox/test_protocol.py python3 mcp/pair_mailbox/test_protocol_authority.py python3 mcp/pair_mailbox/test_protocol_gates.py python3 mcp/pair_mailbox/test_protocol_notes.py python3 mcp/pair_mailbox/test_protocol_delivery.py python3 mcp/pair_mailbox/test_protocol_mailbox.py python3 mcp/pair_mailbox/test_protocol_tui.py python3 mcp/pair_mailbox/test_protocol_permissions.py python3 mcp/pair_mailbox/test_protocol_panes.py python3 mcp/pair_mailbox/test_protocol_pins.py python3 mcp/pair_mailbox/test_protocol_transport.py	serial
+# The protocol row runs through the loader. `python3 <file> <file> ...` executes the
+# FIRST file and passes the rest as argv, and ten of the eleven had no main block:
+# the layer reported green while running nothing at all (backlog #68, fixed here
+# on 2026-10-19 — the proof is a deliberately broken test turning the layer red).
+#
+protocol	positive	1	PYTHONPATH=mcp/pair_mailbox python3 -m unittest test_protocol test_protocol_authority test_protocol_gates test_protocol_notes test_protocol_delivery test_protocol_mailbox test_protocol_tui test_protocol_permissions test_protocol_panes test_protocol_pins test_protocol_transport	serial
 task-banner	positive	1	python3 mcp/pair_mailbox/test_task_banner.py
 autoperms	positive	1	python3 mcp/pair_mailbox/test_autoperms.py
 intent-gate	positive	1	python3 mcp/pair_mailbox/test_intent_gate.py
@@ -59,6 +64,9 @@ digest	positive	1	python3 mcp/pair_mailbox/test_digest.py
 panes	positive	1	python3 mcp/pair_mailbox/test_panes.py	serial
 composer	positive	1	python3 mcp/pair_mailbox/test_composer.py	serial
 composer-bypass	positive	1	python3 mcp/pair_mailbox/test_allowlist_bypass.py	serial
+pointer	positive	1	python3 mcp/pair_mailbox/test_pointer.py
+waiting-contract	positive	1	python3 mcp/pair_mailbox/test_waiting_contract.py
+read-delivery	positive	1	python3 mcp/pair_mailbox/test_read_delivery.py
 roster-heal	positive	1	python3 mcp/pair_mailbox/test_roster_heal.py
 session-facts	positive	1	python3 mcp/pair_mailbox/test_session_facts.py
 anti-mock	positive	1	python3 mcp/pair_mailbox/test_anti_mock_gate.py

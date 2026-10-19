@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 import unittest
 
 import read_delivery
@@ -109,6 +110,67 @@ class ReadDeliveryState(unittest.TestCase):
                                     "read cursor changed since the pending batch"):
             read_delivery.drain(Sess(), 10)
 
+    def test_withheld_count_names_the_letters_behind_the_batch(self) -> None:
+        """The wedge must have a number: letters no read will bring.
+
+        A batch that is not acknowledged holds the cursor, so a letter that
+        arrives after it stays invisible. The count is what tells the reader
+        that reading again cannot help and acknowledging can.
+        """
+        state = {"seen": {"opencode": 0}}
+        read_delivery.create_pending_batch(state, "opencode", 0, 2, [41, 44])
+        self.assertEqual(0, read_delivery.withheld_count(state, "opencode", 2),
+                         "a fresh batch withholds nothing")
+        self.assertEqual(3, read_delivery.withheld_count(state, "opencode", 5),
+                         "letters that arrived after the batch are counted")
+        state["pending_reads"]["opencode"]["fresh_below"] = {"start": 2, "cursor": 4}
+        self.assertEqual(1, read_delivery.withheld_count(state, "opencode", 5),
+                         "the fresh batch below a hole shows its own letters")
+        self.assertEqual(0, read_delivery.withheld_count({"seen": {}}, "opencode", 5),
+                         "no batch, no wedge, nothing withheld")
+
+
+
+class ReadDeliveryWaiting(PairTestCase):
+    """What a read says about its wait, and about the wedge it sits in.
+
+    Measured 2026-10-19: a read whose batch was still unacknowledged answered
+    in 1.24s with the same letters, whatever wait the agent asked for, and
+    reported "waited 45 seconds" for it. The agent read again at once, again
+    and again - 29k polls a day, every poll a full context. The spin was the
+    symptom; the disease was an answer that lied about the wait and hid the
+    wedge behind it.
+    """
+
+    def test_a_replayed_batch_spends_the_wait_it_was_given(self) -> None:
+        self.writer.tool_pair_send(to="reviewer-agent", text="one letter")
+        first = self.peer.tool_pair_read(wait_seconds=0)
+        self.assertEqual(1, first["count"])
+        started = time.monotonic()
+        again = self.peer.tool_pair_read(wait_seconds=2)
+        elapsed = time.monotonic() - started
+        self.assertGreaterEqual(elapsed, 1.9,
+                                "a replay must not answer in milliseconds")
+        self.assertGreaterEqual(again["waited_seconds"], 1.9,
+                                "the answer must report the time the call really took")
+        self.assertEqual(2.0, again["wait_budget_seconds"])
+        self.assertTrue(again["must_ack"], "the batch is still unacknowledged")
+
+    def test_a_letter_behind_an_unacked_batch_is_named_as_withheld(self) -> None:
+        self.writer.tool_pair_send(to="reviewer-agent", text="first")
+        first = self.peer.tool_pair_read(wait_seconds=0)
+        self.assertEqual(0, first["letters_behind"], "nothing waits behind a fresh batch")
+        self.writer.tool_pair_send(to="reviewer-agent", text="second")
+        wedged = self.peer.tool_pair_read(wait_seconds=0)
+        self.assertEqual(["first"], [m["text"] for m in wedged["messages"]],
+                         "the same batch, not the new letter")
+        self.assertEqual(1, wedged["letters_behind"],
+                         "the letter waiting behind the batch must be counted")
+        self.assertTrue(wedged["must_ack"], "the wedge is still unacknowledged")
+        released = self.peer.tool_pair_read(wait_seconds=0, ack_token=first["ack_token"])
+        self.assertEqual(["second"], [m["text"] for m in released["messages"]],
+                         "the ack releases the letter that was waiting")
+        self.assertEqual(0, released["letters_behind"], "nothing waits behind it now")
 
 
 class ReadDeliverySurfaces(PairTestCase):

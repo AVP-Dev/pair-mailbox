@@ -674,7 +674,8 @@ class Pilot:
 
     # ------------------------------------------------------- wake-up
 
-    def mark_wake(self, state: dict, role: str, reason: str, text: str) -> None:
+    def mark_wake(self, state: dict, role: str, reason: str, text: str,
+                  kind: str) -> None:
         """Record that a role must be woken — in a file, not in the composer.
 
         Printing into the composer was the only way to tell a neighbour "you
@@ -682,6 +683,13 @@ class Pilot:
         moment guessed, and leaves a mark in another window. A file wake-up prints
         nothing — the role sees it itself when it looks at state — and gives the
         supervisor a fact to judge by later: did we wake it, or was it awake.
+
+        `kind` says WHY the role is woken, and the supervisor needs it: "mail"
+        is the peer's own work reaching the role (a letter, unread mail) and
+        "report" is the supervisor's own initiative (a silent writer, an idle
+        role). The human's ask file buys one report, so only a report may spend
+        it. The kind travels with the fact instead of being sniffed out of the
+        text, so a reworded pointer cannot silently change the trigger.
 
         The current `last_seen` snapshot goes next to the intent fact. Comparison
         runs against it, not against now: otherwise a role that was awake when
@@ -763,6 +771,7 @@ class Pilot:
                 "seen_at_ask": seen_at_ask,
                 "unread_at_ask": unread_at_ask,
                 "text": text,
+                "kind": kind,
             })
             path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         except OSError as error:
@@ -928,8 +937,14 @@ class Pilot:
             # The journal row and the `escalated` stamp move INSIDE the branch:
             # a refused escalation is not an escalation, and claiming one every
             # tick made the journal say the role was told while it was not.
-            if not self.nudge(role, str(wake.get("text") or ""), state,
-                              reason=f"wake escalation after {int(age // 60)} min"):
+            wake_text = str(wake.get("text") or "")
+            # The kind travels with the wake fact: a wake caused by the peer's
+            # own work ("mail") passes the ask gate, one raised by the
+            # supervisor's own initiative ("report") does not.
+            is_mail = str(wake.get("kind") or "mail") == "mail"
+            if not self.nudge(role, wake_text, state,
+                              reason=f"wake escalation after {int(age // 60)} min",
+                              is_mail=is_mail):
                 continue
             self.store.append_transcript("pilot_wake_escalated", "pairpilot",
                                          target=role, reason=wake.get("reason"),
@@ -962,7 +977,8 @@ class Pilot:
 
     # --------------------------------------------------------------- outbox
 
-    def nudge(self, role: str, text: str, state: dict, reason: str = "") -> bool:
+    def nudge(self, role: str, text: str, state: dict, reason: str = "",
+              is_mail: bool = False) -> bool:
         """Type a nudge into a CLI — behind BOTH gates, and only here.
 
         This is the single door a spontaneous nudge passes. Round 114 made it
@@ -980,6 +996,11 @@ class Pilot:
            trigger. So the second gate is `push_allowed()` — the `.pair/ask`
            file a human or a hook creates, consumed once it is spent.
 
+        A MAIL pointer is not a spontaneous nudge: a letter that arrived is
+        real work, and the ask file buys one report, not the mail. So `is_mail`
+        passes the ask gate — and only a report may spend the trigger (see
+        flush_outbox and the queued item's kind).
+
         Returns True when the nudge was queued. False is silent-but-recorded:
         one journal row per distinct text per TTL, never a repeat every tick.
         """
@@ -991,17 +1012,18 @@ class Pilot:
                     text=text[:120])
                 log(f"not queueing for {role}: its CLI is gone from the pane")
             return False
-        if not self.push_allowed():
+        if not self.push_allowed() and not is_mail:
             if self.remember(f"push-quiet-{role}-{stable_tag(text)}", ttl=self.outbox_ttl):
                 self.store.append_transcript(
                     "pilot_push_quiet", "pairpilot", to=role,
                     reason=reason or "no trigger — create the ask file to let the pilot speak",
                     text=text[:120])
             return False
-        self.enqueue(role, text, state)
+        self.enqueue(role, text, state, kind="mail" if is_mail else "report")
         return True
 
-    def enqueue(self, role: str, text: str, state: dict | None = None) -> None:
+    def enqueue(self, role: str, text: str, state: dict | None = None,
+                kind: str = "report") -> None:
         """Queue a nudge for printing — used by `nudge` and by direct callers.
 
         `nudge` is the gate; this is the queue itself, and it stays free of
@@ -1009,6 +1031,12 @@ class Pilot:
         restart, a permission prompt the human asked about, a test proving the
         queue's own behaviour) can put text into it without re-answering
         "may we speak".
+
+        `kind` says what the queued item IS: "mail" is the peer's own work
+        reaching the role, "report" is the supervisor's own initiative. The
+        human's ask file buys one report, so only a report may spend it — the
+        kind is recorded with the text, because the text alone cannot say what
+        it is for.
 
         The queue age is measured from the FIRST time this exact text was
         queued, not from the last write: rewriting the file used to reset
@@ -1029,21 +1057,45 @@ class Pilot:
                                              to=role, old=old[:120], new=text[:120])
                 queued_at.unlink(missing_ok=True)
         path.write_text(text, encoding="utf-8")
+        try:
+            self.kind_path(role).write_text(kind, encoding="utf-8")
+        except OSError:
+            pass
         if not queued_at.exists():
             try:
                 queued_at.write_text(str(time.time()), encoding="utf-8")
             except OSError:
                 pass
 
+    def kind_path(self, role: str) -> Path:
+        """Where the kind of the queued item lives: next to the text it describes."""
+        return self.outbox / f".{role}.txt.kind"
+
+    def queued_kind(self, role: str) -> str:
+        """The kind of the queued item. Unknown (no marker) means a report.
+
+        A report is the conservative reading: it is the kind that may spend the
+        human's trigger, and a missing marker is an old queue written before
+        kinds existed.
+        """
+        try:
+            kind = self.kind_path(role).read_text(encoding="utf-8").strip()
+        except OSError:
+            return "report"
+        return kind or "report"
+
     def drop_outbox(self, role: str) -> None:
-        """Remove a queued nudge together with its queue-time stamp.
+        """Remove a queued nudge together with its queue-time stamp and its kind.
 
         A stamp without its file would make the next `queued_age` read
         "waiting since N minutes ago" for a nudge that is not there, and
-        `flush_outbox` would mirror that ghost into the mailbox.
+        `flush_outbox` would mirror that ghost into the mailbox. The kind
+        belongs to that text: left behind, it would describe a queue that no
+        longer exists.
         """
         (self.outbox / f"{role}.txt").unlink(missing_ok=True)
         self.queued_at_path(role).unlink(missing_ok=True)
+        self.kind_path(role).unlink(missing_ok=True)
 
     def queued_at_path(self, role: str) -> Path:
         """Where the first-queue timestamp of a queued nudge lives."""
@@ -1162,7 +1214,6 @@ class Pilot:
             text = self.pending(role)
             if not text or role in self.skip:
                 continue
-            path = self.outbox / f"{role}.txt"
             age = self.queued_age(role, now)
             if age is None:
                 continue
@@ -1241,13 +1292,18 @@ class Pilot:
                 log(f"composer retained the text for {role} — kept for mailbox")
                 continue
             if result.get("delivered"):
+                # The kind is read BEFORE the drop: the drop takes the marker
+                # with the text, and the trigger decision needs it.
+                kind = self.queued_kind(role)
                 self.drop_outbox(role)
                 self.store.append_transcript("pilot_deliver", "pairpilot", to=role, text=text[:120])
                 log(f"delivered the queued item for {role}")
                 # The trigger is spent when its reason is actually delivered, not
                 # when the file is read: consuming it early would silence the
                 # pilot while a queued nudge was still waiting for the composer.
-                if self.consume_trigger():
+                # Only a REPORT may spend it: the ask file buys one report of
+                # the supervisor's own choosing, and the peer's mail is not that.
+                if kind != "mail" and self.consume_trigger():
                     log("the ask trigger is spent — the pilot is quiet again until "
                         "a new one is created")
 
@@ -1388,8 +1444,8 @@ class Pilot:
                 text = (f"[pairpilot] You have {missing} unread messages. "
                         f"Call pair_read and answer your neighbour. If all is done — "
                         f"suggest the next chunk via pair_note.")
-                self.mark_wake(state, role, f"{missing} unread", text)
-                if self.nudge(role, text, state, reason=f"{missing} unread messages"):
+                self.mark_wake(state, role, f"{missing} unread", text, "mail")
+                if self.nudge(role, text, state, reason=f"{missing} unread messages", is_mail=True):
                     self.store.append_transcript("pilot_unread_nudge", "pairpilot",
                                                  target=role, unread=missing)
                     log(f"{role}: {missing} unread, pushing at once")
@@ -1424,7 +1480,8 @@ class Pilot:
                 f"and the work will stand till morning. Continue your part, close the phase, "
                 f"or write to the note what blocks and how. Marking “doing” "
                 f"does not count: a real step or an explicit block is needed.")
-        self.mark_wake(state, writer, f"silent {int(age // 60)} min holding the phase", text)
+        self.mark_wake(state, writer, f"silent {int(age // 60)} min holding the phase",
+                              text, "report")
         if self.nudge(writer, text, state,
                       reason=f"writer silent {int(age // 60)} min holding the phase"):
             log(f"{writer} silent {int(age // 60)} min holding phase {state.get('phase')!r} "
@@ -1478,7 +1535,8 @@ class Pilot:
                     f"Call pair_digest: the round task and what is done live there. "
                     f"Take the next chunk or write to the note what blocks you — "
                     f"“doing” does not count, a step or an explicit block is needed.")
-            self.mark_wake(state, role, f"silent {int(age // 60)} min with no incoming", text)
+            self.mark_wake(state, role, f"silent {int(age // 60)} min with no incoming",
+                          text, "report")
             if self.nudge(role, text, state,
                           reason=f"role silent {int(age // 60)} min with no incoming"):
                 self.store.append_transcript("pilot_idle_role", "pairpilot", target=role,

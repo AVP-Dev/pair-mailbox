@@ -1807,6 +1807,25 @@ class PairSession:
                                      to=target, bell_kind=kind, pane=pane, reason=reason)
         return {"rung": False, "why": reason}
 
+    def _clear_own_pointer(self, tmux: str, pane: str) -> int:
+        """Erase our own leftover pointer from a neighbour's composer.
+
+        A ring or a pointer the neighbour never accepted stays in its composer:
+        the text is ours, the composer is not empty, and every later delivery
+        into that pane is refused. Only a tail that is PROVABLY ours is erased —
+        our own pointer shapes, carrying our own role name, and nothing else in
+        that composer. The human's typing is never touched.
+
+        Returns the number of characters erased; zero when there was nothing of
+        ours there. The caller re-reads the pane: an erase that did not take
+        must not be reported as a delivery.
+        """
+        from pointers import clear_own_pointer
+        try:
+            return clear_own_pointer(tmux, pane, self.role)
+        except Exception:  # noqa: BLE001 - a failed cleanup must not break the delivery
+            return 0
+
     def _ring(self, target: str, kind: str, detail: str = "") -> dict[str, Any]:
         """Knock on the peer's tmux pane so a sleeping agent wakes itself.
 
@@ -1881,13 +1900,20 @@ class PairSession:
             return self._ring_refused(target, kind, pane, f"pane unreadable: {exc}")
         reason = ring_refusal_reason(shot, line)
         if reason is not None:
-            return self._ring_refused(target, kind, pane, reason)
-        prompt = f"pair: {kind} from {self.role}. Read pair_read."
-        if detail:
-            # A cause with no letter text. Trimmed text here would be a "bus in parts": past
-            # one line it never fits anyway, reading as a stub no cause follows from.
-            # a stub no cause follows from.
-            prompt += f" ({detail})"
+            # Our own leftover pointer: a ring we typed earlier was never
+            # accepted, so the composer still holds it and every later delivery
+            # into that pane is refused - the pane stays wedged until a human
+            # clears it. Erase our own text and try again; anything else in
+            # that composer is not ours and stays untouched.
+            cleared = self._clear_own_pointer(tmux, pane)
+            if cleared:
+                shot = capture(tmux, pane)
+                line = composer_line(shot)
+                reason = ring_refusal_reason(shot, line)
+            if reason is not None:
+                return self._ring_refused(target, kind, pane, reason)
+        from pointers import ring_prompt
+        prompt = ring_prompt(self.role, kind, detail)
         first = subprocess.run([tmux, "send-keys", "-t", pane, "-l", prompt],
                                capture_output=True, text=True, timeout=5)
         second = subprocess.run(tmux_command().split() + ["send-keys", "-t", pane, "Enter"],
@@ -2046,6 +2072,7 @@ class PairSession:
             return result
 
         from composer import _tmux, pane_is_foreign
+        from pointers import mailbox_pointer
         try:
             foreign, why_foreign = pane_is_foreign(_tmux(), pane, self.store.project_root)
         except ComposerBusy as exc:
@@ -2060,7 +2087,7 @@ class PairSession:
                         # Round 103 S2: the pointer carries its mail seq so a
                         # reader can tell this pointer's vintage — one stale
                         # pointer text was indistinguishable from three fresh ones.
-                         f"[pair] {self.role}: new message in the mailbox (seq {seq}), read pair_read"],
+                         mailbox_pointer(self.role, seq)],
                         capture_output=True, text=True, timeout=5)
             except Exception as exc:  # noqa: BLE001 - the pane vanished between checks
                 result["why"] = f"pane unreadable: {exc}"
@@ -2077,14 +2104,29 @@ class PairSession:
         # 2. The pointer. Short on purpose: a line in another TUI, not text.
         # Round 103 S2: carries the mail seq — a reader must never need the
         # filesystem to know this pointer's vintage.
-        pointer = f"[pair] {self.role}: new message in the mailbox (seq {seq}), read pair_read"
+        pointer = mailbox_pointer(self.role, seq)
         try:
             pointed = deliver(pane, pointer, wait_for_empty=wait_for_empty, submit=submit)
         except ComposerBusy as exc:
-            self.store.append_transcript("deliver_pointer_busy", self.role, to=to,
-                                         reason=str(exc), seq=seq)
-            result["why"] = f"composer busy ({exc}); message in the mailbox"
-            return result
+            # A pointer we typed earlier and the neighbour never accepted is
+            # still in its composer: the composer is not empty, so every
+            # delivery into that pane is refused. Clear our own text and try
+            # once more — the pane must not stay wedged by our own words.
+            cleared = self._clear_own_pointer(_tmux(), pane)
+            if not cleared:
+                self.store.append_transcript("deliver_pointer_busy", self.role, to=to,
+                                             reason=str(exc), seq=seq)
+                result["why"] = f"composer busy ({exc}); message in the mailbox"
+                return result
+            try:
+                pointed = deliver(pane, pointer, wait_for_empty=wait_for_empty, submit=submit)
+            except ComposerBusy as exc2:
+                self.store.append_transcript("deliver_pointer_busy", self.role, to=to,
+                                             reason=str(exc2), seq=seq, cleared=cleared)
+                result["why"] = f"composer busy ({exc2}); message in the mailbox"
+                return result
+            self.store.append_transcript("deliver_pointer_cleared", self.role, to=to,
+                                         pane=pane, seq=seq, erased=cleared)
         self.store.append_transcript("deliver", self.role, to=to, seq=seq, **pointed)
         result["in_pane"] = bool(pointed.get("delivered"))
         result["delivered_to_pane"] = pane
@@ -2205,9 +2247,10 @@ class PairSession:
         # the fast-response optimization.
         try:
             from wake import record_wake
+            from pointers import mailbox_pointer
             # Round 103 S2: the wake text carries the seq.
             record_wake(self.store.root, self.store.read(), to, "message",
-                        f"[pair] {self.role}: new message in the mailbox (seq {result['seq']}), read pair_read")
+                        mailbox_pointer(self.role, int(result["seq"])))
             self.store.append_transcript("wake_pending", self.role, to=to,
                                          reason="message", seq=result["seq"])
         except Exception:  # noqa: BLE001 - the wake file must never drop the send
@@ -2255,7 +2298,8 @@ class PairSession:
             raise ProtocolError("`wait_seconds` must not be negative.")
         timeout_ms = client_timeout_ms(self.role)
         wait, was_capped = effective_read_wait(wait, timeout_ms)
-        deadline = time.monotonic() + wait
+        started = time.monotonic()
+        deadline = started + wait
         messages: list[dict[str, Any]] = []
         batch: dict[str, Any] | None = None
         while True:
@@ -2263,18 +2307,40 @@ class PairSession:
                 messages, batch = self._drain(limit)
             except read_delivery.DrainRefused as exc:
                 raise ProtocolError(str(exc)) from None
+            if batch and batch.get("replayed"):
+                # The SAME batch again: the unacknowledged batch holds the cursor,
+                # so no newer letter can be served - the wait cannot buy anything
+                # here. Spend it anyway, and answer at the end of it: a read that
+                # returns in milliseconds invites a spin, and the spin is what
+                # burns the night (measured: 29k polls a day, one full context
+                # each). The batch is served, the wait is honest, and the answer
+                # names the wedge.
+                remaining = deadline - time.monotonic()
+                if remaining > 0:
+                    time.sleep(remaining)
+                break
             if batch or messages or time.monotonic() >= deadline:
                 break
             time.sleep(0.1)
+        elapsed = time.monotonic() - started
+        state = self.store.read()
+        pending = (state.get("pending_reads") or {}).get(self.role)
+        behind = read_delivery.withheld_count(state, self.role, len(self._inbox_files()))
 
         answer: dict[str, Any] = {
             "messages": messages,
             "count": len(messages),
-            "waited_seconds": round(wait, 2),
+            "waited_seconds": round(elapsed, 2),
+            "wait_budget_seconds": round(wait, 2),
+            "must_ack": isinstance(pending, dict),
+            "letters_behind": behind,
             "note": (
-                "Read messages by seq. If `ack_token` is returned, pass it on the next "
-                "pair_read after processing the batch. A retry without it returns the "
-                "same batch; no other tool call acknowledges mail."
+                "Read messages by seq. One read per turn: an empty answer means nothing "
+                "new arrived - go back to work or sleep, the peer and the supervisor wake "
+                "you. A batch stays unread until its exact `ack_token` is passed on a "
+                "later pair_read; until then `letters_behind` letters wait behind it and "
+                "no read will bring them. `waited_seconds` is what this call really "
+                "took, `wait_budget_seconds` is what it was allowed to take."
             ),
         }
         if batch:
@@ -2287,7 +2353,7 @@ class PairSession:
             answer["why"] = (
                 f"You asked for more than this client can wait for. It cut the wait to "
                 f"{wait:.0f}s (MCP timeout {timeout_ms}ms minus the client margin). Raise "
-                f"the role's MCP timeout or ask for less and call again."
+                f"the role's MCP timeout or ask for less."
             )
         return answer
 
@@ -3393,7 +3459,11 @@ def tool_definitions() -> list[dict[str, Any]]:
             "description": (
                 "Read messages oldest first. A returned batch stays unread until its exact `ack_token` "
                 "is passed on a later pair_read; a retry without it replays the same batch. Other tools "
-                "do not ACK it. Pending batches appear in pair_state/digest and block close."
+                "do not ACK it. Pending batches appear in pair_state/digest and block close. "
+                "One read per turn: the answer reports `must_ack` and `letters_behind` - letters "
+                "waiting behind your unacknowledged batch, which no read will bring - and "
+                "`waited_seconds`, the time the call really took. An empty answer means nothing new "
+                "arrived: go back to work or sleep, the peer and the supervisor wake you."
             ),
             "inputSchema": {
                 "type": "object",

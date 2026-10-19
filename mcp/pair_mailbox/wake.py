@@ -43,8 +43,15 @@ def count_unread(state: dict[str, Any], state_dir: Path, role: str) -> int:
 
 
 def record_wake(state_dir: Path, state: dict[str, Any], role: str,
-                reason: str, text: str) -> Path:
+                reason: str, text: str, kind: str = "mail") -> Path:
     """Record the "wake the role" fact — into a file, not the composer.
+
+    `kind` says WHY the role is woken, and the supervisor needs it: a wake
+    caused by the peer's own work ("mail" — a letter, a note, unread mail) is
+    real work, and a wake from the supervisor's own initiative ("report" — a
+    silent writer, an idle role) is the report the human's ask file buys. The
+    two must not spend the same trigger, so the kind travels with the fact
+    instead of being sniffed out of the text.
 
     Never throws past: unwritten means the caller writes the cause into the
     transcript itself, while the event (letter/note) already sits in the container.
@@ -89,6 +96,7 @@ def record_wake(state_dir: Path, state: dict[str, Any], role: str,
         "seen_at_ask": seen_at_ask,
         "unread_at_ask": unread_at_ask,
         "text": text,
+        "kind": kind,
     })
     try:
         tmp = path.with_suffix(".tmp")

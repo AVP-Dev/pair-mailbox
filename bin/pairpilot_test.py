@@ -491,7 +491,7 @@ class TestLiveness(PilotCase):
         self.write_state(roles={"agy": {"last_seen": ago(3600), "pid": 998111}})
         pilot = self.pilot()
         pilot.wake_grace = 0.0
-        pilot.mark_wake(pilot.state(), "agy", "2 unread", "read your mail")
+        pilot.mark_wake(pilot.state(), "agy", "2 unread", "read your mail", "mail")
         wake_file = pilot.wake_root / "agy.json"
         payload = json.loads(wake_file.read_text(encoding="utf-8"))
         payload["asked_at"] = ago(3600)
@@ -1449,7 +1449,7 @@ class TestTmuxPaths(PilotCase):
         pairpilot.subprocess.run = lambda *a, **k: calls.append(a[0]) or type("R", (), {
             "stdout": "", "returncode": 0})()
         try:
-            pilot.mark_wake(self.pilot().store.read(), "codex", "message", "text")
+            pilot.mark_wake(self.pilot().store.read(), "codex", "message", "text", "mail")
         finally:
             pairpilot.subprocess.run = real_run
         self.assertIn("pilot_ring", self.transcript_kinds())
@@ -1467,9 +1467,9 @@ class TestTmuxPaths(PilotCase):
             "stdout": "", "returncode": 0})()
         try:
             state = self.pilot().store.read()
-            pilot.mark_wake(state, "codex", "message", "text")
+            pilot.mark_wake(state, "codex", "message", "text", "mail")
             before = self.transcript_kinds().count("pilot_ring")
-            pilot.mark_wake(self.pilot().store.read(), "codex", "message", "text")
+            pilot.mark_wake(self.pilot().store.read(), "codex", "message", "text", "mail")
             after = self.transcript_kinds().count("pilot_ring")
         finally:
             pairpilot.subprocess.run = real_run
@@ -1486,7 +1486,7 @@ class TestTmuxPaths(PilotCase):
     def test_role_without_wake_adapter_is_named_not_silent(self) -> None:
         """No adapter means a journal record, not silence (pi stayed silent 3 hours)."""
         self.write_state(roles={"pi": {"last_seen": ago(10), "pane": "%9"}})
-        self.fake_tmux().mark_wake(self.pilot().store.read(), "pi", "message", "text")
+        self.fake_tmux().mark_wake(self.pilot().store.read(), "pi", "message", "text", "mail")
         self.assertIn("pilot_wake_no_adapter", self.transcript_kinds())
 
     def test_permission_prompt_is_confirmed_and_logged(self) -> None:
@@ -2969,15 +2969,21 @@ class TestPushGates(PilotCase):
         directly, so once `wake_grace` passed, a wake raised before the trigger
         existed printed into the CLI with no reason behind it — the exact spam
         the gate exists to stop, arriving through a side door.
+
+        The wake here is the supervisor's own initiative ("report"), so the ask
+        file is what must stop it. A wake caused by the peer's own work is a
+        different case: real mail, and the gate was never made for it.
         """
         self.write_state(writer="agy",
                          roles={"agy": {"last_seen": ago(60), "pid": os.getpid(), "pane": "%1"}})
         pilot = self.pilot()
         pilot.wake_grace = 0.0
-        # A wake raised by an unread, with its grace already past.
-        pilot.mark_wake(pilot.state(), "agy", "3 unread", "you have unread mail")
+        # A wake raised by the supervisor's own finding, with its grace past.
+        pilot.mark_wake(pilot.state(), "agy", "silent 60 min holding the phase",
+                        "you are silent", "report")
         wake = pilot.wake_root / "agy.json"
-        wake.write_text(json.dumps({"reason": "3 unread", "text": "you have unread mail",
+        wake.write_text(json.dumps({"reason": "silent 60 min holding the phase",
+                                    "text": "you are silent", "kind": "report",
                                     "asked_at": ago(600)}), encoding="utf-8")
         pilot.tick()
         self.assertEqual("", pilot.pending("agy"),
@@ -2985,6 +2991,29 @@ class TestPushGates(PilotCase):
         pilot.consume_trigger()
         self.assertFalse(pilot.ask_file.exists(),
                          "nothing was delivered, so nothing consumed the trigger")
+
+    def test_a_mail_wake_escalation_passes_the_gate(self) -> None:
+        """The escalation of a MAIL wake is real work too: it passes the gate.
+
+        The first poke may have found the composer busy. The escalation is the
+        second chance, and it must not be gagged by the ask file either — a
+        letter that arrived is not the supervisor's report.
+        """
+        self.write_state(writer="agy",
+                         roles={"agy": {"last_seen": ago(60), "pid": os.getpid(), "pane": "%1"}})
+        self.inbox("agy", 1)
+        pilot = self.pilot()
+        pilot.wake_grace = 0.0
+        pilot.mark_wake(pilot.state(), "agy", "1 unread", "you have unread mail", "mail")
+        wake = pilot.wake_root / "agy.json"
+        wake.write_text(json.dumps({"reason": "1 unread", "kind": "mail",
+                                    "text": "Call pair_read and answer your neighbour",
+                                    "asked_at": ago(600)}), encoding="utf-8")
+        pilot.tick()
+        self.assertTrue(pilot.pending("agy"),
+                        "a letter that arrived must be escalated without an ask file")
+        self.assertEqual("mail", pilot.queued_kind("agy"),
+                         "the queued item must remember what it is")
 
     def test_the_trigger_survives_until_the_nudge_actually_lands(self) -> None:
         """A queued nudge keeps its trigger, and spending it stops new ones.
@@ -3024,7 +3053,7 @@ class TestPushGates(PilotCase):
         orig = pairpilot.pane_alive
         pairpilot.pane_alive = lambda tmux, pane: True
         self.addCleanup(setattr, pairpilot, "pane_alive", orig)
-        pilot.mark_wake(pilot.state(), "agy", "silent 60 min", "you are silent")
+        pilot.mark_wake(pilot.state(), "agy", "silent 60 min", "you are silent", "report")
         self.assertEqual({}, self.wake(pilot, "agy"),
                          "a wake for a process that no longer exists is never raised")
         self.assertIn("pilot_wake_dead_target", self.transcript_kinds())
@@ -3035,10 +3064,84 @@ class TestPushGates(PilotCase):
                          roles={"agy": {"last_seen": ago(3600), "pid": os.getpid(), "pane": "%1"}})
         pilot = self.pilot()
         pilot.tmux = "/usr/bin/tmux"
-        pilot.mark_wake(pilot.state(), "agy", "silent 60 min", "you are silent")
+        pilot.mark_wake(pilot.state(), "agy", "silent 60 min", "you are silent", "report")
         self.assertTrue(self.wake(pilot, "agy"),
                         "a live process whose probe could not run must still be woken")
         self.assertNotIn("pilot_wake_dead_target", self.transcript_kinds())
+
+    def test_unread_mail_wakes_a_live_peer_without_an_ask_file(self) -> None:
+        """A letter that arrived is real work: the ask gate must not gag it.
+
+        Measured 2026-10-19: 18 `pilot_push_quiet` rows, every one of them the
+        unread wake refused for want of an ask file. The peer never learned it
+        had mail, the letters piled up, and the human read the silence as a
+        stuck round. The gate was made for the supervisor's OWN reports, not for
+        a letter somebody sent.
+        """
+        self.write_state(writer="agy",
+                         roles={"agy": {"last_seen": ago(60), "pid": os.getpid(), "pane": "%1"}})
+        self.inbox("agy", 2)
+        pilot = self._pilot_with_tmux(role_server_in_pane=os.getpid())
+        pilot.tick()
+        self.assertTrue(pilot.pending("agy"),
+                        "a letter that arrived must wake the peer without an ask file")
+        self.assertIn("pilot_unread_nudge", self.transcript_kinds())
+
+    def test_a_delivered_mail_wake_does_not_spend_the_human_trigger(self) -> None:
+        """The ask file buys one report of the supervisor's choosing.
+
+        A letter that arrived is not that report: the mail wake must leave the
+        human's switch alone, or the requested report is eaten by an unrelated
+        letter that happened to arrive first.
+        """
+        self.write_state(writer="agy",
+                         roles={"agy": {"last_seen": ago(60), "pid": os.getpid(), "pane": "%1"}})
+        self.inbox("agy", 1)
+        pilot = self._pilot_with_tmux(role_server_in_pane=os.getpid())
+        self.allow_push()
+        pilot.tick()
+        self.assertTrue(pilot.pending("agy"), "the mail wake is queued")
+        state = self.write_state(roles={"agy": {"pane": "%1", "pid": os.getpid()}})
+        orig_alive, orig_deliver = pairpilot.pane_alive, pairpilot.deliver
+        orig_belongs = pairpilot.pane_belongs_to_project
+        pairpilot.pane_alive = lambda tmux, pane: True
+        pairpilot.pane_belongs_to_project = lambda tmux, pane, root: (True, "")
+        pairpilot.deliver = lambda pane, text, wait_for_empty=0.0: {"delivered": True}
+        try:
+            pilot.tmux = "tmux"
+            pilot.flush_outbox(state)
+        finally:
+            pairpilot.pane_alive, pairpilot.deliver = orig_alive, orig_deliver
+            pairpilot.pane_belongs_to_project = orig_belongs
+        self.assertTrue(pilot.ask_file.exists(),
+                        "a delivered mail wake must not spend the human's trigger")
+
+    def test_a_delivered_report_does_spend_the_human_trigger(self) -> None:
+        """The other half of the contract: the supervisor's own report pays.
+
+        A spontaneous poke is what the ask file was made for, so its delivery
+        spends the trigger - and only one.
+        """
+        self.write_state(writer="agy",
+                         roles={"agy": {"last_seen": ago(3600), "pid": os.getpid(), "pane": "%1"}})
+        pilot = self._pilot_with_tmux(role_server_in_pane=os.getpid())
+        self.allow_push()
+        pilot.tick()
+        self.assertTrue(pilot.pending("agy"), "the trigger lets the pilot speak")
+        state = self.write_state(roles={"agy": {"pane": "%1", "pid": os.getpid()}})
+        orig_alive, orig_deliver = pairpilot.pane_alive, pairpilot.deliver
+        orig_belongs = pairpilot.pane_belongs_to_project
+        pairpilot.pane_alive = lambda tmux, pane: True
+        pairpilot.pane_belongs_to_project = lambda tmux, pane, root: (True, "")
+        pairpilot.deliver = lambda pane, text, wait_for_empty=0.0: {"delivered": True}
+        try:
+            pilot.tmux = "tmux"
+            pilot.flush_outbox(state)
+        finally:
+            pairpilot.pane_alive, pairpilot.deliver = orig_alive, orig_deliver
+            pairpilot.pane_belongs_to_project = orig_belongs
+        self.assertFalse(pilot.ask_file.exists(),
+                         "a delivered report spends the human's trigger")
 
 
 if __name__ == "__main__":

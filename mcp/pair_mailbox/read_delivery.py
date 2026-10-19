@@ -168,6 +168,31 @@ def pending_summary(state: dict[str, Any], role: str) -> dict[str, Any] | None:
     return summary
 
 
+def withheld_count(state: dict[str, Any], role: str, file_count: int) -> int:
+    """How many letters wait behind the batch the reader holds.
+
+    An unacknowledged batch holds the cursor: a letter that arrives after it
+    stays invisible until the batch is acknowledged, and no amount of reading
+    brings it in. The count is what tells a reader the truth about its own
+    wedge - reading again cannot help, acknowledging can.
+
+    `file_count` is the number of letters in the mailbox; the cursor is an
+    index into that same list, so the difference is the number of letters the
+    reader cannot see. A hole (poison) is not counted here: it is reported by
+    the pending record, and it is not a letter that arrived after the batch.
+    """
+    pending = (state.get("pending_reads") or {}).get(role)
+    if not isinstance(pending, dict):
+        return 0
+    cursor = int(pending.get("cursor", 0))
+    fresh_below = pending.get("fresh_below")
+    if isinstance(fresh_below, dict):
+        # The fresh batch below a hole already shows its own letters; the
+        # letters behind IT are the ones still unseen.
+        cursor = max(cursor, int(fresh_below.get("cursor", 0)))
+    return max(0, file_count - cursor)
+
+
 def _migrate_legacy(state: dict[str, Any], role: str) -> None:
     """Fold a legacy `_read_attempts` counter into its batch, once.
 

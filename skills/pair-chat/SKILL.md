@@ -85,12 +85,20 @@ pair_read(ack_token="...")     # commit the batch: mail is read only then
   three attempts (the initial delivery plus two replays,
   `MAX_REPLAY_ATTEMPTS=3`) the operator may settle it with
   `pairctl read-ack <role> <token> [--skip --reason ...]`.
+- **One read per turn.** An empty answer means nothing new arrived: go back to
+  work or sleep — the peer and the supervisor wake you when the mail lands.
+  Reading again in a loop buys nothing and costs a full context per poll.
+- The answer names the wedge: `must_ack` says the batch is still
+  unacknowledged, and `letters_behind` counts the letters that arrived after
+  it and wait behind it. Reading again will not bring them; the ACK will.
 - `wait_seconds` default is `0` (`DEFAULT_READ_WAIT_SECONDS`); cap is 60s
   (`MAX_READ_WAIT_SECONDS`), further capped by the role's real MCP timeout
   (`cli-profiles.json` `mcp.entry.timeout`); a cut wait is reported with the
   named numbers, never hidden. Both roles may wait — a bounded wait always
-  expires, so it cannot deadlock. Empty answer means call again; waiting is
-  the normal way to hear from the peer.
+  expires, so it cannot deadlock. `waited_seconds` is the time the call
+  really took, `wait_budget_seconds` what it was allowed to take: a call that
+  took less than its budget replayed a batch you already hold, and it spent
+  the wait before answering so the loop cannot spin.
 - Closing is refused over unread mail: a report the writer never read is not a
   report. Run `pair_read` and ACK its batch before `pair_advance("done")`.
 
