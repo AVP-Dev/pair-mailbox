@@ -1,13 +1,23 @@
 #!/usr/bin/env python3
-"""Tests for the origin guard (round 108 slice 1).
+"""The guards in serve.sh: WHERE the code runs, and WHICH role it may claim.
 
-The measured defect: my own MCP config pointed at /tmp/wire_test, a scratch clone,
-and on restart that OLD code would have taken my role silently — the role lock
-would have been free, so the foreign tree would have served while everything
-looked correct. Round 104's inventory-honesty class, our own instance.
+Two guards, one source file, one real fixture.
 
-These tests run the REAL serve.sh from real trees, because the claim under test
-is about WHERE code runs, and a mocked path proves nothing about it.
+**The origin guard (round 108 slice 1).** The measured defect: my own MCP config
+pointed at /tmp/wire_test, a scratch clone, and on restart that OLD code would
+have taken my role silently — the role lock would have been free, so the foreign
+tree would have served while everything looked correct. Round 104's
+inventory-honesty class, our own instance.
+
+**The role derivation (round 124).** The role comes from the MCP config, and the
+environment may only DERIVE an instance of it ("agy" -> "agy-writer"): duo mode
+needs two instances of one CLI, and the config is per CLI. A foreign role stays
+a refusal — the 2026-10-07 case, where a process picked up a role it was not
+given.
+
+These tests run the REAL serve.sh from real trees, because the claims under test
+are about WHERE code runs and WHICH role it may claim, and a mocked path proves
+nothing about either.
 
 Run: python3 mcp/pair_mailbox/test_origin_guard.py
 """
@@ -54,7 +64,15 @@ def _lock_holder(state_dir: Path, role: str) -> str:
     return ""
 
 
-class OriginGuardCase(unittest.TestCase):
+class ServeFixture:
+    """The ground the serve.sh guards are measured on.
+
+    A real tree, a real state, a real serve.sh: the claims under test are about
+    WHERE code runs and WHICH role a process may claim, and a mocked path proves
+    nothing about either. A mixin, not a TestCase, so the classes below do not
+    inherit each other's test cases.
+    """
+
     def setUp(self) -> None:
         # NOT under TMPDIR: serve.sh refuses a code root in /tmp outright (round
         # 108's scar — a config left pointing at /tmp/wire_test served a role
@@ -94,7 +112,8 @@ class OriginGuardCase(unittest.TestCase):
         except OSError:
             pass
 
-    def _raise(self, cwd: Path, serve: Path | None = None) -> subprocess.Popen:
+    def _raise(self, cwd: Path, serve: Path | None = None,
+               pair_role: str | None = None) -> subprocess.Popen:
         """Raise the server the way the MCP entry does: a chosen CWD and a chosen
         serve.sh. Both matter — the guard compares the repo the CODE lives in
         against the repo the STATE lives in, so a legitimate twin must run its
@@ -112,6 +131,8 @@ class OriginGuardCase(unittest.TestCase):
         # running pair exports PAIR_ROLE=omp, and a test raising another role
         # would be refused by that guard before it ever reached the origin check.
         env.pop("PAIR_ROLE", None)
+        if pair_role is not None:
+            env["PAIR_ROLE"] = pair_role
         proc = subprocess.Popen(
             ["sh", str(Path(cwd) / "mcp" / "pair_mailbox" / "serve.sh"), self.role,
              "--state", str(self.state)],
@@ -129,6 +150,9 @@ class OriginGuardCase(unittest.TestCase):
                 path.unlink()
         else:
             path.write_text(engine_root, encoding="utf-8")
+
+
+class OriginGuardCase(ServeFixture, unittest.TestCase):
 
     def test_foreign_tree_refuses_and_names_both_roots(self) -> None:
         """A server raised from a FOREIGN REPO must refuse, not serve. The
@@ -525,6 +549,83 @@ class OriginGuardCase(unittest.TestCase):
                              f"{marker}: the shell must change into its cwd")
             self.assertLess(len(proc.stdout), 200,
                             f"{marker}: the init must not dump the environment")
+
+
+class RoleDerivationCase(ServeFixture, unittest.TestCase):
+    """The role may be DERIVED from the configured one, never replaced by it.
+
+    Duo mode needs two instances of ONE CLI in a project, and the MCP config is
+    per CLI: both instances read the same file, so both would claim the same
+    role and the second would be refused by the "one live role, one live
+    process" rule (server.py). The instance suffix says WHICH instance.
+
+    The direction that must stay closed is the one the 2026-10-07 measurement
+    opened: a process that picked up a role it was not given (PAIR_ROLE=opencode
+    served by an omp server). So a FOREIGN role is still a refusal, and the
+    derived name may only extend the configured one - and only with characters
+    that cannot climb out of .pair/, because the role names a mailbox directory
+    and a wake file.
+    """
+
+    def _role_of(self, pair_role: str) -> tuple[int, str]:
+        """Raise the server with this PAIR_ROLE and return (rc, output)."""
+        proc = self._raise(Path(self._tmp.name) / "twin", pair_role=pair_role)
+        try:
+            out, err = proc.communicate(timeout=60)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            out, err = proc.communicate()
+        return proc.returncode, (err or "") + (out or "")
+
+    def test_a_foreign_role_is_refused(self) -> None:
+        rc, out = self._role_of("opencode")
+        self.assertNotEqual(rc, 0, "a role the config never gave must be refused")
+        self.assertIn("refus", out.lower())
+        self.assertIn("opencode", out, "the refusal must name the role it refused")
+        self.assertIn(self.role, out, "and the role that WAS configured")
+
+    def test_a_traversal_shaped_role_is_refused(self) -> None:
+        """The role names a mailbox directory and a wake file."""
+        rc, out = self._role_of(f"{self.role}-../..")
+        self.assertNotEqual(rc, 0, "a role that climbs out of .pair/ must be refused")
+        self.assertIn("refus", out.lower())
+
+    def test_an_instance_of_the_configured_role_is_served(self) -> None:
+        """The legitimate case: "agy" -> "agy-writer" answers the protocol."""
+        twin = _git_repo(Path(self._tmp.name) / "twin")
+        twin_state = twin / ".pair"
+        twin_state.mkdir(parents=True, exist_ok=True)
+        twin_state.joinpath("state.json").write_text(json.dumps(
+            {"round": 903, "mode": "fix", "writer": "omp", "roles": {},
+             "phase": "implement", "seq": 0}), encoding="utf-8")
+        old_state = self.state
+        self.state = twin_state
+        try:
+            proc = self._raise(twin, pair_role=f"{self.role}-writer")
+            served = False
+            try:
+                proc.stdin.write(json.dumps(
+                    {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                     "params": {"protocolVersion": "2024-11-05",
+                                "capabilities": {},
+                                "clientInfo": {"name": "role-test", "version": "1"}}}) + "\n")
+                proc.stdin.flush()
+                served = bool(proc.stdout.readline().strip())
+            except (OSError, ValueError):
+                served = False
+            finally:
+                try:
+                    proc.stdin.close()
+                except OSError:
+                    pass
+                try:
+                    proc.communicate(timeout=30)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.communicate()
+            self.assertTrue(served, "an instance role must be served, not refused")
+        finally:
+            self.state = old_state
 
 
 if __name__ == "__main__":

@@ -14,6 +14,7 @@ import json
 import sys
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -22,6 +23,14 @@ from pair_test_base import PairTestCase  # noqa: E402
 from server import PairSession, Store  # noqa: E402
 
 import pair_notes_consistency as pnc
+
+# The forged entries carry a CURRENT stamp, not a fixed old one: the leg treats
+# an entry predating the attribution floor as history it cannot judge (the
+# appender of that era had no sha field), so a hardcoded old stamp made the
+# red-proof case untestable — the forged entry was excused as pre-era instead
+# of being refused. The stamp is what says "this was written by the current
+# appender, and it does not match the journal".
+NOW = datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
 class TestNotesConsistency(PairTestCase):
@@ -57,7 +66,7 @@ class TestNotesConsistency(PairTestCase):
         self.writer.tool_pair_note(kind="decision", text="the real one")
         target = self.store.notes_root / "decision.md"
         target.write_text(target.read_text(encoding="utf-8") +
-                          "\n## 2026-10-17T23:59:59+00:00 — reviewer-agent "
+                          f"\n## {NOW} — reviewer-agent "
                           "(note deadbeef1234 attempt 1)\n\nforged decision\n",
                           encoding="utf-8")
         ok, why = pnc.check_notes(self.store.root)
@@ -73,7 +82,7 @@ class TestNotesConsistency(PairTestCase):
         that is not pair_note, so it cannot be matched either way."""
         target = self.store.notes_root / "finding.md"
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text("## 2026-10-17T23:59:59+00:00 — reviewer-agent\n\nhand-typed finding\n",
+        target.write_text(f"## {NOW} — reviewer-agent\n\nhand-typed finding\n",
                           encoding="utf-8")
         ok, why = pnc.check_notes(self.store.root)
         self.assertFalse(ok)
@@ -101,7 +110,7 @@ class TestNotesConsistency(PairTestCase):
         self.writer.tool_pair_note(kind="decision", text="the real one")
         target = self.store.notes_root / "decision.md"
         target.write_text(target.read_text(encoding="utf-8") +
-                          "\n## 2026-10-17T23:59:59+00:00 — reviewer-agent "
+                          f"\n## {NOW} — reviewer-agent "
                           "(note cafe1234abcd attempt 1)\n\nforged decision\n",
                           encoding="utf-8")
         with tempfile.TemporaryDirectory() as tmp:

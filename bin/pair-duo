@@ -156,8 +156,12 @@ if [[ -n "$SWAP_CRITIC" ]]; then
     critic_cmd="opencode --standalone --auto"
   fi
   echo "pair-duo: writer $writer stays, critic -> $SWAP_CRITIC"
+  # The new pane is split FROM the writer's pane, so it inherits the writer's
+  # PAIR_ROLE ("agy-writer"). The swapped CLI's own config gives it a different
+  # role, and a role that does not extend it is refused — so the export is
+  # dropped here: the swapped CLI takes the role from its own config, as before.
   tmux split-window $SPLIT_OPT -c "$PROJECT_ROOT_DIR" \
-    "$SHELL -c \"export PAIR_STATE='$STATE_PATH'; cd '$PROJECT_ROOT_DIR'; echo '=== PAIR CRITIC: $SWAP_CRITIC (swap) ==='; $critic_cmd\""
+    "$SHELL -c \"export PAIR_STATE='$STATE_PATH'; unset PAIR_ROLE; cd '$PROJECT_ROOT_DIR'; echo '=== PAIR CRITIC: $SWAP_CRITIC (swap) ==='; $critic_cmd\""
   echo "pair-duo: new critic $SWAP_CRITIC in the next pane; close the old critic pane yourself (Ctrl-D)"
   echo "pair-duo: write authority with $writer, untouched (PROTOCOL §2)"
   exit 0
@@ -277,8 +281,14 @@ if [[ -n "${TMUX:-}" ]]; then
 fi
 
 PROJ_NAME="$(basename -- "$PROJECT_ROOT_DIR")"
-WRITER_INIT="export PAIR_STATE='${STATE_PATH}'; cd '${PROJECT_ROOT_DIR}'; echo '=== PAIR WRITER: ${WRITER_ROLE} ==='; ${WRITER_CMD}"
-CRITIC_INIT="export PAIR_STATE='${STATE_PATH}'; cd '${CRITIC_DIR}'; echo '=== PAIR CRITIC: ${CRITIC_ROLE} ==='; ${CRITIC_CMD}"
+# The per-instance ROLE travels with the pane, and it is DERIVED from the role
+# the CLI's MCP config gives ("agy" -> "agy-writer"): two instances of one CLI
+# read the SAME config, so without this both would claim one role and the
+# second would be refused by the "one live role, one live process" rule
+# (server.py). serve.sh accepts an instance of the configured role and refuses
+# anything else, so a stale export cannot hand a pane a foreign identity.
+WRITER_INIT="export PAIR_STATE='${STATE_PATH}'; export PAIR_ROLE='${WRITER_ROLE}'; cd '${PROJECT_ROOT_DIR}'; echo '=== PAIR WRITER: ${WRITER_ROLE} ==='; ${WRITER_CMD}"
+CRITIC_INIT="export PAIR_STATE='${STATE_PATH}'; export PAIR_ROLE='${CRITIC_ROLE}'; cd '${CRITIC_DIR}'; echo '=== PAIR CRITIC: ${CRITIC_ROLE} ==='; ${CRITIC_CMD}"
 TITLE_WRITER="$PROJ_NAME:${WRITER_ROLE} (writer)"
 TITLE_CRITIC="$PROJ_NAME:${CRITIC_ROLE} (critic)"
 
