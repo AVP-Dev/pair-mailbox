@@ -2,10 +2,12 @@
 # Launch the pair-mailbox MCP server as a fixed role.
 #
 # Each agent gets its own entry in its MCP config pointing at this wrapper with a
-# different role name. The role is baked into configuration rather than read from
-# the environment, because an agent must not be able to claim a role it was not
-# given: the whole write-authority boundary depends on the server knowing which
-# process is which, and a value the process can set for itself is not that.
+# different role name. The role comes from that config, and the environment may
+# only DERIVE an instance of it ("agy" -> "agy-writer"), because an agent must
+# not be able to claim a role it was not given: the whole write-authority
+# boundary depends on the server knowing which process is which, and a value the
+# process can set for itself is not that. A foreign PAIR_ROLE is refused; only
+# an instance of the configured role is accepted.
 #
 # Usage: serve.sh <role> [--state dir | --state=dir | state-dir]
 set -eu
@@ -204,8 +206,30 @@ if [ -n "$_code_top" ] && [ -n "$_state_top" ] && [ "$_code_top" != "$_state_top
   echo "pair-mailbox: NOTE: serving state from $_state_top with engine code from $_code_top (sanctioned)" >&2
 fi
 if [ -n "${PAIR_ROLE:-}" ] && [ "${PAIR_ROLE}" != "$role" ]; then
-  echo "pair-mailbox: refusing: PAIR_ROLE=${PAIR_ROLE} != argv role $role (role comes from config, never from env)" >&2
-  exit 3
+  # The role may be DERIVED from the configured one, never REPLACED by it.
+  #
+  # Duo mode needs two instances of ONE CLI in a project, and the MCP config is
+  # per CLI: both instances read the same file and would claim the same role.
+  # The instance suffix says WHICH instance ("agy" -> "agy-writer"), and it may
+  # only extend the role the config gave. A FOREIGN role stays a refusal: the
+  # measured 2026-10-07 case was a process picking up a role it was not given
+  # (PAIR_ROLE=opencode served by an omp server), and the role decides who may
+  # write and whose verdict counts.
+  case "$PAIR_ROLE" in
+    "${role}"-*) ;;
+    "${role}"_*) ;;
+    *) echo "pair-mailbox: refusing: PAIR_ROLE=${PAIR_ROLE} is neither the configured role ${role} nor an instance of it" >&2
+       exit 3;;
+  esac
+  # The role names a mailbox directory and a wake file, so the derived name may
+  # only carry characters that cannot climb out of .pair/: "agy-writer" and
+  # "agy_2" pass, "agy-../.." does not.
+  case "$PAIR_ROLE" in
+    *[!A-Za-z0-9_-]*)
+      echo "pair-mailbox: refusing: PAIR_ROLE=${PAIR_ROLE} carries characters a role may not hold" >&2
+      exit 3;;
+  esac
+  role="$PAIR_ROLE"
 fi
 
 here="$(cd -- "$(dirname -- "$0")" && pwd)"

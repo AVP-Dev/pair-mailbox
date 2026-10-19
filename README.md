@@ -251,7 +251,13 @@ bin/pairpilot --launch agy=agy   # How to restart a role whose process died
 bin/pairwatch --unblock    # Background daemon to detect stalls and auto-approve [y/n] prompts
 bin/pairdoctor             # Health check and environment diagnostic utility
 bin/pair-duo --swap-critic agy --state <dir> --project <dir>  # Swap critic directly
+bin/pair-duo agy                  # Two instances of ONE CLI: agy-writer and agy-critic
 ```
+
+`bin/pair-duo <cli>` runs two copies of the SAME CLI in one project — the writer
+gets the role `<cli>-writer`, the critic `<cli>-critic`, each derived from the
+role the CLI's own MCP config gives. A foreign role is refused: the environment
+may only name an INSTANCE of the configured role, never replace it.
 
 ### 🧭 How far the pair runs without you
 

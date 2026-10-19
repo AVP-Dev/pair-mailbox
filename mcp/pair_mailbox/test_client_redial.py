@@ -154,7 +154,10 @@ class ClientRedialCase(unittest.TestCase):
             client.stdin.flush()
         except OSError:
             pass
-        client.stdin.close()
+        # The stdin is closed by communicate() itself. Closing it by hand first
+        # makes Python 3.8+ flush a closed stream inside communicate() and raise
+        # "I/O operation on closed file" - a race that only bites when the
+        # client is still alive (measured in CI: 5 of 5 Python versions).
         try:
             out, err = client.communicate(timeout=30)
         except subprocess.TimeoutExpired:
