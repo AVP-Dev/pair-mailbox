@@ -49,18 +49,27 @@ ONE_READ_MARK = ("one read per turn", "одно чтение за ход")
 
 
 def tracked_text_files() -> list[Path]:
-    """Every tracked text file, minus the state dir and the vendored trees."""
+    """Every tracked text file, minus the state dir, the vendored trees and THIS file.
+
+    This file is excluded on purpose: it NAMES the forbidden wording (that is what
+    it hunts for), so a scan that included it would find the phrases in the
+    hunter's own list. The guard covers the shipped surfaces, not the guard.
+    """
     out = subprocess.run(
         ["git", "ls-files"], cwd=REPO_ROOT, capture_output=True, text=True, check=True)
+    this_file = Path(__file__).resolve()
     files = []
     for name in out.stdout.splitlines():
         if not name:
             continue
         if name.startswith((".pair/", "node_modules/")):
             continue
+        path = (REPO_ROOT / name).resolve()
+        if path == this_file:
+            continue
         if not name.endswith((".md", ".py", ".ts", ".json", ".jsonc", ".sh", ".ru.md")):
             continue
-        files.append(REPO_ROOT / name)
+        files.append(path)
     return files
 
 
