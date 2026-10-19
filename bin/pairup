@@ -483,14 +483,21 @@ raise_daemon "$writer"
 # Round 121: the pane starts from a CLEAN pair environment, never from whatever
 # the launching shell carried. Measured in the nyx room: a session spawned
 # inside another project's pane inherited its PAIR_STATE, and BOTH panes served
-# the foreign room while the project's own .pair was served by nobody. Exporting
-# the right value afterwards is not enough — every intermediate shell in the
-# chain still sees the stale one, and the CLI reads it before pairup's export
-# lands. So drop the inherited PAIR_* first, then pin this project's own room.
+# the foreign room while the project's own .pair was served by nobody.
+#
+# Shell builtins, NOT the `env` binary. The first cut used
+# `env -u PAIR_STATE -u PAIR_ROLE -u PAIR_TRUST_ENV PAIR_STATE='...'; cd ...`,
+# and the critic caught it in review with a live probe: `env` is a program, so
+# the `;` ends that command, and with no executable named after the assignment
+# `env` just PRINTS THE WHOLE ENVIRONMENT (79 lines measured) and the shell's own
+# variables stay untouched (probe: state=old role=foo). Exporting only the right
+# value has the same defect for a different reason — every intermediate shell
+# still carries the stale one until its own export runs, and the CLI reads it
+# first. So: unset the inherited names, then export this project's room.
 # PAIR_TRUST_ENV is not honoured here: a pane is spawned by pairup, which has
 # already resolved the room deliberately.
-writer_init="env -u PAIR_STATE -u PAIR_ROLE -u PAIR_TRUST_ENV PAIR_STATE='$STATE_DIR'; cd '$PROJECT_DIR'; echo '=== PAIR WRITER: $writer ==='; [ -f '$STATE_DIR/task-banner.txt' ] && cat '$STATE_DIR/task-banner.txt'; $writer_cmd"
-critic_init="env -u PAIR_STATE -u PAIR_ROLE -u PAIR_TRUST_ENV PAIR_STATE='$STATE_DIR'; cd '$PROJECT_DIR'; echo '=== PAIR CRITIC: $critic ==='; [ -f '$STATE_DIR/task-banner.txt' ] && cat '$STATE_DIR/task-banner.txt'; $critic_cmd"
+writer_init="unset PAIR_ROLE PAIR_TRUST_ENV; export PAIR_STATE='$STATE_DIR'; cd '$PROJECT_DIR'; echo '=== PAIR WRITER: $writer ==='; [ -f '$STATE_DIR/task-banner.txt' ] && cat '$STATE_DIR/task-banner.txt'; $writer_cmd"
+critic_init="unset PAIR_ROLE PAIR_TRUST_ENV; export PAIR_STATE='$STATE_DIR'; cd '$PROJECT_DIR'; echo '=== PAIR CRITIC: $critic ==='; [ -f '$STATE_DIR/task-banner.txt' ] && cat '$STATE_DIR/task-banner.txt'; $critic_cmd"
 title_writer="$(title_for "$writer" writer)"
 title_critic="$(title_for "$critic" critic)"
 
