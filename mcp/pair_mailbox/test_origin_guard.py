@@ -614,10 +614,11 @@ class RoleDerivationCase(ServeFixture, unittest.TestCase):
             except (OSError, ValueError):
                 served = False
             finally:
-                try:
-                    proc.stdin.close()
-                except OSError:
-                    pass
+                # The stdin is closed by communicate() itself. Closing it by
+                # hand first makes Python 3.8+ flush a closed stream inside
+                # communicate() and raise "I/O operation on closed file" - a
+                # race that only bites when the server is still alive (measured
+                # in CI: 5 of 5 Python versions).
                 try:
                     proc.communicate(timeout=30)
                 except subprocess.TimeoutExpired:
