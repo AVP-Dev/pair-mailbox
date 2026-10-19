@@ -3,7 +3,9 @@ title: Two instances of ONE CLI in one project — the launcher exists, the role
 found: 2026-10-19
 severity: medium
 round: 124
-status: open
+status: fixed
+fixed: 2026-10-19
+fixed_by: round 124
 ---
 
 ## The ask (from the human, relayed by the critic)
@@ -160,8 +162,9 @@ human installed.
 - The socket transport (`PAIR_TRANSPORT=socket`): the thin client takes its role
   from argv, and the socket path is not role-scoped in the same way. The duo
   works on the default stdio path; the socket mode is a separate item.
-- `pairup --duo` is still refused ("two copies of one CLI fight over the MCP
-  lock"): the same-CLI launcher is `bin/pair-duo`, and that flag stays gone.
+- `pairup --duo` is still refused: the same-CLI launcher is `bin/pair-duo`,
+  and that flag stays gone. The refusal message now points there instead of
+  claiming the mode is impossible (round 125).
 
 ## Acceptance (what "done" means for this card)
 

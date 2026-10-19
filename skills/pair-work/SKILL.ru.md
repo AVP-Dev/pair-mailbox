@@ -271,8 +271,9 @@ pairctl mode fix          # тот же раунд, тот же разговор
 (`server.py:726`). Не `.pair/` с другим именем и не `pair-transcript.jsonl`.
 
 Ролей шесть (`cli-profiles.json`: opencode, agy, codex, claude, pi, omp);
-`pair-duo` поднимает двойную сессию только для первых четырёх
-(`bin/pair-duo:75`). Автономность по умолчанию — `auto`
+`pair-duo` поднимает двойную сессию для любой из шести
+(`bin/pair-duo:180`), выводя роли `<cli>-writer` и `<cli>-critic`.
+Автономность по умолчанию — `auto`
 (`resolve_autonomy`, `server.py:321`); `finish.sh` принимает задачу только
 флагом `--task` (позиционного аргумента нет, `finish.sh:131`).
 

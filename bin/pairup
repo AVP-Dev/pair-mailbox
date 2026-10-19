@@ -100,7 +100,7 @@ while [ $# -gt 0 ]; do
     --task) TASK="${2:-}"; shift 2 || { echo "error: --task needs text" >&2; exit 2; } ;;
     --writer) WANT_WRITER="${2:-}"; shift 2 || { echo "error: --writer needs a role" >&2; exit 2; } ;;
     --worktree|-w) WORKTREE_BRANCH="${2:-}"; shift 2 || { echo "error: --worktree needs a branch" >&2; exit 2; } ;;
-    --duo) echo "pairup: --duo removed: two copies of one CLI fight over the MCP lock and both crash. The critic is a different CLI: pairup --swap <cli>" >&2; exit 2 ;;
+    --duo) echo "pairup: --duo removed: use bin/pair-duo <cli> for two copies of the SAME CLI (roles <cli>-writer and <cli>-critic). The critic of a pairup pair is a different CLI: pairup --swap <cli>" >&2; exit 2 ;;
     --state) STATE_DIR="${2:-}"; shift 2 || { echo "error: --state needs a dir" >&2; exit 2; } ;;
     -h|--help) usage; exit 0 ;;
     *) echo "error: unknown flag $1" >&2; usage >&2; exit 2 ;;

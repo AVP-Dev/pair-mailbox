@@ -81,7 +81,7 @@ if [ -z "$state" ]; then
 fi
 if [ -z "$state" ]; then
     if git rev-parse --show-toplevel >/dev/null 2>&1; then
-        echo "pair-mailbox: refusing: no .pair/state.json in $(pwd) or above (git root $(git rev-parse --show-toplevel 2>/dev/null)) — create it: cd <project> && pairup [--writer <role>] [--duo <cli>]" >&2
+        echo "pair-mailbox: refusing: no .pair/state.json in $(pwd) or above (git root $(git rev-parse --show-toplevel 2>/dev/null)) — create it: cd <project> && pairup [--writer <role>]   (two copies of one CLI: bin/pair-duo <cli>)" >&2
     else
         echo "pair-mailbox: refusing: no git repository here ($(pwd)) — refusing to create a stray state; cd into a project and run pairup first" >&2
     fi
