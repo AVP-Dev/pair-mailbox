@@ -92,4 +92,8 @@ anyone (forward belongs to the writer). This is your veto and needs no authority
   secrets/.env, prod deploy, DB migrations, data/history deletion, deployment ports/domains, or write
   authority reassignment (`pairctl assign`).
 - Never answer for the user on those 6 critical actions. No forged user permissions.
-- Never wait in a loop for the writer.
+- Never wait in a loop for the writer. One read per turn: an empty answer means
+  nothing new arrived — go back to work or sleep, the peer and the supervisor
+  wake you. ACK every batch (`ack_token`); `must_ack` and `letters_behind` in
+  the answer say what is still unacknowledged and how many letters wait behind
+  it.

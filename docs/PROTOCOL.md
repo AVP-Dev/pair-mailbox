@@ -362,6 +362,14 @@ ends its turn with `pair_read(wait_seconds=N)` is never idle *with unread mail*:
 either reading, or it already has the message. The cost is latency — the agent waits
 instead of exiting. The alternative costs the round its night.
 
+**One read per turn.** The turn ends with that read; it does not begin another. An
+empty answer means nothing new arrived, and reading again buys nothing: the peer and
+the supervisor wake the agent when the mail lands. Every poll costs a full context, so
+a loop of them costs the round its night — measured 2026-10-19 on one pair: 29k polls
+a day, each a full context for nothing. A read that would replay a batch the agent
+already holds therefore spends its whole budget before answering, and the answer names
+what is waiting: `must_ack` and `letters_behind`.
+
 **Delivery ends at the ACK (round 101).** A `pair_read` batch is persisted with
 its token before the answer goes out; it stays unread until the agent passes
 that exact `ack_token` on a later `pair_read`. A retry without the token replays
@@ -436,8 +444,18 @@ fires exactly once.
 
 Two ways to send, then:
 
-`pair_read(wait_seconds=N)` is the normal way to hear from your peer. Empty — call
-again. The ceiling is 60 seconds; when time is up, get back to work.
+`pair_read(wait_seconds=N)` is the normal way to hear from your peer. **One read per
+turn.** Empty — nothing new arrived: get back to work (or sleep); the peer and
+the supervisor wake you when the mail lands. The ceiling is 60 seconds; when
+time is up, get back to work.
+
+The answer is honest about the wait and about the wedge. `waited_seconds` is the
+time the call really took, `wait_budget_seconds` what it was allowed to take: a
+read that would replay a batch you already hold spends its whole budget before
+answering, so a confused agent cannot spin on the same batch. `must_ack` says
+the batch is still unacknowledged, and `letters_behind` counts the letters that
+arrived after it and wait behind it — reading again will not bring them,
+acknowledging will.
 
 Both roles may wait. A bounded wait cannot deadlock: it always expires and returns
 the agent to its task.

@@ -57,23 +57,33 @@ who is wrong.
 
 This is the main thing that makes the pair work. An agent that silently waits is a dead agent.
 
-**In your free time call `pair_read(wait_seconds=45)`.** It returns when the peer
-sends a message, or when the time runs out. Came back empty — **call again**.
+**One read per turn.** In your free time call `pair_read(wait_seconds=45)`. It returns
+when the peer sends a message, or when the time runs out. Came back empty — **go back to
+your task** (or sleep): the peer and the supervisor wake you when the mail arrives, so
+reading again in a loop buys nothing and burns a full context on every poll. A read that
+would replay a batch you already hold spends its whole wait before answering, so the
+loop cannot spin.
+
 The batch it returns stays unread until you ACK it: process it, then pass its
 `ack_token` on a later `pair_read`. A retry without the token replays the same
-letters (round 101 batch contract — see `pair-chat` Reading).
+letters, and the letters that arrived after it wait behind it — the answer names how
+many (`letters_behind`). Reading again will not bring them; acknowledging will
+(round 101 batch contract — see `pair-chat` Reading).
 
 Waiting rules:
 
-- Waiting is work. An empty answer is no reason to stop waiting.
+- One read per turn. An empty answer is no reason to read again.
+- ACK every batch you get. `must_ack` in the answer says the batch is still unacknowledged.
 - The `wait_seconds` default is 0 (`DEFAULT_READ_WAIT_SECONDS`, `server.py:97`),
   the cap is 60s (`MAX_READ_WAIT_SECONDS`); beyond that the client timeout cuts it.
+- `waited_seconds` is the time the call really took; `wait_budget_seconds` is what it
+  was allowed to take. A call that took less than its budget answered early: it
+  replayed a batch you already hold.
 - Time ran out — go back to your task. Do not sit in the wait forever.
 - Both roles may wait. Bounded waiting creates no deadlock:
   it always expires, and you return to work. (Previously the writer was
   forced to 0 — that killed the channel: an agent without waiting went idle and missed
-  mail. The winning code is `tool_pair_read`, `server.py:2341`; the
-  tool schema text still holds the old wording.)
+  mail. The winning code is `tool_pair_read`, `server.py:2341`.)
 
 **When asked "how is it going?" — never answer "checking in a sec".** That is the most annoying
 phrase in the whole system. Open `pair_state` or `pair_transcript` and answer with what is

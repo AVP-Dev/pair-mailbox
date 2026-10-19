@@ -53,7 +53,10 @@ Full messaging contract: skill `pair-chat` (single source of truth).
   (max 2 unanswered per role); the round plan goes with `plan` in `subject`
   before the first commit (§9a).
 - `pair_read(wait_seconds=45)` — check for messages. Call it once per natural pause in your work, then act.
-  Both roles may wait (default 0, cap 60s); an empty answer means call again.
+  Both roles may wait (default 0, cap 60s). One read per turn: an empty answer means nothing
+  new arrived — go back to work or sleep, the peer and the supervisor wake you. ACK every
+  batch (`ack_token`); `must_ack` and `letters_behind` in the answer say what is still
+  unacknowledged and how many letters wait behind it.
 - `pair_note(kind, text)` — leave durable notes in `plan`, `decision`,
   `finding`, `verdict`, `handoff`, `backlog`. **Anything the peer must still
   know after a context reset goes here**, not into the conversation. Your chat
