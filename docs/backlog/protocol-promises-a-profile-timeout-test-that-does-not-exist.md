@@ -3,7 +3,9 @@ title: PROTOCOL §7c promises "a test fails the suite if any profile does not" e
 found: 2026-10-19T23:31Z
 severity: low
 round: 126
-status: open
+status: fixed
+fixed: 2026-10-20
+fixed_by: round 129
 ---
 
 ## Where
@@ -84,3 +86,29 @@ promises cannot happen, and it is the case that halves the wait.
 low — nothing is broken today; the defect is an unguarded promise in the
 contract document, which is the class the audit skill names explicitly
 ("a comment without a test is a finding").
+
+## How it was fixed (round 129)
+
+`TestProfileTimeoutBudget` in `install_test.py`, next to the other profile
+assertions, checks both halves the card named:
+
+- every profile carries an explicit `mcp.entry.timeout` — a missing key is the
+  case that halves the wait, so it is a failure with its own message;
+- that timeout exceeds `MAX_READ_WAIT_SECONDS`.
+
+The constant is read from the real module (`read_wait.MAX_READ_WAIT_SECONDS`),
+not copied into the test: a copy is a second number to keep in step, and the
+protocol names the module's constant.
+
+Red-proof, measured both ways:
+
+- `agy`'s timeout lowered to `20000` → `AssertionError: 20.0 not greater than
+  60 : profile agy allows 20.0s — the protocol waits 60s, so the client gives
+  up first`;
+- `agy`'s `timeout` key removed entirely → `AssertionError: unexpectedly None :
+  profile agy declares no MCP timeout — the client falls back to the 20 s default
+  and the wait is capped at 15 s`.
+
+Restored, the test is green. `cli-profiles.json` carries no trace of either
+mutation — all six profiles still declare `65000`, unchanged from before the
+round.

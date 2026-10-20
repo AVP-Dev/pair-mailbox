@@ -3,7 +3,9 @@ title: PROTOCOL §7 promises wake adapters for agy, Claude and Codex — the cod
 found: 2026-10-19T23:28Z
 severity: medium
 round: 126
-status: open
+status: fixed
+fixed: 2026-10-20
+fixed_by: round 129
 ---
 
 ## Where
@@ -85,3 +87,35 @@ table names three CLIs with adapters and the code has one.
 
 medium — the contract document overstates what the system does, and the
 evidence accumulates silently in the transcript.
+
+## How it was fixed (round 129)
+
+The table was corrected, not the adapters. The second column now names only what
+the code ships, and the text above it says why: the pilot's `WAKE_ADAPTERS` has
+exactly one entry, `opencode` → `mcp/pair_mailbox/wake_opencode.py`, which posts
+to the recorded session's host API. Every other CLI falls back to the ring —
+a `tmux display-message` popup, then the mailbox letter. The `pair-guard`
+plugin is named in the prose and explicitly NOT a wake path: it refreshes the
+authority brief inside the agent's own system prompt when the shared state
+changes, and it pushes nothing into an idle session.
+
+Both language versions were changed together, so the promise is the same in both.
+
+The guard the card asked for is in place — `TestWakeAdapterTableMatchesTheCode`
+in `bin/pairpilot_test.py` reads the table out of both `docs/PROTOCOL.md` and
+`docs/PROTOCOL.ru.md` and compares it with `Pilot.WAKE_ADAPTERS`:
+
+- every row promising an adapter names a role, and the set of those roles equals
+  the pilot's map;
+- every CLI in `cli-profiles.json` appears in the table, so a new profile cannot
+  arrive undocumented.
+
+Red-proof, measured: with the old table restored, the test fails and names the
+offending row — `docs/PROTOCOL.md promises adapters for ['agy', 'opencode'] but
+the pilot ships ['opencode']` for the case where agy's row promised a native
+reactive messaging path again, and the old table's `['Claude, Codex', 'OpenCode',
+'agy']` for the original shape. With the corrected table it is green: 169 tests
+in `bin/pairpilot_test.py`, OK.
+
+The 31 `pilot_wake_no_adapter` rows are now expected behaviour rather than
+evidence of a missing feature.
