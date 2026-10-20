@@ -131,6 +131,36 @@ pr=d["pr"]
 assert pr=="UNKNOWN" or (isinstance(pr,dict) and "UNKNOWN" in str(pr.values())), pr
 PY
 
+# --- 15: a session whose artifact listing outgrows an environment string ---
+# Linux caps ONE environment string at 128KB (MAX_ARG_STRLEN). finalize-check
+# used to hand its captures to python through the environment, so a busy
+# room - this repo's .pair/ holds 3165 files, 166KB of path strings - killed
+# the check with E2BIG before it read anything: exit 126, no output, no
+# session closed. The captures now travel through files. The case below
+# builds a room bigger than the limit and asks for a real verdict.
+repo="$(trash "$(make_repo main)")"
+mkdir -p "$repo/.pair/notes"
+python3 - "$repo" <<'PY'
+import os, sys
+d = os.path.join(sys.argv[1], ".pair", "notes")
+for i in range(2500):
+    open(os.path.join(d, "note-%05d-with-a-longish-name-to-make-the-listing-long.md" % i), "w").write("x")
+PY
+listing_bytes="$(bash "$SKILL_ROOT/adapters/agent.sh" artifacts "$repo" 2>/dev/null | wc -c)"
+[ "$listing_bytes" -gt 131072 ] && ok "15-listing-over-the-limit ($listing_bytes bytes)" || fail "15-listing-over-the-limit" "only $listing_bytes bytes, the case proves nothing"
+out="$(trash "$(mktemp "${TMPDIR}/c.XXXXXX")")"
+run_check "$repo" "$out"
+[ "$CAP_EXIT" -eq 0 ] && ok "15-exit-0 (was 126: argument list too long)" || fail "15-exit-0" "expected exit 0, got $CAP_EXIT"
+must_be_json "$out" "15-json"
+python3 - "$out" <<'PY' 2>/dev/null && ok "15-artifacts-intact" || fail "15-artifacts-intact" "the artifact list must survive the crossing"
+import json, sys
+d = json.load(open(sys.argv[1]))
+arts = d["session_artifacts"]
+assert len(arts) > 2000, len(arts)
+assert all(isinstance(x, str) for x in arts), "not path strings"
+assert any(x.startswith(".pair/notes/") for x in arts), arts[:3]
+PY
+
 # --- bad usage -> exit 2 ---
 bash "$CHECK_BIN" --bogus >/dev/null 2>&1; [ "$?" -eq 2 ] && ok "check-usage-2" || fail "check-usage-2" "expected exit 2"
 

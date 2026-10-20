@@ -29,6 +29,7 @@ bin/paircutover_test.py	paircutover
 bin/pairrestart_scope_test.py	pairrestart-scope
 bin/pairsocket_test.py	pairsocket
 skills/	waiting-contract
+skills/session-finalizer/	session-finalizer
 .agents/	waiting-contract
 .opencode/agents/writer.md	waiting-contract
 .opencode/skills/	waiting-contract
