@@ -51,6 +51,23 @@ class _TranscriptWriter(Protocol):
 MERGEABLE = "ephemeral"          # the only class a delete may target
 
 
+class _RowCounter:
+    """A store that counts the rows written through it.
+
+    The summary line has to say how many transcript rows exist, and it may only
+    say what it counted — a number written next to the word "deleted" is a
+    claim, and §20 rule 5 makes it the only reason a deletion is defensible.
+    """
+
+    def __init__(self, store: _TranscriptWriter) -> None:
+        self._store = store
+        self.count = 0
+
+    def append_transcript(self, kind: str, role: str, **fields: Any) -> None:
+        self.count += 1
+        self._store.append_transcript(kind, role, **fields)
+
+
 def gh_pr_state(repo_dir: Path, branch: str) -> tuple[str, str]:
     """`MERGED`/`OPEN`/`CLOSED` and the PR number for a branch, via gh.
 
@@ -91,27 +108,32 @@ def gh_pr_head(repo_dir: Path, pr: str) -> str:
 
 
 def _remote_branches(repo_dir: Path) -> list[tuple[str, str]]:  # (short name, sha)
-    """(short name, head sha) for every remote branch, or raise — never empty by
-    accident. A `git` that fails answers empty, and empty reads as nothing to do."""
+    """(short name, head sha) for every head the REMOTE has, or raise — never
+    empty by accident. A `git` that fails answers empty, and empty reads as
+    nothing to do.
+
+    The remote is asked, not the local cache. `refs/remotes/` keeps branches
+    GitHub already deleted — a merged PR's branch dies on the remote while its
+    tracking ref lingers until somebody fetches with `--prune` — and a janitor
+    that audits the cache audits branches that are not there: it reports them,
+    offers to delete them, and then fails to delete them. The remote is the
+    only place the question "what exists" has an answer.
+    """
     proc = subprocess.run(
-        ["git", "for-each-ref", "--format=%(refname:short) %(objectname)",
-         "refs/remotes/"],
+        ["git", "ls-remote", "--heads", "origin"],
         cwd=str(repo_dir), capture_output=True, text=True, timeout=60,
     )
     if proc.returncode != 0:
         raise RuntimeError(
-            f"git for-each-ref failed (rc={proc.returncode}): "
+            f"git ls-remote failed (rc={proc.returncode}): "
             f"{proc.stderr.strip()[:200]}"
         )
     out = []
     for line in proc.stdout.splitlines():
-        parts = line.split()
-        if len(parts) != 2 or "->" in parts[0]:
+        sha, _, ref = line.partition("\t")
+        if not ref.startswith("refs/heads/"):
             continue
-        remote, _, short = parts[0].partition("/")
-        if not short:
-            continue  # a bare `origin` line names the remote, not a branch
-        out.append((short, parts[1]))
+        out.append((ref[len("refs/heads/"):], sha.strip()))
     return out
 
 
@@ -184,12 +206,15 @@ def audit(repo_dir: Path) -> tuple[list[dict[str, str]], list[str]]:
 
 
 def delete_merged(repo_dir: Path, row: Mapping[str, str],
-                  store: _TranscriptWriter | None,
-                  role: str = "writer") -> int:
+                  store: _TranscriptWriter,
+                  role: str = "writer") -> bool:
     """Delete one MERGE row, and write what was known when it was decided.
 
     The transcript row is not decoration: it is the only reason a deletion is
-    defensible a month later.
+    defensible a month later. So a delete that cannot be recorded is not
+    performed, and a delete that fails is a refusal — never a deletion.
+
+    Returns True when the branch is gone and its row is written.
     """
     name = row["branch"]
     proc = subprocess.run(
@@ -199,18 +224,17 @@ def delete_merged(repo_dir: Path, row: Mapping[str, str],
     if proc.returncode != 0:
         print(f"refusing to record: delete of {name} failed:\n"
               f"{(proc.stdout + proc.stderr).strip()[:300]}", file=sys.stderr)
-        return 1
-    if store is not None:
-        store.append_transcript(
-            "branch_deleted",
-            role,
-            branch=name,
-            head_sha=row["sha"],
-            pr=row["pr"],
-            reason="ephemeral + PR MERGED (§20 janitor)",
-        )
+        return False
+    store.append_transcript(
+        "branch_deleted",
+        role,
+        branch=name,
+        head_sha=row["sha"],
+        pr=row["pr"],
+        reason="ephemeral + PR MERGED (§20 janitor)",
+    )
     print(f"deleted {name} (head {row['sha'][:12]}, PR #{row['pr']} MERGED)")
-    return 0
+    return True
 
 
 def cmd_branch(store: _TranscriptWriter | None,
@@ -250,57 +274,24 @@ def cmd_branch(store: _TranscriptWriter | None,
         print("branch audit: report only; --delete acts on MERGE rows")
         return 1 if refusals else 0
 
+    if store is None:
+        # A deletion without a transcript row is a deletion nobody can defend
+        # a month later, so it is not performed.
+        print("branch audit: refusing to delete: no store to record the "
+              "deletions in", file=sys.stderr)
+        return 2
+
+    counter = _RowCounter(store)
     deleted = 0
+    refused = 0
     role = getattr(args, "role", "") or "writer"
     for row in rows:
         if row["verdict"] != "MERGE":
             continue
-        deleted += delete_merged(repo, row, store, role)
-    print(f"branch audit: {deleted} branch(es) deleted, each with a transcript row")
-    return 1 if refusals else 0
-
-
-def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--repo", default=".")
-    parser.add_argument("--delete", action="store_true",
-                        help="delete MERGE rows; without it, report only")
-    args = parser.parse_args(argv)
-
-    repo = Path(args.repo).resolve()
-    try:
-        rows, refusals = audit(repo)
-    except (RuntimeError, OSError, subprocess.SubprocessError) as exc:
-        print(f"branch audit: refusing to run: {exc}", file=sys.stderr)
-        return 2
-
-    for row in rows:
-        marker = {"MERGE": "delete-ok", "STALE": "report", "ANOMALY": "report",
-                  "KEEP": "keep", "UNKNOWN": "unknown"}[row["verdict"]]
-        print(f"  {marker:9s} {row['branch']:28s} {row['class']:10s} "
-              f"PR {row['pr'] or '-':>5s}  {row['reason']}")
-
-    counts: dict[str, int] = {}
-    for row in rows:
-        counts[row["verdict"]] = counts.get(row["verdict"], 0) + 1
-    print("branch audit: " + ", ".join(
-        f"{n} {k.lower()}" for k, n in sorted(counts.items())) + f", {len(rows)} branches")
-    for refusal in refusals:
-        print(f"branch audit REFUSAL: {refusal}", file=sys.stderr)
-
-    if not args.delete:
-        print("branch audit: report only; pass --delete to act on MERGE rows")
-        return 1 if refusals else 0
-
-    store = None
-    deleted = 0
-    for row in rows:
-        if row["verdict"] != "MERGE":
-            continue
-        deleted += delete_merged(repo, row, store)
-    print(f"branch audit: {deleted} branch(es) deleted, every one with a transcript row")
-    return 1 if refusals else 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
+        if delete_merged(repo, row, counter, role):
+            deleted += 1
+        else:
+            refused += 1
+    print(f"branch audit: {deleted} branch(es) deleted, {refused} refused, "
+          f"{counter.count} transcript row(s) written")
+    return 1 if (refusals or refused) else 0

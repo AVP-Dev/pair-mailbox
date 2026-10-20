@@ -4,22 +4,19 @@
 and the answers come from GitHub. The refused directions are the product here:
 each one is a case a sweep would get wrong by being useful.
 
-The branch list is NOT mocked: it comes from real `git for-each-ref` in a temp
-repo, because a janitor that mis-reads git is a janitor that deletes the wrong
-thing, and that failure mode is invisible to a mocked ref list.
+The branch list is NOT mocked: it comes from real `git ls-remote` against a real
+bare origin in a temp repo, because a janitor that mis-reads git is a janitor
+that deletes the wrong thing, and that failure mode is invisible to a mocked
+ref list.
 """
 from __future__ import annotations
 
-import subprocess
-import sys
-import tempfile
-import unittest
-from pathlib import Path
-from unittest import mock
-
-import importlib
+import argparse
+import contextlib
+import io
 import json
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -106,6 +103,16 @@ class _FakeGH:
                 resolved = proc.stdout.strip() if proc.returncode == 0 else ""
             return subprocess.CompletedProcess(cmd, 0, resolved or "f" * 40, "")
         return subprocess.CompletedProcess(cmd, 0, "[]", "")
+
+
+class _Store:
+    """The transcript writer the janitor writes through."""
+
+    def __init__(self) -> None:
+        self.rows: list[tuple[str, dict]] = []
+
+    def append_transcript(self, kind: str, role: str, **fields) -> None:
+        self.rows.append((kind, fields))
 
 
 class TestBranchAudit(unittest.TestCase):
@@ -251,31 +258,102 @@ class TestBranchAudit(unittest.TestCase):
         """The one destructive direction, proven: the branch leaves origin, the
         transcript names what was known (head + PR), and no other branch is
         touched."""
-        seen: list[tuple[str, dict]] = []
-
-        class _Store:
-            def append_transcript(self, kind: str, role: str, **fields) -> None:
-                seen.append((kind, fields))
-
+        store = _Store()
         with tempfile.TemporaryDirectory() as tmp:
             repo = self._repo(tmp, ["master", "feature/login"])
             sha = _git(repo, "rev-parse", "refs/remotes/origin/feature/login")
             row = {"branch": "feature/login", "class": "ephemeral",
                    "sha": sha.stdout.strip(), "verdict": "MERGE", "pr": "9",
                    "reason": ""}
-            rc = branch_audit.delete_merged(repo, row, _Store(), "writer")
-            self.assertEqual(rc, 0)
+            done = branch_audit.delete_merged(repo, row, store, "writer")
+            self.assertTrue(done, "a successful delete must report success")
             gone = _git(repo, "ls-remote", "--heads", "origin",
                         "refs/heads/feature/login")
             self.assertEqual(gone.stdout.strip(), "", "branch must leave origin")
             kept = _git(repo, "ls-remote", "--heads", "origin", "refs/heads/master")
             self.assertIn("refs/heads/master", kept.stdout, "master must stay")
-            self.assertEqual(len(seen), 1)
-            kind, fields = seen[0]
+            self.assertEqual(len(store.rows), 1)
+            kind, fields = store.rows[0]
             self.assertEqual(kind, "branch_deleted")
             self.assertEqual(fields["branch"], "feature/login")
             self.assertEqual(fields["pr"], "9")
             self.assertEqual(fields["head_sha"], row["sha"])
+
+    def test_a_refused_delete_is_not_counted_as_a_deletion(self) -> None:
+        """The delete that did not happen must not be reported as one.
+
+        A refusal used to be counted as a success: the summary said "1 branch
+        deleted" over a branch that was never touched, and the command exited 0.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self._repo(tmp, ["master"])
+            row = {"branch": "feature/ghost", "class": "ephemeral",
+                   "sha": "0" * 40, "verdict": "MERGE", "pr": "12", "reason": ""}
+            store = _Store()
+            args = argparse.Namespace(branch_action="audit", repo=str(repo),
+                                      delete=True, role="writer")
+            out, err = io.StringIO(), io.StringIO()
+            with mock.patch.object(branch_audit, "audit",
+                                   lambda r: ([row], [])), \
+                 contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                rc = branch_audit.cmd_branch(store, args)
+            self.assertIn("0 branch(es) deleted", out.getvalue())
+            self.assertIn("1 refused", out.getvalue())
+            self.assertEqual(store.rows, [], "a refused delete writes no row")
+            self.assertNotEqual(rc, 0, "a refused delete must fail the command")
+
+    def test_the_summary_counts_the_deletions_that_happened(self) -> None:
+        """One delete, one branch gone, one transcript row, and the summary
+        says all three."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self._repo(tmp, ["master", "feature/login"])
+            gh = _FakeGH({"feature/login": ("MERGED", "9")}, repo=repo)
+            store = _Store()
+            args = argparse.Namespace(branch_action="audit", repo=str(repo),
+                                      delete=True, role="writer")
+            out, err = io.StringIO(), io.StringIO()
+            with mock.patch.object(branch_audit.subprocess, "run", gh), \
+                 contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                rc = branch_audit.cmd_branch(store, args)
+            self.assertIn("1 branch(es) deleted", out.getvalue())
+            self.assertIn("1 transcript row(s) written", out.getvalue())
+            self.assertEqual(len(store.rows), 1)
+            self.assertEqual(rc, 0)
+            gone = _git(repo, "ls-remote", "--heads", "origin",
+                        "refs/heads/feature/login")
+            self.assertEqual(gone.stdout.strip(), "", "branch must leave origin")
+
+    def test_the_branch_list_is_the_remote_not_the_local_cache(self) -> None:
+        """A merged PR's branch dies on the remote while its tracking ref
+        lingers until somebody prunes. The janitor must not offer to delete a
+        branch that is not there."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self._repo(tmp, ["master", "feature/old"])
+            origin = Path(tmp) / "origin.git"
+            _git(origin, "update-ref", "-d", "refs/heads/feature/old")
+            cached = _git(repo, "rev-parse", "refs/remotes/origin/feature/old")
+            self.assertEqual(cached.returncode, 0,
+                             "the local cache must still hold the branch")
+            names = [n for n, _ in branch_audit._remote_branches(repo)]
+            self.assertNotIn("feature/old", names)
+            self.assertIn("master", names)
+
+    def test_a_delete_without_a_store_is_refused(self) -> None:
+        """A deletion nobody can read a month later is not a deletion."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self._repo(tmp, ["master", "feature/login"])
+            gh = _FakeGH({"feature/login": ("MERGED", "9")}, repo=repo)
+            args = argparse.Namespace(branch_action="audit", repo=str(repo),
+                                      delete=True, role="writer")
+            out, err = io.StringIO(), io.StringIO()
+            with mock.patch.object(branch_audit.subprocess, "run", gh), \
+                 contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                rc = branch_audit.cmd_branch(None, args)
+            self.assertNotEqual(rc, 0)
+            still = _git(repo, "ls-remote", "--heads", "origin",
+                         "refs/heads/feature/login")
+            self.assertIn("refs/heads/feature/login", still.stdout,
+                          "the branch must survive a delete with no record")
 
 
 if __name__ == "__main__":
