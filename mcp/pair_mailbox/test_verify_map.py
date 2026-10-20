@@ -171,6 +171,28 @@ class TestVerifyChangedRouting(unittest.TestCase):
         self.assertNotIn("scripts-check", selected,
                          f"the directory prefix must not win: got {selected!r}")
 
+    def test_a_narrower_directory_row_beats_a_wider_one(self) -> None:
+        """skills/ holds several independent subsystems, so it needs a row
+        narrower than itself.
+
+        Round 133: skills/ was mapped to waiting-contract for the whole
+        tree, so the session-finalizer subsystem - a complete package with
+        its own 70-test suite - was covered by a suite about the mailbox
+        waiting contract, and its own tests ran in no gate at all. The
+        narrower row must win, and the answer must not depend on the order
+        somebody typed the rows in.
+        """
+        selected = self._select("skills/session-finalizer/scripts/finalize-check")
+        self.assertIn("session-finalizer", selected,
+                      f"the finalizer's own suite must cover it: got {selected!r}")
+        self.assertNotIn("waiting-contract", selected,
+                         f"the wider skills/ row must not win: got {selected!r}")
+        other = self._select("skills/pair-work/SKILL.md")
+        self.assertIn("waiting-contract", other,
+                      f"the other skills keep their own suite: got {other!r}")
+        self.assertNotIn("session-finalizer", other,
+                         f"the narrow row must not reach outside its tree: got {other!r}")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

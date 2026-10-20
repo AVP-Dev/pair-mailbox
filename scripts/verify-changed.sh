@@ -39,11 +39,19 @@ suite_for() {
   # The symptom was silent: a change under skills/ selected NO suite at all,
   # so the changed-file gate ran static and nothing else - and the map's own
   # directory rows read as if they were covered.
-  suite=$(awk -F'\t' -v f="$f" 'f == $1 || index(f, $1) == 1 {print $2; found=1} END {if (!found) print "UNKNOWN"}' "$MAP" | head -1)
-  # An exact match beats the prefix: the awk above gives the first match — a
-  # scripts/x.sh file matches both scripts/ and its own line; the exact one we find.
-  exact=$(awk -F'\t' -v f="$f" '$1 == f {print $2}' "$MAP" | head -1)
-  [ -n "$exact" ] && suite="$exact"
+  #
+  # The LONGEST matching row wins (round 133). A directory row covers every
+  # file under it, so a directory that holds several subsystems needs a
+  # narrower row of its own: skills/ said waiting-contract for the whole
+  # tree, and skills/session-finalizer/ - a complete subsystem with its own
+  # suite - could not be routed anywhere else. "First row in file order"
+  # would have made the answer depend on where somebody typed the row;
+  # the exact row is the longest match of all, so it still wins over any
+  # directory prefix.
+  suite=$(awk -F'\t' -v f="$f" '
+    (f == $1 || index(f, $1) == 1) && length($1) > 0 { print length($1) "\t" $2 }
+  ' "$MAP" | sort -rn | head -1 | cut -f2)
+  [ -n "$suite" ] || suite="UNKNOWN"
   # Cross-suite pins: test_protocol asserts output of modules mapped elsewhere
   # (STOP seq 1187: 7 failures hid in green slices). follow:<file> rows in the
   # map add the integration suite on top of the file's own.

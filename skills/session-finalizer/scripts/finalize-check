@@ -26,27 +26,45 @@ if [ "$BASE" = "UNKNOWN" ]; then
   if [ -n "${HB:-}" ] && [ "$HB" != "UNKNOWN" ]; then BASE="$HB"; fi
 fi
 UPSTREAM="$(git_upstream)"
-PORC="$(git status --porcelain=v1 2>/dev/null || echo UNKNOWN)"
-DIFFCHECK_OUT=""; DIFFCHECK_EXIT=0
-DIFFCHECK_OUT=$(git diff --check 2>&1) || DIFFCHECK_EXIT=$?
-STATUS_EXIT=0; git status --porcelain=v1 >/dev/null 2>&1 || STATUS_EXIT=$?
-DETECT_JSON="$("$SKILL/adapters/commands.sh" detect "$ROOT" 2>/dev/null || echo '{}')"
-PR_RAW="$("$SKILL/adapters/hosting.sh" pr "$BRANCH" 2>/dev/null || echo UNKNOWN)"
-ARTS="$("$SKILL/adapters/agent.sh" artifacts "$ROOT" 2>/dev/null || true)"
-export ROOT BRANCH BASE UPSTREAM CFG PORC DIFFCHECK_OUT DIFFCHECK_EXIT STATUS_EXIT DETECT_JSON PR_RAW ARTS SKILL
+# The captures are taken by the python BELOW, not here, and they never travel
+# through the environment. Linux caps ONE environment string at 128KB
+# (MAX_ARG_STRLEN), and the session artifact listing of a busy room is
+# bigger than that: this repo's .pair/ holds 3165 files, 166KB of path
+# strings. Handed over as environment variables, execve failed with E2BIG
+# ("Argument list too long") before python even started: exit 126, no
+# output, no session closed - the finalizer could not close the very
+# session it exists for. The environment now carries names and paths
+# only; the text stays inside the process. Round 133.
+export ROOT BRANCH BASE UPSTREAM CFG SKILL
 python3 - <<'PY'
 import fnmatch, json, os, re, subprocess
 root = os.environ["ROOT"]; branch = os.environ["BRANCH"]; base = os.environ["BASE"]
 upstream = os.environ.get("UPSTREAM", "null"); cfg_path = os.environ["CFG"]
-porc = os.environ.get("PORC", ""); dc_out = os.environ.get("DIFFCHECK_OUT", "")
-dc_exit = int(os.environ.get("DIFFCHECK_EXIT", "0") or 0)
-st_exit = int(os.environ.get("STATUS_EXIT", "0") or 0)
+skill = os.environ.get("SKILL", "")
+def run(*a, timeout=20):
+    try:
+        return subprocess.run(list(a), cwd=root, capture_output=True, text=True, timeout=timeout)
+    except Exception:
+        return None
+def both(r):
+    if r is None:
+        return ""
+    return (r.stdout or "") + (r.stderr or "")
+r_status = run("git", "status", "--porcelain=v1")
+st_exit = r_status.returncode if r_status is not None else 1
+porc = (r_status.stdout if r_status is not None else "") or ""
+r_diff = run("git", "diff", "--check")
+dc_exit = r_diff.returncode if r_diff is not None else 1
+dc_out = both(r_diff)
+r_detect = run("bash", os.path.join(skill, "adapters", "commands.sh"), "detect", root)
 try:
-    detect = json.loads(os.environ.get("DETECT_JSON") or "{}")
+    detect = json.loads((r_detect.stdout if r_detect is not None else "") or "") or {}
 except Exception:
     detect = {}
-pr_raw = (os.environ.get("PR_RAW") or "UNKNOWN").strip()
-artifacts = sorted([l for l in (os.environ.get("ARTS") or "").splitlines() if l.strip()])
+r_pr = run("bash", os.path.join(skill, "adapters", "hosting.sh"), "pr", branch)
+pr_raw = ((r_pr.stdout if r_pr is not None else "") or "").strip() or "UNKNOWN"
+r_arts = run("bash", os.path.join(skill, "adapters", "agent.sh"), "artifacts", root)
+artifacts = sorted([l for l in ((r_arts.stdout if r_arts is not None else "") or "").splitlines() if l.strip()])
 try:
     cfg = json.load(open(cfg_path))
 except Exception:
@@ -54,11 +72,6 @@ except Exception:
 todos_markers = cfg.get("todos_markers", ["TODO", "FIXME"])
 temp_pats = cfg.get("temp_patterns", ["*.tmp"])
 slots = cfg.get("checks_slots", ["test", "lint", "build", "typecheck"])
-def run(*a, timeout=20):
-    try:
-        return subprocess.run(list(a), cwd=root, capture_output=True, text=True, timeout=timeout)
-    except Exception:
-        return None
 porc_lines = [l for l in porc.splitlines() if l.strip()] if porc != "UNKNOWN" else []
 untracked = [l[3:] for l in porc_lines if l.startswith("?? ")]
 # Unpushed: commits in @{u}..HEAD. No upstream set, but origin carries
