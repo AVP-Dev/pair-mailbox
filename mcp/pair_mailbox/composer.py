@@ -215,17 +215,6 @@ def session_address(tmux: str, pane: str) -> str:
     return out
 
 
-def canonical_pane(tmux: str, pane: str) -> str:
-    """What to record into state: the session address when present, else the raw input.
-
-    Backward compatibility here is mandatory, not polite: live roles carry `%N` in
-    state, and had the record stopped taking them, the upgrade would break delivery
-    for all at once. So both shapes take on read, and the preferred one writes.
-    """
-    address = session_address(tmux, pane)
-    return address or pane
-
-
 def same_pane(tmux: str, left, right) -> bool:
     """One pane recorded in two shapes. Fail-closed.
 
@@ -532,21 +521,6 @@ def capture(tmux: str, pane: str) -> list:
 # exactly what read a busy composer as empty. The same lesson as the
 # pane_alive / server.pane_exists drift: one thought, one place.
 BOX_GLYPH = r"\u2500-\u259f"
-
-
-def is_input_box_row(line: str) -> bool:
-    """The TUI input-field line — empty and with typed text alike.
-
-    Telling them apart here is needless: what matters is that the line belongs to
-    the input field, while busyness is is_composer_empty’s call. Recognition used
-    to demand the line consist wholly of frame glyphs, and as soon as one char
-    landed in the input field, composer_line returned None — "nowhere to print":
-    the human starts typing, delivery breaks again.
-    """
-    text = line.lstrip()
-    if not text:
-        return False
-    return text[0] in INPUT_BOX_CORNERS
 
 
 def is_input_box_hint(line: str) -> bool:

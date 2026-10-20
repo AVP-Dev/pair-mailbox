@@ -223,6 +223,41 @@ class TestNotesConsistency(PairTestCase):
         self.assertIn("could be checked and do not match", why)
         self.assertIn("deadbeef1234", why)
 
+    def test_a_note_whose_journal_row_was_deleted_is_named(self) -> None:
+        """The tamper shape, on a REAL entry: a note written through
+        `pair_note`, whose journal row is then removed from the transcript.
+
+        The other cases in this file plant a forged header; this one takes an
+        entry the appender really wrote and removes the row that vouches for
+        it. That is what a hand-edit into the transcript looks like, and it is
+        the shape the leg has to catch — the entry's own header names the sha,
+        and the journal no longer knows it.
+
+        It replaces `pair_notes_consistency.tamper_probe`, which claimed to be
+        this leg's own red-proof while never being called and never able to
+        fail: it returned a constant string for every input, so a test calling
+        it would have proved nothing.
+        """
+        self.writer.tool_pair_note(kind="decision", text="a real decision")
+        target = self.store.notes_root / "decision.md"
+        header = target.read_text(encoding="utf-8").splitlines()[1]
+        sha = header.split("note ")[1].split(" ")[0]
+
+        transcript = self.store.root / "transcript.jsonl"
+        rows = [json.loads(l) for l in transcript.read_text(encoding="utf-8").splitlines()
+                if l.strip()]
+        kept = [r for r in rows if r.get("note_sha") != sha]
+        self.assertNotEqual(len(kept), len(rows), "the note row must be in the journal")
+        transcript.write_text(
+            "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in kept),
+            encoding="utf-8")
+
+        ok, why = pnc.check_notes(self.store.root)
+        self.assertFalse(ok, "an entry whose journal row is gone must be refused")
+        self.assertIn("could be checked and do not match", why)
+        self.assertIn("no transcript row", why)
+        self.assertIn(sha, why)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

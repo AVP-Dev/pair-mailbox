@@ -22,12 +22,6 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 
 
-def _sha256(text: str) -> str:
-    out = subprocess.run(["sha256sum"], input=text, capture_output=True,
-                         text=True, timeout=10)
-    return out.stdout.strip()[:8] if out.stdout else ""
-
-
 def tmux(*args: str, socket: str = "default") -> str:
     cmd = ["tmux"]
     if socket != "default":

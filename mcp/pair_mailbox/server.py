@@ -1057,9 +1057,8 @@ class PairSession:
             # here.
             address = ""
             if tmux:
-                # Exactly session_address, not canonical_pane: the latter returns the raw input on
-                # refusal — reads as success — leaving "no address" nothing to notice by.
-                # refusal — reads as success — leaving "no address" nothing to notice by.
+                # session_address, not a fallback to the raw input: on refusal the raw
+                # input reads as success — leaving "no address" nothing to notice by.
                 from composer import session_address
                 address = session_address(tmux, pane)
             previous = entry.get("pane")

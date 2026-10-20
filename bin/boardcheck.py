@@ -56,11 +56,6 @@ def ancestor_of(sha: str, head: str) -> bool:
     return code == 0
 
 
-def artefact_at(path: str, sha: str) -> bool:
-    code, _ = _git("cat-file", "-e", f"{sha}:{path}")
-    return code == 0
-
-
 def artefact_at_head(path: str) -> bool:
     return (ROOT / path).exists()
 
