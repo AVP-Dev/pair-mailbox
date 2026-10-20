@@ -2,6 +2,8 @@
 title: `permission.ask` в плагине — структурная защита, но ошибка в нём запретит работу
 found: 2026-10-05
 severity: medium
+round: 11
+status: open
 ---
 
 ## Где
