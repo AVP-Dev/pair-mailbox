@@ -94,6 +94,7 @@ mcp/pair_mailbox/manifest.py	manifest
 mcp/pair_mailbox/test_manifest.py	manifest
 bin/pairreport	manifest
 install.sh	installer-subset
+install_test.py	installer-subset
 cli-profiles.json	installer-subset
 .opencode/plugins/pair-guard.ts	guard-check
 .opencode/opencode.jsonc	composer

@@ -120,5 +120,57 @@ class TestVerifyMap(unittest.TestCase):
                            "the map should carry the repo's file-to-suite table")
 
 
+class TestVerifyChangedRouting(unittest.TestCase):
+    """The changed-file gate must SELECT what the map promises.
+
+    Round 129 found the gate's own routing rule broken, and silently: the
+    awk compared `$f` (FIELD f) instead of the variable `f`, and looked for
+    `index($f, $1"/")` — a directory row already ends in a slash, so the
+    probe was "skills//". Both mistakes made every DIRECTORY row of the map
+    dead, so a change under `skills/` selected no suite at all: the gate ran
+    static and nothing else, and it said so with an empty suite list.
+
+    The rule is checked here against the real script, not against a copy of
+    the rule: a test that re-implements the selector cannot see the selector
+    break.
+    """
+
+    SCRIPT = ROOT / "scripts" / "verify-changed.sh"
+
+    def _select(self, path: str) -> str:
+        """The suite verify-changed.sh picks for a changed path.
+
+        The real script, asked directly — a test that re-implements the
+        selector cannot see the selector break.
+        """
+        out = subprocess.run(
+            ["bash", str(self.SCRIPT), "--suite-for", path], cwd=ROOT,
+            capture_output=True, text=True, timeout=60)
+        return out.stdout.strip()
+
+    def test_a_file_under_a_mapped_directory_reaches_that_suite(self) -> None:
+        """The directory rows are the ones the broken rule killed."""
+        for prefix, suite in (("skills/", "waiting-contract"),
+                              (".agents/", "waiting-contract"),
+                              (".opencode/skills/", "waiting-contract")):
+            with self.subTest(prefix=prefix):
+                probe = f"{prefix}pair-work/SKILL.md"
+                self.assertIn(suite, self._select(probe),
+                              f"{probe} must reach the {suite} suite — the "
+                              f"map's {prefix} row promises it")
+
+    def test_an_exact_row_still_wins_over_a_directory_row(self) -> None:
+        """scripts/verify-map.tsv is under scripts/ AND has its own row.
+
+        The exact row must win, or the file's own suite would be lost to the
+        directory prefix that also covers it.
+        """
+        selected = self._select("scripts/verify-map.tsv")
+        self.assertIn("verify-map", selected,
+                      f"an exact row must beat the directory prefix: got {selected!r}")
+        self.assertNotIn("scripts-check", selected,
+                         f"the directory prefix must not win: got {selected!r}")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
