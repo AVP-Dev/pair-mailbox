@@ -189,8 +189,13 @@ class BacklogCheckTest(unittest.TestCase):
         self.assertIn("gone.md", proc.stdout)
 
     def _git(self, *args: str) -> None:
-        proc = subprocess.run(["git", *args], cwd=str(self.root),
-                              capture_output=True, text=True, timeout=60)
+        # The identity is set here, not taken from the machine: a CI runner has
+        # no user.name, and a test that needs one fails there while passing
+        # here - a green local run that says nothing about the run that counts.
+        proc = subprocess.run(
+            ["git", "-c", "user.name=Backlog Gate Test",
+             "-c", "user.email=backlog-gate@example.invalid", *args],
+            cwd=str(self.root), capture_output=True, text=True, timeout=60)
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
 
 
