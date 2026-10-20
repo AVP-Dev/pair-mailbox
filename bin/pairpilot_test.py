@@ -11,6 +11,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -212,6 +213,74 @@ class TestWakeAdapterCall(PilotCase):
         self.assertIsNone(captured["session_id"])
         self.assertIn("pilot_wake_api", self.transcript_kinds())
 
+
+
+class TestWakeAdapterTableMatchesTheCode(PilotCase):
+    """The protocol's adapter table names what the code SHIPS.
+
+    Round 126 filed the drift: PROTOCOL §7 promised an adapter for agy, Claude
+    and Codex, the pilot shipped one (`WAKE_ADAPTERS = {"opencode": ...}`), and
+    the transcript collected 31 `pilot_wake_no_adapter` rows that nobody read.
+    A contract document that overstates what the system does is the defect this
+    pins: the table is checked against the pilot's own map, in both languages.
+    """
+
+    def _table_rows(self, doc: str) -> list[tuple[str, set[str]]]:
+        """The (adapter, roles) pairs of §7's table, read out of the markdown.
+
+        The role is the backticked token in the CLI cell — the same spelling
+        `cli-profiles.json` uses. A row without one cannot be checked, so it is
+        a failure, not a row to skip.
+        """
+        text = (ROOT / doc).read_text(encoding="utf-8")
+        rows: list[tuple[str, set[str]]] = []
+        in_table = False
+        for line in text.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("| CLI |"):
+                in_table = True
+                continue
+            if not in_table:
+                continue
+            if not stripped.startswith("|"):
+                break
+            cells = [c.strip() for c in stripped.strip("|").split("|")]
+            if len(cells) < 2 or set(cells[0]) <= {"-", ":"}:
+                continue
+            roles = set(re.findall(r"`([^`]+)`", cells[0]))
+            rows.append((cells[1], roles))
+        return rows
+
+    def test_the_table_names_exactly_the_adapters_the_pilot_has(self) -> None:
+        """Every row promising an adapter must name a role the pilot can wake."""
+        shipped = set(pairpilot.Pilot.WAKE_ADAPTERS)
+        for doc in ("docs/PROTOCOL.md", "docs/PROTOCOL.ru.md"):
+            rows = self._table_rows(doc)
+            self.assertTrue(rows, f"{doc} has no adapter table to check")
+            promised: set[str] = set()
+            for adapter, roles in rows:
+                if adapter.lower() in {"none", "нет"}:
+                    continue
+                self.assertTrue(roles,
+                                f"{doc}: a row promising an adapter names no role: "
+                                f"{adapter!r}")
+                promised |= roles
+            self.assertEqual(promised, shipped,
+                             f"{doc} promises adapters for {sorted(promised)} "
+                             f"but the pilot ships {sorted(shipped)}")
+
+    def test_the_table_covers_every_profile(self) -> None:
+        """A CLI the project can launch must appear in the table."""
+        profiles = json.loads((ROOT / "cli-profiles.json").read_text(encoding="utf-8"))
+        roles = {name for name in profiles if not name.startswith("_")}
+        for doc in ("docs/PROTOCOL.md", "docs/PROTOCOL.ru.md"):
+            listed: set[str] = set()
+            for _adapter, row_roles in self._table_rows(doc):
+                listed |= row_roles
+            self.assertEqual(roles, listed,
+                             f"{doc} does not cover every cli-profile: "
+                             f"missing {sorted(roles - listed)}, "
+                             f"extra {sorted(listed - roles)}")
 
 
 class TestWakeAckContract(PilotCase):

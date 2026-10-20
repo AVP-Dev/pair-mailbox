@@ -398,12 +398,24 @@ So the split is: **the mailbox is the guarantee, delivery is the accelerator.** 
 wake-up adapter per CLI is allowed to exist, and the table below says so honestly; but
 nothing may depend on one.
 
+The table names the adapters the code SHIPS, not the ones it could grow. The pilot's
+`WAKE_ADAPTERS` (`bin/pairpilot`) has exactly one entry — `opencode` →
+`mcp/pair_mailbox/wake_opencode.py`, which posts to the recorded session's host API.
+Every other CLI falls back to the ring: a `tmux display-message` popup, then the mailbox
+letter. The `pair-guard` plugin (`.opencode/plugins/pair-guard.ts`) is NOT a wake path
+— it refreshes the authority brief inside the agent's own system prompt when the shared
+state changes, and it pushes nothing into an idle session. A row claiming an adapter the
+pilot cannot call sends the operator looking for a wake path that does not exist, so the
+table is guarded by a test against the pilot's own map.
+
 | CLI | adapter | if unsupported |
 |---|---|---|
-| OpenCode | plugin + host API | reminder only, mailbox still delivered |
-| Antigravity (`agy`) | native reactive messaging | reminder only |
-| Claude, Codex | `tmux send-keys` | reminder only |
-| anything else | none | reminder only |
+| OpenCode (`opencode`) | host API — `wake_opencode.py` | reminder only, mailbox still delivered |
+| Antigravity (`agy`) | none | reminder only |
+| Claude (`claude`) | none | reminder only |
+| Codex (`codex`) | none | reminder only |
+| Pi (`pi`) | none | reminder only |
+| OMP (`omp`) | none | reminder only |
 
 The supervisor nudges a role that has unread mail and has gone quiet — once per unread
 batch, not every tick, recorded as `pilot_unread_nudge`. Reading resets the nudge, so the

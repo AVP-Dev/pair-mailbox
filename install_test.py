@@ -612,6 +612,13 @@ def _find_in_tree(root: int, role: str) -> int:
     return composer_module().find_role_pid(root, role)
 
 
+def read_wait_module():
+    """The real read_wait module — the one whose constant the protocol names."""
+    sys.path.insert(0, str(ROOT / "mcp" / "pair_mailbox"))
+    import read_wait  # noqa: PLC0415
+    return read_wait
+
+
 class TestPilotLaunchMap(InstallCase):
     """`launch` serves the fallen-agent restart: with no it the supervisor knows the
     role is dead, but never which command raises it."""
@@ -692,6 +699,41 @@ class TestPilotLaunchMap(InstallCase):
                 if name in home_of:
                     self.assertIn(home_of[name], path,
                                  f"profile {name} writes into a foreign home: {path}")
+
+
+class TestProfileTimeoutBudget(InstallCase):
+    """Every profile must declare a timeout the protocol's wait can fit into.
+
+    PROTOCOL §7c says so: "The MCP `timeout` in `cli-profiles.json` must
+    therefore exceed `MAX_READ_WAIT_SECONDS`, and a test fails the suite if any
+    profile does not." The second half had no test, so the guarantee was a
+    sentence.
+
+    The silent failure is the expensive one. `client_timeout_ms` returns the
+    conservative 20 000 ms default for any role it cannot read
+    (`read_wait.py:45`), and `effective_read_wait` then caps the wait at
+    20 s - 5 s = 15 s (`read_wait.py:49-54`) instead of the protocol's 60 s.
+    A profile added without a timeout halves the pair's maximum wait while the
+    suite stays green — so the test asserts BOTH that the key is present and
+    that it is large enough.
+    """
+
+    def test_every_profile_declares_a_timeout_above_the_protocol_wait(self) -> None:
+        max_wait = read_wait_module().MAX_READ_WAIT_SECONDS
+        profiles = json.loads((ROOT / "cli-profiles.json").read_text(encoding="utf-8"))
+        for name, profile in profiles.items():
+            if name.startswith("_"):
+                continue
+            timeout = ((profile.get("mcp") or {}).get("entry") or {}).get("timeout")
+            with self.subTest(profile=name):
+                self.assertIsNotNone(
+                    timeout,
+                    f"profile {name} declares no MCP timeout — the client falls "
+                    f"back to the 20 s default and the wait is capped at 15 s")
+                self.assertGreater(
+                    timeout / 1000, max_wait,
+                    f"profile {name} allows {timeout / 1000}s — the protocol waits "
+                    f"{max_wait}s, so the client gives up first")
 
 
 if __name__ == "__main__":
