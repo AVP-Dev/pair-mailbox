@@ -2382,9 +2382,16 @@ def write_report(state_dir: Path, state: dict) -> Path:
     return out
 
 
+def main_state_dir(explicit: str | None) -> Path:
+    """The room the supervisor watches — the rule lives in `state_resolve`."""
+    from state_resolve import resolve_state_dir_logged
+    return resolve_state_dir_logged(explicit=explicit, log=log)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Pair-work supervisor")
-    parser.add_argument("--state", default=os.environ.get("PAIR_STATE", ".pair"))
+    parser.add_argument("--state", default=None,
+                        help="the room to watch (default: walk up from cwd)")
     parser.add_argument("--ask", default=None,
                         help="the trigger file that lets the pilot type into a CLI "
                              "(default: <state>/ask). Presence means 'speak', consuming "
@@ -2428,7 +2435,7 @@ def main() -> int:
             return 2
     allow = load_allow_patterns(args.allow)[0] if args.allow else None
 
-    state_dir = Path(args.state).resolve()
+    state_dir = main_state_dir(args.state)
 
     pilot = Pilot(state_dir, silence=args.silence, interval=args.interval,
                   reply_grace=args.reply_grace, reply_hard=args.reply_hard,

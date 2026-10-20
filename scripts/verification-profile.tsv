@@ -94,6 +94,7 @@ eye-deadlock	positive	1	bash scripts/eye-of-sauron_test.sh
 i18n-selftest	positive	1	python3 scripts/i18n_self_test.py
 verification-profile	positive	1	python3 mcp/pair_mailbox/test_verification_profile.py
 verify-map	positive	1	python3 mcp/pair_mailbox/test_verify_map.py
+state-resolve	positive	1	python3 mcp/pair_mailbox/test_state_resolve.py
 
 # --- integration: slow but mandatory before finalization ---
 installer	integration	1	python3 install_test.py	serial

@@ -144,21 +144,25 @@ def extract_state(argv: list[str]) -> tuple[Path, list[str]]:
     # PAIR_STATE reads as one whole string, like the plugin: split would cut a
     # path with a space, and resolvers would diverge on exotica.
     raw = (os.environ.get("PAIR_STATE") or "").strip()
+    explicit = ""
     rest: list[str] = []
     index = 0
     while index < len(argv):
         item = argv[index]
         if item == "--state" and index + 1 < len(argv):
-            raw = argv[index + 1]
+            explicit = argv[index + 1]
             index += 2
             continue
         if item.startswith("--state="):
-            raw = item.split("=", 1)[1]
+            explicit = item.split("=", 1)[1]
             index += 1
             continue
         rest.append(item)
         index += 1
-    resolved = Path(raw).expanduser().resolve() if raw else walk_up_to_state()
+    # Round 127: the rule lives in one place (`state_resolve`), so the shell
+    # entry points and this one cannot drift apart again.
+    from state_resolve import resolve_state_dir
+    resolved, _reason = resolve_state_dir(explicit=explicit or None)
     return resolved, rest
 
 
@@ -190,16 +194,16 @@ def walk_up_to_state(start: Path | None = None) -> Path:
 
     Without it a launch from a project subdir creates a second independent
     state while the plugin shows the root one: two opinions about the writer
-    under one guard that exists exactly against that."""
-    here = (start or Path.cwd()).resolve()
-    for _ in range(12):
-        candidate = here / ".pair"
-        if (candidate / "state.json").exists():
-            return candidate
-        parent = here.parent
-        if parent == here:
-            break
-        here = parent
+    under one guard that exists exactly against that.
+
+    Round 127: the walk-up itself now lives in `state_resolve` — one rule for
+    every entry point, the shell ones included. This stays as the name the
+    rest of the repo already calls.
+    """
+    from state_resolve import walk_up_state
+    found = walk_up_state(start)
+    if found is not None:
+        return found
     return (start or Path.cwd()).resolve() / ".pair"
 
 

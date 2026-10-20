@@ -139,6 +139,8 @@ mcp/pair_mailbox/test_protocol_pins.py	protocol
 mcp/pair_mailbox/test_protocol_transport.py	protocol
 mcp/pair_mailbox/test_verification_profile.py	verification-profile
 mcp/pair_mailbox/test_verify_map.py	verify-map
+mcp/pair_mailbox/state_resolve.py	state-resolve
+mcp/pair_mailbox/test_state_resolve.py	state-resolve
 scripts/verification-profile.tsv	verification-profile
 scripts/verify-map.tsv	verify-map
 scripts/branch-class-check.py	branch-class

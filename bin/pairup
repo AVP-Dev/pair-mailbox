@@ -24,6 +24,12 @@ done
 PAIRUP_ROOT="$(cd -- "$(dirname -- "$_src")/.." && pwd)"
 HERE_STATE=""
 STATE_DIR=""
+
+# Ask the shared resolver which room is ours. It prints the room and the
+# reason on two lines; the reason is what the refusal is made of.
+_resolve_state_dir() {
+  "$PAIRUP_ROOT/mcp/pair_mailbox/state_resolve.sh"
+}
 # Round 121: the PROJECT ROOT owns the state, never the inherited environment.
 #
 # Measured live: the operator opened `tmux new -s nyx` inside a session whose
@@ -42,33 +48,13 @@ STATE_DIR=""
 # (PAIR_TRUST_ENV=1 — deliberate escapes: tests, an operator who knows exactly
 # which room they want). Silence here is the defect being fixed: a mismatch
 # must be loud, because a quiet repoint is how the pair above lost its project.
-_INHERITED_STATE="${PAIR_STATE:-}"
-_resolved_top="$(git rev-parse --show-toplevel 2>/dev/null || true)"
-_dir="$(pwd -P)"
-for _ in 1 2 3 4 5 6 7 8 9 10 11 12; do
-  if [ -f "$_dir/.pair/state.json" ]; then STATE_DIR="$_dir/.pair"; break; fi
-  if [ -n "$_resolved_top" ] && [ "$_dir" = "$_resolved_top" ]; then break; fi
-  _parent="$(dirname -- "$_dir")"
-  if [ "$_parent" = "$_dir" ]; then break; fi
-  _dir="$_parent"
-done
-if [ -n "$_INHERITED_STATE" ]; then
-  _want="$(cd -- "$_INHERITED_STATE" 2>/dev/null && pwd -P || true)"
-  if [ "$_want" = "$STATE_DIR" ]; then
-    :  # the inherited state IS this project's own: nothing to complain about
-  elif [ -n "${PAIR_TRUST_ENV:-}" ] && [ "${PAIR_TRUST_ENV}" = "1" ]; then
-    STATE_DIR="$_INHERITED_STATE"
-  elif [ -n "$STATE_DIR" ]; then
-    echo "pairup: refusing: PAIR_STATE=$_INHERITED_STATE belongs to another project," >&2
-    echo "pairup: this launch roots at $(dirname -- "$STATE_DIR"). Using $STATE_DIR." >&2
-    echo "pairup: (to run another room on purpose, export PAIR_TRUST_ENV=1)" >&2
-  else
-    echo "pairup: refusing: PAIR_STATE=$_INHERITED_STATE is not this project's state" >&2
-    echo "pairup: and no .pair was found by walking up from $(pwd -P)." >&2
-    echo "pairup: cd to the project you mean, or PAIR_TRUST_ENV=1 to keep the room." >&2
-    exit 1
-  fi
-fi
+#
+# Round 127: the rule moved into `mcp/pair_mailbox/state_resolve.py`, so the
+# three shell entry points and the Python ones cannot drift apart again.
+_resolved="$(_resolve_state_dir)" || exit 1
+_resolved_room="$(printf '%s' "$_resolved" | sed -n '1p')"
+STATE_DIR="$_resolved_room"
+_resolve_reason="$(printf '%s' "$_resolved" | sed -n '2p')"
 
 usage() {
   sed -n '2,14p' "$0" | sed 's/^# //; s/^#//'
@@ -106,6 +92,17 @@ while [ $# -gt 0 ]; do
     *) echo "error: unknown flag $1" >&2; usage >&2; exit 2 ;;
   esac
 done
+
+# The refusal is reported only if the flags did not replace the room: an
+# explicit --state is the operator speaking, and a complaint about a state
+# they did not choose is noise.
+case "$_resolve_reason" in
+  refused*|ignoring*)
+    if [ "$STATE_DIR" = "$_resolved_room" ]; then
+      echo "pairup: $_resolve_reason" >&2
+    fi
+    ;;
+esac
 
 if [ -n "$WORKTREE_BRANCH" ]; then
   _git_root="$(git rev-parse --show-toplevel 2>/dev/null || true)"

@@ -28,9 +28,17 @@
 
 HERE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd -- "$HERE/.." && pwd)"
-# Defined here, not below: the standing-assignment read happens above where this
-# definition stood, and a silently empty variable would mean no assignment.
-STATE_PATH="${PAIR_STATE:-$ROOT/.pair}"
+
+# The inherited room is read HERE, before anything can change it, and is
+# remembered rather than used: the resolution happens after the flags are
+# parsed, so an explicit --state still wins over the environment.
+_INHERITED_STATE="${PAIR_STATE:-}"
+
+# Ask the shared resolver which room is ours. It prints the room and the
+# reason on two lines; the reason is what the refusal is made of.
+_resolve_state_dir() {
+  "$ROOT/mcp/pair_mailbox/state_resolve.sh" "$1"
+}
 
 USE_WORKTREE=0
 SPLIT_OPT="-h"
@@ -39,6 +47,7 @@ SWAP_CRITIC=""
 WANT_PILOT=0
 FLAG_STATE=""
 FLAG_PROJECT=""
+PRINT_STATE=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -78,6 +87,12 @@ while [[ $# -gt 0 ]]; do
       FLAG_PROJECT="${2:-}"
       shift 2 || { echo "error: --project needs a dir" >&2; exit 2; }
       ;;
+    --print-state)
+      # Resolve the room and print it, then stop: the answer to "which room
+      # would this launch use" without launching anything.
+      PRINT_STATE=1
+      shift
+      ;;
     -h|--help)
       sed -n '2,28p' "$0" | sed 's/^# //' | sed 's/^#//'
       exit 0
@@ -88,12 +103,36 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-# Explicit state/project beat the default: pairup calls from the project dir, not
-# the autonomy repo, carrying both paths along.
-if [[ -n "$FLAG_STATE" ]]; then
-  STATE_PATH="$FLAG_STATE"
+# Round 121's rule, applied here too: the PROJECT owns the room, never the
+# inherited environment. Measured live (round 126): an operator standing in
+# /tmp/myproj ran `bin/pair-duo opencode`; the script took PAIR_STATE on its
+# face, wrote a writer into that FOREIGN room, and launched the panes bound
+# to it. The default was the INSTALL directory, so the pair served pair-mailbox
+# itself instead of the project the operator was standing in.
+#
+# The rule now lives in one place (`state_resolve.resolve_state_dir`), which
+# every entry point calls, so the next one cannot get it wrong again. This
+# script asks it through the Python the server already loads — the same
+# pattern `bin/pairup` uses for the worktree.
+_resolved="$(_resolve_state_dir "$FLAG_STATE")" || exit 2
+STATE_PATH="$(printf '%s' "$_resolved" | sed -n '1p')"
+_resolve_reason="$(printf '%s' "$_resolved" | sed -n '2p')"
+case "$_resolve_reason" in
+  refused*|ignoring*)
+    echo "pair-duo: $_resolve_reason" >&2
+    ;;
+esac
+# The project is the room's project: the panes must stand where the work is,
+# not in the directory pair-mailbox happens to be installed in. The state dir
+# is `<project>/.pair`, so its parent IS the project — one rule, no second
+# guess, and the two can never disagree.
+PROJECT_ROOT_DIR="${FLAG_PROJECT:-$(dirname -- "$STATE_PATH")}"
+
+if [[ "$PRINT_STATE" -eq 1 ]]; then
+  echo "state=$STATE_PATH"
+  echo "project=$PROJECT_ROOT_DIR"
+  exit 0
 fi
-PROJECT_ROOT_DIR="${FLAG_PROJECT:-$ROOT}"
 
 # Supervisor before agents (RUNBOOK §3): never doubling the live one — a second
 # pilot on the same state would tick in parallel doubling wakes (agy seq-475 note).
