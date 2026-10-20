@@ -70,6 +70,7 @@ read-delivery	positive	1	python3 mcp/pair_mailbox/test_read_delivery.py
 pair-duo	positive	1	python3 bin/pair-duo_test.py
 notes-consistency	positive	1	python3 mcp/pair_mailbox/test_pair_notes_consistency.py
 boardcheck	positive	1	python3 mcp/pair_mailbox/test_boardcheck.py
+boardcheck-isolation	positive	1	python3 mcp/pair_mailbox/test_boardcheck_isolation.py
 client-redial	positive	1	python3 mcp/pair_mailbox/test_client_redial.py
 lock-liveness	positive	1	python3 mcp/pair_mailbox/test_lock_liveness.py
 lock-reaper	positive	1	python3 mcp/pair_mailbox/test_lock_reaper.py
@@ -77,7 +78,6 @@ serve-guard	positive	1	python3 mcp/pair_mailbox/test_origin_guard.py
 read-wait	positive	1	python3 mcp/pair_mailbox/test_read_wait.py
 socket-client	positive	1	python3 mcp/pair_mailbox/test_socket_client.py
 socket-transport	positive	1	python3 mcp/pair_mailbox/test_socket_transport.py
-state-rotation	positive	1	python3 mcp/pair_mailbox/test_state_rotation.py
 transport-mode	positive	1	python3 mcp/pair_mailbox/test_transport_mode.py
 paircutover	positive	1	python3 bin/paircutover_test.py
 pairrestart-scope	positive	1	python3 bin/pairrestart_scope_test.py

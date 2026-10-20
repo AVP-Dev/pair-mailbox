@@ -108,7 +108,15 @@ def critic_ack(state_dir: Path, round_number: int, writer: str,
     # cause keeps its newest instance, not its first.
     stale: tuple[str, str] | None = None
     wrong_round: tuple[str, str] | None = None
-    for path in sorted(notes_dir.glob("verdict*.md")):
+    searched: list[str] = []
+    # Every note file, not only the ones whose NAME starts with "verdict". The
+    # visa is CONTENT, and the kind is metadata the server already records:
+    # the name was the only thing the glob looked at, so a visa written to
+    # notes/plan-ack.md — the obvious kind for a plan acknowledgement — was
+    # invisible to the gate, and the writer waited out the 24-hour window for
+    # a visa that had already been given (round 127).
+    for path in sorted(notes_dir.glob("*.md")):
+        searched.append(path.name)
         try:
             text = path.read_text(encoding="utf-8")
         except OSError:
@@ -145,7 +153,11 @@ def critic_ack(state_dir: Path, round_number: int, writer: str,
         return {"ack": False, "why": stale[0]}
     if wrong_round:
         return {"ack": False, "why": wrong_round[0]}
-    return {"ack": False, "why": "no critic note with this round plan-ack"}
+    # Name where the gate looked: a refusal that does not say where it
+    # searched leaves the peer guessing which file it was supposed to write.
+    where = ", ".join(searched) if searched else "no note files at all"
+    return {"ack": False,
+            "why": f"no critic note with this round plan-ack (searched: {where})"}
 
 
 def _ack_timeout_hours(state_dir: Path) -> float:

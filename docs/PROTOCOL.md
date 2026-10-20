@@ -334,9 +334,12 @@ plan artefact and the neighbour's visa (round 55):
   current round), then the sections `Goal`, `Invariants`, `Acceptance`. The marker
   exists for the same reason a stale verdict is refused: applying last round's plan
   silently is worse than having none.
-- **The neighbour's visa** — a `kind=verdict` note containing `plan-ack round N`,
-  written by any role but the writer (your own visa is refused: that would be the
-  gate removing itself), not older than the plan file. In `mode=fix` only.
+- **The neighbour's visa** — any note containing `plan-ack round N`, written by
+  any role but the writer (your own visa is refused: that would be the gate
+  removing itself), not older than the plan file. The visa is CONTENT: the note's
+  file name is not part of the rule, and the gate reads every `notes/*.md` file —
+  a visa written to `notes/plan-ack.md` counts exactly as one written to
+  `notes/verdict.md`. In `mode=fix` only.
 - **The waiting window** — `.pair/plan-gate.json` `{"ack_timeout_hours": 24}`: when
   the window expires and the writer has no open requests to the neighbour, the
   transition is allowed. An open request stops the clock — a remark nobody answered

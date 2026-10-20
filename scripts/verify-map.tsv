@@ -15,6 +15,8 @@ mcp/pair_mailbox/test_read_delivery.py	read-delivery
 bin/pair-duo_test.py	pair-duo
 mcp/pair_mailbox/test_pair_notes_consistency.py	notes-consistency
 mcp/pair_mailbox/test_boardcheck.py	boardcheck
+mcp/pair_mailbox/test_boardcheck_isolation.py	boardcheck-isolation
+bin/boardcheck.py	boardcheck
 mcp/pair_mailbox/test_client_redial.py	client-redial
 mcp/pair_mailbox/test_lock_liveness.py	lock-liveness
 mcp/pair_mailbox/test_lock_reaper.py	lock-reaper
@@ -22,7 +24,6 @@ mcp/pair_mailbox/test_origin_guard.py	serve-guard
 mcp/pair_mailbox/test_read_wait.py	read-wait
 mcp/pair_mailbox/test_socket_client.py	socket-client
 mcp/pair_mailbox/test_socket_transport.py	socket-transport
-mcp/pair_mailbox/test_state_rotation.py	state-rotation
 mcp/pair_mailbox/test_transport_mode.py	transport-mode
 bin/paircutover_test.py	paircutover
 bin/pairrestart_scope_test.py	pairrestart-scope

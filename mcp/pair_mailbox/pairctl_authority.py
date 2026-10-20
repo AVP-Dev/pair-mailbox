@@ -383,14 +383,15 @@ def cmd_reset(store: Store, args: argparse.Namespace) -> int:
     for path in (store.mailbox_root, store.notes_root, store.patches_root):
         shutil.rmtree(path, ignore_errors=True)
     store.state_path.unlink(missing_ok=True)
+    # The self-heal counter is room state: a reset that leaves it behind resets nothing.
+    (store.root / "heal-state.json").unlink(missing_ok=True)
     # Reset just deleted state.json: bootstrap again, not a read (round 115 S4).
     fresh = Store(store.root, allow_create=True)
     # Wiping state must not raise rights — but rights count against the default,
     # and the default is now auto: exactly what the human set as norm. Setting
     # observe here would contradict: wipe would stop the pair against "work alone,
-    # return with output" and force the human to notice. \u00a712 stays off-axis, so
-    # auto never means "destructive allowed".
-    # destructive allowed".
+    # return with output". §12 stays off-axis, so auto never means "destructive
+    # allowed".
     fresh.mutate(lambda st: st.__setitem__("autonomy", "auto"))
     store.append_transcript("reset", "human", autonomy="auto")
     print("state reset; autonomy is now 'auto' — the pair works to the end and "
@@ -405,8 +406,7 @@ def cmd_keys(store: Store, args: argparse.Namespace) -> int:
     if getattr(args, "keys_command", "") != "gen" or not getattr(args, "role", ""):
         print("usage: pairctl keys gen <role>", file=sys.stderr)
         return 2
-    import base64
-    import rolekeys
+    import base64, rolekeys
     role = args.role
     pub = rolekeys.keys_dir(store.root) / f"{role}.pub"
     old = base64.b64encode(pub.read_bytes()).decode("ascii") if pub.exists() else ""

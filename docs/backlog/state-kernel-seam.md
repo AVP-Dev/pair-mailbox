@@ -16,7 +16,10 @@ State kernel: **lines 636..1071** (436 lines) — `ProtocolError` (636),
 `_transcript_hash` (649), `verify_transcript_chain` (655), `_transcript_entry`
 (702), `_transcript_tail` (719), `class Store` (761..1071), `atomic_write_json`
 (1073), plus the constants `CHAIN_GENESIS` (634), `TRANSCRIPT_ARCHIVES`,
-`TRANSCRIPT_MAX_BYTES` and the rotation merge `_state_rotation_load` (1113).
+`TRANSCRIPT_MAX_BYTES`. (The rotation merge `_state_rotation_load` was part of
+this seam until round 127 removed it — the state archive it fed was never
+written, and the mechanism is filed again in
+`state-json-grows-unbounded-because-rotation-needs-a-design-round.md`.)
 
 Everything else in server.py is protocol/gates/tools/transport (1..635 and
 1072..4478).

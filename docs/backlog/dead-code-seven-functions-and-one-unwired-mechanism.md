@@ -19,6 +19,11 @@ status: open
 | `_sha256` | `bin/pairsocket_test.py:25` | 0 |
 | `state_rotation.rotate` | `mcp/pair_mailbox/state_rotation.py:80` | tests only — see its own card |
 
+(Round 127 removed the whole `state_rotation` module: wiring its writer
+duplicates 91 task records, because the union `_load` hands out is what
+`_save` writes back. The mechanism is filed again, with the measurements, in
+`state-json-grows-unbounded-because-rotation-needs-a-design-round.md`.)
+
 ## What breaks
 
 Nothing crashes. The cost is that the code lies to the next reader, and in two
