@@ -16,7 +16,7 @@
 #
 
 # --- static: fast checks before every edit ---
-shell-syntax	static	1	bash -n scripts/verify-project.sh scripts/security-scan.sh scripts/file-size-gate.sh scripts/comment-lint.sh scripts/comment-lint_test.sh scripts/eye-of-sauron.sh scripts/eye-of-sauron_test.sh bin/pair-duo bin/pairup bin/pairctl mcp/pair_mailbox/serve.sh
+shell-syntax	static	1	./scripts/shell-syntax.sh
 python-syntax	static	1	./scripts/python-syntax.sh
 exec-bits	static	1	test -x scripts/file-size-gate_test.sh
 file-size	static	1	./scripts/file-size-gate.sh
