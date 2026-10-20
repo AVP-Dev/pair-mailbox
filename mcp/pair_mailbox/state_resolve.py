@@ -35,21 +35,29 @@ from typing import Callable
 TRUST_ENV = "PAIR_TRUST_ENV"
 
 
-def walk_up_state(cwd: Path | None = None, *, bounded_by_git: bool = True) -> Path | None:
+def walk_up_state(cwd: Path | None = None, *, bounded_by_git: bool = True,
+                  no_walk_up_above: Path | None = None) -> Path | None:
     """The nearest `.pair` holding a state.json, walking up from cwd.
 
     Bounded by the git root: without that bound, someone else's `~/work/.pair`
     latches on from a subdirectory. Returns None when nothing is found, so the
     caller decides between "no room" and "a room of my own making" — the
     difference is the litter.
+
+    `no_walk_up_above` stops the walk at a directory even when git would let
+    it climb further. It exists for tests, which must not depend on what
+    happens to sit above the temp dir on the machine running them.
     """
     here = (cwd or Path.cwd()).resolve()
     top = _git_top(here) if bounded_by_git else None
+    ceiling = no_walk_up_above.resolve() if no_walk_up_above else None
     for _ in range(12):
         candidate = here / ".pair"
         if (candidate / "state.json").exists():
             return candidate
         if top is not None and here == top:
+            break
+        if ceiling is not None and here == ceiling:
             break
         parent = here.parent
         if parent == here:
@@ -78,6 +86,7 @@ def resolve_state_dir(
     env: dict[str, str] | None = None,
     cwd: Path | None = None,
     fallback: Path | None = None,
+    no_walk_up_above: Path | None = None,
 ) -> tuple[Path, str]:
     """The room this process serves, and why.
 
@@ -92,19 +101,26 @@ def resolve_state_dir(
     if explicit:
         return Path(explicit).expanduser().resolve(), "explicit --state"
 
-    walked = walk_up_state(here)
+    walked = walk_up_state(here, no_walk_up_above=no_walk_up_above)
+    inherited = (environ.get("PAIR_STATE") or "").strip()
+    want = _resolved(inherited) if inherited else None
+
     if walked is None:
-        # No room underfoot. The caller's own project gets a fresh one; the
-        # fallback (the install dir) is for a project not set up yet.
+        # No room underfoot. The INHERITED room is still a candidate: a
+        # trusted PAIR_STATE names a room the operator chose, and it is the
+        # only room there is. An untrusted one is refused like anywhere else.
+        if want is not None and environ.get(TRUST_ENV) == "1":
+            return want, "the inherited room, trusted on purpose (PAIR_TRUST_ENV=1)"
+        # No room underfoot and no trusted inherited room: the caller's own
+        # project gets a fresh one; the fallback (the install dir) is for a
+        # project not set up yet.
         target = (fallback or here / ".pair")
         return target.resolve(), "no room found underfoot"
 
-    inherited = (environ.get("PAIR_STATE") or "").strip()
-    if not inherited:
-        return walked.resolve(), "the room underfoot"
-
-    want = _resolved(inherited)
     mine = walked.resolve()
+    if not inherited:
+        return mine, "the room underfoot"
+
     if want is None or want == mine:
         return mine, "the inherited room is this project's own"
 

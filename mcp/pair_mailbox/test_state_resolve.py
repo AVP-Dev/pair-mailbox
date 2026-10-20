@@ -109,6 +109,41 @@ class ResolveStateDirCase(unittest.TestCase):
         self.assertNotEqual(outside.resolve(), found.resolve(),
                             "the walk-up must stop at the git root")
 
+    def test_a_trusted_inherited_room_counts_even_with_no_room_underfoot(self) -> None:
+        """The escape hatch must work where there is no room to fall back on.
+
+        Found by CI (all five Python versions), not by the local run: the local
+        tree had a `.pair` above the temp dir, so the walk-up always found
+        something and the early return never fired. On a clean machine there is
+        no room underfoot, and the resolver returned the fallback WITHOUT
+        consulting the inherited room — so PAIR_TRUST_ENV=1 was ignored exactly
+        where it was the only thing that could answer.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            bare = Path(tmp) / "bare"
+            bare.mkdir()
+            chosen = Path(tmp) / "chosen"
+            env = {"PAIR_STATE": str(chosen), "PAIR_TRUST_ENV": "1"}
+            room, reason = resolve_state_dir(env=env, cwd=bare,
+                                            no_walk_up_above=Path(tmp))
+            self.assertEqual(chosen.resolve(), room.resolve(),
+                             f"a trusted inherited room must be honoured ({reason})")
+
+    def test_an_untrusted_inherited_room_is_refused_with_no_room_underfoot(self) -> None:
+        """The refusal holds where there is no room underfoot either: the
+        fallback is the caller's own project, never a foreign room."""
+        with tempfile.TemporaryDirectory() as tmp:
+            bare = Path(tmp) / "bare"
+            bare.mkdir()
+            foreign = Path(tmp) / "foreign"
+            env = {"PAIR_STATE": str(foreign)}
+            room, reason = resolve_state_dir(env=env, cwd=bare,
+                                            no_walk_up_above=Path(tmp))
+            self.assertNotEqual(foreign.resolve(), room.resolve(),
+                                f"a foreign room must not be adopted ({reason})")
+            self.assertEqual((bare / ".pair").resolve(), room.resolve(),
+                             "the fallback is the caller's own project")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
