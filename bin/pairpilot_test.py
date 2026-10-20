@@ -54,7 +54,6 @@ class PilotCase(unittest.TestCase):
         # and running the suite FROM %20 the pilot takes agy for sitting in its own pane,
         # adds it to skip and stays silent. The suite fell two tests depending on which
         # pane launched it — the check depended on place, not code.
-        # pane launched it — the check depended on place, not code.
         self._orig_tmux_pane = os.environ.pop("TMUX_PANE", None)
 
     def tearDown(self) -> None:
@@ -3142,6 +3141,35 @@ class TestPushGates(PilotCase):
             pairpilot.pane_belongs_to_project = orig_belongs
         self.assertFalse(pilot.ask_file.exists(),
                          "a delivered report spends the human's trigger")
+
+
+class PilotStateResolutionCase(unittest.TestCase):
+    """The supervisor watches the room the shared resolver names.
+
+    The rule itself is covered once, in `mcp/pair_mailbox/test_state_resolve.py`
+    — it is ONE rule now (round 127 put it in `state_resolve` and every entry
+    point calls it). What is the pilot's own business is that it CALLS it, and
+    that the room it watches is the one the resolver chose.
+    """
+
+    def test_the_pilot_watches_the_resolved_room(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp) / "proj"
+            state = project / ".pair"
+            state.mkdir(parents=True)
+            (state / "state.json").write_text("{}", encoding="utf-8")
+            sub = project / "sub"
+            sub.mkdir()
+            cwd = Path.cwd()
+            os.chdir(sub)
+            try:
+                resolved = pairpilot.main_state_dir(None)
+            finally:
+                os.chdir(cwd)
+            self.assertEqual(state.resolve(), resolved.resolve(),
+                             "the supervisor must watch the project's own room")
+            self.assertFalse((sub / ".pair").exists(),
+                             "a launch from a subdirectory must not create a room")
 
 
 if __name__ == "__main__":

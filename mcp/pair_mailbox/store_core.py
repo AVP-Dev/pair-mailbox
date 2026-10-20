@@ -329,15 +329,6 @@ class Store:
                 "reason": "", "closed_at": None, "closed_by": None,
             }]
         state.setdefault("tasks", [])
-        # Round 106 slice B: the hot file is bounded, so this load must hand back
-        # the UNION of the active window and the state archive. A rotated record
-        # becomes invisible only to the writer's memory, never to a reader — the
-        # same invariant the transcript union carries, and the one a shrunken file
-        # would otherwise break.
-        try:
-            state = _state_rotation_load(self.root, state)
-        except Exception as exc:  # noqa: BLE001 - an unreadable archive never hides the active window
-            log(f"state archive unreadable ({exc}); serving the active window alone")
         return state
 
     def _save(self, state: dict[str, Any]) -> None:
@@ -584,13 +575,6 @@ def is_pid_alive(pid: Any) -> bool:
     return liveness.pid_alive(pid)
 
 
-def _proc_starttime(pid: Any) -> int | None:
-    """`liveness.proc_starttime` wrapper (round 103 S3), same drift rule."""
+def _proc_starttime(pid: int) -> str | None:
+    """liveness.proc_starttime wrapper (round 103 S3), same drift rule."""
     return liveness.proc_starttime(pid)
-
-
-def _state_rotation_load(root: Path, state: dict[str, Any]) -> dict[str, Any]:
-    """Store._load's rotation merge, imported lazily (server imports state_rotation,
-    never the reverse — a top-level import would close a cycle)."""
-    from state_rotation import load_state
-    return load_state(root, state)

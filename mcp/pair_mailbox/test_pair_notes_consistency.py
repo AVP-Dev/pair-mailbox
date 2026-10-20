@@ -14,7 +14,7 @@ import json
 import sys
 import tempfile
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -30,13 +30,53 @@ import pair_notes_consistency as pnc
 # red-proof case untestable — the forged entry was excused as pre-era instead
 # of being refused. The stamp is what says "this was written by the current
 # appender, and it does not match the journal".
-NOW = datetime.now(timezone.utc).isoformat(timespec="seconds")
+#
+# It is computed per USE, not once at import: the attribution floor is the
+# EARLIEST journal row that carries a note_sha, and the real note in the test
+# is written afterwards. A stamp taken at import time can therefore land
+# BEFORE that floor — a second boundary between the import and the write is
+# enough — and the forged entry is excused as pre-era, which is the opposite
+# of what the test asserts. CI on a slow runner hit exactly that (round 127:
+# Python 3.12 red, 3.8-3.11 green).
+def _now_after(rows: list[dict]) -> str:
+    """A stamp at or after the attribution floor of the rows given.
+
+    The forged entry has to look like it was written by the CURRENT appender:
+    after the earliest row that carries a note_sha, so the leg judges it
+    instead of excusing it as history.
+    """
+    stamps = [str(r.get("ts") or "") for r in rows if r.get("note_sha")]
+    if stamps:
+        latest = max(stamps)
+        try:
+            base = datetime.fromisoformat(latest.replace("Z", "+00:00"))
+        except ValueError:
+            base = datetime.now(timezone.utc)
+        return (base + timedelta(seconds=1)).isoformat(timespec="seconds")
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
 class TestNotesConsistency(PairTestCase):
     def setUp(self) -> None:
         super().setUp()
         self.allow_panes()
+
+    def _stamped_now(self) -> str:
+        """A stamp the attribution floor cannot excuse.
+
+        The floor is the EARLIEST journal row carrying a note_sha, so a forged
+        entry has to be stamped AT OR AFTER it. A stamp taken at import time
+        can land before the floor on a slow runner (a second boundary between
+        the import and the write), and then the leg excuses the forgery as
+        pre-attribution history instead of refusing it — the opposite of what
+        these cases assert. CI hit exactly that on Python 3.12 in round 127.
+        """
+        transcript = self.store.root / "transcript.jsonl"
+        rows = []
+        if transcript.exists():
+            rows = [json.loads(line) for line in
+                     transcript.read_text(encoding="utf-8").splitlines() if line.strip()]
+        return _now_after(rows)
 
     def test_appended_note_matches_its_journal_row(self) -> None:
         """The appender writes both sides: entry + row. Must pass."""
@@ -66,7 +106,7 @@ class TestNotesConsistency(PairTestCase):
         self.writer.tool_pair_note(kind="decision", text="the real one")
         target = self.store.notes_root / "decision.md"
         target.write_text(target.read_text(encoding="utf-8") +
-                          f"\n## {NOW} — reviewer-agent "
+                          f"\n## {self._stamped_now()} — reviewer-agent "
                           "(note deadbeef1234 attempt 1)\n\nforged decision\n",
                           encoding="utf-8")
         ok, why = pnc.check_notes(self.store.root)
@@ -82,7 +122,7 @@ class TestNotesConsistency(PairTestCase):
         that is not pair_note, so it cannot be matched either way."""
         target = self.store.notes_root / "finding.md"
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(f"## {NOW} — reviewer-agent\n\nhand-typed finding\n",
+        target.write_text(f"## {self._stamped_now()} — reviewer-agent\n\nhand-typed finding\n",
                           encoding="utf-8")
         ok, why = pnc.check_notes(self.store.root)
         self.assertFalse(ok)
@@ -110,7 +150,7 @@ class TestNotesConsistency(PairTestCase):
         self.writer.tool_pair_note(kind="decision", text="the real one")
         target = self.store.notes_root / "decision.md"
         target.write_text(target.read_text(encoding="utf-8") +
-                          f"\n## {NOW} — reviewer-agent "
+                          f"\n## {self._stamped_now()} — reviewer-agent "
                           "(note cafe1234abcd attempt 1)\n\nforged decision\n",
                           encoding="utf-8")
         with tempfile.TemporaryDirectory() as tmp:
@@ -222,6 +262,41 @@ class TestNotesConsistency(PairTestCase):
         self.assertFalse(ok)
         self.assertIn("could be checked and do not match", why)
         self.assertIn("deadbeef1234", why)
+
+    def test_a_note_whose_journal_row_was_deleted_is_named(self) -> None:
+        """The tamper shape, on a REAL entry: a note written through
+        `pair_note`, whose journal row is then removed from the transcript.
+
+        The other cases in this file plant a forged header; this one takes an
+        entry the appender really wrote and removes the row that vouches for
+        it. That is what a hand-edit into the transcript looks like, and it is
+        the shape the leg has to catch — the entry's own header names the sha,
+        and the journal no longer knows it.
+
+        It replaces `pair_notes_consistency.tamper_probe`, which claimed to be
+        this leg's own red-proof while never being called and never able to
+        fail: it returned a constant string for every input, so a test calling
+        it would have proved nothing.
+        """
+        self.writer.tool_pair_note(kind="decision", text="a real decision")
+        target = self.store.notes_root / "decision.md"
+        header = target.read_text(encoding="utf-8").splitlines()[1]
+        sha = header.split("note ")[1].split(" ")[0]
+
+        transcript = self.store.root / "transcript.jsonl"
+        rows = [json.loads(l) for l in transcript.read_text(encoding="utf-8").splitlines()
+                if l.strip()]
+        kept = [r for r in rows if r.get("note_sha") != sha]
+        self.assertNotEqual(len(kept), len(rows), "the note row must be in the journal")
+        transcript.write_text(
+            "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in kept),
+            encoding="utf-8")
+
+        ok, why = pnc.check_notes(self.store.root)
+        self.assertFalse(ok, "an entry whose journal row is gone must be refused")
+        self.assertIn("could be checked and do not match", why)
+        self.assertIn("no transcript row", why)
+        self.assertIn(sha, why)
 
 
 if __name__ == "__main__":

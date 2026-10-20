@@ -185,19 +185,17 @@ class PairupStateOwnershipCase(unittest.TestCase):
         say so. Refusing every non-matching env would break deliberate use."""
         other = self.tmp / "other"
         (other / ".pair").mkdir(parents=True)
-        text = PAIRUP.read_text(encoding="utf-8")
-        start = text.index('HERE_STATE=""')
-        end = text.index('usage() {', start)
-        script = ("PAIR_TRUST_ENV=1\nPAIR_STATE=%s\nPAIRUP_ROOT=%s\n%s\n"
-                  % (other / ".pair", ROOT, text[start:end]))
         env = dict(__import__("os").environ)
         env["PAIRUP_ROOT"] = str(ROOT)
         env.pop("PAIR_STATE", None)
         env.pop("TMUX", None)
-        proc = subprocess.run(["sh", "-c", script + '\nprintf "%s" "$STATE_DIR"'],
-                              capture_output=True, text=True, env=env,
-                              timeout=60, cwd=str(self.proj))
-        self.assertEqual(proc.stdout.strip(), str(other / ".pair"),
+        env["PAIR_TRUST_ENV"] = "1"
+        env["PAIR_STATE"] = str(other / ".pair")
+        proc = subprocess.run(
+            [str(ROOT / "mcp" / "pair_mailbox" / "state_resolve.sh")],
+            capture_output=True, text=True, env=env, timeout=60,
+            cwd=str(self.proj))
+        self.assertEqual(proc.stdout.splitlines()[0].strip(), str(other / ".pair"),
                          "PAIR_TRUST_ENV=1 is the operator's deliberate override")
 
 

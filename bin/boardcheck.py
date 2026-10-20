@@ -37,32 +37,33 @@ SHA_RE = re.compile(r"\b([0-9a-f]{7,40})\b")
 PATH_RE = re.compile(r"`([A-Za-z0-9_][A-Za-z0-9_./-]*)`|\b((?:bin|mcp|docs|scripts)/[A-Za-z0-9_./-]+)")
 
 
-def _git(*args: str) -> tuple[int, str]:
-    proc = subprocess.run(["git", *args], cwd=str(ROOT),
+def _git(*args: str, root: Path | None = None) -> tuple[int, str]:
+    proc = subprocess.run(["git", *args], cwd=str(root or ROOT),
                           capture_output=True, text=True, timeout=60)
     return proc.returncode, (proc.stdout or "").strip()
 
 
-def resolve_sha(sha: str) -> str:
-    code, out = _git("rev-parse", "--verify", f"{sha}^{{commit}}")
+def resolve_sha(sha: str, root: Path | None = None) -> str:
+    code, out = _git("rev-parse", "--verify", f"{sha}^{{commit}}", root=root)
     return out if code == 0 else ""
 
 
-def ancestor_of(sha: str, head: str) -> bool:
+def ancestor_of(sha: str, head: str, root: Path | None = None) -> bool:
     """`sha` is an ancestor of `head` (or IS head): the work is in this branch."""
     if not head:
         return False
-    code, _ = _git("merge-base", "--is-ancestor", sha, head)
+    code, _ = _git("merge-base", "--is-ancestor", sha, head, root=root)
     return code == 0
 
 
-def artefact_at(path: str, sha: str) -> bool:
-    code, _ = _git("cat-file", "-e", f"{sha}:{path}")
-    return code == 0
+def artefact_at_head(path: str, root: Path | None = None) -> bool:
+    """The path exists in the tree under test.
 
-
-def artefact_at_head(path: str) -> bool:
-    return (ROOT / path).exists()
+    The tree is the PROJECT's, not this module's own checkout: the board
+    names artefacts of the work the pair did in the project it serves, and
+    checking the installation's tree would answer a different question.
+    """
+    return ((root or ROOT) / path).exists()
 
 
 def slices(board: Path) -> list[dict[str, str]]:
@@ -81,9 +82,16 @@ def slices(board: Path) -> list[dict[str, str]]:
     return sections
 
 
-def check(board: Path, require_ancestor: bool = True) -> tuple[bool, list[str]]:
+def check(board: Path, require_ancestor: bool = True,
+          root: Path | None = None) -> tuple[bool, list[str]]:
+    """Check the board against the tree under test.
+
+    `root` is the project whose tree the claims are about; it defaults to
+    this module's own checkout, which is what the CLI checks.
+    """
+    tree = root or ROOT
     problems: list[str] = []
-    head = _git("rev-parse", "HEAD")[1]
+    head = _git("rev-parse", "HEAD", root=tree)[1]
     unresolved = 0
     for sec in slices(board):
         m = STATE_RE.search(sec["state"])
@@ -98,25 +106,25 @@ def check(board: Path, require_ancestor: bool = True) -> tuple[bool, list[str]]:
         if not shas:
             problems.append(
                 f"slice {sec['letter']}: claims {state_word!r} with no sha — "
-                f"the state column must bind a revision")
+                "the state column must bind a revision")
             continue
         for sha in shas:
-            full = resolve_sha(sha)
+            full = resolve_sha(sha, root=tree)
             if not full:
                 problems.append(f"slice {sec['letter']}: sha {sha} does not resolve")
                 unresolved += 1
                 continue
-            if require_ancestor and head and not ancestor_of(full, head):
+            if require_ancestor and head and not ancestor_of(full, head, root=tree):
                 problems.append(
                     f"slice {sec['letter']}: sha {sha} is not an ancestor of HEAD — "
-                    f"the work this row claims is not in this branch")
+                    "the work this row claims is not in this branch")
         # artefact claims: any path named in the row must exist in the tree
         for backticked, bare in PATH_RE.findall(rest):
             path = backticked or bare
             # a word in prose is not a path claim; only shapes that look like one
             if "/" not in path and "." not in path:
                 continue
-            if not artefact_at_head(path):
+            if not artefact_at_head(path, root=tree):
                 problems.append(
                     f"slice {sec['letter']}: names {path}, which the tree does not carry")
     return (not problems), problems

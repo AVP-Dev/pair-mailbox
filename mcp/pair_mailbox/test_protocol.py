@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Protocol tests for pair-mailbox (core: shared helpers and cross-cutting pins).
 
-Domains were split out by round 108 slice 3, cut by bin/split_protocol_tests.py
-(never by hand, so the ranges cannot drift): authority, gates, messaging, tui,
-liveness. Run: python3 -m unittest discover -s mcp/pair_mailbox -v
+Domains were split out by round 108 slice 3, cut by measurement rather than by
+hand: authority, gates, messaging, tui, liveness. Run:
+python3 -m unittest discover -s mcp/pair_mailbox -v
 """
 
 from __future__ import annotations

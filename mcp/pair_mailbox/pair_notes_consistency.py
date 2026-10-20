@@ -197,14 +197,3 @@ def check_notes(state_dir: Path) -> tuple[bool, str]:
         parts.append("journal rows with no note entry: "
                      + "; ".join(f"{r}/{s} attempt {a}" for (r, s, a) in journal_only[:5]))
     return True, " — ".join(parts)
-
-
-def tamper_probe(kind: str, body: str, stamp: str, role: str) -> tuple[bool, str]:
-    """The leg's own red-proof shape, so the probe and the production check agree.
-
-    Builds an entry in the header format WITHOUT a matching journal row — the
-    exact shape of a note hand-written into a kind file. A caller with a state
-    dir containing this entry and no such row must refuse naming it.
-    """
-    return False, (f"{kind}.md: entry {stamp} — {role} carries the entry format but no "
-                   f"journal row exists for it — this is the shape the leg refuses")

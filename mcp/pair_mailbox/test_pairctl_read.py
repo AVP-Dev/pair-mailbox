@@ -370,15 +370,30 @@ class TestMultiProject(PairTestCase):
 
     def test_state_resolution_prefers_flag_over_env_over_cwd(self) -> None:
         """Three components resolved the path three ways — a second state in one
-        project (state-dir-not-pinned). Priority: --state, then PAIR_STATE."""
+        project (state-dir-not-pinned). Priority: --state, then PAIR_STATE.
+
+        Round 127: PAIR_STATE is no longer honoured blindly. It is honoured
+        only when it names THIS project's own room, which is the rule
+        `bin/pairup` and `serve.sh` have followed since round 121 — a leftover
+        from another project is a stale pointer, not an instruction. The
+        explicit escape is PAIR_TRUST_ENV=1.
+        """
         from pairctl_read import extract_state
         explicit = str(self.root)
         self.assertEqual(extract_state(["--state", explicit, "status"])[0], Path(explicit))
-        env = dict(os.environ, PAIR_STATE=explicit)
         old = os.environ.get("PAIR_STATE")
         os.environ["PAIR_STATE"] = explicit
         try:
-            self.assertEqual(extract_state(["status"])[0], Path(explicit))
+            # The room underfoot wins over a foreign inherited one.
+            self.assertNotEqual(extract_state(["status"])[0], Path(explicit),
+                                "a foreign inherited room must not be adopted")
+            # ...unless the operator says so on purpose.
+            os.environ["PAIR_TRUST_ENV"] = "1"
+            try:
+                self.assertEqual(extract_state(["status"])[0], Path(explicit),
+                                 "PAIR_TRUST_ENV=1 must keep the room named")
+            finally:
+                os.environ.pop("PAIR_TRUST_ENV", None)
         finally:
             if old is None:
                 os.environ.pop("PAIR_STATE", None)

@@ -190,6 +190,51 @@ def log(message: str) -> None:
     print(f"[{SERVER_NAME}] {message}", file=sys.stderr, flush=True)
 
 
+_BOARD_CHECKER: Any = None
+_BOARD_CHECKER_TRIED = False
+
+
+def _board_checker() -> Any:
+    """The board checker, loaded from THIS installation by path.
+
+    Why by path and not by name: `import boardcheck` resolves against
+    sys.path, and the project this server serves has a bin/ of its own. The
+    old code put that directory on sys.path inside a per-call branch, so the
+    import found the PROJECT's boardcheck.py — which the server then executed,
+    in a long-lived process, on a security-relevant gate. It also grew
+    sys.path by one entry on every call.
+
+    The checker that belongs to the gate is the one shipped here: this
+    module's own checkout, `bin/boardcheck.py`, resolved relative to this
+    file. Loading it by path needs no sys.path change at all.
+
+    Returns None when the module is absent or broken; the caller says so
+    loudly rather than pretending the gate ran.
+    """
+    global _BOARD_CHECKER, _BOARD_CHECKER_TRIED
+    if _BOARD_CHECKER_TRIED:
+        return _BOARD_CHECKER
+    _BOARD_CHECKER_TRIED = True
+    here = Path(__file__).resolve().parent
+    for candidate in (here.parent.parent / "bin" / "boardcheck.py",):
+        if not candidate.exists():
+            continue
+        try:
+            import importlib.util
+            spec = importlib.util.spec_from_file_location(
+                "pairmailbox_boardcheck", candidate)
+            if spec is None or spec.loader is None:
+                continue
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            if hasattr(module, "check"):
+                _BOARD_CHECKER = module
+                return _BOARD_CHECKER
+        except Exception as exc:  # noqa: BLE001 - a broken gate must not crash the server
+            log(f"board check could not be loaded from {candidate}: {exc}")
+    return _BOARD_CHECKER
+
+
 def global_roles_path() -> Path:
     """Where the human's across-every-project role pinning lives."""
     return Path(os.environ.get("PAIR_ROLES", Path.home() / ".config" / "pair-mailbox" / "roles.json"))
@@ -651,7 +696,6 @@ from store_core import (  # noqa: E402,F401 - re-export, the seam's public face
     verify_transcript_chain,
     _next_entry,
     _proc_starttime,
-    _state_rotation_load,
     _transcript_entry,
     _transcript_hash,
     _transcript_tail,
@@ -1057,9 +1101,8 @@ class PairSession:
             # here.
             address = ""
             if tmux:
-                # Exactly session_address, not canonical_pane: the latter returns the raw input on
-                # refusal — reads as success — leaving "no address" nothing to notice by.
-                # refusal — reads as success — leaving "no address" nothing to notice by.
+                # session_address, not a fallback to the raw input: on refusal the raw
+                # input reads as success — leaving "no address" nothing to notice by.
                 from composer import session_address
                 address = session_address(tmux, pane)
             previous = entry.get("pane")
@@ -1532,17 +1575,24 @@ class PairSession:
             # block a close on a check that could not run.
             board = self.store.root / "plan.md"
             if board.exists():
-                try:
-                    sys.path.insert(0, str(self.store.project_root / "bin"))
-                    import boardcheck as _boardcheck
-                    _ok, _problems = _boardcheck.check(board,
-                                                       require_ancestor=False)
-                    if not _ok:
-                        blockers.append(
-                            "the board claims what the tree cannot show: "
-                            + "; ".join(_problems[:3]) + ". ")
-                except Exception as exc:  # noqa: BLE001 - the leg never drops a close
-                    log(f"board check skipped ({exc})")
+                checker = _board_checker()
+                if checker is None:
+                    # The leg could not be loaded. Say so where the operator
+                    # will see it: a gate that silently stops running reads as
+                    # a gate that passed.
+                    log("board check unavailable: the shipped boardcheck module "
+                        "could not be loaded from the installation")
+                else:
+                    try:
+                        _ok, _problems = checker.check(
+                            board, require_ancestor=False,
+                            root=self.store.project_root)
+                        if not _ok:
+                            blockers.append(
+                                "the board claims what the tree cannot show: "
+                                + "; ".join(_problems[:3]) + ". ")
+                    except Exception as exc:  # noqa: BLE001 - the leg never drops a close
+                        log(f"board check skipped ({exc})")
             if self.store.obligations_root.is_dir():
                 for path in self.store.obligations_root.glob("*.json"):
                     try:
@@ -2517,6 +2567,25 @@ class PairSession:
                     traceback.print_exc()
 
         self.store.mutate(apply)
+        if reopening:
+            # The self-heal cap counts CONSECUTIVE auto-heals (PROTOCOL §10f).
+            # A role reopening a closed round is the human (or the peer)
+            # taking the work back, which ends the streak: the machine stops
+            # reopening, somebody reopens by hand, and the next incident starts
+            # from zero. Without this the counter grew over the project's whole
+            # life, and the third failure of any kind, ever, disabled
+            # self-healing for good.
+            #
+            # It is deliberately NOT reset at the close: the flapping case the
+            # cap exists for is heal → close → fail → heal, and a reset there
+            # would let that loop run forever. The auto-heal path reopens
+            # without passing through here, so only a hand reopen clears it.
+            try:
+                from heal import reset_heal_state
+                reset_heal_state(self.store.root)
+            except Exception:  # noqa: BLE001 - a counter reset never drops a move
+                import traceback
+                traceback.print_exc()
         self.store.append_transcript(
             "advance", self.role, phase=phase, previous=from_phase, reopened=reopening
         )

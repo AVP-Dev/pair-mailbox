@@ -65,7 +65,7 @@ def newest_source_mtime(paths: list[Path]) -> float | None:
 def runtime_code_mtime(project_root: Path = ROOT) -> float | None:
     """Newest mtime among RUNTIME sources — never test files (round 106 slice A, rider b).
 
-    Measured root cause of the 24h outage pattern: `server_code_mtime()` took the
+    Measured root cause of the 24h outage pattern: a mtime helper that took the
     newest mtime across ALL `mcp/pair_mailbox/*.py`, tests included, so every
     commit touching a test file made EVERY role's server stale, and `--yes` then
     killed the peer's server too. One agent's hygiene became the other's outage.
@@ -140,10 +140,6 @@ def caller_role(state_dir: Path | None = None, env: dict | None = None) -> str:
                 if value and value in (pane, "%" + pane.lstrip("%")):
                     return name
     return ""
-
-
-def server_code_mtime() -> float | None:
-    return newest_source_mtime(list((ROOT / "mcp" / "pair_mailbox").glob("*.py")))
 
 
 def pilot_code_mtime() -> float | None:

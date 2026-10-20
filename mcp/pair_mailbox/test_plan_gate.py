@@ -160,6 +160,43 @@ class TestGateCases(PairTestCase):
         error = self.assertRefused(self.writer.tool_pair_advance, "implement")
         self.assertIn("window", str(error))
 
+    def test_a_visa_in_a_plan_ack_note_counts(self) -> None:
+        """The visa is CONTENT; the note's file NAME is not part of the rule.
+
+        The gate globbed `notes/verdict*.md`, so a visa written to
+        `notes/plan-ack.md` — the obvious kind for a plan acknowledgement, and
+        the name this very project already uses — was invisible to it. The
+        writer then waited out the 24-hour window for a visa that had already
+        been given, with no error to show for it.
+
+        Derived through the tool's own appender, not a hand-written fixture:
+        the fixture is what hid this defect in the first place.
+        """
+        self.advance_to_plan()
+        self.store.mutate(lambda st: st.__setitem__("round", 1))
+        write_plan(self.store.root, 1)
+        import os
+        plan_path = self.store.root / plan_gate.PLAN_FILE
+        stamped = os.stat(plan_path).st_mtime - 2
+        os.utime(plan_path, (stamped, stamped))
+        self.peer.tool_pair_note(kind="plan-ack", text="plan-ack round 1")
+        found = plan_gate.critic_ack(self.store.root, 1, "writer-agent", not_before=None)
+        self.assertTrue(found["ack"],
+                        f"a visa in notes/plan-ack.md must count: {found}")
+        self.assertEqual("reviewer-agent", found["role"])
+        self.assertEqual("implement", self.writer.tool_pair_advance("implement")["phase"])
+
+    def test_the_refusal_names_where_it_searched(self) -> None:
+        """A refusal that does not say where it looked leaves the peer guessing
+        which file it was supposed to write."""
+        self.advance_to_plan()
+        self.store.mutate(lambda st: st.__setitem__("round", 7))
+        write_plan(self.store.root, 7)
+        found = plan_gate.critic_ack(self.store.root, 7, "writer-agent", not_before=None)
+        self.assertFalse(found["ack"])
+        self.assertIn("searched", found["why"],
+                      f"the refusal must name where it looked: {found}")
+
     def test_timeout_passes_without_open_requests(self) -> None:
         self.advance_to_plan()
         write_plan(self.store.root, 1)
