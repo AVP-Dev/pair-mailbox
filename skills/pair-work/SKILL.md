@@ -194,6 +194,23 @@ re-checks exactly those. False ones — the critic records why in `verdict`.
 
 The critic does not invent problems for volume. If the code is good — it says so plainly.
 
+**A verdict the merge gate can read.** The gate reads the LAST `## `-section of
+the verdict note that carries a MACHINE-READABLE marker (PROTOCOL §10g): either
+`verdict-approve <sha>` or a line that is exactly `**APPROVED**`. The prose
+"APPROVED" or a heading like `## Verdict: APPROVED` is not a marker: the gate
+then falls back to an OLDER marked section and compares that stale head with the
+live one, and the merge is refused for a reason that has nothing to do with the
+work. When the critic approves, the note ends with:
+
+```
+## verdict-approve <the head sha being reviewed>
+
+**APPROVED**
+```
+
+`<the head sha>` is what pins the verdict to a revision, so a verdict for an
+older commit does not approve a newer one.
+
 **Round 4 — repeat.** What was found is fixed, tests are green, the critic confirmed.
 The writer records `pair_evidence(kind="test", ...)` with what the machine actually
 printed (count and exit code), and only then `pair_advance("verify")`, then
