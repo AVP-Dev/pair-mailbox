@@ -83,7 +83,7 @@ class TestReviewGate(PairTestCase):
                 "phase": "verify",
                 "round": 60,
                 "writer": "agy",
-                "evidence": [{"round": 60, "kind": "test", "ok": True}],
+                "evidence": [{"round": 60, "kind": "test", "ok": True, "head": head}],
                 "verdicts": [{
                     "role": "agy",  # The verdict author IS the writer!
                     "kind": "verdict",
@@ -110,13 +110,14 @@ class TestReviewGate(PairTestCase):
             # Add a new commit to the same file -> the verdict turns stale
             (tmp_path / "file.txt").write_text("hello world", encoding="utf-8")
             subprocess.run(["git", "commit", "-am", "second commit"], cwd=str(tmp_path), check=True, capture_output=True)
+            head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=str(tmp_path), capture_output=True, text=True).stdout.strip()
 
             store = MagicMock()
             store.read.return_value = {
                 "phase": "verify",
                 "round": 60,
                 "writer": "agy",
-                "evidence": [{"round": 60, "kind": "test", "ok": True}],
+                "evidence": [{"round": 60, "kind": "test", "ok": True, "head": head}],
                 "verdicts": [{
                     "role": "omp",
                     "kind": "verdict",
@@ -148,7 +149,7 @@ class TestReviewGate(PairTestCase):
                 "phase": "verify",
                 "round": 60,
                 "writer": "agy",
-                "evidence": [{"round": 60, "kind": "test", "ok": True}],
+                "evidence": [{"round": 60, "kind": "test", "ok": True, "head": head}],
                 "verdicts": [{
                     "role": "omp",
                     "kind": "verdict",
@@ -160,6 +161,80 @@ class TestReviewGate(PairTestCase):
             (store.notes_root / "verdict.md").write_text(f"## 2026-10-12T01:00:00 - omp\n\nverdict-approve {head[:12]}", encoding="utf-8")
             ok, reason = review_gate.check_pr_merge(store, tmp_path)
             self.assertTrue(ok)
+            self.assertEqual(reason, "")
+
+    def test_check_pr_merge_refuses_evidence_for_another_head(self) -> None:
+        """Round 138: the evidence must name the commit that gets merged.
+
+        The round number does not move when the head does, so a record written
+        for one commit kept vouching for every commit after it in that round.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            head = self._repo_with_commit(tmp_path)
+            state = self._state(head)
+            state["evidence"][0]["head"] = "deadbeef1234567890"
+            store = MagicMock()
+            store.read.return_value = state
+            store.notes_root = tmp_path / "notes"
+            store.notes_root.mkdir()
+            (store.notes_root / "verdict-round91-critic.md").write_text(
+                f"## t — opencode\n\n**APPROVED** on {head[:12]}\n", encoding="utf-8")
+            ok, reason = review_gate.check_pr_merge(store, tmp_path)
+            self.assertFalse(ok)
+            self.assertIn("no passing test evidence names the head being merged", reason)
+            self.assertIn("deadbeef1234", reason)
+
+    def test_check_pr_merge_refuses_evidence_without_a_head(self) -> None:
+        """Round 138: a fact that names no commit vouches for nothing.
+
+        The record must say which commit it was measured on; an old record that
+        says nothing is not allowed to cover a new commit.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            head = self._repo_with_commit(tmp_path)
+            state = self._state(head)
+            state["evidence"][0].pop("head")
+            store = MagicMock()
+            store.read.return_value = state
+            store.notes_root = tmp_path / "notes"
+            store.notes_root.mkdir()
+            (store.notes_root / "verdict-round91-critic.md").write_text(
+                f"## t — opencode\n\n**APPROVED** on {head[:12]}\n", encoding="utf-8")
+            ok, reason = review_gate.check_pr_merge(store, tmp_path)
+            self.assertFalse(ok)
+            self.assertIn("no passing test evidence names the head being merged", reason)
+
+    def test_check_pr_merge_refuses_a_pr_head_that_is_not_the_local_head(self) -> None:
+        """Round 138: the merge ships the PR's head, not the local one.
+
+        The gate looks at the local HEAD; `gh pr merge` ships the PR's head. If
+        the two differ, the merge would ship a commit nobody checked here.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            self._repo_with_commit(tmp_path)
+            store = MagicMock()
+            store.read.return_value = {"phase": "verify"}
+            ok, reason = review_gate.check_pr_merge(store, tmp_path, pr_head="deadbeef1234")
+            self.assertFalse(ok)
+            self.assertIn("is not the local HEAD", reason)
+
+    def test_check_pr_merge_accepts_a_pr_head_equal_to_the_local_head(self) -> None:
+        """The same commit spelled the same way passes: case and prefix are not
+        two different commits."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            head = self._repo_with_commit(tmp_path)
+            store = MagicMock()
+            store.read.return_value = self._state(head)
+            store.notes_root = tmp_path / "notes"
+            store.notes_root.mkdir()
+            (store.notes_root / "verdict-round91-critic.md").write_text(
+                f"## t — opencode\n\n**APPROVED** on {head[:12]}\n", encoding="utf-8")
+            ok, reason = review_gate.check_pr_merge(store, tmp_path, pr_head=head.upper())
+            self.assertTrue(ok, reason)
             self.assertEqual(reason, "")
 
     def test_check_pr_merge_uncommitted_untracked_refused(self) -> None:
@@ -180,7 +255,7 @@ class TestReviewGate(PairTestCase):
                 "phase": "verify",
                 "round": 60,
                 "writer": "agy",
-                "evidence": [{"round": 60, "kind": "test", "ok": True}],
+                "evidence": [{"round": 60, "kind": "test", "ok": True, "head": head}],
                 "verdicts": [{
                     "role": "omp",
                     "kind": "verdict",
@@ -216,7 +291,7 @@ class TestReviewGate(PairTestCase):
                 "phase": "verify",
                 "round": 60,
                 "writer": "agy",
-                "evidence": [{"round": 60, "kind": "test", "ok": True}],
+                "evidence": [{"round": 60, "kind": "test", "ok": True, "head": head}],
                 "verdicts": [{
                     "role": "omp",
                     "kind": "verdict",
@@ -241,12 +316,14 @@ class TestReviewGate(PairTestCase):
             subprocess.run(["git", "add", "file.txt"], cwd=str(tmp_path), check=True, capture_output=True)
             subprocess.run(["git", "commit", "-m", "init"], cwd=str(tmp_path), check=True, capture_output=True)
 
+            head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=str(tmp_path), capture_output=True, text=True).stdout.strip()
+
             store = MagicMock()
             store.read.return_value = {
                 "phase": "verify",
                 "round": 60,
                 "writer": "agy",
-                "evidence": [{"round": 60, "kind": "test", "ok": True}],
+                "evidence": [{"round": 60, "kind": "test", "ok": True, "head": head}],
                 "verdicts": [{
                     "role": "omp",
                     "kind": "verdict",
@@ -274,7 +351,7 @@ class TestReviewGate(PairTestCase):
                 "phase": "verify",
                 "round": 60,
                 "writer": "agy",
-                "evidence": [{"round": 60, "kind": "test", "ok": True}],
+                "evidence": [{"round": 60, "kind": "test", "ok": True, "head": head}],
                 "verdicts": [{
                     "role": "omp",
                     "kind": "verdict",
@@ -309,7 +386,7 @@ class TestReviewGate(PairTestCase):
                 "phase": "verify",
                 "round": 60,
                 "writer": "agy",
-                "evidence": [{"round": 60, "kind": "test", "ok": True}],
+                "evidence": [{"round": 60, "kind": "test", "ok": True, "head": head}],
                 "verdicts": [{
                     "role": "omp",
                     "kind": "verdict",
@@ -340,7 +417,7 @@ class TestReviewGate(PairTestCase):
                 "phase": "verify",
                 "round": 60,
                 "writer": "agy",
-                "evidence": [{"round": 60, "kind": "test", "ok": True}],
+                "evidence": [{"round": 60, "kind": "test", "ok": True, "head": head}],
                 "verdicts": [{
                     "role": "omp",
                     "kind": "verdict",
@@ -374,7 +451,7 @@ class TestReviewGate(PairTestCase):
                 "phase": "verify",
                 "round": 60,
                 "writer": "agy",
-                "evidence": [{"round": 60, "kind": "test", "ok": True}],
+                "evidence": [{"round": 60, "kind": "test", "ok": True, "head": head}],
                 "verdicts": [{
                     "role": "omp",
                     "kind": "verdict",
@@ -446,6 +523,54 @@ class TestReviewGate(PairTestCase):
             pr_id="123",
         )
 
+    @patch("review_gate.run_gh_merge")
+    @patch("review_gate.resolve_pr_head", return_value=("", "gh not authenticated"))
+    def test_cmd_pr_refuses_when_the_pr_head_cannot_be_read(self, _mock_head: MagicMock,
+                                                             mock_merge: MagicMock) -> None:
+        """Round 138: no answer about the PR's head, no merge.
+
+        The gate checks the local HEAD; without the PR's head it cannot know
+        whether the merge ships the commit it checked. Fail-closed beats a guess.
+        """
+        store = MagicMock()
+        store.read.return_value = {"round": 91, "phase": "verify"}
+        args = argparse.Namespace(pr_action="merge", force=False, reason="", pr_id="84", role="omp")
+        res = review_gate.cmd_pr(store, args)
+        self.assertEqual(res, 1)
+        mock_merge.assert_not_called()
+
+    @patch("review_gate.run_gh_merge")
+    @patch("review_gate.resolve_pr_head", return_value=("deadbeef1234", ""))
+    def test_cmd_pr_refuses_a_pr_head_the_gate_did_not_check(self, _mock_head: MagicMock,
+                                                              mock_merge: MagicMock) -> None:
+        """Round 138: the PR's head is not the local HEAD -> refuse, do not merge."""
+        with tempfile.TemporaryDirectory() as tmp:
+            store, base = self._store_with(tmp)
+            head = self._repo_with_commit(base)
+            state = self._state(head)
+            store.mutate(lambda s: s.update(state))
+            args = argparse.Namespace(pr_action="merge", force=False, reason="", pr_id="84", role="omp")
+            res = review_gate.cmd_pr(store, args)
+            self.assertEqual(res, 1)
+            mock_merge.assert_not_called()
+
+    @patch("review_gate.subprocess.run")
+    def test_resolve_pr_head_reads_the_oid(self, mock_run: MagicMock) -> None:
+        """The PR's head comes from GitHub, not from a guess."""
+        mock_run.return_value = MagicMock(returncode=0, stdout="abc123def456\n", stderr="")
+        head, err = review_gate.resolve_pr_head(Path("/tmp"), "84")
+        self.assertEqual(head, "abc123def456")
+        self.assertEqual(err, "")
+        self.assertIn("headRefOid", " ".join(mock_run.call_args[0][0]))
+
+    @patch("review_gate.subprocess.run")
+    def test_resolve_pr_head_fails_closed_when_gh_fails(self, mock_run: MagicMock) -> None:
+        """GitHub says nothing -> the gate is told nothing, and refuses."""
+        mock_run.return_value = MagicMock(returncode=1, stdout="", stderr="gh not authenticated")
+        head, err = review_gate.resolve_pr_head(Path("/tmp"), "84")
+        self.assertEqual(head, "")
+        self.assertIn("gh not authenticated", err)
+
     def _repo_with_commit(self, tmp: Path) -> str:
         subprocess.run(["git", "init"], cwd=str(tmp), check=True, capture_output=True)
         subprocess.run(["git", "config", "user.email", "pair@test.local"], cwd=str(tmp), check=True, capture_output=True)
@@ -460,7 +585,7 @@ class TestReviewGate(PairTestCase):
             "phase": "verify",
             "round": 91,
             "writer": "omp",
-            "evidence": [{"round": 91, "kind": "test", "ok": True}],
+            "evidence": [{"round": 91, "kind": "test", "ok": True, "head": head}],
             "verdicts": [{
                 "role": "opencode",
                 "kind": kind,

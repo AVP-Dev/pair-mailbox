@@ -25,8 +25,12 @@ from typing import Any
 import review
 
 
-def check_pr_merge(store: Any, repo_dir: Path) -> tuple[bool, str]:
+def check_pr_merge(store: Any, repo_dir: Path, pr_head: str | None = None) -> tuple[bool, str]:
     """Check whether the PR merge passes the protocol rules.
+
+    `pr_head` is the commit the PR would actually merge, as GitHub reports it
+    (`gh pr view --json headRefOid`). The gate reads the local HEAD, so a PR
+    whose head is not the local HEAD would ship a commit nobody checked here.
 
     Returns (True, "") on a passed check or (False, refusal_reason).
     """
@@ -39,18 +43,41 @@ def check_pr_merge(store: Any, repo_dir: Path) -> tuple[bool, str]:
     if phase != "verify":
         return False, f"phase is {phase!r}, PR merge allowed strictly in 'verify'"
 
+    pr = str(pr_head or "").strip()
+    if pr and pr.lower() != head.lower():
+        return False, (
+            f"the PR head {pr[:12]} is not the local HEAD {head[:12]}: "
+            f"the merge would ship a commit this gate did not check"
+        )
+
     # Check for successful test evidence in the current round
     cur_round = int(state.get("round", 0))
     round_ev = [
         ev for ev in (state.get("evidence") or [])
         if int(ev.get("round", -1)) == cur_round
     ]
-    has_test_ok = any(
-        ev.get("kind") == "test" and ev.get("ok")
-        for ev in round_ev
-    )
-    if not has_test_ok:
+    test_ev = [
+        ev for ev in round_ev
+        if ev.get("kind") == "test" and ev.get("ok")
+    ]
+    if not test_ev:
         return False, f"round {cur_round} has no passing test evidence (kind='test', ok=True)"
+
+    # The evidence must name the commit it was measured on, and that commit must
+    # be the one being merged. A record bound to the round alone keeps vouching for
+    # every commit after it: the round number does not move when the head does
+    # (the card: merge-gate-does-not-require-ci-for-the-head).
+    head_lower = head.lower()
+    if not any(str(ev.get("head") or "").strip().lower() == head_lower for ev in test_ev):
+        named = sorted({
+            str(ev.get("head") or "").strip()[:12]
+            for ev in test_ev if str(ev.get("head") or "").strip()
+        })
+        return False, (
+            f"no passing test evidence names the head being merged ({head[:12]}); "
+            f"the evidence names {', '.join(named) or 'no commit'}: "
+            f"run the suite on this commit and record the evidence again"
+        )
 
     # Check the critic verdict
     verdicts = state.get("verdicts") or []
@@ -217,6 +244,38 @@ def run_gh_merge(repo_dir: Path, pr_id: str | None) -> tuple[int, str]:
         return 1, "gh pr merge timed out"
 
 
+def resolve_pr_head(repo_dir: Path, pr_id: str | None) -> tuple[str, str]:
+    """Ask GitHub which commit the PR would merge.
+
+    The gate looks at the local HEAD; the merge ships the PR's head. When the two
+    differ, the merge would ship a commit nobody checked here — so the gate needs
+    the PR's head, and no answer means no merge.
+    """
+    cmd = ["gh", "pr", "view"]
+    if pr_id:
+        cmd.append(str(pr_id))
+    cmd.extend(["--json", "headRefOid", "--jq", ".headRefOid"])
+    try:
+        proc = subprocess.run(
+            cmd,
+            cwd=str(repo_dir),
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except OSError as err:
+        return "", f"failed to execute gh: {err}"
+    except subprocess.TimeoutExpired:
+        return "", "gh pr view timed out"
+    if proc.returncode != 0:
+        detail = (proc.stderr or proc.stdout or "").strip() or f"exit {proc.returncode}"
+        return "", detail
+    oid = proc.stdout.strip()
+    if not oid:
+        return "", "gh pr view reported no head oid"
+    return oid, ""
+
+
 def run_gh_view(repo_dir: Path, pr_id: str) -> tuple[int, str]:
     """Ask GitHub for a PR's real merge state (audit-repair path only)."""
     cmd = [
@@ -306,6 +365,7 @@ def cmd_pr(store: Any, args: argparse.Namespace) -> int:
     repo_dir = store.project_root
     force = bool(getattr(args, "force", False))
     reason = str(getattr(args, "reason", "") or "").strip()
+    pr_id = getattr(args, "pr_id", None)
 
     if force:
         if not reason:
@@ -325,12 +385,18 @@ def cmd_pr(store: Any, args: argparse.Namespace) -> int:
             pr_id=getattr(args, "pr_id", None),
         )
     else:
-        ok, why_not = check_pr_merge(store, repo_dir)
+        pr_head, head_err = resolve_pr_head(repo_dir, pr_id)
+        if head_err:
+            print(
+                f"PR merge gate REFUSED: cannot read the PR's head: {head_err}",
+                file=sys.stderr,
+            )
+            return 1
+        ok, why_not = check_pr_merge(store, repo_dir, pr_head=pr_head)
         if not ok:
             print(f"PR merge gate REFUSED: {why_not}", file=sys.stderr)
             return 1
 
-    pr_id = getattr(args, "pr_id", None)
     code, out = run_gh_merge(repo_dir, pr_id)
     if code != 0:
         print(f"gh pr merge failed (exit {code}):\n{out}", file=sys.stderr)

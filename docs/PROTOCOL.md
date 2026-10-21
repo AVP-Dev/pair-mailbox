@@ -886,7 +886,13 @@ PR merging is gated by machine rules rather than prompt agreements:
 3. **Preconditions for merging (`check_pr_merge`)**:
    - **Phase constraint**: Phase must be strictly `verify` (merging during `implement`, `plan`, or `scoping` is refused).
    - **Environment**: Must be a valid git repository (fail-closed on merge path: "cannot verify: not a git repo").
-   - **Test evidence**: Current round must have passing test evidence (`kind="test"`, `ok=True`).
+   - **Test evidence**: Current round must have passing test evidence (`kind="test"`, `ok=True`), and that
+     evidence must name the commit it was measured on — the recorded `head` must equal the head being
+     merged. A record bound to the round alone kept vouching for every later commit of that round: the
+     round number does not move when the head does (round 138).
+   - **The commit being merged**: the gate asks GitHub for the PR's head (`gh pr view --json headRefOid`)
+     and refuses when it is not the local HEAD. The merge ships the PR's head, so a gate that looked at
+     another commit would vouch for code nobody checked here (round 138). No answer from GitHub, no merge.
    - **Peer review approval**: A non-stale `approve` verdict must exist (`verdict` or `verdict-*` slug).
    - **No self-approval**: The verdict author must NOT be the current writer (`verdict.role != store.writer`).
    - **Staleness check**: Reuses canonical `review.is_stale(...)`. Any code modifications or commits touching reviewed files invalidate the verdict.

@@ -260,6 +260,35 @@ class TestEvidenceGate(PairTestCase):
     def test_empty_value_is_refused(self) -> None:
         self.assertRefused(self.writer.tool_pair_evidence, "test", "  ", contains="value")
 
+    def test_evidence_names_the_head_it_was_measured_on(self) -> None:
+        """Round 138: the fact says which commit it was measured on.
+
+        The merge gate compares that head with the commit it merges: a record
+        bound to the round alone keeps vouching for every commit after it.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp) / "repo"
+            (repo / ".pair").mkdir(parents=True)
+            subprocess.run(["git", "init"], cwd=str(repo), check=True, capture_output=True)
+            subprocess.run(["git", "config", "user.email", "pair@test.local"], cwd=str(repo), check=True, capture_output=True)
+            subprocess.run(["git", "config", "user.name", "Pair Test"], cwd=str(repo), check=True, capture_output=True)
+            (repo / "file.txt").write_text("hello", encoding="utf-8")
+            subprocess.run(["git", "add", "file.txt"], cwd=str(repo), check=True, capture_output=True)
+            subprocess.run(["git", "commit", "-m", "init"], cwd=str(repo), check=True, capture_output=True)
+            head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=str(repo), capture_output=True, text=True).stdout.strip()
+            store = Store(repo / ".pair", allow_create=True)
+            writer = PairSession("writer-agent", store)
+            writer.tool_pair_evidence(kind="test", value="12 passed, exit 0", ok=True)
+            record = store.read()["evidence"][-1]
+            self.assertEqual(record["head"], head, "the fact names the commit it was measured on")
+
+    def test_evidence_outside_a_git_repo_names_no_commit(self) -> None:
+        """Round 138: with no repo there is no head to name, and the record says
+        so instead of inventing one — the gate then refuses, which is the point."""
+        self.writer.tool_pair_evidence(kind="test", value="12 passed, exit 0", ok=True)
+        record = self.store.read()["evidence"][-1]
+        self.assertEqual(record.get("head", ""), "")
+
     def test_signed_evidence_carries_a_verifying_envelope(self) -> None:
         """A keyed fact signs with the round:kind:task:value envelope (3.1)."""
         rolekeys = self.require_rolekeys()
