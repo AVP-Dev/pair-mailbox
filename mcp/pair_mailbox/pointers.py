@@ -21,17 +21,29 @@ from composer import BOX_GLYPH, capture, composer_line, erase, is_composer_empty
 # SENDER's role name: that is what makes a leftover provably ours.
 RING_SHAPE = r"pair: [a-z]+ from {role}\. Read pair_read\.( \(.*\))?"
 MAILBOX_SHAPE = r"\[pair\] {role}: new message in the mailbox \(seq \d+\), read pair_read"
+# The supervisor types into a neighbour's composer too, and its leftovers must
+# be recognisable as ITS own — a peer only ever cleans up pointers carrying the
+# peer's own role name. A report wake points at the state, not at the mailbox:
+# there is no letter behind it, so a doorbell saying "read pair_read" would
+# send the peer looking for one that does not exist.
+PILOT_WAKE_SHAPE = r"pair: [a-z]+ from pairpilot\. See pair_state\.( \(.*\))?"
 
 
-def ring_prompt(role: str, kind: str = "message", detail: str = "") -> str:
+def ring_prompt(role: str, kind: str = "message", detail: str = "",
+                where: str = "Read pair_read.") -> str:
     """The doorbell line: a cause, never the letter.
 
     `detail` is NOT a place for the message text. The human directive: the
     terminal is a display, not a bus between agents. Trimmed text here would be
     a "bus in parts": past one line it never fits anyway, reading as a stub no
     cause follows from.
+
+    `where` says where the cause is to be read: the mailbox for a letter, the
+    state for a silence. The supervisor's report doorbell points at the state,
+    because there is no letter behind it and a pointer to an empty mailbox
+    sends the peer looking for one.
     """
-    prompt = f"pair: {kind} from {role}. Read pair_read."
+    prompt = f"pair: {kind} from {role}. {where}"
     if detail:
         prompt += f" ({detail})"
     return prompt
@@ -52,8 +64,11 @@ def own_pointer_length(line: str | None, role: str) -> int:
     if not line:
         return 0
     cleaned = re.sub(f"[{BOX_GLYPH}|]", "", line).strip()
-    for shape in (RING_SHAPE, MAILBOX_SHAPE):
-        match = re.search(shape.format(role=re.escape(role)) + r"$", cleaned)
+    candidates = [shape.format(role=re.escape(role)) + r"$"
+                  for shape in (RING_SHAPE, MAILBOX_SHAPE)]
+    candidates.append(PILOT_WAKE_SHAPE + r"$")
+    for pattern in candidates:
+        match = re.search(pattern, cleaned)
         if not match:
             continue
         head = cleaned[: match.start()].strip()

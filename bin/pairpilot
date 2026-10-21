@@ -64,8 +64,10 @@ try:
         pane_key,
         pane_role_pid,
         resolve_permission_prompt,
+        ring_refusal_reason,
     )
     from panes import pane_belongs_to_project  # noqa: E402 - the pane's project membership
+    from pointers import clear_own_pointer, ring_prompt  # noqa: E402 - the pointer shapes
 except Exception as error:  # noqa: BLE001 - the reason must stay visible
     print(f"pairpilot: could not attach composer: {error}", file=sys.stderr)
     raise SystemExit(1)
@@ -675,7 +677,7 @@ class Pilot:
     # ------------------------------------------------------- wake-up
 
     def mark_wake(self, state: dict, role: str, reason: str, text: str,
-                  kind: str) -> None:
+                  kind: str) -> dict:
         """Record that a role must be woken — in a file, not in the composer.
 
         Printing into the composer was the only way to tell a neighbour "you
@@ -722,7 +724,7 @@ class Pilot:
                     self.store.append_transcript(
                         "pilot_wake_dead_target", "pairpilot", target=role, reason=reason)
                     log(f"{role}: pid {pid} is gone and its pane is a shell — no wake")
-                return
+                return self.no_wake("the role's process is gone")
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
             # A hanging wake-up is amended, not overwritten.
@@ -780,63 +782,93 @@ class Pilot:
             self.store.append_transcript("pilot_wake_failed", "pairpilot",
                                          target=role, error=str(error)[:120])
             log(f"{role}: could not record the wake-up — {error}")
-            return
+            return self.no_wake("the wake-up could not be recorded")
         self.store.append_transcript("pilot_wake_pending", "pairpilot",
                                      target=role, reason=reason)
         log(f"{role}: {reason}, waiting for the wake-up silently (no printing)")
-        self.ring(state, role, reason)
+        return self.ring(state, role, reason, kind)
+
+    @staticmethod
+    def no_wake(why: str) -> dict:
+        """The outcome of a wake that never happened.
+
+        A caller must be able to tell "the peer was woken" from "nothing
+        happened", and both from "the wake file could not even be written" —
+        otherwise a caller that skips a follow-up step has no fact to skip it on.
+        """
+        return {"composer": "not tried", "adapter": "none", "popup": False,
+                "delivered": False, "why": why}
 
     # Role -> wake module (was `if role == "opencode"`; new = string + wake_<cli>.py).
     WAKE_ADAPTERS = {"opencode": "wake_opencode"}
 
-    def ring(self, state: dict, role: str, reason: str) -> None:
-        """Ring the role’s pane: display-message, not composer printing.
+    def ring(self, state: dict, role: str, reason: str, kind: str = "mail") -> dict:
+        """Wake the role: the neighbour's composer first, the popup as the fallback.
 
-        Printing into a busy TUI is garbage in the input line; a ring is a popup
-        the agent sees from the corner of its eye and decides itself when to look.
+        A tmux popup is drawn in tmux's message area, OUTSIDE the pane's rendered
+        region. A full-screen TUI (OpenCode, agy, omp) owns that region and
+        repaints it, so the popup never reaches the agent's screen: the wake is a
+        no-op, and the room looks silent while the peer is merely unaware.
+        Measured on a live pane: the popup text is absent from `capture-pane`.
+
+        So the ring uses the path the server's doorbell uses — the neighbour's
+        composer, with the same guards — and the popup stays only as the
+        fallback for a pane that refuses.
+
+        Two texts, each for its own reader. The popup shows a human a pointer;
+        the composer gets the server's ring shape, because that shape is the one
+        `pointers.own_pointer_length` recognises — the pilot can therefore erase
+        its OWN leftovers instead of leaving the neighbour's composer wedged
+        (a leftover pointer makes every later delivery refuse).
+
+        The pointer carries a CAUSE, never the letter: the wake text stays in the
+        mailbox and in the wake file. The report text stays behind the ask
+        trigger — the ring is a doorbell, not a report.
+
         Throttle by the rung_at field in the wake file: at most once per 5 min,
         otherwise it is the same spam, just without text.
 
-        After the ring — the wake adapter from WAKE_ADAPTERS (fail-closed, shared throttle).
+        The order is: the API adapter when the CLI has one (fail-closed, and it
+        wakes the session without typing into it), then the composer, then the
+        popup.
         """
+        outcome = {"composer": "not tried", "adapter": "none", "popup": False,
+                   "delivered": False}
         if self.tmux is None or role in self.skip:
-            return
+            return outcome
         path = self.wake_root / f"{role}.json"
         if time.time() - self._last_ring(path) < 300:
-            return
+            return outcome
         pane = ((state.get("roles") or {}).get(role) or {}).get("pane")
         if not pane or not pane_alive(self.tmux, pane):
-            return
+            return outcome
         pointer = f"[pair] {reason} — pick it up from mailbox via pair_read"
-        try:
-            subprocess.run([self.tmux, "display-message", "-t", pane,
-                            "-d", "4000", pointer],
-                           capture_output=True, timeout=5)
-        except Exception:
-            return
+        # The doorbell: the same shape the server types into a neighbour's
+        # composer, so the pilot's leftovers are recognisable as its own.
+        # A mail wake points at the mailbox, where the letter is. A report wake
+        # has no letter: it points at the state, where the cause is visible.
+        if kind == "mail":
+            doorbell = ring_prompt("pairpilot", "message", reason)
+        else:
+            doorbell = ring_prompt("pairpilot", "wake", reason,
+                                    where="See pair_state.")
         adapter = self.WAKE_ADAPTERS.get(role)
         if adapter:
-            # [R101c] The exact recorded session id, never a directory or
-            # recency guess: the adapter fails closed when it is absent/stale.
-            role_entry = (state.get("roles") or {}).get(role) or {}
-            session_id = role_entry.get("opencode_session_id")
-            try:
-                # The role's own pid rides along: the adapter finds the
-                # opencode server that HOLDS this pair's connection by walking
-                # up from that process, and the shared service answers for
-                # every project on the box at once (round 141).
-                result = __import__(adapter).wake(self.store.project_root, pointer,
-                                                  session_id,
-                                                  role_pid=role_entry.get("pid"),
-                                                  role_pid_start=role_entry.get("pid_start"))
-                self.store.append_transcript("pilot_wake_api", "pairpilot",
-                                             target=role, woken=result.get("woken"),
-                                             why=(result.get("why") or "")[:120])
-            except Exception as error:  # noqa: BLE001 - the adapter must not drop the ring
-                self.store.append_transcript("pilot_wake_api_failed", "pairpilot",
-                                             target=role, error=str(error)[:120])
+            outcome["adapter"] = self.wake_via_adapter(state, role, adapter, pointer)
+            outcome["delivered"] = outcome["adapter"] == "woken"
         else:
+            # No API adapter for this CLI — a fact worth saying out loud: the
+            # ring falls back to the neighbour's composer, and a silent journal
+            # is what made pi's three quiet hours invisible.
             self.store.append_transcript("pilot_wake_no_adapter", "pairpilot", target=role)
+        if not outcome["delivered"]:
+            landed, why = self.ring_into_composer(state, role, pane, doorbell)
+            outcome["composer"] = why
+            outcome["delivered"] = landed
+        if not outcome["delivered"]:
+            # The popup: a human at a plain terminal sees it, a full-screen TUI
+            # never will — but it costs nothing and it is the last resort.
+            outcome["popup"] = self.ring_popup(pane, pointer)
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
             payload["rung_at"] = time.time()
@@ -845,6 +877,128 @@ class Pilot:
         except (OSError, ValueError):
             pass
         self.store.append_transcript("pilot_ring", "pairpilot", target=role, reason=reason)
+        return outcome
+
+    def wake_via_adapter(self, state: dict, role: str, adapter: str,
+                         pointer: str) -> str:
+        """Wake the role through its API adapter. Returns what the adapter said.
+
+        "woken" only when the adapter says so: the adapters fail closed, and a
+        fail-closed adapter that said "woken" would be a lie the ring believes.
+        """
+        # [R101c] The exact recorded session id, never a directory or
+        # recency guess: the adapter fails closed when it is absent/stale.
+        role_entry = (state.get("roles") or {}).get(role) or {}
+        session_id = role_entry.get("opencode_session_id")
+        try:
+            # The role's own pid rides along: the adapter finds the
+            # opencode server that HOLDS this pair's connection by walking
+            # up from that process, and the shared service answers for
+            # every project on the box at once (round 141).
+            result = __import__(adapter).wake(self.store.project_root, pointer,
+                                              session_id,
+                                              role_pid=role_entry.get("pid"),
+                                              role_pid_start=role_entry.get("pid_start"))
+            self.store.append_transcript("pilot_wake_api", "pairpilot",
+                                         target=role, woken=result.get("woken"),
+                                         why=(result.get("why") or "")[:120])
+            return "woken" if result.get("woken") else "refused"
+        except Exception as error:  # noqa: BLE001 - the adapter must not drop the ring
+            self.store.append_transcript("pilot_wake_api_failed", "pairpilot",
+                                         target=role, error=str(error)[:120])
+            return "failed"
+
+    def ring_into_composer(self, state: dict, role: str, pane: str,
+                           doorbell: str) -> tuple:
+        """Type the doorbell into the neighbour's composer. Returns (landed, why).
+
+        The same guards the server's doorbell uses, and none of them is
+        optional: a ring that types into the wrong window is worse than a ring
+        that never happened.
+
+        - The role's OWN cli must sit in that pane. A shell would run the
+          pointer as a command (round 114: 97 "[pairpilot]: command not found"
+          lines on somebody's screen).
+        - The pane must be provably ours. Another project's agent sits there.
+        - The composer must be visible and free. A busy composer holds somebody's
+          typing, and an invisible one has nowhere to type at all.
+        """
+        info = (state.get("roles") or {}).get(role) or {}
+        if not self.push_target_alive(state, role, info):
+            why = "the role's own cli is not in the pane"
+            self.store.append_transcript("pilot_ring_composer", "pairpilot",
+                                         target=role, pane=pane, why=why)
+            return False, why
+        try:
+            ours, why_own = pane_belongs_to_project(
+                self.tmux, pane, self.store.project_root)
+        except Exception:  # noqa: BLE001 - an unprovable pane is not ours
+            ours, why_own = False, "the ownership check failed"
+        if not ours:
+            why = f"a foreign pane: {why_own}"
+            self.store.append_transcript("pilot_ring_composer", "pairpilot",
+                                         target=role, pane=pane, why=why)
+            return False, why
+        try:
+            shot = capture(self.tmux, pane)
+            line = composer_line(shot)
+        except Exception:  # noqa: BLE001 - the pane vanished between checks
+            why = "the pane is unreadable"
+            self.store.append_transcript("pilot_ring_composer", "pairpilot",
+                                         target=role, pane=pane, why=why)
+            return False, why
+        refusal = ring_refusal_reason(shot, line)
+        if refusal is not None:
+            # Our OWN leftover pointer may be what holds the composer. Erase
+            # ours and look again; anything else in there is not ours to touch.
+            if clear_own_pointer(self.tmux, pane, "pairpilot"):
+                shot = capture(self.tmux, pane)
+                line = composer_line(shot)
+                refusal = ring_refusal_reason(shot, line)
+            if refusal is not None:
+                self.store.append_transcript("pilot_ring_composer", "pairpilot",
+                                             target=role, pane=pane, why=refusal)
+                return False, refusal
+        try:
+            result = deliver(pane, doorbell, wait_for_empty=0)
+        except ComposerBusy as error:
+            why = f"the composer is busy: {error}"
+            self.store.append_transcript("pilot_ring_composer", "pairpilot",
+                                         target=role, pane=pane, why=why)
+            return False, why
+        if not result.get("delivered"):
+            why = str(result.get("why") or "the paste never confirmed")
+            self.store.append_transcript("pilot_ring_composer", "pairpilot",
+                                         target=role, pane=pane, why=why)
+            return False, why
+        if result.get("submit_state") == "retained":
+            # The pointer is on the screen and Enter was sent, but the composer
+            # still shows it: the peer may have taken it (a TUI keeps the text
+            # rendered above the input field) or may not. Say exactly that
+            # instead of claiming a submission.
+            why = "the composer retained the pointer"
+            self.store.append_transcript("pilot_ring_composer", "pairpilot",
+                                         target=role, pane=pane, why=why,
+                                         submit_state="retained")
+            return True, why
+        self.store.append_transcript("pilot_ring_composer", "pairpilot",
+                                     target=role, pane=pane, why="delivered")
+        return True, "delivered"
+
+    def ring_popup(self, pane: str, pointer: str) -> bool:
+        """The fallback popup: tmux's own message area, outside the pane.
+
+        A human at a plain terminal sees it. A full-screen TUI does not — that
+        is why the composer path exists — but the popup costs nothing and it is
+        the last resort for a pane that refuses everything else.
+        """
+        try:
+            subprocess.run([self.tmux, "display-message", "-t", pane,
+                            "-d", "4000", pointer],
+                           capture_output=True, timeout=5)
+            return True
+        except Exception:  # noqa: BLE001 - a vanished pane is a vanished pane
+            return False
 
     @staticmethod
     def _last_ring(path) -> float:
@@ -1450,10 +1604,22 @@ class Pilot:
                 text = (f"[pairpilot] You have {missing} unread messages. "
                         f"Call pair_read and answer your neighbour. If all is done — "
                         f"suggest the next chunk via pair_note.")
-                self.mark_wake(state, role, f"{missing} unread", text, "mail")
-                if self.nudge(role, text, state, reason=f"{missing} unread messages", is_mail=True):
+                rung = self.mark_wake(state, role, f"{missing} unread", text, "mail")
+                # The ring already reached the peer's screen: the doorbell is
+                # in its composer. Queuing the same news again would put a
+                # SECOND line into the same pane for one letter — the duplicate
+                # trace the mailbox is meant to avoid. The outbox path stays as
+                # the fallback for a ring that could not land (a busy composer
+                # waits there until it frees).
+                if rung.get("delivered"):
                     self.store.append_transcript("pilot_unread_nudge", "pairpilot",
-                                                 target=role, unread=missing)
+                                                 target=role, unread=missing,
+                                                 how="ring")
+                    log(f"{role}: {missing} unread, rung at once")
+                elif self.nudge(role, text, state, reason=f"{missing} unread messages", is_mail=True):
+                    self.store.append_transcript("pilot_unread_nudge", "pairpilot",
+                                                 target=role, unread=missing,
+                                                 how="queue")
                     log(f"{role}: {missing} unread, pushing at once")
         return out
 

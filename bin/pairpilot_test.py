@@ -1576,9 +1576,9 @@ class TestTmuxPaths(PilotCase):
             pairpilot.subprocess.run = real_run
         self.assertEqual("%11", found[0], "provisional ranks first in the queue")
 
-    def test_wake_placement_rings_the_pane_without_typing(self) -> None:
-        """A wake placement rings the pane by display-message, never types into the
-        composer: the ring shows, the input line stays whole."""
+    def test_wake_placement_falls_back_to_the_popup_when_there_is_no_composer(self) -> None:
+        """A pane with no composer shows the popup instead: the tmux message area is
+        all a plain terminal has, and typing into nowhere is worse than a popup."""
         self.write_state(roles={"codex": {"last_seen": ago(10), "pane": "%9"}})
         pilot = self.fake_tmux_pilot()
         calls = []
@@ -1591,9 +1591,7 @@ class TestTmuxPaths(PilotCase):
             pairpilot.subprocess.run = real_run
         self.assertIn("pilot_ring", self.transcript_kinds())
         self.assertTrue(any("display-message" in c for c in calls),
-                        "the ring goes by display-message, not send-keys")
-        self.assertFalse(any("send-keys" in c for c in calls),
-                         "typing into the composer is banned")
+                        "the popup is the fallback for a pane with no composer")
 
     def test_ring_is_throttled_to_five_minutes(self) -> None:
         """A second ring in a row is silence: never ringing more often than 5 min."""
@@ -1653,6 +1651,192 @@ class TestTmuxPaths(PilotCase):
         pilot = self.fake_tmux_pilot()
         pilot.tick()
         self.assertNotIn("pilot_pane_dead", self.transcript_kinds())
+
+
+class TestRingReachesTheScreen(PilotCase):
+    """The wake must reach a full-screen TUI, not a tmux popup.
+
+    A tmux popup is drawn in tmux's message area, OUTSIDE the pane's rendered
+    region. A full-screen TUI owns that region and repaints it, so the popup
+    never reaches the agent: the wake is a no-op and the room looks silent
+    while the peer is merely unaware
+    (docs/backlog/pilot-ring-popup-is-invisible-in-a-full-screen-tui.md).
+
+    The pilot therefore types the doorbell into the neighbour's composer, with
+    the same guards the server's doorbell uses, and the popup stays the
+    fallback for a pane that refuses.
+    """
+
+    def tui_tmux(self, cwd: str | None = None, typed: str = "") -> Path:
+        """A tmux that behaves like a full-screen TUI agent.
+
+        The pane shows an input field; `send-keys -l` puts the text into it and
+        `capture-pane` shows it back, so a delivery that really landed is
+        visible in the capture — the way the real pane shows it. The pane's cwd
+        is this project, so the ownership check answers "ours" as it does on a
+        live pane.
+        """
+        current = Path(self.tmp.name) / "tui-typed.txt"
+        history = Path(self.tmp.name) / "tui-history.txt"
+        current.write_text(typed, encoding="utf-8")
+        script = f'''#!/usr/bin/env python3
+import sys
+
+args = sys.argv[1:]
+with open({str(self.tmux_log)!r}, "a", encoding="utf-8") as log:
+    log.write(" ".join(args) + "\\n")
+
+try:
+    with open({str(current)!r}, encoding="utf-8") as fh:
+        typed = fh.read()
+except OSError:
+    typed = ""
+
+if args[:1] == ["capture-pane"]:
+    print("▌ " + typed.rstrip("\\n"))
+elif args[:1] == ["display-message"] and "-p" in args:
+    fmt = args[-1]
+    if "pane_dead" in fmt:
+        print("0\\t{cwd}\\tmail:0.1\\t1\\t%9")
+    elif "pane_pid" in fmt:
+        print("4242")
+    else:
+        print("mail:0.1")
+elif args[:1] == ["send-keys"]:
+    rest = args[1:]
+    if "-l" in rest:
+        piece = rest[rest.index("-l") + 1]
+        with open({str(current)!r}, "a", encoding="utf-8") as fh:
+            fh.write(piece)
+        with open({str(history)!r}, "a", encoding="utf-8") as fh:
+            fh.write(piece)
+    elif "BSpace" in rest:
+        count = int(rest[rest.index("-N") + 1]) if "-N" in rest else 1
+        with open({str(current)!r}, "w", encoding="utf-8") as fh:
+            fh.write(typed[:-count] if count else typed)
+    elif "Enter" in rest:
+        with open({str(current)!r}, "w", encoding="utf-8") as fh:
+            fh.write("")
+'''
+        fake = self.fake_tmux
+        fake.write_text(script, encoding="utf-8")
+        fake.chmod(0o755)
+        return fake
+
+    def typed_into_the_pane(self) -> str:
+        path = Path(self.tmp.name) / "tui-history.txt"
+        return path.read_text(encoding="utf-8") if path.exists() else ""
+
+    def a_live_tui(self, cwd: str | None = None, typed: str = "") -> tuple:
+        """A pilot whose tmux is a full-screen TUI, and the role that sits in it."""
+        pilot = self.pilot()
+        pilot.tmux = str(self.tui_tmux(cwd=cwd or str(self.tmp.name), typed=typed))
+        state = self.write_state(roles={"agy": {
+            "pane": "mail:0.1", "pid": os.getpid(), "last_seen": ago(10)}})
+        return pilot, state
+
+    def test_the_ring_lands_in_a_full_screen_tui(self) -> None:
+        """The red-proof: a TUI in a tmux pane receives the wake.
+
+        The popup cannot do this — tmux draws it outside the pane's region, so
+        the agent never reads it. The composer can.
+        """
+        pilot, state = self.a_live_tui()
+        outcome = pilot.ring(state, "agy", "1 unread")
+        typed = self.typed_into_the_pane()
+        self.assertTrue(typed.strip(), "the peer pane received no text at all")
+        self.assertIn("pair_read", typed, "the pointer must say where to look")
+        self.assertIn("1 unread", typed, "the pointer carries the cause")
+        self.assertTrue(outcome.get("delivered"), "the ring must report the delivery")
+        self.assertIn("pilot_ring_composer", self.transcript_kinds())
+
+    def test_the_pointer_is_the_servers_own_shape(self) -> None:
+        """A pointer the pilot cannot recognise is a pointer it cannot clean up.
+
+        The shape is the server's ring shape, so `pointers.own_pointer_length`
+        finds the pilot's own leftovers and the neighbour's composer is never
+        wedged by them.
+        """
+        pilot, state = self.a_live_tui()
+        pilot.ring(state, "agy", "1 unread")
+        typed = self.typed_into_the_pane()
+        self.assertRegex(typed, r"pair: [a-z]+ from pairpilot\. Read pair_read\.")
+
+    def test_the_pilot_clears_its_own_report_pointer_too(self) -> None:
+        """The report doorbell points at the state instead of the mailbox, so it
+        wears another shape — and that shape must be cleanable as well, or the
+        neighbour's composer keeps a pointer the pilot cannot take back."""
+        pilot, state = self.a_live_tui(
+            typed="pair: wake from pairpilot. See pair_state. (silent 30 min holding the phase)")
+        pilot.ring(state, "agy", "silent 30 min holding the phase", kind="report")
+        typed = self.typed_into_the_pane()
+        self.assertEqual(1, typed.count("pair: wake from pairpilot"),
+                         "the leftover must be erased before the new pointer lands")
+
+    def test_a_report_wake_points_at_the_state_not_at_an_empty_mailbox(self) -> None:
+        """A report wake has no letter in the mailbox: the doorbell must not send
+        the peer looking for one. The cause is in the pointer, and the state is
+        where the cause is visible."""
+        pilot, state = self.a_live_tui()
+        pilot.ring(state, "agy", "silent 30 min holding the phase", kind="report")
+        typed = self.typed_into_the_pane()
+        self.assertIn("silent 30 min holding the phase", typed,
+                      "the doorbell carries the cause")
+        self.assertIn("pair_state", typed,
+                      "a report wake must point where the cause can be seen")
+
+    def test_a_busy_composer_is_never_typed_into(self) -> None:
+        """Somebody is typing: their line is theirs, and the popup is the fallback."""
+        pilot, state = self.a_live_tui(typed="half a thought")
+        pilot.ring(state, "agy", "1 unread")
+        self.assertEqual("", self.typed_into_the_pane(),
+                         "the ring overwrote a line somebody was typing")
+        self.assertIn("pilot_ring_composer", self.transcript_kinds())
+        self.assertTrue(any("display-message" in call for call in self.tmux_calls()),
+                        "the popup is the fallback for a busy composer")
+
+    def test_a_foreign_pane_is_never_typed_into(self) -> None:
+        """Another project's agent sits in that pane: a popup is the most we may do."""
+        pilot, state = self.a_live_tui(cwd="/somewhere/else")
+        pilot.ring(state, "agy", "1 unread")
+        self.assertEqual("", self.typed_into_the_pane(),
+                         "the ring typed into another project's pane")
+        self.assertTrue(any("display-message" in call for call in self.tmux_calls()),
+                        "the popup is the fallback for a foreign pane")
+
+    def test_a_shell_pane_is_never_typed_into(self) -> None:
+        """A bare shell would RUN the pointer as a command (round 114: 97 lines of
+        "[pairpilot]: command not found" on somebody's screen)."""
+        pilot, state = self.a_live_tui()
+        state["roles"]["agy"]["pid"] = 999999  # the role's cli is gone from the pane
+        pilot.ring(state, "agy", "1 unread")
+        self.assertEqual("", self.typed_into_the_pane(),
+                         "the ring typed into a shell")
+
+    def test_the_pilot_clears_its_own_leftover_pointer(self) -> None:
+        """A leftover pointer holds the composer and makes every later delivery
+        refuse. The pilot erases its OWN and leaves anybody else's text alone."""
+        pilot, state = self.a_live_tui(
+            typed="pair: message from pairpilot. Read pair_read. (1 unread)")
+        pilot.ring(state, "agy", "1 unread")
+        typed = self.typed_into_the_pane()
+        self.assertEqual(1, typed.count("pair: message from pairpilot"),
+                         "the leftover must be erased before the new pointer lands")
+
+    def test_one_letter_produces_one_message_in_the_peer_pane(self) -> None:
+        """The ring and the queued push are two doors to the same peer: only one
+        of them may fire, or the peer reads the same news twice."""
+        pilot = self.pilot()
+        pilot.tmux = str(self.tui_tmux(cwd=str(self.tmp.name)))
+        self.write_state(roles={"agy": {"pane": "mail:0.1", "pid": os.getpid(),
+                                        "last_seen": ago(10)}})
+        self.inbox("agy", 1)
+        pilot.tick()
+        typed = self.typed_into_the_pane()
+        self.assertEqual(1, typed.count("pair_read"),
+                         "one letter must not become two messages in the pane")
+        self.assertFalse(pilot.pending("agy"),
+                         "a delivered ring must not leave the same news in the queue")
 
 
 class TestRestart(PilotCase):
