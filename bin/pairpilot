@@ -818,11 +818,17 @@ class Pilot:
         if adapter:
             # [R101c] The exact recorded session id, never a directory or
             # recency guess: the adapter fails closed when it is absent/stale.
-            session_id = ((state.get("roles") or {}).get(role) or {}).get(
-                "opencode_session_id")
+            role_entry = (state.get("roles") or {}).get(role) or {}
+            session_id = role_entry.get("opencode_session_id")
             try:
+                # The role's own pid rides along: the adapter finds the
+                # opencode server that HOLDS this pair's connection by walking
+                # up from that process, and the shared service answers for
+                # every project on the box at once (round 141).
                 result = __import__(adapter).wake(self.store.project_root, pointer,
-                                                  session_id)
+                                                  session_id,
+                                                  role_pid=role_entry.get("pid"),
+                                                  role_pid_start=role_entry.get("pid_start"))
                 self.store.append_transcript("pilot_wake_api", "pairpilot",
                                              target=role, woken=result.get("woken"),
                                              why=(result.get("why") or "")[:120])

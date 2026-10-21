@@ -58,6 +58,7 @@ import digest  # noqa: E402 - needs sys.path above
 import facts as facts_store  # noqa: E402 - needs sys.path above
 import liveness  # noqa: E402 - needs sys.path above
 import obligations  # noqa: E402 - needs sys.path above
+import opencode_server  # noqa: E402 - needs sys.path above
 import restart_trace  # noqa: E402 - needs sys.path above
 import server_freshness  # noqa: E402 - needs sys.path above
 import statecache  # noqa: E402 - needs sys.path above
@@ -4217,11 +4218,31 @@ class MCPServer:
         requested = params.get("protocolVersion")
         version = requested if requested in SUPPORTED_PROTOCOL_VERSIONS else DEFAULT_PROTOCOL_VERSION
         self.initialized = True
+        # Round 141: the id the opencode client sends in a tool call's metadata
+        # arrives only AFTER the agent has called something -- and the agent
+        # that most needs waking is the one that has never called anything
+        # (measured: the opencode client's initialize carries no metadata at
+        # all, so the old code threw away an id it had never been given). The
+        # id is bound here from the server that owns our connection: its
+        # active session, accepted only when that session belongs to this
+        # project. No binding means no id -- never a guess.
+        #
+        # OUTSIDE the state lock, on purpose: the binding asks the opencode
+        # server over HTTP, and a lock held across a network call blocks every
+        # other role's state write for as long as that call takes.
+        bound = ""
+        if self.session.role == "opencode":
+            bound = opencode_server.bind_session(self.session.store.project_root,
+                                                 os.getpid())
         with self.session.store.lock():
             state = self.session.store._load()
             self.session._register(state)
             if self.session.role == "opencode":
-                state["roles"][self.session.role].pop("opencode_session_id", None)
+                entry = state["roles"][self.session.role]
+                if bound:
+                    entry["opencode_session_id"] = bound
+                else:
+                    entry.pop("opencode_session_id", None)
             self.session.store._save(state)
         log(f"initialized by {params.get('clientInfo', {}).get('name', '?')} protocol={version}")
         self.reply(
