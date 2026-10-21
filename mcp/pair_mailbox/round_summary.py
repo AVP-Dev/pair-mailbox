@@ -1,8 +1,8 @@
 """Round summary: the machine-readable round digest for verify-ground-truth.
 
 Why: the performer summary reconciles against physical facts, not performer
-memory (lesson R81). The extractor only composes ready structures — facts.json,
-ledger.jsonl records, the anti-mock verdict — and invents nothing past them.
+memory (lesson R81). The extractor only composes ready structures — the tree
+facts, ledger.jsonl records, the anti-mock verdict — and invents nothing past them.
 Library (build/render) + thin CLI.
 """
 
@@ -82,9 +82,9 @@ def render(summary: dict[str, Any]) -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """CLI: round facts.json + ledger -> summary.json on stdout/file."""
+    """CLI: round tree facts + ledger -> summary.json on stdout/file."""
     parser = argparse.ArgumentParser(description="Round digest")
-    parser.add_argument("--facts", required=True, help="path to facts.json")
+    parser.add_argument("--facts", required=True, help="path to the tree facts")
     parser.add_argument("--state-dir", required=True, help="the .pair directory")
     parser.add_argument("--round", required=True, type=int, help="round number")
     parser.add_argument("--out", default="", help="summary.json file")

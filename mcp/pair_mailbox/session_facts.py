@@ -4,6 +4,13 @@ Why: agent claims check against the physical tree state, not agent memory.
 Precedent - the R81 incident: green unit tests counted for a wired UI while the
 browser kept a static collection, with buttons sending hardcoded ids. Collecting
 only reads (git status/diff plus file reads), runtime is stdlib + git CLI.
+
+The file: `.pair/tree-facts.json` - NOT the anchor's `.pair/facts.json`
+(`facts.py`). Round 137: the two wrote ONE file, and each wiped the other. The
+close ritual runs this collector every round, so the anchor was empty by the
+next morning; and an anchor write left this file without a `version` key, which
+`load_facts` refuses - the ground-truth gate turned BLOCKED ("input never
+reads"). Two files, two shapes, one writer each.
 """
 from __future__ import annotations
 
@@ -18,7 +25,10 @@ from pathlib import Path
 from typing import Any
 
 FACTS_VERSION = 1
-FACTS_FILE = "facts.json"
+# The tree facts have a file of their own. The anchor's file is `facts.json`
+# (facts.py) - a different shape, a different writer, and the two used to be
+# one file (round 137).
+FACTS_FILE = "tree-facts.json"
 
 
 class FactsError(Exception):
@@ -277,7 +287,7 @@ def scan_text(path, start, lines, patterns=None):
 
 
 def collect_facts(repo_root, test_runs=None, patterns=None):
-    """Collect facts.json. Patterns resolve from anti-mock.json
+    """Collect the tree facts. Patterns resolve from anti-mock.json
     unless passed explicitly."""
     repo = Path(repo_root)
     active = patterns if patterns is not None else load_patterns(repo)
@@ -325,7 +335,7 @@ def collect_facts(repo_root, test_runs=None, patterns=None):
 
 
 def save_facts(state_dir: Path | str, facts: dict[str, Any]) -> Path:
-    "Write facts.json into the state dir, returning the path."
+    "Write the tree facts into the state dir, returning the path."
     target = Path(state_dir) / FACTS_FILE
     target.write_text(json.dumps(facts, indent=2, ensure_ascii=False)
                       + "\n", encoding="utf-8")
@@ -333,19 +343,19 @@ def save_facts(state_dir: Path | str, facts: dict[str, Any]) -> Path:
 
 
 def load_facts(path: Path | str) -> dict[str, Any]:
-    "Read facts.json; a broken file means FactsError, never blank."
+    "Read the tree facts; a broken file means FactsError, never blank."
     try:
         data = json.loads(Path(path).read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
-        raise FactsError(f"facts.json never reads: {exc}")
+        raise FactsError(f"the tree facts never read: {exc}")
     if not isinstance(data, dict) or data.get("version") != FACTS_VERSION:
-        raise FactsError("a foreign-version facts.json, or not a dict")
+        raise FactsError("a foreign-version tree-facts file, or not a dict")
     return data
 
 
 def record_test_run(facts_path: Path | str, command: str,
                     exit_code: int, output: str = "") -> dict[str, Any]:
-    "Append a run into facts.json: command, exit, output tail."
+    "Append a run into the tree facts: command, exit, output tail."
     facts = load_facts(facts_path)
     facts.setdefault("test_runs", []).append({
         "command": command,
@@ -359,11 +369,12 @@ def record_test_run(facts_path: Path | str, command: str,
 
 
 def main(argv: list[str] | None = None) -> int:
-    "CLI: collect the tree facts writing facts.json."
-    parser = argparse.ArgumentParser(description="Collect the tree facts.json")
+    "CLI: collect the tree facts writing tree-facts.json."
+    parser = argparse.ArgumentParser(
+        description="Collect the tree facts into .pair/tree-facts.json")
     parser.add_argument("--root", default=".", help="the repo root")
-    parser.add_argument("--out", default=".pair/facts.json",
-                        help="where to write facts.json")
+    parser.add_argument("--out", default=".pair/tree-facts.json",
+                        help="where to write the tree facts")
     args = parser.parse_args(argv)
     try:
         facts = collect_facts(args.root)

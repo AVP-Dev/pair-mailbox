@@ -97,7 +97,7 @@ class TestCli(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             state = Path(tmp)
             facts = make_facts()
-            facts_path = state / "facts.json"
+            facts_path = state / "tree-facts.json"
             facts_path.write_text(json.dumps(facts), encoding="utf-8")
             ledger.append(state, 7, "omp", {"decisions": ["picked x"]})
             ledger.append(state, 8, "omp", {"decisions": ["other"]})

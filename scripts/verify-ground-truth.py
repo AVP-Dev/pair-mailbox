@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Ground-truth gate: checking summary claims against facts.json.
+"""Ground-truth gate: checking summary claims against the tree facts.
 
 Why: the worker summary claims "files changed, tests run" - the gate checks every
 claim against deterministic facts, blocking (exit 1) on mismatch. Fail-closed: a
-broken facts.json, a foreign head or a mismatched dirty-hash blocks too, never
+broken facts file, a foreign head or a mismatched dirty-hash blocks too, never
 passes.
 Summary input is JSON: {"files": [...], "tests": [{"command": ..., "exit": 0}]}.
 """
@@ -25,7 +25,7 @@ def verify(summary: dict, facts: dict) -> list[str]:
         problems.append(
             f"the summary head {summary['head'][:12]} != facts {facts.get('head', '')[:12]}")
     if summary.get("dirty_hash") and summary.get("dirty_hash") != facts.get("dirty_hash"):
-        problems.append("the summary dirty-hash mismatched facts.json - the tree changed")
+        problems.append("the summary dirty-hash mismatched the tree facts - the tree changed")
     known = set(facts.get("touched", [])) | set(facts.get("untracked", []))
     files = (summary.get("files") if "files" in summary
              else list(summary.get("touched", []))
@@ -40,14 +40,15 @@ def verify(summary: dict, facts: dict) -> list[str]:
         if (test.get("command"), test.get("exit")) not in runs:
             problems.append(
                 f"test {test.get('command')} exit {test.get('exit')} "
-                f" never recorded in facts.json")
+                f" never recorded in the tree facts")
     return problems
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Check the summary against facts.json")
+    parser = argparse.ArgumentParser(
+        description="Check the summary against the tree facts")
     parser.add_argument("summary", help="The worker summary JSON")
-    parser.add_argument("facts", help="the facts.json path")
+    parser.add_argument("facts", help="the tree facts path")
     args = parser.parse_args(argv)
     try:
         summary = json.loads(Path(args.summary).read_text(encoding="utf-8"))

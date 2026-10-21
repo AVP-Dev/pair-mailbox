@@ -8,6 +8,11 @@ a write that would cross the budget is REFUSED rather than quietly trimmed.
 
 Where the facts live: `.pair/facts.json`, a file of its own. Not `state.json`: that
 one rotates (round 127), and a fact that vanishes with a rotation is not an anchor.
+And not the tree facts: the collector that snapshots the repo state
+(`session_facts.py`) writes `.pair/tree-facts.json` - a different shape with a
+different writer. The two shared one file until round 137, and each wiped the
+other: the close ritual runs the collector every round, so the anchor was empty
+by the next morning.
 
 Who writes: any agent, like a note — the critic is often the one who knows a new fact.
 The writer owns the pruning: dropping and clearing are the writer's.

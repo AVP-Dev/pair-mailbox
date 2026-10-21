@@ -192,6 +192,33 @@ class TestRoundTrip(unittest.TestCase):
         self.assertEqual(len(updated["test_runs"]), 1)
         self.assertEqual(updated["test_runs"][0]["exit"], 0)
 
+    def test_the_collector_writes_a_file_of_its_own(self) -> None:
+        """Round 137: the collector wrote the anchor's file.
+
+        Two writers, one file, both quiet: the collector replaced the anchor's
+        facts (the anchor read a foreign file as "no facts"), and an anchor
+        write left this file without a `version` key, which `load_facts`
+        refuses - the ground-truth gate turned BLOCKED. The collector's file is
+        `tree-facts.json`; the anchor's is `facts.json` (facts.py).
+        """
+        facts = session_facts.collect_facts(self.repo.root)
+        target = session_facts.save_facts(self.state_dir, facts)
+        self.assertEqual(target.name, "tree-facts.json")
+        self.assertFalse((self.state_dir / "facts.json").exists(),
+                         "the collector wrote the anchor's file")
+
+    def test_the_cli_default_path_is_the_tree_facts_file(self) -> None:
+        """The default is what the close ritual gets when nobody names a path."""
+        proc = subprocess.run(
+            ["python3", str(Path(session_facts.__file__).resolve()),
+             "--root", str(self.repo.root)],
+            cwd=self.state_dir, capture_output=True, text=True, timeout=60)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertTrue((self.state_dir / ".pair" / "tree-facts.json").exists(),
+                        f"the CLI wrote no tree facts: {proc.stdout}")
+        self.assertFalse((self.state_dir / ".pair" / "facts.json").exists(),
+                         "the CLI wrote the anchor's file")
+
     def test_broken_facts_fails_closed(self) -> None:
         bad = self.state_dir / session_facts.FACTS_FILE
         bad.write_text("{nope", encoding="utf-8")

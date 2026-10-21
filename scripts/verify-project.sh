@@ -106,6 +106,19 @@ warnings=0
 line_number=0
 running=0
 mkdir -p "$PROJECT_ROOT/.pair"
+# One gate per worktree (scripts/verify-lock.sh). This run removes the logs
+# and the results file below, so a second runner in the same worktree would
+# delete this run's evidence and count the other's rows - round 137 measured
+# it: 83 result rows where 78 checks had run, and a "0 required failures"
+# that belonged to neither run. The loser is told, not left to corrupt both.
+. "$SCRIPT_DIR/verify-lock.sh"
+if ! acquire_worktree_lock "$PROJECT_ROOT"; then
+  printf 'verify-project: another gate is running in this worktree (%s)\n' \
+    "$(verify_lock_dir "$PROJECT_ROOT")" >&2
+  printf 'verify-project: refusing to run - two gates in one worktree delete each other'"'"'s logs and results\n' >&2
+  exit 75
+fi
+trap 'release_worktree_lock "$PROJECT_ROOT"' EXIT
 rm -f "$PROJECT_ROOT/.pair/verify-results.txt" "$PROJECT_ROOT/.pair/verify-"*.log
 
 while IFS=$'\t' read -r name layer required command serial extra || [ -n "${name:-}${layer:-}${required:-}${command:-}${serial:-}${extra:-}" ]; do

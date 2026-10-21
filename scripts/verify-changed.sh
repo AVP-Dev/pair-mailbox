@@ -84,6 +84,17 @@ suites="${suites#;}"
 echo "verify-changed: files: $(echo "$files" | tr '\n' ' ')"
 echo "verify-changed: suites: $suites"
 [ "$DRY" -eq 1 ] && exit 0
+# One gate per worktree (scripts/verify-lock.sh): this session writes the
+# same .pair/verify-*.log and .pair/verify-results.txt the full gate writes,
+# and the static layer below runs through verify-project.sh - so the lock is
+# taken here and the child inherits it through the environment.
+. "$SCRIPT_DIR/verify-lock.sh"
+if ! acquire_worktree_lock "$ROOT"; then
+  printf 'verify-changed: another gate is running in this worktree (%s)\n' \
+    "$(verify_lock_dir "$ROOT")" >&2
+  exit 75
+fi
+trap 'release_worktree_lock "$ROOT"' EXIT
 # static always: file-size-gate and comment-lint catch what no suite sees.
 "$SCRIPT_DIR/verify-project.sh" --only static || exit $?
 fail=0

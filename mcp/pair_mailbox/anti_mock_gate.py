@@ -1,9 +1,9 @@
-"""Anti-mock gate: the verdict over the facts.json mock flags.
+"""Anti-mock gate: the verdict over the tree facts' mock flags.
 
 Why: fact collecting finds suspicious lines, but the "block or pass" decision is a
 separate responsibility. Test paths warn, never block: fixtures in tests are lawful.
 Live paths block: a mock instead of wiring (the R81 lesson) never passes silent.
-Runtime is stdlib, the only input facts.json.
+Runtime is stdlib, the only input is the tree facts file.
 """
 from __future__ import annotations
 
@@ -50,9 +50,10 @@ def render(verdict: dict[str, Any]) -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
-    "CLI: check facts.json, exit 1 on live mocks."
-    parser = argparse.ArgumentParser(description="Check facts.json for mocks")
-    parser.add_argument("facts", help="the facts.json path")
+    "CLI: check the tree facts, exit 1 on live mocks."
+    parser = argparse.ArgumentParser(
+        description="Check the tree facts for mocks")
+    parser.add_argument("facts", help="the tree facts path")
     args = parser.parse_args(argv)
     try:
         facts = session_facts.load_facts(args.facts)
