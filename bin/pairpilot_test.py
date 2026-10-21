@@ -56,12 +56,66 @@ class PilotCase(unittest.TestCase):
         # adds it to skip and stays silent. The suite fell two tests depending on which
         # pane launched it — the check depended on place, not code.
         self._orig_tmux_pane = os.environ.pop("TMUX_PANE", None)
+        # Round 136: the machine's tmux is out of reach.
+        #
+        # The suite used to read the LIVE server. On this box pane %1 was another
+        # project's window, and the pilot — rightfully — refused to type into a
+        # foreign pane, so four assertions of a REQUIRED gate fell for a reason
+        # that had nothing to do with the change under test.
+        #
+        # Two resolvers reach a tmux here: the pilot's own attribute, and the
+        # composer's `_tmux()`, which looks the binary up in PATH by itself. So
+        # stubbing one of them leaves the other a road to the host. The fake
+        # therefore goes into PATH: every `which("tmux")` finds it, and the
+        # pilot is handed its path directly. Nothing in this file may name a
+        # tmux binary of this machine again.
+        self.fake_tmux = self._install_fake_tmux()
+        self._orig_path = os.environ.get("PATH", "")
+        os.environ["PATH"] = f"{self.fake_tmux.parent}{os.pathsep}{self._orig_path}"
+
+    def _install_fake_tmux(self) -> Path:
+        """A tmux that answers nothing and leaves a trace.
+
+        It exits 0 — exactly what `/usr/bin/true` gave the suite before — so no
+        caller changes its mind about what tmux said. The log is the trace:
+        every command the pilot asked for is on record, and a command that
+        asked for typing would be visible there.
+
+        One answer is not empty: a pane asked for its screen shows a shell
+        prompt. The pilot's own question — "is the agent busy?" — was read off
+        a REAL window before, so the gate's colour depended on what another
+        project had on screen. Here the answer is the same on every machine:
+        an idle shell, which is what the fixtures say they mean.
+        """
+        bindir = Path(self.tmp.name) / "bin"
+        bindir.mkdir(parents=True, exist_ok=True)
+        fake = bindir / "tmux"
+        log = Path(self.tmp.name) / "tmux-calls.log"
+        fake.write_text(
+            "#!/bin/sh\n"
+            f"printf '%s\\n' \"$*\" >> '{log}'\n"
+            "case \"$1\" in\n"
+            "  capture-pane) printf '$ \\n' ;;\n"
+            "esac\n"
+            "exit 0\n",
+            encoding="utf-8")
+        fake.chmod(0o755)
+        self.tmux_log = log
+        return fake
+
+    def tmux_calls(self) -> list[str]:
+        """Every tmux command the code under test asked for, in order."""
+        if not self.tmux_log.exists():
+            return []
+        return [line for line in
+                self.tmux_log.read_text(encoding="utf-8").splitlines() if line]
 
     def tearDown(self) -> None:
         if self._orig_tmux_pane is not None:
             os.environ["TMUX_PANE"] = self._orig_tmux_pane
         else:
             os.environ.pop("TMUX_PANE", None)
+        os.environ["PATH"] = self._orig_path
         self.tmp.cleanup()
 
     def allow_push(self) -> None:
@@ -171,7 +225,7 @@ class TestWakeAdapterCall(PilotCase):
     def test_ring_passes_recorded_session_id(self) -> None:
         """The recorded session id rides to the adapter, never a guess."""
         pilot = self.pilot()
-        pilot.tmux = "tmux-fake"  # ring gates on a live pane; pane_alive is mocked
+        pilot.tmux = str(self.fake_tmux)  # ring gates on a live pane; pane_alive is mocked
         state = self.write_state(roles={"opencode": {
             "pane": "%7", "opencode_session_id": "ses_recorded"}})
         captured = {}
@@ -196,7 +250,7 @@ class TestWakeAdapterCall(PilotCase):
     def test_ring_without_a_recorded_session_still_calls_fail_closed(self) -> None:
         """Absent id passes None; the adapter refuses, never guesses."""
         pilot = self.pilot()
-        pilot.tmux = "tmux-fake"
+        pilot.tmux = str(self.fake_tmux)
         state = self.write_state(roles={"opencode": {"pane": "%7"}})
         captured = {}
 
@@ -365,7 +419,7 @@ class TestWakeAckContract(PilotCase):
         and landed as fresh mail about a finished round.
         """
         pilot = self.pilot()
-        pilot.tmux = "tmux-fake"
+        pilot.tmux = str(self.fake_tmux)
         self.write_state(writer=None, roles={"agy": {"last_seen": now_iso(),
                                                      "pid": 1, "pane": "%1"}})
         pilot.enqueue("agy", "old pointer text")
@@ -589,7 +643,7 @@ class TestLiveness(PilotCase):
         pairpilot.pane_belongs_to_project = lambda tmux, pane, root: (_ for _ in ()).throw(RuntimeError("no pane"))
         pairpilot.pane_alive = lambda tmux, pane: False
         try:
-            p.tmux = "tmux"
+            p.tmux = str(self.fake_tmux)
             p.flush_outbox(state)
         finally:
             pairpilot.deliver = orig_deliver
@@ -979,7 +1033,7 @@ class TestOutboxStaleness(PilotCase):
         pairpilot.pane_belongs_to_project = lambda tmux, pane, root: (True, "")
         pairpilot.deliver = lambda pane, text, wait_for_empty=0.0: {"delivered": True}
         try:
-            p.tmux = "tmux"
+            p.tmux = str(self.fake_tmux)
             p.flush_outbox(state)
         finally:
             pairpilot.pane_alive, pairpilot.deliver = orig_alive, orig_deliver
@@ -999,7 +1053,7 @@ class TestOutboxStaleness(PilotCase):
         pairpilot.pane_belongs_to_project = lambda tmux, pane, root: (True, "")
         pairpilot.deliver = lambda pane, text, wait_for_empty=0.0: calls.append(text) or {"delivered": True}
         try:
-            p.tmux = "tmux"
+            p.tmux = str(self.fake_tmux)
             p.flush_outbox(state)
         finally:
             pairpilot.pane_alive, pairpilot.deliver = orig_alive, orig_deliver
@@ -1022,7 +1076,7 @@ class TestOutboxStaleness(PilotCase):
         pairpilot.deliver = lambda pane, text, wait_for_empty=0.0: {
             "delivered": True, "submit_state": "retained"}
         try:
-            p.tmux = "tmux"
+            p.tmux = str(self.fake_tmux)
             p.flush_outbox(state)
         finally:
             pairpilot.pane_alive, pairpilot.deliver = orig_alive, orig_deliver
@@ -1045,7 +1099,7 @@ class TestOutboxStaleness(PilotCase):
         orig_alive = pairpilot.pane_alive
         pairpilot.pane_alive = lambda tmux, pane: True
         try:
-            p.tmux = "tmux"
+            p.tmux = str(self.fake_tmux)
             p.flush_outbox(state)
         finally:
             pairpilot.pane_alive = orig_alive
@@ -1173,7 +1227,7 @@ class TestOutboxStaleness(PilotCase):
         orig_alive = pairpilot.pane_alive
         pairpilot.pane_alive = lambda tmux, pane: True
         try:
-            p.tmux = "tmux"
+            p.tmux = str(self.fake_tmux)
             p.flush_outbox(state)
         finally:
             pairpilot.deliver = orig_deliver
@@ -1201,7 +1255,7 @@ class TestOutboxStaleness(PilotCase):
         pairpilot.pane_belongs_to_project = lambda tmux, pane, root: (False, "no such pane")
         pairpilot.pane_alive = lambda tmux, pane: False
         try:
-            p.tmux = "tmux"
+            p.tmux = str(self.fake_tmux)
             p.flush_outbox(state)
         finally:
             pairpilot.deliver = orig_deliver
@@ -1235,7 +1289,7 @@ class TestOutboxStaleness(PilotCase):
         pairpilot.pane_belongs_to_project = boom
         pairpilot.pane_alive = lambda tmux, pane: True
         try:
-            p.tmux = "tmux"
+            p.tmux = str(self.fake_tmux)
             p.flush_outbox(state)
             p.flush_outbox(state)
         finally:
@@ -1263,7 +1317,7 @@ class TestOutboxStaleness(PilotCase):
         orig_alive2 = pairpilot.pane_alive
         pairpilot.pane_alive = lambda tmux, pane: True
         try:
-            p.tmux = "tmux"
+            p.tmux = str(self.fake_tmux)
             p.flush_outbox(state)
         finally:
             pairpilot.deliver = orig_deliver
@@ -1288,7 +1342,7 @@ class TestOutboxStaleness(PilotCase):
         pairpilot.pane_belongs_to_project = lambda tmux, pane, root: (True, "")
         pairpilot.deliver = busy
         try:
-            p.tmux = "tmux"
+            p.tmux = str(self.fake_tmux)
             p.flush_outbox(state)
         finally:
             pairpilot.pane_alive, pairpilot.deliver = orig_alive, orig_deliver
@@ -1368,9 +1422,9 @@ class TestTmuxPaths(PilotCase):
     """Paths that call tmux. They need a stub, or they check only live — exactly where
     append_transcript fell with a foreign role=."""
 
-    def fake_tmux(self, alive=True, prompt=None, verdict="allow"):
+    def fake_tmux_pilot(self, alive=True, prompt=None, verdict="allow"):
         pilot = self.pilot()
-        pilot.tmux = "/usr/bin/true"
+        pilot.tmux = str(self.fake_tmux)
         pairpilot.pane_alive = lambda tmux, pane: alive
         pairpilot.resolve_permission_prompt = (
             lambda tmux, pane, allow=None: {"approved": verdict == "allow",
@@ -1394,7 +1448,7 @@ class TestTmuxPaths(PilotCase):
 
     def test_missing_pane_is_recorded_without_crashing(self) -> None:
         self.write_state(roles={"codex": {"last_seen": ago(10)}})
-        pilot = self.fake_tmux()
+        pilot = self.fake_tmux_pilot()
         pilot.tick()
         self.assertIn("pilot_pane_missing", self.transcript_kinds())
 
@@ -1403,7 +1457,7 @@ class TestTmuxPaths(PilotCase):
         record, never bury the role. Or deliver goes blind at a live neighbour."""
         import os
         self.write_state(roles={"codex": {"last_seen": ago(10), "pid": os.getpid()}})
-        pilot = self.fake_tmux()
+        pilot = self.fake_tmux_pilot()
         real_find = pairpilot.find_pane_of_pid
         pairpilot.find_pane_of_pid = lambda tmux, pid: "%7"
         try:
@@ -1417,7 +1471,7 @@ class TestTmuxPaths(PilotCase):
         """A dead/empty pid with a live free pane in the project: heal the record by cwd,
         never bury the role (P1, critic seq 381)."""
         self.write_state(roles={"codex": {"last_seen": ago(10), "pid": 1}})
-        pilot = self.fake_tmux()
+        pilot = self.fake_tmux_pilot()
         real_find = pairpilot.find_pane_of_pid
         real_belongs = pairpilot.pane_belongs_to_project
         real_rolepid = pairpilot.pane_role_pid
@@ -1443,7 +1497,7 @@ class TestTmuxPaths(PilotCase):
         """A foreign pane never heals the roster: belonging unproven — the role stays
         paneless, fail-closed."""
         self.write_state(roles={"codex": {"last_seen": ago(10), "pid": 1}})
-        pilot = self.fake_tmux()
+        pilot = self.fake_tmux_pilot()
         real_find = pairpilot.find_pane_of_pid
         real_belongs = pairpilot.pane_belongs_to_project
         real_run = pairpilot.subprocess.run
@@ -1464,7 +1518,7 @@ class TestTmuxPaths(PilotCase):
         """A project pane with no role server.py (a human shell) never adopts: cwd is the
         second factor, the first — the live role process (round-33 verdict)."""
         self.write_state(roles={"codex": {"last_seen": ago(10), "pid": 1}})
-        pilot = self.fake_tmux()
+        pilot = self.fake_tmux_pilot()
         real_find = pairpilot.find_pane_of_pid
         real_belongs = pairpilot.pane_belongs_to_project
         real_rolepid = pairpilot.pane_role_pid
@@ -1490,7 +1544,7 @@ class TestTmuxPaths(PilotCase):
         (round-33 verdict, seq 392)."""
         self.write_state(roles={"codex": {"last_seen": ago(10), "pid": 1,
                                           "pane_provisional": "%11"}})
-        pilot = self.fake_tmux()
+        pilot = self.fake_tmux_pilot()
         real_belongs = pairpilot.pane_belongs_to_project
         real_rolepid = pairpilot.pane_role_pid
         real_run = pairpilot.subprocess.run
@@ -1511,7 +1565,7 @@ class TestTmuxPaths(PilotCase):
         """A wake placement rings the pane by display-message, never types into the
         composer: the ring shows, the input line stays whole."""
         self.write_state(roles={"codex": {"last_seen": ago(10), "pane": "%9"}})
-        pilot = self.fake_tmux()
+        pilot = self.fake_tmux_pilot()
         calls = []
         real_run = pairpilot.subprocess.run
         pairpilot.subprocess.run = lambda *a, **k: calls.append(a[0]) or type("R", (), {
@@ -1529,7 +1583,7 @@ class TestTmuxPaths(PilotCase):
     def test_ring_is_throttled_to_five_minutes(self) -> None:
         """A second ring in a row is silence: never ringing more often than 5 min."""
         self.write_state(roles={"codex": {"last_seen": ago(10), "pane": "%9"}})
-        pilot = self.fake_tmux()
+        pilot = self.fake_tmux_pilot()
         real_run = pairpilot.subprocess.run
         pairpilot.subprocess.run = lambda *a, **k: type("R", (), {
             "stdout": "", "returncode": 0})()
@@ -1545,7 +1599,7 @@ class TestTmuxPaths(PilotCase):
 
     def test_dead_pane_is_recorded_once(self) -> None:
         self.write_state(roles={"agy": {"last_seen": ago(10), "pane": "%9"}})
-        pilot = self.fake_tmux(alive=False)
+        pilot = self.fake_tmux_pilot(alive=False)
         pilot.tick()
         pilot.tick()
         self.assertEqual(1, self.transcript_kinds().count("pilot_pane_dead"),
@@ -1554,12 +1608,12 @@ class TestTmuxPaths(PilotCase):
     def test_role_without_wake_adapter_is_named_not_silent(self) -> None:
         """No adapter means a journal record, not silence (pi stayed silent 3 hours)."""
         self.write_state(roles={"pi": {"last_seen": ago(10), "pane": "%9"}})
-        self.fake_tmux().mark_wake(self.pilot().store.read(), "pi", "message", "text", "mail")
+        self.fake_tmux_pilot().mark_wake(self.pilot().store.read(), "pi", "message", "text", "mail")
         self.assertIn("pilot_wake_no_adapter", self.transcript_kinds())
 
     def test_permission_prompt_is_confirmed_and_logged(self) -> None:
         self.write_state(roles={"agy": {"last_seen": ago(10), "pane": "%9"}})
-        pilot = self.fake_tmux(prompt="Allow Read of server.py?")
+        pilot = self.fake_tmux_pilot(prompt="Allow Read of server.py?")
         pilot.tick()
         self.assertIn("pilot_unblock", self.transcript_kinds())
 
@@ -1567,21 +1621,21 @@ class TestTmuxPaths(PilotCase):
         """A refusal is a result. Silently skipping "y" is banned: the human must know the
         pane stands and why he must step to it himself."""
         self.write_state(roles={"agy": {"last_seen": ago(10), "pane": "%9"}})
-        pilot = self.fake_tmux(prompt="Allow execution of bash? rm -rf /", verdict="refuse")
+        pilot = self.fake_tmux_pilot(prompt="Allow execution of bash? rm -rf /", verdict="refuse")
         pilot.tick()
         self.assertIn("pilot_unblock_refused", self.transcript_kinds())
         self.assertNotIn("pilot_unblock", self.transcript_kinds())
 
     def test_observe_mode_never_confirms_a_prompt(self) -> None:
         self.write_state(autonomy="observe", roles={"agy": {"last_seen": ago(10), "pane": "%9"}})
-        pilot = self.fake_tmux(prompt="Allow Read of server.py?")
+        pilot = self.fake_tmux_pilot(prompt="Allow Read of server.py?")
         pilot.tick()
         self.assertNotIn("pilot_unblock", self.transcript_kinds(),
                          "in observe the human drives, the supervisor only speaks")
 
     def test_live_pane_produces_no_panic(self) -> None:
         self.write_state(writer="agy", roles={"agy": {"last_seen": ago(10), "pane": "%9"}})
-        pilot = self.fake_tmux()
+        pilot = self.fake_tmux_pilot()
         pilot.tick()
         self.assertNotIn("pilot_pane_dead", self.transcript_kinds())
 
@@ -1625,7 +1679,7 @@ class TestRestart(PilotCase):
 
     def pilot_with_launch(self, command: str = "agy --resume"):
         pilot = self.pilot()
-        pilot.tmux = "/usr/bin/tmux"
+        pilot.tmux = str(self.fake_tmux)
         pairpilot.pane_alive = lambda tmux, pane: True
         pilot._explicit_launch = {"agy": command} if command else {}
         return pilot
@@ -1673,7 +1727,7 @@ class TestRestart(PilotCase):
             "claude": {"last_seen": ago(9000), "pid": 999999, "pane": "%7"},
         })
         pilot = self.pilot()
-        pilot.tmux = "/usr/bin/tmux"
+        pilot.tmux = str(self.fake_tmux)
         pilot.tick()
         self.assertNotIn("agy", pilot.skip, "a live neighbour must never fall under skip")
         self.assertNotIn("pilot_pane_shared", self.transcript_kinds())
@@ -1698,7 +1752,7 @@ class TestRestart(PilotCase):
         # What asserts is the restart fact in the right pane with the right command, not
         # which call number it was: `self.calls[0]` claims order, breaking on any edit
         # in neighbouring code.
-        self.assertEqual([["/usr/bin/tmux", "respawn-pane", "-t", "%999999", "agy --resume"]],
+        self.assertEqual([[str(self.fake_tmux), "respawn-pane", "-t", "%999999", "agy --resume"]],
                          self.respawns(),
                          "a fallen writer restarts in its own pane")
         self.assertIn("pilot_restart", self.transcript_kinds())
@@ -1763,7 +1817,7 @@ class TestRestart(PilotCase):
         """
         self.dead_writer_state()
         pilot = self.pilot_with_launch(command="")
-        pilot.tmux = "/usr/bin/tmux"
+        pilot.tmux = str(self.fake_tmux)
         pairpilot.pane_alive = lambda tmux, pane: True
         pilot.tick()
         self.assertNoRestart("no profile means no restart")
@@ -1836,7 +1890,7 @@ class TestRestart(PilotCase):
         pilot = self.pilot_with_launch()
         pairpilot.pane_role_pid = lambda tmux, pane, role: self.DEAD_PID
         pilot.tick()
-        self.assertEqual([["/usr/bin/tmux", "respawn-pane", "-t", "%999999", "agy --resume"]],
+        self.assertEqual([[str(self.fake_tmux), "respawn-pane", "-t", "%999999", "agy --resume"]],
                          self.respawns(),
                          "a dead pid in the pane means the role rises")
         self.assertNotIn("pilot_pid_stale_pane_alive", self.transcript_kinds())
@@ -2475,7 +2529,7 @@ class TestVisibleWork(PilotCase):
     def test_busy_pane_is_not_nudged_even_when_the_clock_ran_out(self) -> None:
         self.silent_writer_state()
         pilot = self.pilot()
-        pilot.tmux = "/usr/bin/true"
+        pilot.tmux = str(self.fake_tmux)
         self.patch_composer("> finishing the test", empty=False)
         pilot.tick()
         self.assertEqual("", pilot.pending("agy"),
@@ -2491,7 +2545,7 @@ class TestVisibleWork(PilotCase):
         self.silent_writer_state()
         pilot = self.pilot()
         self.allow_push()
-        pilot.tmux = "/usr/bin/true"
+        pilot.tmux = str(self.fake_tmux)
         self.patch_composer(">", empty=True)
         pilot.tick()
         self.assertTrue(self.wake(pilot, "agy"), "an empty composer — exactly the defect")
@@ -2509,7 +2563,7 @@ class TestVisibleWork(PilotCase):
         unknown what."""
         self.silent_writer_state()
         pilot = self.pilot()
-        pilot.tmux = "/usr/bin/true"
+        pilot.tmux = str(self.fake_tmux)
         self.patch_composer(None, empty=True)
         pilot.tick()
         self.assertEqual("", pilot.pending("agy"))
@@ -2551,7 +2605,7 @@ class TestSmartAutoCompact(PilotCase):
     def test_stalled_busy_triggers_escape_and_compact(self) -> None:
         self.write_state(writer="omp", roles={"omp": {"pane": "%3", "last_seen": ago(100)}})
         pilot = self.pilot()
-        pilot.tmux = "/usr/bin/true"
+        pilot.tmux = str(self.fake_tmux)
         pilot.stall_timeout = 10.0
 
         # Mocking a hung spinner: composer_line returns None (busy), the screen never
@@ -2575,7 +2629,7 @@ class TestSmartAutoCompact(PilotCase):
     def test_active_busy_with_screen_delta_is_not_compacted(self) -> None:
         self.write_state(writer="omp", roles={"omp": {"pane": "%3", "last_seen": ago(100)}})
         pilot = self.pilot()
-        pilot.tmux = "/usr/bin/true"
+        pilot.tmux = str(self.fake_tmux)
         pilot.stall_timeout = 10.0
 
         pairpilot.composer_line = lambda lines: None
@@ -2598,7 +2652,7 @@ class TestSmartAutoCompact(PilotCase):
         self.write_state(phase="done", closed_at=now_iso(),
                          writer="agy", roles={"omp": {"pane": "%3", "last_seen": ago(10)}})
         pilot = self.pilot()
-        pilot.tmux = "/usr/bin/true"
+        pilot.tmux = str(self.fake_tmux)
 
         # The composer is free
         pairpilot.composer_line = lambda lines: ">"
@@ -2612,7 +2666,7 @@ class TestSmartAutoCompact(PilotCase):
         """A CLI with no /compact: a hung agent takes Escape, but no /compact."""
         self.write_state(writer="omp", roles={"omp": {"pane": "%3", "last_seen": ago(100)}})
         pilot = self.pilot()
-        pilot.tmux = "/usr/bin/true"
+        pilot.tmux = str(self.fake_tmux)
         pilot.stall_timeout = 10.0
         pilot.supports_compact = lambda role: False
 
@@ -2633,7 +2687,7 @@ class TestSmartAutoCompact(PilotCase):
         self.write_state(phase="done", closed_at=now_iso(),
                          writer="agy", roles={"omp": {"pane": "%3", "last_seen": ago(10)}})
         pilot = self.pilot()
-        pilot.tmux = "/usr/bin/true"
+        pilot.tmux = str(self.fake_tmux)
         pilot.supports_compact = lambda role: False
 
         pairpilot.composer_line = lambda lines: ">"
@@ -2947,20 +3001,56 @@ class TestPushGates(PilotCase):
     def _pilot_with_tmux(self, role_server_in_pane: int = 0) -> "pairpilot.Pilot":
         """A pilot whose pane verdicts are stubbed: the pane is alive as a shell.
 
-        The stub answers the two facts the pilot needs and nothing else, so the
-        test cannot pass by touching a real window.
+        The stub answers the three facts the pilot needs and nothing else, so
+        the test cannot pass by touching a real window.
+
+        Round 136: it answered two of the three. The third — does this pane
+        belong to THIS project — was read from the live server, and on a
+        machine where %1 was another project's window the pilot correctly
+        refused to type and four assertions of a REQUIRED gate fell. The
+        fixtures were wrong; the pilot was right. So the third fact is
+        stubbed here too, and the tmux the pilot holds is the fake.
         """
         pilot = self.pilot()
-        pilot.tmux = "/usr/bin/tmux"
-        orig_role_pid = pairpilot.pane_role_pid
-        pairpilot.pane_role_pid = lambda tmux, pane, role: role_server_in_pane
-        self.addCleanup(setattr, pairpilot, "pane_role_pid", orig_role_pid)
+        pilot.tmux = str(self.fake_tmux)
+        for name, stub in (
+            ("pane_role_pid", lambda tmux, pane, role: role_server_in_pane),
+            ("pane_alive", lambda tmux, pane: True),
+            ("pane_belongs_to_project", lambda tmux, pane, root: (True, "")),
+        ):
+            original = getattr(pairpilot, name)
+            setattr(pairpilot, name, stub)
+            self.addCleanup(setattr, pairpilot, name, original)
         return pilot
+
+    def test_the_push_path_asks_the_machine_nothing(self) -> None:
+        """Round 136: the only tmux in reach is the fake, and nothing was typed.
+
+        The gate's colour used to depend on what other projects had open on
+        this box. Two resolvers reach a tmux here — the pilot's own attribute
+        and the composer's own PATH lookup — and BOTH must find the fake, or
+        one of them keeps a road to the live server. And a push path that
+        asked for typing would have typed into a window: the log says it did
+        not.
+        """
+        pilot = self._pilot_with_tmux(role_server_in_pane=os.getpid())
+        self.write_state(writer="agy",
+                         roles={"agy": {"last_seen": ago(60), "pid": os.getpid(),
+                                        "pane": "%999999"}})
+        self.inbox("agy", 2)
+        pilot.tick()
+        self.assertEqual(str(self.fake_tmux), pilot.tmux,
+                         "the pilot must hold the fake, never a tmux of this machine")
+        self.assertTrue(pairpilot._tmux().startswith(str(self.fake_tmux)),
+                        "the composer resolves its own tmux from PATH: it must "
+                        f"find the fake too, not {pairpilot._tmux()!r}")
+        self.assertNotIn("send-keys", "\n".join(self.tmux_calls()),
+                         "the push path must never ask for typing")
 
     def test_dead_cli_in_a_live_pane_gets_no_text(self) -> None:
         """The galatour shape: pane alive, role server gone. Nothing is typed."""
         self.write_state(writer="agy",
-                         roles={"agy": {"last_seen": ago(3600), "pid": 999999, "pane": "%1"}})
+                         roles={"agy": {"last_seen": ago(3600), "pid": 999999, "pane": "%999999"}})
         pilot = self._pilot_with_tmux(role_server_in_pane=0)
         self.allow_push()
         pilot.tick()
@@ -2971,7 +3061,7 @@ class TestPushGates(PilotCase):
     def test_live_cli_in_the_pane_gets_the_text(self) -> None:
         """The healthy shape: the role's own server sits in its pane."""
         self.write_state(writer="agy",
-                         roles={"agy": {"last_seen": ago(3600), "pid": os.getpid(), "pane": "%1"}})
+                         roles={"agy": {"last_seen": ago(3600), "pid": os.getpid(), "pane": "%999999"}})
         pilot = self._pilot_with_tmux(role_server_in_pane=os.getpid())
         self.allow_push()
         pilot.tick()
@@ -2980,7 +3070,7 @@ class TestPushGates(PilotCase):
     def test_no_trigger_means_silence_with_one_journal_row(self) -> None:
         """Opening a session types nothing, and says why once."""
         self.write_state(writer="agy",
-                         roles={"agy": {"last_seen": ago(3600), "pid": os.getpid(), "pane": "%1"}})
+                         roles={"agy": {"last_seen": ago(3600), "pid": os.getpid(), "pane": "%999999"}})
         pilot = self.pilot()
         pilot.tick()
         pilot.tick()
@@ -2993,7 +3083,7 @@ class TestPushGates(PilotCase):
     def test_the_trigger_file_makes_the_pilot_speak_once(self) -> None:
         """The ask file is the human's switch: present, one report, then quiet."""
         self.write_state(writer="agy",
-                         roles={"agy": {"last_seen": ago(3600), "pid": os.getpid(), "pane": "%1"}})
+                         roles={"agy": {"last_seen": ago(3600), "pid": os.getpid(), "pane": "%999999"}})
         pilot = self.pilot()
         self.allow_push()
         pilot.tick()
@@ -3043,7 +3133,7 @@ class TestPushGates(PilotCase):
         different case: real mail, and the gate was never made for it.
         """
         self.write_state(writer="agy",
-                         roles={"agy": {"last_seen": ago(60), "pid": os.getpid(), "pane": "%1"}})
+                         roles={"agy": {"last_seen": ago(60), "pid": os.getpid(), "pane": "%999999"}})
         pilot = self.pilot()
         pilot.wake_grace = 0.0
         # A wake raised by the supervisor's own finding, with its grace past.
@@ -3068,7 +3158,7 @@ class TestPushGates(PilotCase):
         letter that arrived is not the supervisor's report.
         """
         self.write_state(writer="agy",
-                         roles={"agy": {"last_seen": ago(60), "pid": os.getpid(), "pane": "%1"}})
+                         roles={"agy": {"last_seen": ago(60), "pid": os.getpid(), "pane": "%999999"}})
         self.inbox("agy", 1)
         pilot = self.pilot()
         pilot.wake_grace = 0.0
@@ -3093,7 +3183,7 @@ class TestPushGates(PilotCase):
         is not revoked by a spent trigger (that would drop text mid-flight).
         """
         self.write_state(writer="agy",
-                         roles={"agy": {"last_seen": ago(3600), "pid": os.getpid(), "pane": "%1"}})
+                         roles={"agy": {"last_seen": ago(3600), "pid": os.getpid(), "pane": "%999999"}})
         pilot = self.pilot()
         self.allow_push()
         pilot.tick()
@@ -3115,9 +3205,9 @@ class TestPushGates(PilotCase):
         source removes that round trip.
         """
         self.write_state(writer="agy",
-                         roles={"agy": {"last_seen": ago(3600), "pid": 999999, "pane": "%1"}})
+                         roles={"agy": {"last_seen": ago(3600), "pid": 999999, "pane": "%999999"}})
         pilot = self.pilot()
-        pilot.tmux = "/usr/bin/tmux"
+        pilot.tmux = str(self.fake_tmux)
         orig = pairpilot.pane_alive
         pairpilot.pane_alive = lambda tmux, pane: True
         self.addCleanup(setattr, pairpilot, "pane_alive", orig)
@@ -3129,9 +3219,9 @@ class TestPushGates(PilotCase):
     def test_a_live_process_with_a_moved_record_still_wakes(self) -> None:
         """The refusal is narrow on purpose: 'not proven alive' is not 'dead'."""
         self.write_state(writer="agy",
-                         roles={"agy": {"last_seen": ago(3600), "pid": os.getpid(), "pane": "%1"}})
+                         roles={"agy": {"last_seen": ago(3600), "pid": os.getpid(), "pane": "%999999"}})
         pilot = self.pilot()
-        pilot.tmux = "/usr/bin/tmux"
+        pilot.tmux = str(self.fake_tmux)
         pilot.mark_wake(pilot.state(), "agy", "silent 60 min", "you are silent", "report")
         self.assertTrue(self.wake(pilot, "agy"),
                         "a live process whose probe could not run must still be woken")
@@ -3147,7 +3237,7 @@ class TestPushGates(PilotCase):
         a letter somebody sent.
         """
         self.write_state(writer="agy",
-                         roles={"agy": {"last_seen": ago(60), "pid": os.getpid(), "pane": "%1"}})
+                         roles={"agy": {"last_seen": ago(60), "pid": os.getpid(), "pane": "%999999"}})
         self.inbox("agy", 2)
         pilot = self._pilot_with_tmux(role_server_in_pane=os.getpid())
         pilot.tick()
@@ -3163,20 +3253,19 @@ class TestPushGates(PilotCase):
         letter that happened to arrive first.
         """
         self.write_state(writer="agy",
-                         roles={"agy": {"last_seen": ago(60), "pid": os.getpid(), "pane": "%1"}})
+                         roles={"agy": {"last_seen": ago(60), "pid": os.getpid(), "pane": "%999999"}})
         self.inbox("agy", 1)
         pilot = self._pilot_with_tmux(role_server_in_pane=os.getpid())
         self.allow_push()
         pilot.tick()
         self.assertTrue(pilot.pending("agy"), "the mail wake is queued")
-        state = self.write_state(roles={"agy": {"pane": "%1", "pid": os.getpid()}})
+        state = self.write_state(roles={"agy": {"pane": "%999999", "pid": os.getpid()}})
         orig_alive, orig_deliver = pairpilot.pane_alive, pairpilot.deliver
         orig_belongs = pairpilot.pane_belongs_to_project
         pairpilot.pane_alive = lambda tmux, pane: True
         pairpilot.pane_belongs_to_project = lambda tmux, pane, root: (True, "")
         pairpilot.deliver = lambda pane, text, wait_for_empty=0.0: {"delivered": True}
         try:
-            pilot.tmux = "tmux"
             pilot.flush_outbox(state)
         finally:
             pairpilot.pane_alive, pairpilot.deliver = orig_alive, orig_deliver
@@ -3191,19 +3280,18 @@ class TestPushGates(PilotCase):
         spends the trigger - and only one.
         """
         self.write_state(writer="agy",
-                         roles={"agy": {"last_seen": ago(3600), "pid": os.getpid(), "pane": "%1"}})
+                         roles={"agy": {"last_seen": ago(3600), "pid": os.getpid(), "pane": "%999999"}})
         pilot = self._pilot_with_tmux(role_server_in_pane=os.getpid())
         self.allow_push()
         pilot.tick()
         self.assertTrue(pilot.pending("agy"), "the trigger lets the pilot speak")
-        state = self.write_state(roles={"agy": {"pane": "%1", "pid": os.getpid()}})
+        state = self.write_state(roles={"agy": {"pane": "%999999", "pid": os.getpid()}})
         orig_alive, orig_deliver = pairpilot.pane_alive, pairpilot.deliver
         orig_belongs = pairpilot.pane_belongs_to_project
         pairpilot.pane_alive = lambda tmux, pane: True
         pairpilot.pane_belongs_to_project = lambda tmux, pane, root: (True, "")
         pairpilot.deliver = lambda pane, text, wait_for_empty=0.0: {"delivered": True}
         try:
-            pilot.tmux = "tmux"
             pilot.flush_outbox(state)
         finally:
             pairpilot.pane_alive, pairpilot.deliver = orig_alive, orig_deliver

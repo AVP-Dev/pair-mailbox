@@ -48,7 +48,13 @@ rolekeys	positive	1	python3 mcp/pair_mailbox/test_rolekeys.py
 pairctl-authority	positive	1	python3 mcp/pair_mailbox/test_pairctl_authority.py
 pairctl-panes	positive	1	python3 mcp/pair_mailbox/test_pairctl_panes.py
 pairctl-read	positive	1	python3 mcp/pair_mailbox/test_pairctl_read.py
-supervisor	positive	1	python3 bin/pairpilot_test.py	serial
+supervisor	positive	1	python3 bin/pairpilot_test.py
+# The same suite with the host's tmux server out of reach (round 136). The two
+# rows together are the property the suite never had: its result does not
+# depend on the machine it runs on. Before the fix the first row was red on any
+# box where another project held pane %1, and the second was the only green one
+# - the gate was telling the truth about the machine, not about the change.
+supervisor-offline	positive	1	env -u TMUX -u TMUX_PANE TMUX_TMPDIR=$(mktemp -d) python3 bin/pairpilot_test.py
 board-hosts	positive	1	python3 mcp/pair_mailbox/test_board_hosts.py
 board-snapshot	positive	1	python3 mcp/pair_mailbox/test_board_snapshot.py
 board-render	positive	1	python3 mcp/pair_mailbox/test_board_render.py
