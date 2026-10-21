@@ -110,6 +110,8 @@ scripts/i18n_self_test.py	i18n-selftest
 scripts/merge-audit-trail.py	merge-audit-trail
 scripts/merge-audit-trail_test.py	merge-audit-trail
 scripts/merge-audit-baseline.tsv	merge-audit-trail
+scripts/verify-changed.sh	changed-file-gate
+scripts/verify-changed_test.sh	changed-file-gate
 scripts/	scripts-check
 docs/	docs-check
 mcp/pair_mailbox/wake_opencode.py	wake-api
