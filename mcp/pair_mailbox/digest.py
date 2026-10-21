@@ -5,10 +5,12 @@ its own duty — fitting pair state into a set budget — and it is checked by i
 own tests, never raising the server.
 
 The dependency direction matches `statecache`, `liveness`, `wake` and `review`:
-`server.py` depends on this file, not the reverse. `estimate_tokens` moved here
-too, because the digest needs it, not the protocol: the ceiling counts on the
-text we assemble ourselves, and the estimate must be the same function on the
-same text.
+`server.py` depends on this file, not the reverse. The token estimate itself moved
+OUT to `token_budget.py` (round 135), because the protocol needs it too, not only the
+digest: the note read and the facts store budget in tokens as well, and a room with
+two estimators has two truths about what a token costs. The ceiling counts on the
+text we assemble ourselves, and the estimate must be the same function on the same
+text.
 """
 from __future__ import annotations
 
@@ -19,6 +21,9 @@ from pathlib import Path
 from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from token_budget import estimate_tokens as _estimate_tokens  # noqa: E402 - needs sys.path above
+from token_budget import fit_prefix as _fit_prefix  # noqa: E402 - needs sys.path above
 
 # The journal-tail read stays in `server`: both `pairctl log` and the digest
 # use it. The import stays lazy for the same reason as in `server` itself:
@@ -72,14 +77,15 @@ def _render_digest(lines: list[str]) -> str:
 def estimate_tokens(text: str) -> int:
     """A rough text size estimate in tokens.
 
-    Chars divided by four: an estimate, not a measure, fit for exactly one thing —
-    capping text we assemble ourselves. An exact counter costs more than the whole
-    digest.
-
-    The estimate must OVER-INSURE, never shave: with more tokens out than the
-    ceiling, the agent hits the context limit where it counted on the digest.
+    The arithmetic moved to `token_budget.py` (round 135) because the protocol needs it
+    too, not only the digest: the note read and the facts store budget in tokens,
+    and a room with two estimators has two truths about what a token costs. The
+    old form divided BYTES by four, which under-counted Russian by a third — 2.6
+    characters per token, measured — and the digest's 500-token ceiling was a
+    500-token ceiling in English and a 650-token one in Russian. The shared
+    estimate over-counts both, so a ceiling holds whatever the room writes in.
     """
-    return (len(text.encode("utf-8")) + 3) // 4
+    return _estimate_tokens(text)
 
 
 def _digest_line(text: str, budget: int) -> str:
@@ -92,8 +98,21 @@ def _digest_line(text: str, budget: int) -> str:
         return text
     if budget <= 4:
         return "…"
-    limit = budget * 4 - 4
-    return text.encode("utf-8")[:limit].decode("utf-8", "ignore").rstrip() + "…"
+    return _fit_prefix(text, max(budget - 1, 0)).rstrip() + "…"
+
+
+def _facts_lines(store: "Any") -> list[str]:
+    """The stored facts, as short lines for the digest.
+
+    The facts are the answer a compaction summary cannot give: what the round stands
+    on, in keys, in a few hundred tokens. The digest carries them before the sections
+    it can re-read at will.
+    """
+    import facts as facts_store
+
+    stored = facts_store.read_facts(store)
+    return [f"{item.get('key')}: {_digest_line(str(item.get('value')), 60)}"
+            for item in stored[:8]]
 
 
 def _note_tail(store: "Any", slug: str, lines: int = 4) -> list[str]:
@@ -265,6 +284,13 @@ def build_digest(store: "Any", role: str = "", budget: int = DIGEST_TOKEN_BUDGET
          f"round {state.get('round', 0)}")
     cut |= take(f"writes: {state.get('writer') or '—'}"
          + (f" (you)" if role and state.get("writer") == role else ""))
+
+    # 1b. The facts anchor: what the round stands on, in keys a reset cannot lose.
+    # The prose it replaces — the compaction summary — cost 39 513 to 49 131 tokens
+    # and could not be queried. These lines are cheaper than the sections below
+    # them and answer the same question, so they come first.
+    for line in _facts_lines(store):
+        cut |= take(f"  {line}")
 
     # 2. Open tasks. Closed ones carry no meaning for the next step: eight closed
     #    tasks cost ~800 tokens and said nothing new.

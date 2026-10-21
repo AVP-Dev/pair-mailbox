@@ -43,6 +43,11 @@ mcp/pair_mailbox/statecache.py	statecache
 mcp/pair_mailbox/test_statecache.py	statecache
 mcp/pair_mailbox/server.py	protocol
 mcp/pair_mailbox/test_protocol.py	protocol
+mcp/pair_mailbox/test_protocol_budgets.py	protocol
+mcp/pair_mailbox/token_budget.py	protocol
+mcp/pair_mailbox/test_token_budget.py	protocol
+mcp/pair_mailbox/facts.py	protocol
+mcp/pair_mailbox/test_facts.py	protocol
 mcp/pair_mailbox/test_obligations.py	obligations
 mcp/pair_mailbox/intent_gate.py	intent-gate
 mcp/pair_mailbox/test_intent_gate.py	intent-gate

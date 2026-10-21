@@ -74,7 +74,7 @@ Waiting rules:
 
 - One read per turn. An empty answer is no reason to read again.
 - ACK every batch you get. `must_ack` in the answer says the batch is still unacknowledged.
-- The `wait_seconds` default is 0 (`DEFAULT_READ_WAIT_SECONDS`, `server.py:97`),
+- The `wait_seconds` default is 0 (`DEFAULT_READ_WAIT_SECONDS`, `read_wait.py:10`),
   the cap is 60s (`MAX_READ_WAIT_SECONDS`); beyond that the client timeout cuts it.
 - `waited_seconds` is the time the call really took; `wait_budget_seconds` is what it
   was allowed to take. A call that took less than its budget answered early: it
@@ -83,7 +83,7 @@ Waiting rules:
 - Both roles may wait. Bounded waiting creates no deadlock:
   it always expires, and you return to work. (Previously the writer was
   forced to 0 — that killed the channel: an agent without waiting went idle and missed
-  mail. The winning code is `tool_pair_read`, `server.py:2341`.)
+  mail. The winning code is `tool_pair_read`, `server.py:2343`.)
 
 **When asked "how is it going?" — never answer "checking in a sec".** That is the most annoying
 phrase in the whole system. Open `pair_state` or `pair_transcript` and answer with what is
@@ -252,12 +252,18 @@ agents politely converging on an opinion gives nothing.
 ## 7a. Reading notes
 
 **Always call `pair_note_index` before reading notes.** It shows each note's size
-without reading the contents. Do not read a note wholesale with `read` — use
-`pair_note_read` (default 120 lines, cap 400; `NOTE_READ_DEFAULT`/`NOTE_READ_MAX`,
-`server.py:183,198`).
+without reading the contents: the newest notes first, twelve of them, plus the room's
+totals (`count`, `total_bytes`, `largest` — which note is the whale). The rest of the
+heap is behind `scope="largest"` or a bigger `limit`; the answer says how many it left
+out. Do not read a note wholesale with `read` — use `pair_note_read`, which answers
+with the tail under a **token** budget (default 800, cap 4000:
+`NOTE_READ_TOKEN_BUDGET`/`NOTE_READ_TOKEN_MAX`, `token_budget.py:39,41`). The line
+window stays on top of it (default 120 lines, cap 400: `NOTE_READ_DEFAULT`/
+`NOTE_READ_MAX`, `token_budget.py:45,46`), and the answer says which ceiling bound
+it — `budget_applied`: `tokens`, `lines`, `record` or `none`.
 
 If a note is bigger than 5 KB — read only the latest entries. Rotation carries old entries
-into `notes/archive/` at 600 lines (`NOTE_LINE_CAP`, `server.py:182`), leaving
+into `notes/archive/` at 600 lines (`NOTE_LINE_CAP`, `token_budget.py:51`), leaving
 a pointer — nothing is lost.
 
 Note kinds — six, per PROTOCOL.md §9: `plan`, `decision`, `finding`, `verdict`,
@@ -273,24 +279,41 @@ Sent means delivered to its mailbox or window, and that is all.
 
 ## 7b. Quiet tools (no separate section, but call them)
 
-22 tools total (`tool_definitions`, `server.py:3241`): state, comms,
-patches, tasks, notes, digest, transcript, unblock.
+23 tools total (`tool_definitions`, `server.py:3530`): state, comms,
+patches, tasks, notes, facts, digest, transcript, unblock.
 `pair_ping` (sign of life instead of silence), `pair_task` (a round does not close
-with open tasks), `pair_evidence` (`done` gate in `fix`), `pair_transcript`
+with open tasks; `action="list"` answers with the OPEN tasks and the counts, the
+history is behind `scope="history"`), `pair_evidence` (`done` gate in `fix`),
+`pair_transcript`
 (audit trail `transcript.jsonl`: what actually happened), `pair_note_index`
-(see §7a), `pair_unblock` (peer's pane on a permission prompt: confirm
+(see §7a), `pair_facts` (the anchor that survives a compaction: key → value, 500
+tokens, a write over the budget refused rather than trimmed), `pair_unblock`
+(peer's pane on a permission prompt: confirm
 only per allowlist).
 
 Storage is `Store` in `.pair/`: `mailbox/`, `notes/`, `patches/`,
 `obligations/`, `notifications/`, `state.json`, `transcript.jsonl`
-(`server.py:726`). Not `.pair/` under another name and not `pair-transcript.jsonl`.
+(`store_core.py:185`). Not `.pair/` under another name and not `pair-transcript.jsonl`.
 
 Six roles (`cli-profiles.json`: opencode, agy, codex, claude, pi, omp);
 `pair-duo` raises a double session for any of the six
 (`bin/pair-duo:180`), deriving the roles `<cli>-writer` and `<cli>-critic`.
 Default autonomy is `auto`
-(`resolve_autonomy`, `server.py:321`); `finish.sh` takes the task only
+(`resolve_autonomy`, `server.py:317`); `finish.sh` takes the task only
 via the `--task` flag (no positional argument, `finish.sh:131`).
+
+## 7c. Read by range, never by whole file
+
+Measured on this project's longest session (2026-10-21): `write` and `edit` arguments
+carrying WHOLE files cost 232 065 tokens of that session's context — 7.6 % of the
+session and 59 % of all call arguments — and the harness stored every call payload a
+second time, another 10.9 %. A `read` with a range cost 5 953 tokens across 212 calls;
+the same file handed over whole costs thousands per call. The tools already allow the
+cheap form; the habit was the expensive one.
+
+- read a file by range (`path:50-120`), never `cat` it whole;
+- patch a file with the smallest edit that does the job, never rewrite it whole;
+- when a whole file must travel, say why in the note — the cost is the reader's.
 
 ## 8. Write authority
 
@@ -319,7 +342,7 @@ This needs no write rights: reopening is not a write operation.
 ## 9. `done` gates — complete, no surprises
 
 `pair_advance("done")` refuses while anything hangs (`done_blockers`,
-`server.py:409`, plus queue and stale verdict in `_done_blockers`, `server.py:1760`):
+`server.py:476`, plus queue and stale verdict in `_done_blockers`, `server.py:1549`):
 
 1. Unread mail — `pair_read` first.
 2. No passing `evidence` at all — record what the machine actually ran.

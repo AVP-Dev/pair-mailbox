@@ -33,7 +33,7 @@ backlog-lint	static	1	python3 scripts/backlog_check_test.py && python3 scripts/b
 # the layer reported green while running nothing at all (backlog #68, fixed here
 # on 2026-10-19 — the proof is a deliberately broken test turning the layer red).
 #
-protocol	positive	1	PYTHONPATH=mcp/pair_mailbox python3 -m unittest test_protocol test_protocol_authority test_protocol_gates test_protocol_notes test_protocol_delivery test_protocol_mailbox test_protocol_tui test_protocol_permissions test_protocol_panes test_protocol_pins test_protocol_transport	serial
+protocol	positive	1	PYTHONPATH=mcp/pair_mailbox python3 -m unittest test_protocol test_protocol_authority test_protocol_budgets test_token_budget test_facts test_protocol_gates test_protocol_notes test_protocol_delivery test_protocol_mailbox test_protocol_tui test_protocol_permissions test_protocol_panes test_protocol_pins test_protocol_transport	serial
 task-banner	positive	1	python3 mcp/pair_mailbox/test_task_banner.py
 autoperms	positive	1	python3 mcp/pair_mailbox/test_autoperms.py
 intent-gate	positive	1	python3 mcp/pair_mailbox/test_intent_gate.py
