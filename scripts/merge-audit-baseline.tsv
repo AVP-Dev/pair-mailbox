@@ -1,0 +1,93 @@
+# The known merge-trail debt: PRs merged on the remote with no pr_merged event
+# in the pair's journal.
+#
+# Format: pr_number<TAB>why_it_has_no_event
+#
+# A record means: this PR was merged, and the journal holds no pr_merged event
+# for it. The check (scripts/merge-audit-trail.py) compares the merged PRs with
+# the journal's events and fails on an escape that is NOT named here.
+#
+# These absences are never healed by writing an event into the past: an event
+# for a merge that happened long ago would be a forgery, and the journal is an
+# append-only record of what the machine did. The debt is named here instead,
+# with the reason for each, so that "nothing compares the two" stops being
+# true and the hole has a size.
+#
+# Two strata, measured 2026-10-21 (round 139):
+#   PRs 1-26  - no merge gate existed; it arrives with PR #27.
+#   PRs 27-60 - the gate existed, but the journal recorded no merges until
+#               PR #62 (pr_merge_record in mcp/pair_mailbox/review_gate.py).
+#               The gate's own verdicts for that era live in the archived
+#               notes, not in the transcript, so the journal cannot prove
+#               those merges were sanctioned.
+#
+# PR 6 and PR 76 are absent: they were closed without being merged. PR 61 is
+# absent too: it was merged outside the gate, and round 115 repaired it
+# properly - the journal holds a `pr_merge_repaired` event for it.
+#
+# A new row here is a decision, not a cleanup: it means a merge escaped the
+# sanctioned path and the debt grew. The honest repair is the merge path
+# (bin/pairctl pr merge) or the repair command
+# (bin/pairctl pr merge-record), never a hand-written event.
+#
+# Measured 2026-10-21 on the round-139 tree: 83 merged PRs, 24 with a merge
+# record, 59 without.
+1	merged before the merge gate existed (it arrives with PR #27)
+2	merged before the merge gate existed (it arrives with PR #27)
+3	merged before the merge gate existed (it arrives with PR #27)
+4	merged before the merge gate existed (it arrives with PR #27)
+5	merged before the merge gate existed (it arrives with PR #27)
+7	merged before the merge gate existed (it arrives with PR #27)
+8	merged before the merge gate existed (it arrives with PR #27)
+9	merged before the merge gate existed (it arrives with PR #27)
+10	merged before the merge gate existed (it arrives with PR #27)
+11	merged before the merge gate existed (it arrives with PR #27)
+12	merged before the merge gate existed (it arrives with PR #27)
+13	merged before the merge gate existed (it arrives with PR #27)
+14	merged before the merge gate existed (it arrives with PR #27)
+15	merged before the merge gate existed (it arrives with PR #27)
+16	merged before the merge gate existed (it arrives with PR #27)
+17	merged before the merge gate existed (it arrives with PR #27)
+18	merged before the merge gate existed (it arrives with PR #27)
+19	merged before the merge gate existed (it arrives with PR #27)
+20	merged before the merge gate existed (it arrives with PR #27)
+21	merged before the merge gate existed (it arrives with PR #27)
+22	merged before the merge gate existed (it arrives with PR #27)
+23	merged before the merge gate existed (it arrives with PR #27)
+24	merged before the merge gate existed (it arrives with PR #27)
+25	merged before the merge gate existed (it arrives with PR #27)
+26	merged before the merge gate existed (it arrives with PR #27)
+27	the gate existed, but the journal recorded no merges until PR #62
+28	the gate existed, but the journal recorded no merges until PR #62
+29	the gate existed, but the journal recorded no merges until PR #62
+30	the gate existed, but the journal recorded no merges until PR #62
+31	the gate existed, but the journal recorded no merges until PR #62
+32	the gate existed, but the journal recorded no merges until PR #62
+33	the gate existed, but the journal recorded no merges until PR #62
+34	the gate existed, but the journal recorded no merges until PR #62
+35	the gate existed, but the journal recorded no merges until PR #62
+36	the gate existed, but the journal recorded no merges until PR #62
+37	the gate existed, but the journal recorded no merges until PR #62
+38	the gate existed, but the journal recorded no merges until PR #62
+39	the gate existed, but the journal recorded no merges until PR #62
+40	the gate existed, but the journal recorded no merges until PR #62
+41	the gate existed, but the journal recorded no merges until PR #62
+42	the gate existed, but the journal recorded no merges until PR #62
+43	the gate existed, but the journal recorded no merges until PR #62
+44	the gate existed, but the journal recorded no merges until PR #62
+45	the gate existed, but the journal recorded no merges until PR #62
+46	the gate existed, but the journal recorded no merges until PR #62
+47	the gate existed, but the journal recorded no merges until PR #62
+48	the gate existed, but the journal recorded no merges until PR #62
+49	the gate existed, but the journal recorded no merges until PR #62
+50	the gate existed, but the journal recorded no merges until PR #62
+51	the gate existed, but the journal recorded no merges until PR #62
+52	the gate existed, but the journal recorded no merges until PR #62
+53	the gate existed, but the journal recorded no merges until PR #62
+54	the gate existed, but the journal recorded no merges until PR #62
+55	the gate existed, but the journal recorded no merges until PR #62
+56	the gate existed, but the journal recorded no merges until PR #62
+57	the gate existed, but the journal recorded no merges until PR #62
+58	the gate existed, but the journal recorded no merges until PR #62
+59	the gate existed, but the journal recorded no merges until PR #62
+60	the gate existed, but the journal recorded no merges until PR #62

@@ -100,6 +100,7 @@ file-size-gate-tests	positive	1	bash scripts/file-size-gate_test.sh
 eye-deadlock	positive	1	bash scripts/eye-of-sauron_test.sh
 session-finalizer	positive	1	bash skills/session-finalizer/tests/run.sh
 i18n-selftest	positive	1	python3 scripts/i18n_self_test.py
+merge-audit-trail	positive	1	python3 scripts/merge-audit-trail_test.py
 verification-profile	positive	1	python3 mcp/pair_mailbox/test_verification_profile.py
 verify-map	positive	1	python3 mcp/pair_mailbox/test_verify_map.py
 verify-project	positive	1	python3 mcp/pair_mailbox/test_verify_project.py
