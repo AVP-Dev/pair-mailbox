@@ -275,6 +275,14 @@ without writing into someone else's notes, but implementing it is the writer's j
 so only the writer closes. An empty reason is refused: a task that vanishes silently
 is the exact failure the list exists to prevent.
 
+The list answers with the OPEN window, not with the whole history. Measured on a live
+room, the full list of 137 tasks cost 29 784 tokens per call to say that one task was
+open — the largest single token sink in the room. `pair_task(action="list")` returns
+the open tasks, the counts (`open`/`done`/`dropped`/`total`) and `next_id`; the whole
+history is behind `scope="history"`, with `limit`/`offset` for paging. The default
+answer says how much it left out (`hidden`), so a short list is never mistaken for a
+short round.
+
 A round will not close while any task is `open`. The human can also do it: `pairctl
 task --done N`, `pairctl task --drop N --reason "..."`.
 
@@ -557,6 +565,15 @@ the record, the directory keeps only open debt. The close report
 (`.pair/REPORT.md`) lists what was parked this round and the open cards, so
 a parked finding cannot die silently.
 
+A note is read by its TAIL, never whole. `pair_note_read` answers with the tail under
+a budget in TOKENS (800 by default) — the line budget that stood here before cost
+3 166 to 5 122 tokens on the same four notes, because a line of Russian prose is not
+a fixed number of tokens — and it says which ceiling bound the answer
+(`budget_applied`: `tokens`, `lines`, `record`, `none`). The cut lands on a record
+edge, never inside a record. `pair_note_index` lists the freshest notes with the
+room's totals (`count`, `total_bytes`, `largest`); the rest of the heap stays behind
+`scope="largest"` or a bigger `limit`.
+
 ## 9a. Talk before work: the plan goes through the mailbox first
 
 Applies in `mode=fix` only — in `audit` there are no commits, so there is
@@ -641,6 +658,23 @@ newest of each cause" answered the first block seen (round 105 4a);
 `pair_notes_consistency`'s "united stream" read an archive path that was always
 empty (round 105 4b); round 104's floor names claimed what origin carries while
 probing only local refs. Each comment made a promise its tests could not check.
+
+## 9c. The facts anchor: what a context reset must not lose
+
+A compaction in the harness removes about 90 % of the context and leaves 39 513 to
+49 131 tokens of prose alive — the summary the agent carries for the rest of the
+session. It cannot be queried, diffed or dropped. The pair's own anchor is structured
+and small: `pair_facts` keeps key → value records of what the round stands on (the
+task, the decision in force, the blocker, the branch) in `.pair/facts.json`, under a
+500-token budget.
+
+- any agent may set a fact, like a note; the writer owns the pruning (`drop`,
+  `clear`);
+- a write that would cross the budget is REFUSED, never trimmed: a silently trimmed
+  fact is a fact the writer believes they recorded and nobody else can find;
+- the facts travel in `pair_digest`, the cheap orientation, and cost a few hundred
+  tokens there;
+- the facts survive the round: they are the next round's starting point.
 
 ## 10. Git is part of the work
 

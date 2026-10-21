@@ -53,7 +53,9 @@ from typing import Any
 # The path joins here, once Path exists.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import token_budget  # noqa: E402 - needs sys.path above
 import digest  # noqa: E402 - needs sys.path above
+import facts as facts_store  # noqa: E402 - needs sys.path above
 import liveness  # noqa: E402 - needs sys.path above
 import obligations  # noqa: E402 - needs sys.path above
 import restart_trace  # noqa: E402 - needs sys.path above
@@ -72,6 +74,18 @@ DIGEST_MARKER = digest.DIGEST_MARKER
 TRANSCRIPT_SCAN_LIMIT = digest.TRANSCRIPT_SCAN_LIMIT
 build_digest = digest.build_digest
 estimate_tokens = digest.estimate_tokens
+
+# The note budgets live in `token_budget.py` (round 135) beside the token estimate they
+# are counted with. The names re-export here because the tests, the skills and the
+# protocol all name them, and a second copy of a ceiling is a second truth about it.
+NOTE_LINE_CAP = token_budget.NOTE_LINE_CAP
+NOTE_READ_DEFAULT = token_budget.NOTE_READ_DEFAULT
+NOTE_READ_MAX = token_budget.NOTE_READ_MAX
+NOTE_READ_TOKEN_BUDGET = token_budget.NOTE_READ_TOKEN_BUDGET
+NOTE_READ_TOKEN_MAX = token_budget.NOTE_READ_TOKEN_MAX
+NOTE_INDEX_DEFAULT = token_budget.NOTE_INDEX_DEFAULT
+split_records = token_budget.split_records
+fit_records_to_budget = token_budget.fit_records_to_budget
 
 # The task banner for panes is its own module: server.py is frozen
 # (file-size-baseline.tsv), and monolith growth is banned without extraction.
@@ -153,9 +167,8 @@ EVIDENCE_KEEP = 50
 # never owned a second side — reading — and no bounded form existed at all.
 # existed at all.
 # Rotation carries the old into archive, leaving a pointer in the file: nothing is
-# lost, and the file stops growing without bound.
-NOTE_LINE_CAP = 600
-NOTE_READ_DEFAULT = 120
+# lost, and the file stops growing without bound. The ceilings themselves live in
+# `token_budget.py` now, beside the token estimate they are counted with.
 # The transcript sliding window. The journal stays on disk whole, but the active
 # file is capped: without it `read_transcript` parsed the whole file for twenty reply
 # lines, and limitless `pairctl log` dumped into the terminal everything the round
@@ -170,7 +183,6 @@ TRANSCRIPT_READ_BLOCK = 64 * 1024
 # Limitless `pairctl log` serves this much, not the whole file: the same spend as
 # `pair_transcript`, only with no limiter.
 LOG_DEFAULT_LIMIT = 50
-NOTE_READ_MAX = 400
 
 # Phases where the human "ok" word means anything. Only the round number checked
 # before, and a plan approval closed the round on verify.
@@ -2597,16 +2609,23 @@ class PairSession:
         }
 
     def tool_pair_task(self, action: str, id: int | None = None, text: str = "",
-                        reason: str = "") -> dict[str, Any]:
+                        reason: str = "", scope: str = "open",
+                        limit: int | None = None, offset: int = 0) -> dict[str, Any]:
         """The shared task list: one truth for two, not a copy each.
 
         The list never replaces notes but closes one hole: a task added mid-round
-        silently vanished, because state held one task line and the new overwrote
-        the old. Proven: the round closed as "task B" with evidence gathered for task A.
+        silently vanished, because state held one task line and the new overwrote the
+        old. Proven: the round closed as "task B" with evidence gathered for task A.
 
         Rights run asymmetric, and that is a decision, not a gap: the critic opens a
         task — or it could never say "I found this too" without writing into another
         note — but the writer closes it, because it implements it.
+
+        The default answer is the OPEN window, not the whole history. Measured on the
+        live room: 137 tasks, one of them open, and the full list cost 29 784 tokens
+        per call — the largest single token sink in the room, paid by every agent
+        that only wanted to know what is open right now. The history is still there,
+        behind scope="history", and the answer says how much it left out.
         """
         action = str(action or "").strip()
         if action not in ("add", "done", "drop", "list"):
@@ -2615,11 +2634,35 @@ class PairSession:
 
         if action == "list":
             items = tasks_of(state)
-            return {
-                "tasks": items,
-                "open": [item.get("id") for item in items if item.get("status") == OPEN_TASK],
+            counts = {status: 0 for status in TASK_STATUSES}
+            for item in items:
+                status = str(item.get("status") or "")
+                counts[status] = counts.get(status, 0) + 1
+            counts["total"] = len(items)
+            scope = str(scope or "open").strip().lower()
+            if scope not in ("open", "history"):
+                raise ProtocolError(f"unknown task scope {scope!r}. Use open or history.")
+            if limit is not None and (not isinstance(limit, int) or limit < 1):
+                raise ProtocolError("`limit` must be a positive integer.")
+            if not isinstance(offset, int) or offset < 0:
+                raise ProtocolError("`offset` must be zero or a positive integer.")
+            open_items = [item for item in items if item.get("status") == OPEN_TASK]
+            window = open_items if scope == "open" else items
+            if offset:
+                window = window[offset:]
+            if limit is not None:
+                window = window[:limit]
+            answer = {
+                "tasks": window,
+                "open": [item.get("id") for item in open_items],
+                "counts": counts,
                 "next_id": next_task_id(state),
+                "scope": scope,
+                "hidden": len(items) - len(window),
             }
+            if scope == "open" and answer["hidden"]:
+                answer["hint"] = "the closed tasks are behind scope=\"history\""
+            return answer
 
         if action == "add":
             body = str(text or "").strip()
@@ -3146,21 +3189,77 @@ class PairSession:
         return {"role": self.role, "last_seen": entry.get("last_seen"),
                 "pid": entry.get("pid")}
 
-    def tool_pair_note_index(self) -> dict[str, Any]:
+    def tool_pair_facts(self, action: str, key: str = "", value: str = "") -> dict[str, Any]:
+        """The facts anchor: the round's invariants, in a shape a reset cannot lose.
+
+        A compaction keeps 39 513 to 49 131 tokens of prose alive — the summary the
+        agent carries for the rest of the session. It cannot be queried, diffed or
+        dropped. A fact is the same anchor in a shape an agent can read for 500
+        tokens: key → value, bounded, and a write that would cross the budget is
+        refused rather than trimmed — a silently trimmed fact is a fact the writer
+        believes they recorded and nobody else can find.
+
+        Any agent may set a fact, like a note. Dropping and clearing are the
+        writer's: the anchor is a decision, not a click.
+        """
+        action = str(action or "").strip()
+        if action not in ("set", "list", "drop", "clear"):
+            raise ProtocolError(f"unknown facts action {action!r}. Use set, list, drop or clear.")
+        state = self.store.read()
+        if action == "list":
+            stored = facts_store.read_facts(self.store)
+            return {"facts": stored, "count": len(stored),
+                    "text": facts_store.render_facts(stored),
+                    "tokens": facts_store.facts_tokens(stored),
+                    "budget": facts_store.FACTS_TOKEN_BUDGET}
+        if action in ("drop", "clear") and state.get("writer") != self.role:
+            raise ProtocolError(
+                f"only the writer prunes the facts; {self.role!r} may set and list them.",
+                "A fact you believe is wrong: overwrite it with pair_facts(action=\"set\", "
+                "key=..., value=...), and the writer will clear the anchor.")
+        try:
+            if action == "set":
+                return facts_store.set_fact(self.store, key, value, self.role,
+                                            int(state.get("round", 0)))
+            if action == "drop":
+                return facts_store.drop_fact(self.store, key)
+            return facts_store.clear_facts(self.store)
+        except facts_store.FactsError as error:
+            raise ProtocolError(str(error)) from error
+
+    def tool_pair_note_index(self, limit: int = NOTE_INDEX_DEFAULT, scope: str = "fresh",
+                              offset: int = 0) -> dict[str, Any]:
         """The note list with size and freshness — seeing the heap without reading it.
 
         Notes pile to dozens, the biggest near 19 thousand tokens. This list decides
         what to read, spending zero content tokens on it.
+
+        The default window is the FRESHEST notes, not every note. The live room held
+        229 of them, and the whole listing cost 8 065 tokens of metadata — 35 tokens a
+        row, for a list nobody reads to the end. The totals travel with the window
+        (how many notes there are, how many bytes they hold, which one is the whale),
+        and everything else stays reachable behind scope="largest" or a bigger limit.
         """
+        scope = str(scope or "fresh").strip().lower()
+        if scope not in ("fresh", "largest"):
+            raise ProtocolError(f"unknown note index scope {scope!r}. Use fresh or largest.")
+        if not isinstance(limit, int) or limit < 1:
+            raise ProtocolError("`limit` must be a positive integer.")
+        if not isinstance(offset, int) or offset < 0:
+            raise ProtocolError("`offset` must be zero or a positive integer.")
         root = self.store.notes_root
-        out: list[dict[str, Any]] = []
+        # The sort key is the raw mtime, not the printed one: the printed stamp has
+        # second resolution, and notes written in the same second sorted by it
+        # alphabetically — the "freshest" window came back in name order.
+        entries: list[tuple[float, dict[str, Any]]] = []
         if root.is_dir():
             for path in sorted(root.glob("*.md")):
                 try:
                     text = path.read_text(encoding="utf-8")
+                    modified = path.stat().st_mtime
                 except OSError:
                     continue
-                out.append({
+                entries.append((modified, {
                     "kind": path.stem,
                     "lines": text.count("\n") + 1,
                     "entries": text.count("\n## "),
@@ -3168,12 +3267,24 @@ class PairSession:
                     "archived": (root / "archive" / f"{path.stem}-").exists()
                     or any((root / "archive").glob(f"{path.stem}-*.md"))
                     if (root / "archive").is_dir() else False,
-                })
-        out.sort(key=lambda item: item["bytes"], reverse=True)
+                    "modified": datetime.fromtimestamp(modified, timezone.utc).isoformat(
+                        timespec="seconds"),
+                }))
+        if scope == "fresh":
+            entries.sort(key=lambda pair: pair[0], reverse=True)
+        else:
+            entries.sort(key=lambda pair: pair[1]["bytes"], reverse=True)
+        out = [item for _, item in entries]
+        window = out[offset:offset + limit]
+        biggest = max(out, key=lambda item: item["bytes"]) if out else None
         return {"count": len(out), "total_bytes": sum(i["bytes"] for i in out),
-                "notes": out}
+                "largest": {"kind": biggest["kind"], "bytes": biggest["bytes"]} if biggest else None,
+                "notes": window, "omitted": len(out) - len(window),
+                "scope": scope, "limit": limit, "offset": offset}
 
-    def tool_pair_note_read(self, kind: str, tail_lines: int = NOTE_READ_DEFAULT, limit: int | None = None) -> dict[str, Any]:
+    def tool_pair_note_read(self, kind: str, tail_lines: int | None = None,
+                             limit: int | None = None,
+                             token_budget: int = NOTE_READ_TOKEN_BUDGET) -> dict[str, Any]:
         """Read the note TAIL, never the whole.
 
         A note grows tail-only, and reading it whole is needless almost always: the
@@ -3181,14 +3292,25 @@ class PairSession:
         always cuts on the record edge, stating outright whether it cut — or the reader
         takes the tail for the whole text. `limit` aliases `tail_lines` (the
         pair_read/transcript habit).
+
+        The budget is in TOKENS, and that is the point. The line budget it replaced
+        (120 lines) cost 3 166 to 5 122 tokens on the live room's four working notes:
+        a line of Russian prose is not a fixed number of tokens, so a note of long
+        lines cost four times a note of short ones, and the reader could not tell in
+        advance which one it had opened. `token_budget` bounds what the answer costs
+        whatever the note holds, and the answer says which budget bound it.
         """
         if limit is not None: tail_lines = limit
+        if tail_lines is None: tail_lines = NOTE_READ_DEFAULT
         kind = (kind or "").strip()
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}", kind):
             raise ProtocolError("`kind` must be a short slug: letters, digits, dot, dash, underscore.")
         if not isinstance(tail_lines, int) or tail_lines < 1:
             raise ProtocolError("`tail_lines` must be a positive integer.")
+        if not isinstance(token_budget, int) or token_budget < 1:
+            raise ProtocolError("`token_budget` must be a positive integer.")
         tail_lines = min(tail_lines, NOTE_READ_MAX)
+        token_budget = min(token_budget, NOTE_READ_TOKEN_MAX)
         path = self.store.notes_root / f"{kind}.md"
         if not path.is_file():
             raise ProtocolError(f"no note `{kind}`")
@@ -3197,8 +3319,8 @@ class PairSession:
         # Count BEFORE cutting: or total_lines would equal returned_lines, and the cut
         # mark would turn useless.
         available = len(body)
-        truncated = available > tail_lines
-        if truncated:
+        cut_by_lines = available > tail_lines
+        if cut_by_lines:
             cut = len(body) - tail_lines
             while cut < len(body) and not body[cut].startswith("## "):
                 cut += 1
@@ -3216,14 +3338,34 @@ class PairSession:
                 else:
                     body = everything[starts[-1]:]
                 cut = available - len(body)
+        # The token budget over the line window: two ceilings, and the answer says
+        # which one bound it. Whole records only — a half record reads as a whole one.
+        records = split_records(body)
+        kept, _ = fit_records_to_budget(records, token_budget)
+        cut_by_tokens = len(kept) < len(records)
+        body = [line for record in kept for line in record]
+        text = "\n".join(body)
+        tokens = estimate_tokens(text)
+        if kept and tokens > token_budget:
+            # Even the newest record is over the budget. It comes whole or not at all:
+            # splitting a record to fit the budget would cost the reader the truth.
+            budget_applied = "record"
+        elif cut_by_tokens:
+            budget_applied = "tokens"
+        elif cut_by_lines:
+            budget_applied = "lines"
+        else:
+            budget_applied = "none"
         # total_lines sizes the READABLE tail, not the file: or with no cut returned_lines
         # would mismatch total_lines over the service blank line, with "cut" reading false.
         # would mismatch total_lines over the service blank line, with "cut" reading false.
         # The on-disk file size is its own field, to keep it visible too.
         return {"kind": kind, "total_lines": available, "returned_lines": len(body),
-                "truncated": truncated, "tail_lines": tail_lines,
+                "truncated": len(body) < available, "tail_lines": tail_lines,
+                "token_budget": token_budget, "tokens": tokens,
+                "budget_applied": budget_applied,
                 "file_lines": len(lines),
-                "text": "\n".join(body)}
+                "text": text}
 
     def tool_pair_note(self, kind: str, text: str, head: str | None = None) -> dict[str, Any]:
         """Append a durable note: a plan, a decision, a finding, a verdict.
@@ -3617,7 +3759,10 @@ def tool_definitions() -> list[dict[str, Any]]:
                 "cannot close while any task is open, so a task added mid-round cannot be "
                 "forgotten: either it gets done, or it gets dropped with a reason on the "
                 "record. The critic adds tasks it discovered; only the writer closes them, "
-                "because implementing them is the writer's job (PROTOCOL.md 4)."
+                "because implementing them is the writer's job (PROTOCOL.md 4). "
+                "action=\"list\" answers with the OPEN tasks and the counts (open/done/dropped) "
+                "— the whole history costs 29 784 tokens per call on a room with 137 tasks, "
+                "and it stays reachable behind scope=\"history\"."
             ),
             "inputSchema": {
                 "type": "object",
@@ -3628,6 +3773,21 @@ def tool_definitions() -> list[dict[str, Any]]:
                     "text": {"type": "string", "description": "What to do. Required for add."},
                     "reason": {"type": "string",
                                "description": "Required for drop, and it may not be empty."},
+                    "scope": {
+                        "type": "string", "enum": ["open", "history"], "default": "open",
+                        "description": (
+                            "For list: which window to answer with. \"open\" (default) is the "
+                            "tasks still open; \"history\" is every task, closed ones included."
+                        ),
+                    },
+                    "limit": {
+                        "type": "integer", "minimum": 1,
+                        "description": "For list: how many tasks to return. Omit for all of them.",
+                    },
+                    "offset": {
+                        "type": "integer", "minimum": 0, "default": 0,
+                        "description": "For list: how many tasks to skip before the window starts.",
+                    },
                 },
                 "required": ["action"],
             },
@@ -3711,20 +3871,67 @@ def tool_definitions() -> list[dict[str, Any]]:
             },
         },
         {
+            "name": "pair_facts",
+            "description": (
+                "The facts anchor: key → value records of what the round stands on — the task, "
+                "the decision in force, the blocker, the branch. A compaction keeps 39 513 to "
+                "49 131 tokens of prose alive; a fact costs a few tokens and survives the reset. "
+                "The store holds 500 tokens; a write that would cross it is refused, never "
+                "trimmed. Any agent may set a fact; dropping and clearing are the writer's."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "action": {"type": "string", "enum": ["set", "list", "drop", "clear"]},
+                    "key": {"type": "string",
+                            "description": "Short slug, for example blocker or decision."},
+                    "value": {"type": "string",
+                              "description": "The fact itself. Required for set."},
+                },
+                "required": ["action"],
+            },
+        },
+        {
             "name": "pair_note_index",
             "description": (
-                "List every note with its size, entry count and freshness, largest first. Use this "
+                "List the notes with their size, entry count and freshness, freshest first, and the "
+                "room's totals (how many notes, how many bytes, which one is the biggest). Use this "
                 "before deciding what to read: a single note can cost ~19000 tokens in full, and this "
-                "listing costs none of the content. Read notes with pair_note_read, not with a file read."
+                "listing costs none of the content. Read notes with pair_note_read, not with a file "
+                "read. The listing shows the newest notes by default — the whole index of 229 notes "
+                "cost 8065 tokens of metadata — and the rest stays behind scope=\"largest\" or a "
+                "bigger limit."
             ),
-            "inputSchema": {"type": "object", "properties": {}, "required": []},
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "limit": {
+                        "type": "integer", "minimum": 1, "default": NOTE_INDEX_DEFAULT,
+                        "description": "How many notes to list.",
+                    },
+                    "scope": {
+                        "type": "string", "enum": ["fresh", "largest"], "default": "fresh",
+                        "description": (
+                            "Which notes to list: \"fresh\" (newest first, the default) or "
+                            "\"largest\" (biggest first)."
+                        ),
+                    },
+                    "offset": {
+                        "type": "integer", "minimum": 0, "default": 0,
+                        "description": "How many notes to skip before the window starts.",
+                    },
+                },
+                "required": [],
+            },
         },
         {
             "name": "pair_note_read",
             "description": (
                 "Read the TAIL of a note, never the whole file. Notes only ever grow at the tail, so "
                 "the recent entries are what matter. The answer is cut at an entry boundary and says "
-                "whether it was truncated, so a truncated tail is never mistaken for the full note."
+                "whether it was truncated, so a truncated tail is never mistaken for the full note. "
+                "The cost is bounded in tokens: a 120-line tail of Russian prose cost 3166 to 5122 "
+                "tokens, and the budget now holds whatever the note is written in."
             ),
             "inputSchema": {
                 "type": "object",
@@ -3733,12 +3940,20 @@ def tool_definitions() -> list[dict[str, Any]]:
                     "tail_lines": {
                         "type": "integer",
                         "description": (
-                            f"Approximate tail size to return. Default {NOTE_READ_DEFAULT}, "
-                            f"capped at {NOTE_READ_MAX}."
+                            f"Line window to return. Default {NOTE_READ_DEFAULT}, capped at "
+                            f"{NOTE_READ_MAX}. The token budget applies on top of it."
                         ),
                         "minimum": 1,
                     },
                     "limit": {"type": "integer", "description": "Alias for tail_lines.", "minimum": 1},
+                    "token_budget": {
+                        "type": "integer", "minimum": 1, "default": NOTE_READ_TOKEN_BUDGET,
+                        "description": (
+                            f"What the answer may cost, in tokens. Default {NOTE_READ_TOKEN_BUDGET}, "
+                            f"capped at {NOTE_READ_TOKEN_MAX}. The cut lands on a record edge, never "
+                            "inside a record."
+                        ),
+                    },
                 },
                 "required": ["kind"],
             },
@@ -3797,7 +4012,8 @@ HANDLERS = {
     "pair_task": lambda session, args: session.tool_pair_task(**args),
     "pair_evidence": lambda session, args: session.tool_pair_evidence(**args),
     "pair_note": lambda session, args: session.tool_pair_note(**args),
-    "pair_note_index": lambda session, args: session.tool_pair_note_index(),
+    "pair_note_index": lambda session, args: session.tool_pair_note_index(**args),
+    "pair_facts": lambda session, args: session.tool_pair_facts(**args),
     "pair_note_read": lambda session, args: session.tool_pair_note_read(**args),
     "pair_digest": lambda session, args: session.tool_pair_digest(**args),
     "pair_transcript": lambda session, args: session.tool_pair_transcript(**args),
