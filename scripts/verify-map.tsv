@@ -107,6 +107,9 @@ cli-profiles.json	installer-subset
 scripts/i18n_apply.py	i18n-selftest
 scripts/i18n_extract.py	i18n-selftest
 scripts/i18n_self_test.py	i18n-selftest
+scripts/merge-audit-trail.py	merge-audit-trail
+scripts/merge-audit-trail_test.py	merge-audit-trail
+scripts/merge-audit-baseline.tsv	merge-audit-trail
 scripts/	scripts-check
 docs/	docs-check
 mcp/pair_mailbox/wake_opencode.py	wake-api

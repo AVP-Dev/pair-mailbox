@@ -919,6 +919,18 @@ PR merging is gated by machine rules rather than prompt agreements:
    with no checks reads as a green PR. Round 130 lost a branch to exactly this:
    PR #76 was unmergeable, had zero checks, and was closed. The next branch
    comes from the merged master, never from the previous round's branch.
+8. **The merge trail is audited mechanically.**
+   `scripts/merge-audit-trail.py` compares the PRs merged on the remote with the
+   journal's merge records — `pr_merged`, `pr_merge_repaired`, `pr_merge_forced`,
+   read from the active transcript AND its rotated archives — and fails on a
+   merge the journal knows nothing about. The historical debt is named in
+   `scripts/merge-audit-baseline.tsv` (59 PRs, in two strata: 1–26 predate the
+   gate, 27–60 predate the journal's recording), and it is never healed by
+   writing an event into the past — that would forge the journal. The check
+   fails closed: without `gh`, without an answer, or without a journal it fails
+   rather than reporting success. It is a local audit, not a CI layer: the
+   journal is the pair's state, not the repository's. Round 139 added it after
+   83 PRs had been merged and 24 of them had a record.
 
 ### 10h. Server Runtime Freshness & Supervisor Parking
 
