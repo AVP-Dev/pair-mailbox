@@ -29,52 +29,56 @@ class TestServerFreshness(unittest.TestCase):
         self.assertEqual(server_freshness.proc_available(),
                          Path("/proc").is_dir())
 
-    def test_fresh_when_start_time_after_files(self) -> None:
+    def test_fresh_when_only_the_mtime_moved(self) -> None:
+        """Round 138: a merge rewrites the files with the same bytes.
+
+        The old rule compared mtimes with the server's start, so the merge that
+        brought the round's own code called the fresh server stale — twice, both
+        times at a round's close.
+        """
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             f1 = tmp_path / "foo.py"
             f1.write_text("x = 1\n", encoding="utf-8")
-            st = f1.stat().st_mtime
-            
-            # The process starts AFTER the files are created
+            snap = server_freshness.snapshot_code(tmp_path)
+            # a checkout writes the same bytes and gives them a new mtime
+            f1.write_text("x = 1\n", encoding="utf-8")
+            later = time.time() + 60.0
+            os.utime(f1, (later, later))
             verdict = server_freshness.check_server_freshness(
-                code_dir=tmp_path, process_start_ts=st + 10.0
-            )
-            self.assertTrue(verdict["fresh"])
-            self.assertEqual("foo.py", verdict["newest_code_file"])
+                code_dir=tmp_path, snapshot=snap)
+            self.assertTrue(verdict["fresh"], verdict["why"])
             self.assertEqual([], verdict["stale_files"])
             self.assertIn("fresh", verdict["why"])
 
-    def test_stale_when_files_newer_than_start(self) -> None:
+    def test_stale_when_the_content_differs(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             f1 = tmp_path / "bar.py"
             f1.write_text("y = 2\n", encoding="utf-8")
-            st = f1.stat().st_mtime
-
-            # The process starts LONG BEFORE the files change (> 2s)
+            snap = server_freshness.snapshot_code(tmp_path)
+            f1.write_text("y = 3\n", encoding="utf-8")
             verdict = server_freshness.check_server_freshness(
-                code_dir=tmp_path, process_start_ts=st - 100.0
-            )
+                code_dir=tmp_path, snapshot=snap)
             self.assertFalse(verdict["fresh"])
-            self.assertEqual("bar.py", verdict["newest_code_file"])
             self.assertEqual(["bar.py"], verdict["stale_files"])
             self.assertIn("Restart the MCP server", verdict["why"])
-            self.assertGreater(verdict["lag_seconds"], 90.0)
 
-    def test_tolerance_window_considers_nearly_simultaneous_fresh(self) -> None:
+    def test_stale_when_the_content_differs_and_the_mtime_did_not(self) -> None:
+        """The mtime is not the criterion: an edit that keeps the old timestamp
+        still leaves the old bytecode in memory."""
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             f1 = tmp_path / "baz.py"
             f1.write_text("z = 3\n", encoding="utf-8")
-            st = f1.stat().st_mtime
-
-            # A 1-second gap lands inside the 2.0-second tolerance
+            snap = server_freshness.snapshot_code(tmp_path)
+            f1.write_text("z = 4\n", encoding="utf-8")
+            old = time.time() - 600.0
+            os.utime(f1, (old, old))
             verdict = server_freshness.check_server_freshness(
-                code_dir=tmp_path, process_start_ts=st - 1.0
-            )
-            self.assertTrue(verdict["fresh"])
-            self.assertEqual([], verdict["stale_files"])
+                code_dir=tmp_path, snapshot=snap)
+            self.assertFalse(verdict["fresh"])
+            self.assertEqual(["baz.py"], verdict["stale_files"])
 
 
 class TestServerFreshnessWiring(PairTestCase):
@@ -181,20 +185,19 @@ class TestRuntimeOnlyStaleness(unittest.TestCase):
         server_fresh=false with server_stale_files=["test_origin_guard.py"] —
         which gates pair_advance (server.py:2364) over a runtime nobody touched.
         The gate was correct about RUNTIME only; the list that fed it was not."""
-        past = time.time() - 600
-        os.utime(self.dir / "server.py", (past, past))
-        os.utime(self.dir / "composer.py", (past, past))
-        self._touch("test_origin_guard.py", time.time())
-        stale = server_freshness.list_stale_files(code_dir=self.dir,
-                                                  process_start_ts=time.time() - 5)
+        snap = server_freshness.snapshot_code(self.dir)
+        (self.dir / "test_origin_guard.py").write_text("# touched\n", encoding="utf-8")
+        stale = server_freshness.list_stale_files(code_dir=self.dir, snapshot=snap)
         self.assertNotIn("test_origin_guard.py", stale,
-                         "a newer test file is not a stale server")
+                         "a changed test file is not a stale server")
         verdict = server_freshness.check_server_freshness(
-            code_dir=self.dir, process_start_ts=time.time() - 5)
+            code_dir=self.dir, snapshot=snap)
         self.assertTrue(verdict["fresh"],
                         f"a test-only commit must not read as stale: {verdict}")
 
-    def test_newer_test_file_does_not_stale_the_server(self) -> None:
+    def test_the_newest_runtime_file_skips_test_files(self) -> None:
+        """The mtime helper names the newest RUNTIME source — the rule pairrestart
+        uses; a test file is not runtime code."""
         past = time.time() - 600
         os.utime(self.dir / "server.py", (past, past))
         os.utime(self.dir / "composer.py", (past, past))
@@ -203,7 +206,7 @@ class TestRuntimeOnlyStaleness(unittest.TestCase):
         self.assertIn(name, ("server.py", "composer.py"),
                      f"the newest RUNTIME source must be one of them, got {name!r}")
 
-    def test_newer_runtime_file_still_stales_the_server(self) -> None:
+    def test_the_newest_runtime_file_is_the_newer_one(self) -> None:
         past = time.time() - 600
         os.utime(self.dir / "server.py", (past, past))
         os.utime(self.dir / "composer.py", (past, past))
@@ -211,6 +214,14 @@ class TestRuntimeOnlyStaleness(unittest.TestCase):
         newest, name = server_freshness.latest_code_mtime(self.dir)
         self.assertEqual(name, "review.py",
                          "a newer runtime source must still be the newest")
+
+    def test_a_changed_runtime_file_stales_the_server(self) -> None:
+        """The content rule: runtime code that changed on disk is stale, whatever
+        its mtime says."""
+        snap = server_freshness.snapshot_code(self.dir)
+        (self.dir / "review.py").write_text("w = 9\n", encoding="utf-8")
+        stale = server_freshness.list_stale_files(code_dir=self.dir, snapshot=snap)
+        self.assertEqual(["review.py"], stale)
 
     def test_pairrestart_and_freshness_agree(self) -> None:
         """One rule, one answer: both implementations must name the SAME newest

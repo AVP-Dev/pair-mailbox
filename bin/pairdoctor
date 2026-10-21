@@ -101,8 +101,8 @@ def freshness_lines(targets, code_dir=None):
     _start = min(_pids) if _pids else None
     if _start is None:
         return [("warn", "freshness check skipped — no live server pid in state")]
-    _stale = _fresh.list_stale_files(_fresh.server_code_dir() if code_dir is None else code_dir,
-                                     process_start_ts=_start)
+    _stale = _fresh.list_newer_than_start(_fresh.server_code_dir() if code_dir is None else code_dir,
+                                          process_start_ts=_start)
     if _stale:
         return [("warn", "server code newer than server start: " + ", ".join(_stale) +
                  " — restart MCP servers (serve.sh)")]

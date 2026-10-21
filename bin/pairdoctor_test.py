@@ -132,7 +132,7 @@ class TestRound86Fixes(unittest.TestCase):
     def test_freshness_section_present(self) -> None:
         text = (ROOT / "bin" / "pairdoctor").read_text(encoding="utf-8")
         self.assertIn("[6] freshness", text)
-        self.assertIn("list_stale_files", text)
+        self.assertIn("list_newer_than_start", text)
 
     def test_freshness_compares_against_servers(self) -> None:
         """The section must count from the server start, not the doctor’s.
@@ -142,9 +142,9 @@ class TestRound86Fixes(unittest.TestCase):
         always empty, the section green on a stale server."""
         text = (ROOT / "bin" / "pairdoctor").read_text(encoding="utf-8")
         self.assertIn("process_start_ts=", text)
-        # no bare list_stale_files() without an argument next to the call
+        # no bare list_newer_than_start() without an argument next to the call
         import re
-        bare = [m for m in re.finditer(r"list_stale_files\(\)", text)]
+        bare = [m for m in re.finditer(r"list_newer_than_start\(\)", text)]
         self.assertEqual([], bare, "a bare call counts the doctor start, not the servers")
 
     def test_freshness_section_calls_freshness_lines(self) -> None:
