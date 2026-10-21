@@ -415,8 +415,13 @@ The table names the adapters the code SHIPS, not the ones it could grow. The pil
 `mcp/pair_mailbox/wake_opencode.py`, which posts to the host API of the opencode server that
 holds the pair's connection — the session that server is serving, checked against this
 project's directory. The recorded session id is the fallback, not the primary name.
-Every other CLI falls back to the ring: a `tmux display-message` popup, then the mailbox
-letter. The `pair-guard` plugin (`.opencode/plugins/pair-guard.ts`) is NOT a wake path
+Every other CLI falls back to the ring: the neighbour's composer gets a doorbell — the
+server's own ring shape, `pair: message from pairpilot. Read pair_read.` — and a `tmux
+display-message` popup is what a pane that refuses gets, then the mailbox letter. The
+popup alone was not enough: tmux draws it in its message area, OUTSIDE the pane's rendered
+region, and a full-screen TUI (OpenCode, agy, omp) owns that region and repaints it, so
+the wake never reached the agent's screen. The `pair-guard` plugin
+(`.opencode/plugins/pair-guard.ts`) is NOT a wake path
 — it refreshes the authority brief inside the agent's own system prompt when the shared
 state changes, and it pushes nothing into an idle session. A row claiming an adapter the
 pilot cannot call sends the operator looking for a wake path that does not exist, so the
@@ -424,18 +429,21 @@ table is guarded by a test against the pilot's own map.
 
 | CLI | adapter | if unsupported |
 |---|---|---|
-| OpenCode (`opencode`) | host API — `wake_opencode.py` | reminder only, mailbox still delivered |
-| Antigravity (`agy`) | none | reminder only |
-| Claude (`claude`) | none | reminder only |
-| Codex (`codex`) | none | reminder only |
-| Pi (`pi`) | none | reminder only |
-| OMP (`omp`) | none | reminder only |
+| OpenCode (`opencode`) | host API — `wake_opencode.py` | doorbell, then popup, mailbox still delivered |
+| Antigravity (`agy`) | none | doorbell, then popup |
+| Claude (`claude`) | none | doorbell, then popup |
+| Codex (`codex`) | none | doorbell, then popup |
+| Pi (`pi`) | none | doorbell, then popup |
+| OMP (`omp`) | none | doorbell, then popup |
 
 The supervisor nudges a role that has unread mail and has gone quiet — once per unread
-batch, not every tick, recorded as `pilot_unread_nudge`. Reading resets the nudge, so the
-next letter wakes again; a hanging `expects_reply` repeats every 2h until answered. That
-nudge goes through the same unreliable delivery, so treat it as best-effort. The pull is
-what actually works.
+batch, not every tick, recorded as `pilot_unread_nudge` (with `how`: `ring` when the
+doorbell landed, `queue` when the text waited for a free composer). Reading resets the
+nudge, so the next letter wakes again; a hanging `expects_reply` repeats every 2h until
+answered. One letter produces ONE message in the peer's pane: the doorbell and the
+queued push are two doors to the same peer, and the ring that lands takes the queue's
+place. That nudge goes through the same unreliable delivery, so treat it as
+best-effort. The pull is what actually works.
 
 ### 7c. Two gates in front of the supervisor's typing
 
@@ -447,7 +455,7 @@ unread mail" nudge into that shell every 15 seconds for 19 hours: 1314
 not one nudge anyone could read. The human's verdict on that state was that the system was
 broken, and a state nobody can read and nobody can disprove is exactly that.
 
-So `Pilot.nudge` is the single door every spontaneous push passes, and it holds two gates
+So `Pilot.nudge` is the door every spontaneous REPORT passes, and it holds two gates
 (`bin/pairpilot`):
 
 1. **The role's own CLI is there.** `push_target_alive` asks `pane_role_pid` — is
@@ -457,6 +465,21 @@ So `Pilot.nudge` is the single door every spontaneous push passes, and it holds 
 2. **There is a reason.** `push_allowed` reads the `.pair/ask` file. Creating it is the
    trigger: a human who wants the pair woken, a hook, an agent. Consumed once spent
    (`consume_trigger`), so it cannot re-arm itself. No file means quiet by default.
+
+The RING is the second door, and it is narrower than the nudge on purpose. It is a
+doorbell: it types a CAUSE into the neighbour's composer (`pair: message from pairpilot.
+Read pair_read. (1 unread)`) and never the letter, never the report. It answers "you are
+not alone in here", and the peer reads the mailbox itself. Its guards are the physical
+ones — the role's own CLI in the pane, the pane provably ours, the composer visible and
+free — plus a five-minute throttle per role; the ask trigger is NOT its gate, because a
+cause is not a report and does not spend the trigger. The report text stays behind the
+trigger exactly as before. A doorbell that cannot land (a busy composer, a pane that is
+not ours, a shell where a CLI used to be) falls back to the tmux popup and leaves the
+wake file to the escalation ladder.
+
+The pilot's own leftovers are cleaned up: the doorbell wears the server's ring shape, so
+`pointers.own_pointer_length` recognises it, and the pilot erases its own before typing
+again. Anything else in that composer is somebody else's and stays untouched.
 
 The mailbox path needs neither gate and is unaffected: the pull is the guarantee, the push
 is the accelerator.
