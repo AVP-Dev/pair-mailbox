@@ -171,6 +171,23 @@ class TestVerifyChangedRouting(unittest.TestCase):
         self.assertNotIn("scripts-check", selected,
                          f"the directory prefix must not win: got {selected!r}")
 
+    def test_the_offline_supervisor_row_runs_with_the_file_it_covers(self) -> None:
+        """Round 137: the new supervisor-offline row was in no fast gate.
+
+        The full gate runs it, but the per-commit gate (verify-changed.sh) runs
+        only the suites the map names for the changed paths - and the map named
+        `supervisor` alone, because a path selects ONE suite (the longest
+        matching row wins). The second environment therefore reached the full
+        gate only: a change to the suite could break the offline row, and no
+        fast gate would have said so.
+        """
+        selected = self._select("bin/pairpilot_test.py")
+        self.assertIn("supervisor", selected,
+                      f"the suite's own row must still run: got {selected!r}")
+        self.assertIn("supervisor-offline", selected,
+                      f"the offline supervisor row must run with its file: "
+                      f"got {selected!r}")
+
     def test_a_narrower_directory_row_beats_a_wider_one(self) -> None:
         """skills/ holds several independent subsystems, so it needs a row
         narrower than itself.

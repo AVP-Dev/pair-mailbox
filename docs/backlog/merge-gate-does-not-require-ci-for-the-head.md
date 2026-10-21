@@ -46,7 +46,7 @@ a commit, unless it names the commit.
 **What to do.**
 
 - The evidence needs the head it was measured on, and the gate needs to
-  compare it. `session_facts` already writes the head into `.pair/facts.json`
+  compare it. `session_facts` already writes the head into `.pair/tree-facts.json`
   and `scripts/verify-ground-truth.py:24` already refuses a summary whose
   head differs from the facts — the same comparison, in the same shape, is
   what the merge gate is missing.

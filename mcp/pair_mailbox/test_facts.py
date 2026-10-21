@@ -79,6 +79,33 @@ class TestFactsStore(PairTestCase):
         self.assertIn("blocker", text)
         self.assertIn("waiting for the verdict", text)
 
+    def test_a_tree_facts_write_does_not_wipe_the_anchor(self) -> None:
+        """Round 137: the anchor and the tree-facts collector shared one file.
+
+        The close ritual runs the collector every round, so a shared file meant
+        the anchor was wiped by the very ritual that closes the round: the
+        anchor was empty by the next morning, and the facts anchor - the
+        feature that exists to survive a reset - held nothing. Now the anchor
+        owns `facts.json` and the collector owns `tree-facts.json`.
+        """
+        import session_facts
+
+        self.writer.tool_pair_facts(action="set", key="blocker",
+                                    value="the anchor holds this")
+        state_dir = Path(self.store.root)
+        session_facts.save_facts(state_dir, {
+            "version": 1, "head": "0" * 40, "dirty_hash": "0" * 16,
+            "touched": [], "untracked": [], "diff_stat": "",
+            "mock_flags": [], "test_runs": []})
+        answer = self.writer.tool_pair_facts(action="list")
+        self.assertEqual(1, answer["count"],
+                         "the collector's write wiped the anchor")
+        self.assertIn("the anchor holds this", answer["text"])
+        self.assertTrue((state_dir / "facts.json").exists(),
+                        "the anchor's file is missing")
+        self.assertTrue((state_dir / "tree-facts.json").exists(),
+                        "the collector's file is missing")
+
     def test_bad_arguments_are_refused(self) -> None:
         self.assertRefused(self.writer.tool_pair_facts, "set", key="../escape", value="x")
         self.assertRefused(self.writer.tool_pair_facts, "set", key="empty", value="")

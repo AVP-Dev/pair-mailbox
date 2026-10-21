@@ -102,6 +102,7 @@ session-finalizer	positive	1	bash skills/session-finalizer/tests/run.sh
 i18n-selftest	positive	1	python3 scripts/i18n_self_test.py
 verification-profile	positive	1	python3 mcp/pair_mailbox/test_verification_profile.py
 verify-map	positive	1	python3 mcp/pair_mailbox/test_verify_map.py
+verify-project	positive	1	python3 mcp/pair_mailbox/test_verify_project.py
 state-resolve	positive	1	python3 mcp/pair_mailbox/test_state_resolve.py
 
 # --- integration: slow but mandatory before finalization ---

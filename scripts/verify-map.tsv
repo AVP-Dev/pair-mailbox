@@ -134,6 +134,12 @@ follow:mcp/pair_mailbox/pointers.py	protocol
 follow:mcp/pair_mailbox/read_delivery.py	protocol
 follow:docs/PROTOCOL.md	waiting-contract
 follow:docs/PROTOCOL.ru.md	waiting-contract
+# Round 137: the supervisor suite runs in TWO environments - with the host tmux
+# server in reach, and with it shadowed (the supervisor-offline row). The map
+# names one suite per path, so the second environment reached the full gate
+# only: a change to the suite could break the offline row and no fast gate said
+# so. The pin runs it on top of the file's own suite.
+follow:bin/pairpilot_test.py	supervisor-offline
 mcp/pair_mailbox/test_protocol_authority.py	protocol
 mcp/pair_mailbox/test_protocol_gates.py	protocol
 mcp/pair_mailbox/test_protocol_tui.py	protocol
@@ -146,6 +152,9 @@ mcp/pair_mailbox/test_protocol_pins.py	protocol
 mcp/pair_mailbox/test_protocol_transport.py	protocol
 mcp/pair_mailbox/test_verification_profile.py	verification-profile
 mcp/pair_mailbox/test_verify_map.py	verify-map
+mcp/pair_mailbox/test_verify_project.py	verify-project
+scripts/verify-project.sh	verify-project
+scripts/verify-lock.sh	verify-project
 mcp/pair_mailbox/state_resolve.py	state-resolve
 mcp/pair_mailbox/test_state_resolve.py	state-resolve
 scripts/verification-profile.tsv	verification-profile

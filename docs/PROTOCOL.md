@@ -211,10 +211,14 @@ Green unit tests once certified an unconnected UI: the browser still served a
 static collection while buttons sent hardcoded mock ids (round 81). The contour
 below makes that class of fiction machine-checkable. Chain, in order:
 
-1. **Facts** (`mcp/pair_mailbox/session_facts.py` → `facts.json`): deterministic
-   snapshot — head, `dirty_hash`, touched/untracked paths, added-line mock flags,
-   AST `stub-body` flags (empty `pass` / `...` / `raise NotImplementedError`
-   bodies, `@abstractmethod` excluded), recorded test runs.
+1. **Tree facts** (`mcp/pair_mailbox/session_facts.py` → `.pair/tree-facts.json`):
+   deterministic snapshot — head, `dirty_hash`, touched/untracked paths, added-line
+   mock flags, AST `stub-body` flags (empty `pass` / `...` / `raise
+   NotImplementedError` bodies, `@abstractmethod` excluded), recorded test runs.
+   The file is its own: the facts anchor (§9c) writes `.pair/facts.json`, a
+   different shape. The two shared one file until round 137, and each wiped the
+   other — the close ritual runs this collector every round, so the anchor was
+   empty by the next morning.
 2. **Rules** (`anti-mock.json`, versioned at the repo root): regex patterns plus
    the `detect_stubs` switch. Missing or broken file falls back to the strict
    built-in default; the file itself is gate-exempt (it describes the check).
@@ -225,7 +229,7 @@ below makes that class of fiction machine-checkable. Chain, in order:
    facts + `ledger.jsonl` slices + verdict. Only composes, never invents; emits
    the `files`/`tests` keys the gate reads.
 5. **Gate** (`scripts/verify-ground-truth.py`): every claimed file and test run
-   must exist in `facts.json`; head and `dirty_hash` must match. Any mismatch
+   must exist in the tree facts; head and `dirty_hash` must match. Any mismatch
    blocks (exit 1), including a lying summary that claims files git never saw.
 6. **Receipt** (`mcp/pair_mailbox/receipt.py`): `done` refuses to write
    `.pair/RECEIPT-<round>.md` while combat mocks stand (`GroundTruthBlocked`).
@@ -666,7 +670,10 @@ A compaction in the harness removes about 90 % of the context and leaves 39 513 
 session. It cannot be queried, diffed or dropped. The pair's own anchor is structured
 and small: `pair_facts` keeps key → value records of what the round stands on (the
 task, the decision in force, the blocker, the branch) in `.pair/facts.json`, under a
-500-token budget.
+500-token budget. That file is the anchor's own: the tree facts of §5d live in
+`.pair/tree-facts.json`. The two shared one file until round 137, and each wiped
+the other — the close ritual runs the collector every round, so the anchor was
+empty by the next morning.
 
 - any agent may set a fact, like a note; the writer owns the pruning (`drop`,
   `clear`);

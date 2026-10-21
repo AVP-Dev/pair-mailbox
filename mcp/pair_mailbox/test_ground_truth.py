@@ -70,7 +70,7 @@ class TestGroundTruthGate(unittest.TestCase):
             state = Path(tmp)
             summary_path = state / "summary.json"
             summary_path.write_text("{}", encoding="utf-8")
-            bad = state / "facts.json"
+            bad = state / "tree-facts.json"
             bad.write_text("{nope", encoding="utf-8")
             proc = subprocess.run(
                 ["python3", str(GATE), str(summary_path), str(bad)],
