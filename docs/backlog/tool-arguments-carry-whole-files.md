@@ -58,6 +58,19 @@ Two halves, one in this repository and one in the harness:
 - the session log holds one copy of each call payload — a test that counts the
   occurrences of a known payload string in the log sees one, not two.
 
+## What round 135 did, and what is left
+
+**Done (the repository's half).** The pair skills now say what the tools already
+allowed: read a file by range, never hand a whole file back as a call argument
+(`skills/pair-work/SKILL.md` §7c and its Russian mirror). The guidance is in place;
+what it buys depends on the agents reading it.
+
+**Left (the harness's half).** The `tool_execution_start` duplication — 330 999
+tokens in the measured session, 10,9 % of the context — lives in the harness's own
+session store, not in this repository. Storing the call once, or storing an event id
+instead of the payload, is a change in the harness. It stays here until that
+project takes it, and the red-proof above still names the property to check.
+
 ## Severity
 
 medium — the cost is invisible from the tool side: every tool did exactly what it was
