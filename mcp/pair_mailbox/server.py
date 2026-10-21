@@ -2755,6 +2755,14 @@ class PairSession:
         if not str(value or "").strip():
             raise ProtocolError("`value` is required: the machine's own output, not a verdict.")
 
+        # The commit the measurement was made on. The merge gate compares it with the
+        # head it is about to merge: a record that names no commit keeps vouching for
+        # every commit that comes after it in the same round (the card:
+        # merge-gate-does-not-require-ci-for-the-head). Outside a git repo there is no
+        # head to name, and the record says so instead of inventing one.
+        from review import git_head
+        measured_head = git_head(self.store.project_root)
+
         def apply(state: dict[str, Any]) -> dict[str, Any]:
             # Which task the fact belongs to. Default — the single open one: usually one
             # runs, and asking every time would force the agent to repeat what the list implies.
@@ -2767,6 +2775,9 @@ class PairSession:
                 "kind": kind,
                 "value": str(value).strip(),
                 "ok": bool(ok),
+                # The commit this fact was measured on. The merge gate compares it
+                # with the head it merges; a fact without one vouches for nothing.
+                "head": measured_head,
                 "note": str(note or "").strip(),
                 "task": owner,
                 # A snapshot of open tasks at record time. With several, the fact binds to none —

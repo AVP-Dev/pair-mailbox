@@ -886,7 +886,13 @@ PR merging is gated by machine rules rather than prompt agreements:
 3. **Preconditions for merging (`check_pr_merge`)**:
    - **Phase constraint**: Phase must be strictly `verify` (merging during `implement`, `plan`, or `scoping` is refused).
    - **Environment**: Must be a valid git repository (fail-closed on merge path: "cannot verify: not a git repo").
-   - **Test evidence**: Current round must have passing test evidence (`kind="test"`, `ok=True`).
+   - **Test evidence**: Current round must have passing test evidence (`kind="test"`, `ok=True`), and that
+     evidence must name the commit it was measured on — the recorded `head` must equal the head being
+     merged. A record bound to the round alone kept vouching for every later commit of that round: the
+     round number does not move when the head does (round 138).
+   - **The commit being merged**: the gate asks GitHub for the PR's head (`gh pr view --json headRefOid`)
+     and refuses when it is not the local HEAD. The merge ships the PR's head, so a gate that looked at
+     another commit would vouch for code nobody checked here (round 138). No answer from GitHub, no merge.
    - **Peer review approval**: A non-stale `approve` verdict must exist (`verdict` or `verdict-*` slug).
    - **No self-approval**: The verdict author must NOT be the current writer (`verdict.role != store.writer`).
    - **Staleness check**: Reuses canonical `review.is_stale(...)`. Any code modifications or commits touching reviewed files invalidate the verdict.
@@ -906,6 +912,13 @@ PR merging is gated by machine rules rather than prompt agreements:
    A repair that cannot name what the remote merged is not a repair. Round 115
    needed it: a hand-run `gh pr merge` closed PR #61 and the transcript, at 456
    rows, carried zero merge events — the merge existed, the repo's audit did not.
+7. **The next round's branch is cut from a fresh `origin/master`.**
+   A squash merge drops the round's branch from master's history, so the next
+   commit on that branch lands in an add/add conflict — and a conflicting PR
+   cannot be built into a merge ref, so GitHub reports no checks at all. A PR
+   with no checks reads as a green PR. Round 130 lost a branch to exactly this:
+   PR #76 was unmergeable, had zero checks, and was closed. The next branch
+   comes from the merged master, never from the previous round's branch.
 
 ### 10h. Server Runtime Freshness & Supervisor Parking
 
@@ -914,6 +927,17 @@ PR merging is gated by machine rules rather than prompt agreements:
    - `pair_state` exposes runtime status: `server_fresh: bool` and `server_stale_files: list[str]`.
    - `pair_advance` fail-closed gate: Forward phase transitions and round reopenings (`done` → `implement`) are refused with `ProtocolError` if `server_fresh` is false, requiring server restart (`serve.sh`). Backward recovery steps (`PHASE_BACKWARD`) remain open.
    - `pairpilot` detects stale server processes and records `pilot_server_stale` events in the transcript.
+   - **The comparison is by content, not by mtime.** The gate hashes the runtime sources (the
+     files a server loads, test files excluded) when the process starts, and compares that hash
+     with the files on disk. A merge or a checkout rewrites the mtimes of files whose bytes did
+     not change: round 137's close was blocked twice by that, each time right after a merge that
+     brought the round's own code. The mtime is still reported, and still drives the
+     cross-process callers (the doctor, `pairrestart`) that cannot read another process's
+     snapshot — but the gate's own question is whether the bytes differ.
+   - **Restarting the server from inside a session.** The protocol's remedy is `serve.sh`, and
+     the harness owns the MCP server. When the agent cannot restart the harness, killing the
+     MCP server process is the same remedy: the client spawns a fresh one, which loads the
+     current code. Round 138 measured it twice, both times on the round's own close.
 2. **Supervisor Done Parking & Token Budget Protection**:
    In continuous supervisor mode, once a round reaches `phase: done`, `pairpilot` parks itself (`pilot_parked`) if no open tasks (`pair_task`) and no pending obligations exist:
    - Suppresses silence escalations, repetitive nudges, and note wake file escalations (`poll_wakes`) to prevent token quota waste on idle rounds.

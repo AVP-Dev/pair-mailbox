@@ -262,8 +262,11 @@ To run parallel pairs or avoid context clashes across branches:
 PR merges are enforced by machine rules before git master receives code:
 - Run `bin/pairctl pr merge [pr_id]` — verified gate checking that:
   1. The round phase is strictly `verify`.
-  2. Passing test evidence exists in the round.
-  3. A peer review approval verdict exists from an independent reviewer (self-approval by the writer is refused).
-  4. The review verdict is fresh on current HEAD (no changes or new commits after approval).
+  2. Passing test evidence exists in the round, and that evidence names the head being merged (round 138).
+  3. The PR's head is the local HEAD — the merge ships the PR's head, so a gate that looked at another commit would vouch for code nobody checked (round 138).
+  4. A peer review approval verdict exists from an independent reviewer (self-approval by the writer is refused).
+  5. The review verdict is fresh on current HEAD (no changes or new commits after approval).
 - Bypass: `--force` requires `--reason <explanation>` and is logged to the audit transcript (`pr_merge_forced`).
 - Feature Freeze: Commits or dirty edits during `verify` make the verdict stale, refusing both PR merge and closing the round.
+- **Never merge with a direct `gh pr merge`.** It runs outside the server, so no rule in this repo can refuse it and the journal learns nothing about the merge (PROTOCOL §10g). Round 115 merged that way and had to be repaired by hand.
+- **Cut the next round's branch from a fresh `origin/master`**, never from the previous round's branch. A squash merge drops the round's branch from master's history: the next commit on it lands in an add/add conflict, and its CI never runs — a PR with no checks reads as a green PR.
