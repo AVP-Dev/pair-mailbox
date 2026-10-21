@@ -67,7 +67,21 @@ fi
 if [ -n "$BASE" ]; then
   files=$(git diff --name-only "$BASE" -- . ':!node_modules')
 else
-  files=$( (git diff --name-only -- . ':!node_modules'; git ls-files --others --exclude-standard) | sort -u)
+  # Three lists, because one of them was missing (round 140).
+  #
+  # `git diff` with no commit compares the WORKTREE WITH THE INDEX, so a
+  # change that was already `git add`ed was in neither list: it is not
+  # unstaged, and it is tracked, so it is not "other" either. The gate
+  # printed "nothing to check, the tree is clean" and exited 0 - a green
+  # gate that ran nothing. The map's own test wants the files the map
+  # names to be tracked, so a new file had to be staged before the map's
+  # test passed - and once staged, the gate could not see it. There was no
+  # state in which the per-commit gate covered a new file the map names.
+  #
+  # So the staged changes get their own diff. The union is the honest
+  # direction: a file that is staged for deletion and lives again in the
+  # worktree is still a change to look at.
+  files=$( (git diff --name-only -- . ':!node_modules'; git diff --name-only --cached -- . ':!node_modules'; git ls-files --others --exclude-standard) | sort -u)
 fi
 [ -n "$files" ] || { echo "verify-changed: nothing to check, the tree is clean"; exit 0; }
 suites=""
