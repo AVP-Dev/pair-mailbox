@@ -412,7 +412,9 @@ nothing may depend on one.
 
 The table names the adapters the code SHIPS, not the ones it could grow. The pilot's
 `WAKE_ADAPTERS` (`bin/pairpilot`) has exactly one entry — `opencode` →
-`mcp/pair_mailbox/wake_opencode.py`, which posts to the recorded session's host API.
+`mcp/pair_mailbox/wake_opencode.py`, which posts to the host API of the opencode server that
+holds the pair's connection — the session that server is serving, checked against this
+project's directory. The recorded session id is the fallback, not the primary name.
 Every other CLI falls back to the ring: a `tmux display-message` popup, then the mailbox
 letter. The `pair-guard` plugin (`.opencode/plugins/pair-guard.ts`) is NOT a wake path
 — it refreshes the authority brief inside the agent's own system prompt when the shared

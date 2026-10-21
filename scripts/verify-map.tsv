@@ -116,6 +116,8 @@ scripts/	scripts-check
 docs/	docs-check
 mcp/pair_mailbox/wake_opencode.py	wake-api
 mcp/pair_mailbox/test_wake_opencode.py	wake-api
+mcp/pair_mailbox/opencode_server.py	wake-api
+mcp/pair_mailbox/test_opencode_server.py	wake-api
 anti-mock.json	session-facts
 mcp/pair_mailbox/session_facts.py	session-facts
 mcp/pair_mailbox/test_session_facts.py	session-facts

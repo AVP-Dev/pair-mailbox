@@ -12,8 +12,13 @@ they check.
 """
 from __future__ import annotations
 
+import json
 import os
+import signal
+import subprocess
+import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -225,3 +230,194 @@ class PairTestCase(unittest.TestCase):
         default change broke tests unrelated to the default.
         """
         self.store.mutate(lambda state: state.__setitem__("autonomy", level))
+
+class FakeOpencode:
+    """An opencode server process, with a child, a port and a password.
+
+    The shape the discovery has to find: a process whose command line is the
+    opencode server's, holding a listening socket, with OPENCODE_PASSWORD in
+    its environment, and a child that stands for the pair's own MCP server.
+
+    It is a real process on purpose. The discovery reads /proc, so a mock of
+    /proc would only test the mock; the fake speaks HTTP on a real port with
+    a real basic auth, and the requests it received are on disk for the test
+    to read.
+    """
+
+    SOURCE = r'''
+import base64
+import json
+import os
+import subprocess
+import sys
+import threading
+import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+CONFIG = json.loads(os.environ["FAKE_CONFIG"])
+PASSWORD = os.environ["OPENCODE_PASSWORD"]
+
+
+class Handler(BaseHTTPRequestHandler):
+    def log_message(self, *args):
+        pass
+
+    def _authorized(self):
+        header = self.headers.get("Authorization", "")
+        if not header.startswith("Basic "):
+            return False
+        try:
+            decoded = base64.b64decode(header[6:]).decode()
+        except Exception:
+            return False
+        return decoded == "opencode:" + PASSWORD
+
+    def _send(self, code, payload):
+        # Compact, like the real server's answers: the wake looks for
+        # '"type":"user"' in the body it gets back.
+        body = json.dumps(payload, separators=(",", ":")).encode()
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_GET(self):
+        if not self._authorized():
+            self._send(401, {"error": "unauthorized"})
+            return
+        path = self.path.split("?")[0]
+        if path == "/api/session/active":
+            session = CONFIG.get("active")
+            if not session:
+                self._send(404, {"error": "no active session"})
+                return
+            self._send(200, {"data": session})
+            return
+        if path.startswith("/api/session/"):
+            session_id = path[len("/api/session/"):]
+            session = (CONFIG.get("sessions") or {}).get(session_id)
+            if not session:
+                self._send(404, {"error": "no such session"})
+                return
+            self._send(200, {"data": session})
+            return
+        self._send(404, {"error": "no route"})
+
+    def do_POST(self):
+        if not self._authorized():
+            self._send(401, {"error": "unauthorized"})
+            return
+        length = int(self.headers.get("Content-Length") or 0)
+        body = self.rfile.read(length)
+        with open(CONFIG["log"], "a", encoding="utf-8") as handle:
+            handle.write(json.dumps({"path": self.path,
+                                     "body": body.decode("utf-8", "replace")}) + "\n")
+        self._send(200, {"data": {"type": "user", "payload": {"text": "probe"}}})
+
+
+server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+with open(CONFIG["port_file"], "w", encoding="utf-8") as handle:
+    handle.write(str(server.server_address[1]))
+# Serving in a thread, not in the main one: the pair server asks this server
+# for its active session WHILE the handshake below is waiting for the reply.
+# A single-threaded server would sit on the answer until the handshake timed
+# out, and the two would wait for each other.
+threading.Thread(target=server.serve_forever, daemon=True).start()
+
+mcp_init = CONFIG.get("mcp_init")
+if mcp_init:
+    # The real pair server, spawned HERE so that the process tree is the one
+    # the discovery reads: this fake is its opencode server.
+    child = subprocess.Popen(mcp_init["argv"], stdin=subprocess.PIPE,
+                             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                             text=True)
+    request = {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+               "params": {"protocolVersion": "2024-11-05", "capabilities": {},
+                          "clientInfo": {"name": "probe", "version": "1"}}}
+    child.stdin.write(json.dumps(request) + "\n")
+    child.stdin.flush()
+    reply = child.stdout.readline()
+    with open(CONFIG["reply_file"], "w", encoding="utf-8") as handle:
+        handle.write(reply)
+else:
+    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(300)"])
+with open(CONFIG["child_file"], "w", encoding="utf-8") as handle:
+    handle.write(str(child.pid))
+while True:
+    time.sleep(60)
+'''
+
+    def __init__(self, root: Path, active: dict | None = None,
+                 sessions: dict | None = None,
+                 mcp_argv: list[str] | None = None) -> None:
+        self.root = Path(root)
+        self.dir = self.root / "fake-opencode"
+        self.dir.mkdir(parents=True, exist_ok=True)
+        self.password = "pw-" + str(os.getpid())
+        self.port_file = self.dir / "port"
+        self.child_file = self.dir / "child"
+        self.log_file = self.dir / "requests.jsonl"
+        self.reply_file = self.dir / "init-reply.json"
+        self.config = {
+            "port_file": str(self.port_file),
+            "child_file": str(self.child_file),
+            "log": str(self.log_file),
+            "reply_file": str(self.reply_file),
+            "active": active,
+            "sessions": sessions or {},
+        }
+        if mcp_argv:
+            self.config["mcp_init"] = {"argv": list(mcp_argv)}
+        self.process: subprocess.Popen | None = None
+        self.child_pid: int | None = None
+        self.port: int | None = None
+
+    def start(self, timeout: float = 30.0) -> "FakeOpencode":
+        """Run the fake and wait until it serves and has a child."""
+        script = self.dir / "opencode"
+        script.write_text(self.SOURCE, encoding="utf-8")
+        env = dict(os.environ)
+        env["OPENCODE_PASSWORD"] = self.password
+        env["FAKE_CONFIG"] = json.dumps(self.config)
+        # The command line is the opencode server's: the discovery reads it.
+        self.process = subprocess.Popen(
+            [sys.executable, str(script), "serve", "--stdio", "--port", "0"],
+            env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if self.port_file.exists() and self.child_file.exists():
+                if not self.config.get("mcp_init") or self.reply_file.exists():
+                    break
+            time.sleep(0.05)
+        else:
+            self.stop()
+            raise RuntimeError("the fake opencode server did not start")
+        self.port = int(self.port_file.read_text(encoding="utf-8").strip())
+        self.child_pid = int(self.child_file.read_text(encoding="utf-8").strip())
+        return self
+
+    def url(self) -> str:
+        return f"http://127.0.0.1:{self.port}"
+
+    def requests(self) -> list[dict]:
+        """What the fake received, in order."""
+        if not self.log_file.exists():
+            return []
+        lines = self.log_file.read_text(encoding="utf-8").splitlines()
+        return [json.loads(line) for line in lines if line.strip()]
+
+    def stop(self) -> None:
+        if self.child_pid:
+            try:
+                os.kill(self.child_pid, signal.SIGKILL)
+            except OSError:
+                pass
+            self.child_pid = None
+        if self.process:
+            self.process.terminate()
+            try:
+                self.process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                self.process.kill()
+            self.process = None

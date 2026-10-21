@@ -223,17 +223,27 @@ class TestWakeAdapterCall(PilotCase):
     """
 
     def test_ring_passes_recorded_session_id(self) -> None:
-        """The recorded session id rides to the adapter, never a guess."""
+        """The recorded session id rides to the adapter, never a guess.
+
+        Round 141: the role's own pid rides with it. The adapter finds the
+        opencode server that HOLDS this pair's connection by walking up from
+        that process; the shared service answers for every project on the box
+        at once, so the pid is what makes the answer ours.
+        """
         pilot = self.pilot()
         pilot.tmux = str(self.fake_tmux)  # ring gates on a live pane; pane_alive is mocked
         state = self.write_state(roles={"opencode": {
-            "pane": "%7", "opencode_session_id": "ses_recorded"}})
+            "pane": "%7", "opencode_session_id": "ses_recorded",
+            "pid": 4242, "pid_start": 99}})
         captured = {}
 
         class FakeAdapter:
             @staticmethod
-            def wake(project_root, pointer, session_id=None):
+            def wake(project_root, pointer, session_id=None, role_pid=None,
+                     role_pid_start=None):
                 captured["args"] = (project_root, pointer, session_id)
+                captured["role_pid"] = role_pid
+                captured["role_pid_start"] = role_pid_start
                 return {"woken": False, "why": "test adapter"}
 
         with mock.patch.object(pairpilot, "pane_alive", return_value=True), \
@@ -246,6 +256,10 @@ class TestWakeAdapterCall(PilotCase):
                          "the recorded session id rides to the adapter")
         self.assertIn("[pair]", pointer)
         self.assertEqual(str(pilot.store.project_root), str(root))
+        self.assertEqual(4242, captured["role_pid"],
+                         "the role's own pid rides to the adapter")
+        self.assertEqual(99, captured["role_pid_start"],
+                         "a pid without its start time proves nothing")
 
     def test_ring_without_a_recorded_session_still_calls_fail_closed(self) -> None:
         """Absent id passes None; the adapter refuses, never guesses."""
@@ -256,7 +270,8 @@ class TestWakeAdapterCall(PilotCase):
 
         class FakeAdapter:
             @staticmethod
-            def wake(project_root, pointer, session_id=None):
+            def wake(project_root, pointer, session_id=None, role_pid=None,
+                     role_pid_start=None):
                 captured["session_id"] = session_id
                 return {"woken": False, "why": "no recorded OpenCode session id"}
 
