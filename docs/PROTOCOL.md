@@ -912,6 +912,13 @@ PR merging is gated by machine rules rather than prompt agreements:
    A repair that cannot name what the remote merged is not a repair. Round 115
    needed it: a hand-run `gh pr merge` closed PR #61 and the transcript, at 456
    rows, carried zero merge events — the merge existed, the repo's audit did not.
+7. **The next round's branch is cut from a fresh `origin/master`.**
+   A squash merge drops the round's branch from master's history, so the next
+   commit on that branch lands in an add/add conflict — and a conflicting PR
+   cannot be built into a merge ref, so GitHub reports no checks at all. A PR
+   with no checks reads as a green PR. Round 130 lost a branch to exactly this:
+   PR #76 was unmergeable, had zero checks, and was closed. The next branch
+   comes from the merged master, never from the previous round's branch.
 
 ### 10h. Server Runtime Freshness & Supervisor Parking
 
