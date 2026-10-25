@@ -32,6 +32,7 @@ from pathlib import Path
 # the drift would let the janitor delete what this checker calls legal.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "mcp" / "pair_mailbox"))
 from branch_classes import ACCUMULATORS, TRUNK, classify  # noqa: E402
+from trunk import resolve_trunk  # noqa: E402
 
 
 def remote_branches(root: Path) -> list[str]:
@@ -83,9 +84,10 @@ def main(argv: list[str] | None = None) -> int:
         # Proven empty by a successful git run. Legal, and worth saying out loud.
         print("branch-class-check: no remote branches")
 
+    trunk_name = resolve_trunk(root)
     rows: list[tuple[str, str]] = []
     for name in sorted(names):
-        rows.append((name, classify(name)))
+        rows.append((name, classify(name, trunk_name)))
 
     anomalies = [n for n, c in rows if c == "anomaly"]
     for name in sorted(ACCUMULATORS):

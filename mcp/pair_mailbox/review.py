@@ -18,8 +18,13 @@ from __future__ import annotations
 
 import hashlib
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from trunk import resolve_trunk  # noqa: E402 - needs sys.path above
 
 MAX_OPEN_REVIEWS = 2
 
@@ -278,7 +283,7 @@ def pr_ceiling(root: Path, autonomy: str) -> tuple[str, str]:
         names = ", ".join(f"#{pr['number']}" for pr in open_for_head)
         return "resolved", f"PR {names} open at semi"
     if merged:
-        return "resolved", "HEAD merged to master"
+        return "resolved", f"HEAD merged to {resolve_trunk(root)}"
     if autonomy == "semi":
         return ("missing",
                 "no open PR for HEAD: prepare one (`gh pr create`), "
@@ -287,26 +292,31 @@ def pr_ceiling(root: Path, autonomy: str) -> tuple[str, str]:
             "HEAD merged by no PR and carried by no open PR: "
             "merge first — autonomy is auto, which means end to end")
 
-def unanchored_master_commits(root: Path, base: str) -> list[str]:
-    """Commits on origin/master after `base` — the close-side leg of the lane.
+def unanchored_trunk_commits(root: Path, base: str) -> list[str]:
+    """Commits on the trunk after `base` — the close-side leg of the lane.
 
     The ceiling associates only HEAD (`commits/<oid>/pulls`), so a post-merge
-    commit on master is invisible by design: the PR carried the merge, not the
-    hotfix that followed it. That blind spot is why round 104's seven direct
-    commits read as no-PR at close.
+    commit on the trunk is invisible by design: the PR carried the merge, not
+    the hotfix that followed it. That blind spot is why round 104's seven
+    direct commits read as no-PR at close.
+
+    The trunk is the project's own branch (`trunk.resolve_trunk`), not a
+    hardcoded `master`: a project whose trunk is `dev` must be measured
+    against `dev`, or its rounds can never close.
     """
     if not base:
         return []
-    out = _run_git(root, "log", "--format=%H", f"{base}..origin/master")
+    trunk_ref = f"origin/{resolve_trunk(root)}"
+    out = _run_git(root, "log", "--format=%H", f"{base}..{trunk_ref}")
     return [line.strip() for line in out.splitlines() if line.strip()] if out else []
 
 
 def hotfix_trailer_check(root: Path, base: str) -> tuple[bool, str]:
-    """Every commit after `base` on origin/master must name its parent PR.
+    """Every commit after `base` on the trunk must name its parent PR.
 
     Trailer `follows: PR #N`, verified merged through `gh`. An unknown or
     unmerged N REFUSES — the leg never assigns itself a number, because the
-    defect it exists to catch is work reaching master without review.
+    defect it exists to catch is work reaching the trunk without review.
 
     Returns `(ok, detail)`; `ok=True` only when every commit names a verified
     merged PR, or when nothing sits after base (nothing to name).
@@ -322,13 +332,14 @@ def hotfix_trailer_check(root: Path, base: str) -> tuple[bool, str]:
     if not base or not _run_git(root, "rev-parse", "--verify", f"{base}^{{commit}}"):
         return False, (f"round base '{base or 'unset'}' does not resolve: "
                        f"cannot locate the commits to check")
-    head_ref = _run_git(root, "rev-parse", "--verify", "origin/master")
+    trunk_ref = f"origin/{resolve_trunk(root)}"
+    head_ref = _run_git(root, "rev-parse", "--verify", trunk_ref)
     if not head_ref:
-        return False, "origin/master does not resolve: cannot locate the commits to check"
+        return False, f"{trunk_ref} does not resolve: cannot locate the commits to check"
 
-    commits = unanchored_master_commits(root, base)
+    commits = unanchored_trunk_commits(root, base)
     if not commits:
-        return True, "no commits after the round base on origin/master"
+        return True, f"no commits after the round base on {trunk_ref}"
 
     trailer_re = re.compile(r"^follows:\s*PR\s*#(\d+)\s*$", re.IGNORECASE | re.MULTILINE)
     slug = _repo_slug(root)
@@ -358,7 +369,7 @@ def hotfix_trailer_check(root: Path, base: str) -> tuple[bool, str]:
     if unnamed or unverified:
         parts = []
         if unnamed:
-            parts.append("commit(s) on master naming no parent PR: " + ", ".join(unnamed))
+            parts.append("commit(s) on the trunk naming no parent PR: " + ", ".join(unnamed))
         parts.extend(unverified)
         return False, "; ".join(parts)
     return True, f"{len(commits)} commit(s) after base, each naming a verified merged PR"
@@ -384,13 +395,14 @@ def origin_truth(root: Path, round_base: str) -> tuple[str, str]:
     question: how far is LOCAL from where the round started and what origin has.
 
     Returns `(status, detail)`:
-    - `"aligned"`: local head is an ancestor-or-equal of origin/master — nothing
-      of ours is missing from origin, and nothing on origin is missing locally.
-    - `"behind"`: origin/master carries commits local does not; the count is
+    - `"aligned"`: local head is an ancestor-or-equal of the trunk ref —
+      nothing of ours is missing from origin, and nothing on origin is
+      missing locally.
+    - `"behind"`: the trunk carries commits local does not; the count is
       named, because "behind" with no number is not actionable.
     - `"ahead"`: local head carries commits origin does not (push first).
     - `"unknown"`: no round_base recorded (a fresh round: nothing to diff
-      against), no git, no origin/master, or a probe that failed mid-way —
+      against), no git, no trunk ref, or a probe that failed mid-way —
       loud, never scored as a pass.
     """
     if not round_base:
@@ -400,11 +412,12 @@ def origin_truth(root: Path, round_base: str) -> tuple[str, str]:
         return "unknown", "not a git repository: origin truth cannot be checked"
     if not _run_git(root, "rev-parse", "--verify", f"{round_base}^{{commit}}"):
         return "unknown", f"round base {round_base[:12]} does not resolve: cannot compare"
-    if not _run_git(root, "rev-parse", "--verify", "origin/master"):
-        return "unknown", "origin/master does not resolve: cannot compare"
+    trunk_ref = f"origin/{resolve_trunk(root)}"
+    if not _run_git(root, "rev-parse", "--verify", trunk_ref):
+        return "unknown", f"{trunk_ref} does not resolve: cannot compare"
 
-    behind = _run_git(root, "rev-list", "--count", f"HEAD..origin/master")
-    ahead = _run_git(root, "rev-list", "--count", f"origin/master..HEAD")
+    behind = _run_git(root, "rev-list", "--count", f"HEAD..{trunk_ref}")
+    ahead = _run_git(root, "rev-list", "--count", f"{trunk_ref}..HEAD")
     if behind is None or ahead is None:
         return "unknown", "rev-list failed mid-check (timeout, lock, or damage): origin truth cannot be checked"
     behind = behind.strip()
@@ -413,10 +426,10 @@ def origin_truth(root: Path, round_base: str) -> tuple[str, str]:
         return "unknown", "rev-list answered unreadable counts: origin truth cannot be checked"
     n_behind, n_ahead = int(behind), int(ahead)
     if n_behind:
-        return "behind", f"{n_behind} commits behind origin/master: pull/rebase before the round can ship"
+        return "behind", f"{n_behind} commits behind {trunk_ref}: pull/rebase before the round can ship"
     if n_ahead:
-        return "ahead", f"{n_ahead} commits ahead of origin/master: push first (`git push -u origin <branch>`)"
-    return "aligned", "local head equals origin/master"
+        return "ahead", f"{n_ahead} commits ahead of {trunk_ref}: push first (`git push -u origin <branch>`)"
+    return "aligned", f"local head equals {trunk_ref}"
 
 
 def snapshot(root: Path) -> dict[str, Any]:

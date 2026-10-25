@@ -22,9 +22,20 @@ PERSONAL = re.compile(r"^users/[^/]+/.+$")
 ACCUMULATORS = ("dev", "develop", "integration", "staging", "main", "trunk")
 
 
-def classify(ref: str) -> str:
-    """The §20 class of a remote branch ref, or `anomaly`."""
-    if TRUNK.match(ref):
+def classify(ref: str, trunk: str = "master") -> str:
+    """The §20 class of a remote branch ref, or `anomaly`.
+
+    `trunk` is the project's own trunk branch name: a project whose trunk is
+    `dev` must have `dev` classified as the trunk, not as an accumulator
+    antipattern. The default keeps `master` the trunk for a project that has
+    not said otherwise.
+
+    `master` stays in the trunk class even when the project names another
+    trunk: the class is the one no robot may ever delete, and a project that
+    still carries `master` is safer with it protected than with it reported
+    as an anomaly.
+    """
+    if ref == trunk or TRUNK.match(ref):
         return "trunk"
     if STRATEGIC.match(ref):
         return "strategic"

@@ -126,3 +126,4 @@ opencode-server	positive	1	python3 mcp/pair_mailbox/test_opencode_server.py
 branch-class	positive	1	python3 scripts/branch_class_check_test.py
 pre-push-guard	positive	1	python3 bin/pre_push_guard_test.py
 branch-audit	positive	1	python3 mcp/pair_mailbox/test_branch_audit.py
+trunk	positive	1	python3 mcp/pair_mailbox/test_trunk.py

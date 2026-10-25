@@ -71,6 +71,7 @@ mcp/pair_mailbox/panes.py	pairctl-panes
 mcp/pair_mailbox/pairctl_panes.py	pairctl-panes
 mcp/pair_mailbox/test_pairctl_read.py	pairctl-read
 mcp/pair_mailbox/pairctl_read.py	pairctl-read
+mcp/pair_mailbox/pairctl_cli.py	pairctl-panes
 mcp/pair_mailbox/test_panes.py	panes
 mcp/pair_mailbox/test_roster_heal.py	roster-heal
 mcp/pair_mailbox/roster_heal.py	roster-heal
@@ -176,3 +177,5 @@ docs/PROTOCOL.md	branch-class
 docs/PROTOCOL.ru.md	branch-class
 mcp/pair_mailbox/branch_audit.py	branch-audit
 mcp/pair_mailbox/branch_classes.py	branch-audit
+mcp/pair_mailbox/trunk.py	trunk
+mcp/pair_mailbox/test_trunk.py	trunk

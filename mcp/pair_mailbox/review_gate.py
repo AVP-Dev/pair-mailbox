@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any
 
 import review
+from trunk import resolve_trunk
 
 
 def check_pr_merge(store: Any, repo_dir: Path, pr_head: str | None = None) -> tuple[bool, str]:
@@ -316,8 +317,8 @@ def _cmd_pr_merge_record(store: Any, args: argparse.Namespace) -> int:
     if not pr_id:
         print("error: pr merge-record needs a PR id", file=sys.stderr)
         return 2
-    base = getattr(args, "base", None) or "master"
     repo_dir = store.project_root
+    base = getattr(args, "base", None) or resolve_trunk(repo_dir)
     code, out = run_gh_view(repo_dir, str(pr_id))
     if code != 0:
         print(f"cannot verify PR {pr_id} on the remote:\n{out}", file=sys.stderr)

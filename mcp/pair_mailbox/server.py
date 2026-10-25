@@ -63,6 +63,7 @@ import restart_trace  # noqa: E402 - needs sys.path above
 import server_freshness  # noqa: E402 - needs sys.path above
 import statecache  # noqa: E402 - needs sys.path above
 import read_delivery  # noqa: E402 - pending mailbox batch transitions
+import trunk  # noqa: E402 - needs sys.path above
 from read_wait import (  # noqa: E402 - reads the role's configured MCP budget
     DEFAULT_READ_WAIT_SECONDS, MAX_READ_WAIT_SECONDS, client_timeout_ms, effective_read_wait,
 )
@@ -2424,7 +2425,7 @@ class PairSession:
         return read_delivery.drain(self, limit)
 
     def _pin_round_base(self, state: dict[str, Any]) -> None:
-        """Stamp the round's own base: the head origin/master carries right now.
+        """Stamp the round's own base: the head the trunk carries right now.
 
         Round 104's delivery floor answered `delivered` from refs/remotes/* while
         origin sat 7 ahead — there was no recorded base to diff against, so "ahead
@@ -2432,16 +2433,22 @@ class PairSession:
         the round), it gives the origin-truth comparison (round 105 slice 2b) a
         number instead of a guess.
 
-        Best-effort by design: a state dir with no git, or no origin/master yet,
+        The trunk is the project's own branch (`trunk.resolve_trunk`), not a
+        hardcoded `master`: round 144 merged into `dev` and the base was pinned
+        against `origin/master`, so the round could never line up with its own
+        trunk.
+
+        Best-effort by design: a state dir with no git, or no trunk ref yet,
         leaves the field unset rather than blocking the round — the comparison then
         reports its own inability, it does not invent a base.
         """
         if state.get("round_base"):
             return
         try:
-            from review import unanchored_master_commits, _run_git
+            from review import _run_git
             root = self.store.project_root
-            head = _run_git(root, "rev-parse", "--verify", "origin/master")
+            head = _run_git(root, "rev-parse", "--verify",
+                            f"origin/{trunk.resolve_trunk(root)}")
         except Exception:  # noqa: BLE001 - a missing base never blocks an open
             head = None
         if head:

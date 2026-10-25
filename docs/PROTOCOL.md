@@ -937,13 +937,14 @@ PR merging is gated by machine rules rather than prompt agreements:
    A repair that cannot name what the remote merged is not a repair. Round 115
    needed it: a hand-run `gh pr merge` closed PR #61 and the transcript, at 456
    rows, carried zero merge events — the merge existed, the repo's audit did not.
-7. **The next round's branch is cut from a fresh `origin/master`.**
-   A squash merge drops the round's branch from master's history, so the next
+7. **The next round's branch is cut from a fresh trunk (`origin/master` by
+   default; the project's trunk otherwise).**
+   A squash merge drops the round's branch from the trunk's history, so the next
    commit on that branch lands in an add/add conflict — and a conflicting PR
    cannot be built into a merge ref, so GitHub reports no checks at all. A PR
    with no checks reads as a green PR. Round 130 lost a branch to exactly this:
    PR #76 was unmergeable, had zero checks, and was closed. The next branch
-   comes from the merged master, never from the previous round's branch.
+   comes from the merged trunk, never from the previous round's branch.
 8. **The merge trail is audited mechanically.**
    `scripts/merge-audit-trail.py` compares the PRs merged on the remote with the
    journal's merge records — `pr_merged`, `pr_merge_repaired`, `pr_merge_forced`,
@@ -1294,6 +1295,43 @@ fresh clone kept receiving a repo nobody had curate.
    that the log does not. Two merged branches left on `origin` are two lies about
    where the work is.
 
+### The trunk is a project setting, not a constant in the engine
+
+Round 144 measured what a hardcoded `master` costs when the human orders
+otherwise: the round was merged into `dev` exactly as ordered, and then
+`pair_advance("done")` was refused with "1 commits ahead of origin/master". The
+engine had no notion of a trunk other than `master` — the close-side gates
+(`review.origin_truth`, `review.hotfix_trailer_check`, `server._pin_round_base`,
+`manifest._round_merged`) compared against `origin/master` by name. A project
+whose trunk is another branch could merge, deliver and review a round, and
+never close it.
+
+The trunk is now resolved, in this order, first hit wins:
+
+1. **`PAIR_TRUNK`** — the environment, for one process (a pilot run, a CI job).
+2. **`<project>/.pair/trunk`** — the LOCAL setting of one workspace. It lives in
+   the ignored state dir, so a local choice never dirties the tree and never
+   travels.
+3. **`<project>/.pair-trunk`** — the COMMITTED policy of the project, for
+   everybody who clones it.
+4. **`master`** — the default. A project that says nothing keeps the behaviour it
+   had, byte for byte.
+
+Every close-side gate asks the resolver (`mcp/pair_mailbox/trunk.py`) instead of
+naming a branch: the origin-truth comparison, the hotfix-trailer check, the
+pinned round base, the manifest's merge detection, the §20 class table (the
+project's trunk is the trunk class, whatever its name), the branch janitor, and
+the local pre-push guard (the trunk is the branch that receives code only by PR
+merge).
+
+Two rules keep this safe:
+
+- **The default changes nothing.** No existing project moves until it says which
+  branch it wants.
+- **The resolver reads a NAME, never a remote and never the network.** It is
+  asked on hot paths (every `pair_state`, every close), and a gate that can
+  hang on a network call is a gate that hangs.
+
 ### The round card: memory survives the clone
 
 1. **Each closed round leaves one tracked file: `docs/rounds/<N>.md`.** Not twenty:
@@ -1349,7 +1387,7 @@ alone.
 
 | class | name | lifetime | robot may delete? | protection |
 |---|---|---|---|---|
-| trunk | `master` | forever | **never** | protected; no direct push (local hook, `bin/git-hooks/pre-push`) |
+| trunk | the project's trunk (`master` by default — see "The trunk is a project setting" above) | forever | **never** | protected; no direct push (local hook, `bin/git-hooks/pre-push`) |
 | strategic | `release/*`, `support/*` | longer than one PR | **never** | `do not allow deletions`; delete only by hand, with a reason, recorded |
 | ephemeral | `round-*`, `feature/*`, `fix/*`, `hotfix/*`, `chore/*` | one PR, dies with the merge | **only when its PR is MERGED** | none needed |
 | personal | `users/<name>/*` | the author's, no trunk merge | **never** — TTL sweep reports, humans decide | none |
@@ -1359,7 +1397,7 @@ Two corrections to first instinct, both from the critic:
 
 - **`hotfix/*` is ephemeral, not strategic.** A hotfix fixes one incident and
   closes through a PR; `review.py`'s `hotfix_trailer_check` already demands
-  `follows: PR #N` on every commit after the round base on `origin/master`,
+  `follows: PR #N` on every commit after the round base on the trunk,
   which is the lifecycle of a mortal branch written down in code. Strategic
   means a *support line*: a release that keeps receiving cherry-picks for
   months.
