@@ -1,15 +1,22 @@
 #!/usr/bin/env bash
 # pre-push: the local lane guard (round 105 slice 2a).
 #
-# Rule: the trunk receives code ONLY by PR merge. A direct `git push origin <trunk>`
-# (or any refspec that updates refs/heads/<trunk>) is refused before bytes leave
-# the machine — no network, no gh, no pairctl, no .pair read. It therefore also
-# catches round 104's deviation shape with the servers down.
+# Rule: a protected branch receives code ONLY by PR merge. A direct
+# `git push origin <protected>` (or any refspec that updates refs/heads/<protected>)
+# is refused before bytes leave the machine — no network, no gh, no pairctl,
+# no .pair read. It therefore also catches round 104's deviation shape with the
+# servers down.
 #
-# The trunk is the project's own branch, read from the same three sources the
-# engine uses (PAIR_TRUNK, .pair/trunk, .pair-trunk), defaulting to master:
-# a project whose trunk is `dev` must have `dev` guarded, and `dev` must not
-# be reported as an untouched accumulator.
+# Two branches are protected, and the second one is not optional:
+#
+#   1. the project's own trunk, read from the same three sources the engine
+#      uses (PAIR_TRUNK, .pair/trunk, .pair-trunk), defaulting to master. A
+#      project whose trunk is `dev` must have `dev` guarded.
+#   2. `master`, always. The §19/§20 default trunk stays protected in a
+#      project that moved its trunk elsewhere: naming another trunk does not
+#      hand `master` over to direct pushes, and a guard that guarded `dev`
+#      while `master` went unguarded was the defect round 144's second slice
+#      carried into the merge.
 #
 # Deliberately NOT the merge gate: this hook approves nothing. It only refuses
 # one direction of travel. Human override exists, is explicit, and is echoed so
@@ -35,15 +42,20 @@ fi
 
 while read -r local_ref local_sha remote_ref _remote_sha; do
     [ -z "${remote_ref:-}" ] && continue
-    if [ "$remote_ref" = "refs/heads/$trunk" ]; then
-        if [ "${PAIR_ALLOW_TRUNK_PUSH:-}" = "1" ]; then
-            echo "pair pre-push: PAIR_ALLOW_TRUNK_PUSH=1 — direct push to $trunk allowed by local override" >&2
-            continue
-        fi
-        cat >&2 <<MSG
-pair pre-push REFUSED: direct push to refs/heads/$trunk
+    target=""
+    case "$remote_ref" in
+        "refs/heads/$trunk") target="$trunk" ;;
+        refs/heads/master) target="master" ;;
+    esac
+    [ -n "$target" ] || continue
+    if [ "${PAIR_ALLOW_TRUNK_PUSH:-}" = "1" ]; then
+        echo "pair pre-push: PAIR_ALLOW_TRUNK_PUSH=1 — direct push to $target allowed by local override" >&2
+        continue
+    fi
+    cat >&2 <<MSG
+pair pre-push REFUSED: direct push to refs/heads/$target
 
-$trunk receives code ONLY by PR merge (round 105 lane rule; round 104's
+$target receives code ONLY by PR merge (round 105 lane rule; round 104's
 ab9ba87 deviation closed on the record). Push your branch instead:
 
     git push -u origin <branch>
@@ -51,9 +63,8 @@ ab9ba87 deviation closed on the record). Push your branch instead:
 then open a PR (bin/pairctl pr merge runs the machine gate).
 
 Human override, echoed so it is never silent:
-    PAIR_ALLOW_TRUNK_PUSH=1 git push origin $trunk
+    PAIR_ALLOW_TRUNK_PUSH=1 git push origin $target
 MSG
-        exit 1
-    fi
+    exit 1
 done
 exit 0
