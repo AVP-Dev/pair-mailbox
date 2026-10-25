@@ -1,0 +1,249 @@
+#!/usr/bin/env python3
+"""bin/pair-runner — start one agent as a plain subprocess, no tmux anywhere.
+
+The tmux stack (pairup, panes, composer) stays the first-class mode for remote
+sessions and `tmux attach`; this is the OTHER way in, for a host with no
+terminal multiplexer. Nothing here replaces anything there: the runner simply
+does not use tmux.
+
+The contract, in one place:
+
+  * Zero Pip: the standard library only, Python 3.8+. Nothing is installed.
+  * The child is a subprocess with a per-launch MCP configuration. The pair
+    server entry names THIS room and THIS child's role, so the child's
+    `pair_*` tools work without a terminal.
+  * The mailbox is the channel. `pair_send` lands the letter in the room;
+    `pair_deliver` has no pane to type a pointer into and says so. The runner
+    promises delivery into the mailbox, never a wake-up.
+  * One CLI in this round: OpenCode, the one measured headless here. Any
+    other CLI is refused by name instead of half-supported.
+
+Usage:
+  bin/pair-runner --role opencode [--state DIR] [--message TEXT]
+  bin/pair-runner --role opencode --print-config
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+SERVE = ROOT / "mcp" / "pair_mailbox" / "serve.sh"
+SUPPORTED_CLIS = ("opencode",)
+MCP_TIMEOUT_MS = 65000
+# The environment variables that would tell the server "you live in a pane".
+# A child of this runner has no pane, so it must not inherit one: an
+# inherited TMUX_PANE makes the child's role claim the launcher's pane, and
+# the pane-collision route then lets one role type into another's composer.
+PANE_ENV = ("TMUX", "TMUX_PANE", "PAIR_PANE", "PAIR_PANE_SOCKET",
+            "PAIR_PILOT_PANE")
+# The server discovers a pane by walking the process ancestry when the
+# environment names none. The runner's child descends from the launching
+# terminal, so that walk would find the launcher's pane; the documented knob
+# switches it off for this child only.
+ANCESTRY_KNOB = "PAIR_DISABLE_ANCESTRY_PANE"
+
+DEFAULT_MESSAGE = (
+    "You are role {role!r} in a two-agent pair working in the room {room}. "
+    "You run as a plain subprocess: there is no tmux pane, so the mailbox is "
+    "the channel. Call pair_state first to see the round, then pair_read to "
+    "read mail (one read per turn, ACK the batch with its ack_token). Send "
+    "with pair_send; pair_deliver only reaches the mailbox here. The task is "
+    "the one pair_state names."
+)
+
+
+class RunnerError(Exception):
+    """A refusal with a cause the operator can act on."""
+
+    def __init__(self, message: str, code: int = 2) -> None:
+        super().__init__(message)
+        self.code = code
+
+
+def git_top(path: Path) -> str:
+    """The git identity of a tree, or '' when it has none.
+
+    The identity is the toplevel, never the path string: one tree is
+    reachable through several paths, and a string comparison would call one
+    repo two.
+    """
+    try:
+        proc = subprocess.run(["git", "rev-parse", "--show-toplevel"], cwd=str(path),
+                              capture_output=True, text=True, timeout=15)
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    if proc.returncode != 0:
+        return ""
+    return (proc.stdout or "").strip()
+
+
+def resolve_room(explicit: str | None, cwd: Path) -> Path:
+    """Which room this launch serves.
+
+    The shared resolver decides: an explicit `--state` from argv is trusted,
+    an inherited PAIR_STATE is judged against the room underfoot, and the
+    reason is the resolver's own. The runner never keeps a second rule.
+    """
+    sys.path.insert(0, str(ROOT / "mcp" / "pair_mailbox"))
+    try:
+        from state_resolve import resolve_state_dir  # noqa: PLC0415
+    except ImportError as exc:
+        raise RunnerError(f"pair-runner: the engine's state_resolve.py is missing: {exc}") from None
+    room, _reason = resolve_state_dir(explicit=explicit or None, env=dict(os.environ),
+                                      cwd=cwd)
+    return Path(room)
+
+
+def check_engine(room: Path) -> None:
+    """Refuse a launch whose engine and room do not agree.
+
+    The server has its own origin guard (serve.sh) and would refuse later;
+    this check says the same thing at launch time, naming both trees, so the
+    operator reads one refusal instead of two.
+    """
+    engine_top = git_top(ROOT)
+    project = room.parent if room.name == ".pair" else room
+    project_top = git_top(project) if project.exists() else ""
+    if not project_top or not engine_top or project_top == engine_top:
+        return
+    own_package = Path(project_top) / "mcp" / "pair_mailbox" / "serve.sh"
+    if own_package.exists():
+        raise RunnerError(
+            f"pair-runner: the room's project carries its own pair-mailbox "
+            f"({own_package}); point the launch at that server instead of the "
+            f"engine at {engine_top}")
+    sanction = room / "engine"
+    sanctioned = ""
+    if sanction.is_file():
+        try:
+            recorded = sanction.read_text(encoding="utf-8").strip()
+        except OSError:
+            recorded = ""
+        if recorded:
+            sanctioned = git_top(Path(recorded)) if Path(recorded).exists() else ""
+    if sanctioned != engine_top:
+        raise RunnerError(
+            f"pair-runner: the engine at {engine_top} is not sanctioned for the "
+            f"room {room}: the project's engine record "
+            f"({sanction}) names {sanctioned or 'nothing'}. Run the project's "
+            f"pairup, or launch the engine the project sanctions.")
+
+
+def build_config(role: str, room: Path) -> dict:
+    """The per-launch MCP configuration for the child.
+
+    One entry, the pair server, with the role and the room spelled out. The
+    role is the one the caller named; the room is the one the caller named.
+    """
+    return {"mcp": {"pair": {
+        "type": "local",
+        "command": ["sh", str(SERVE), role, "--state", str(room)],
+        "enabled": True,
+        "timeout": MCP_TIMEOUT_MS,
+    }}}
+
+
+def child_env(config: dict) -> dict:
+    """The child's environment: no pane, no inherited room, the config inline.
+
+    The pane variables are removed because the child has no pane; the room
+    variable is removed because the child is told the room explicitly, and an
+    inherited room from another project is a room it must never serve.
+    """
+    env = {k: v for k, v in os.environ.items()
+           if k not in PANE_ENV and k not in ("PAIR_STATE", "PAIR_ROLE")}
+    env[ANCESTRY_KNOB] = "1"
+    env["OPENCODE_CONFIG_CONTENT"] = json.dumps(config)
+    return env
+
+
+def build_argv(cli: str, cli_bin: str | None, message: str, model: str = "") -> list:
+    """The child's command line.
+
+    `opencode run --standalone --auto` is the headless form: a private
+    server, no interactive prompt, permissions auto-approved by the CLI's own
+    flag.
+
+    The model is named, not inherited: the host's default model is a choice of
+    the host's account, and on this host the default (`opencode-go/*`) refused
+    the request ("Go usage limit exceeded") while a named provider answered.
+    A launch that cannot say which model answers it is a launch that fails
+    for reasons the operator cannot see, so `--model` is a first-class flag.
+    """
+    binary = cli_bin or cli
+    argv = [binary, "run", "--standalone", "--auto"]
+    if model:
+        argv += ["-m", model]
+    argv.append(message)
+    return argv
+
+
+def parse_args(argv: list) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        prog="pair-runner",
+        description="Start one agent as a plain subprocess; the mailbox is the channel.")
+    parser.add_argument("--role", required=True,
+                        help="the role the child holds in this room")
+    parser.add_argument("--state", default="",
+                        help="the room (state dir); default: the room underfoot")
+    parser.add_argument("--cli", default="opencode", help="the CLI to launch")
+    parser.add_argument("--cli-bin", default="",
+                        help="path to the CLI binary (default: the CLI name)")
+    parser.add_argument("--model", default="",
+                        help="the model the child answers with (provider/model)")
+    parser.add_argument("--message", default="",
+                        help="the instruction handed to the child")
+    parser.add_argument("--cwd", default="", help="the child's working directory")
+    parser.add_argument("--timeout", type=float, default=0.0,
+                        help="seconds to wait for the child (0: wait forever)")
+    parser.add_argument("--print-config", action="store_true",
+                        help="print the MCP configuration and exit")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="print what would be launched and exit")
+    return parser.parse_args(argv)
+
+
+def main(argv: list | None = None) -> int:
+    args = parse_args(list(sys.argv[1:] if argv is None else argv))
+    if args.cli not in SUPPORTED_CLIS:
+        raise RunnerError(
+            f"pair-runner: unsupported CLI {args.cli!r}: this round supports "
+            f"{', '.join(SUPPORTED_CLIS)} only (measured headless here). Every "
+            f"other CLI is refused by name rather than half-supported.")
+    cwd = Path(args.cwd).resolve() if args.cwd else Path.cwd()
+    room = resolve_room(args.state or None, cwd)
+    check_engine(room)
+    message = args.message or DEFAULT_MESSAGE.format(role=args.role, room=room)
+    config = build_config(args.role, room)
+    if args.print_config:
+        print(json.dumps(config, ensure_ascii=False, indent=2))
+        return 0
+    child_argv = build_argv(args.cli, args.cli_bin or None, message, args.model)
+    if args.dry_run:
+        print(json.dumps({"argv": child_argv, "cwd": str(cwd),
+                          "config": config}, ensure_ascii=False, indent=2))
+        return 0
+    try:
+        proc = subprocess.Popen(child_argv, cwd=str(cwd), env=child_env(config))
+    except OSError as exc:
+        raise RunnerError(f"pair-runner: cannot launch {child_argv[0]!r}: {exc}") from None
+    try:
+        return proc.wait(timeout=args.timeout) if args.timeout else proc.wait()
+    except subprocess.TimeoutExpired:
+        proc.terminate()
+        proc.wait(timeout=30)
+        raise RunnerError(
+            f"pair-runner: the child exceeded {args.timeout:g}s and was terminated")
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except RunnerError as error:
+        print(str(error), file=sys.stderr)
+        sys.exit(error.code)

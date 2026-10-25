@@ -112,6 +112,25 @@ The text is already in the mailbox: go back to waiting. On an unproven (foreign)
 input is forbidden — only `display-message` + mailbox, otherwise it is injection into someone
 else's composer.
 
+## 2a-1. When there is no tmux at all
+
+A launch through `bin/pair-runner` runs the agent as a plain subprocess on a
+host with no terminal multiplexer. The mailbox is unchanged; the composer is
+absent. So:
+
+- **`pair_send` is the channel.** It delivers the body into the mailbox; the
+  peer reads it on its own next turn.
+- **`pair_deliver` cannot wake anybody there.** It still writes the same
+  mailbox letter and answers `in_pane: false` with a `why` naming the missing
+  pane. Read that answer literally: the peer was not woken, only the letter
+  was placed.
+- **The wait rule is unchanged**: one read per turn, ACK the batch with its
+  `ack_token`, and wait with a bounded `pair_read(wait_seconds=45)`. Nothing
+  about losing tmux turns the read loop into work.
+- The plan, the review, the verdict and the PR do not change. Only the wake-up
+  path does — and the supervisor's wake file still exists, so a peer's own
+  `pair_read` sees the letter.
+
 ## 2b. Round mode: digest, then `pair_state`
 
 `pair_state` returns `mode`. It decides what the round does at all, and it is not in the task

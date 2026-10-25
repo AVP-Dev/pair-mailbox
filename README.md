@@ -216,6 +216,21 @@ work with the peer on: fix 502 retry handling and backoff jitter
 
 The agents will read the codebase, claim roles (`pair_claim`), enter the autonomous pairing loop (Plan &rarr; Implement &rarr; Sealed Review &rarr; Test &rarr; PR), and finish the task without interrupting you.
 
+**Without tmux at all:** `bin/pair-runner` starts one agent as a plain
+subprocess, with the pair MCP server injected per launch (the role and the
+room are named in the injected config). There is no pane, so nothing can wake
+the peer — the mailbox is the channel, `pair_send` replaces `pair_deliver`, and
+the wait rule is unchanged (one read per turn, ACK the batch with its
+`ack_token`).
+
+```bash
+bin/pair-runner --role opencode --state .pair --model provider/model \
+  --message "work with the peer on: fix 502 retry handling"
+```
+
+OpenCode is the only CLI the runner supports in this round; any other CLI is
+refused by name instead of half-supported.
+
 ### 4. One-command setup (`finish.sh`)
 
 The heavy first-time path: full pipeline in 7 steps — (1) tests before install, (2) install, (3) standing roles, (4) autonomy, (5) supervisor before agents, (6) agents in fresh tmux windows, (7) status report. Takes 5–10 minutes (full test suites); for the daily start use `pairup` above.

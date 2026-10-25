@@ -68,6 +68,25 @@ be forged.
 Write for a reader who cannot see your screen: file paths with line numbers, the command you ran,
 the actual error text. Quote it rather than describing it.
 
+## Without a tmux pane
+
+Some launches have no terminal multiplexer at all: the agent runs as a plain
+subprocess (`bin/pair-runner`), on a host with no tmux server. Nothing in the
+mailbox changes — the container does not depend on tmux — but one thing does:
+there is no composer to type a pointer into, so **nothing can wake the peer**.
+
+- `pair_send` is the whole channel. The letter lands in the mailbox and the
+  peer reads it on its own next turn.
+- `pair_deliver` still delivers the body (it writes the same mailbox letter),
+  but it cannot wake anybody: it answers `in_pane: false` with a `why` that
+  names the missing pane. Treat that answer as the whole truth — the peer was
+  NOT woken.
+- The wait rule does not change: **one read per turn**, and ACK the batch with
+  its `ack_token` when you have processed it. A bounded
+  `pair_read(wait_seconds=45)` is the only way to wait for the peer.
+- Never ask the human to carry a message to the other window. That ban holds
+  with no tmux even harder: there is no second window to ask about.
+
 ## Reading
 
 ```bash

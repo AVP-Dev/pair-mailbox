@@ -13,6 +13,8 @@ mcp/pair_mailbox/test_waiting_contract.py	waiting-contract
 mcp/pair_mailbox/read_delivery.py	read-delivery
 mcp/pair_mailbox/test_read_delivery.py	read-delivery
 bin/pair-duo_test.py	pair-duo
+bin/pair-runner	pair-runner
+bin/pair-runner_test.py	pair-runner
 mcp/pair_mailbox/test_pair_notes_consistency.py	notes-consistency
 mcp/pair_mailbox/test_boardcheck.py	boardcheck
 mcp/pair_mailbox/test_boardcheck_isolation.py	boardcheck-isolation

@@ -75,6 +75,10 @@ pointer	positive	1	python3 mcp/pair_mailbox/test_pointer.py
 waiting-contract	positive	1	python3 mcp/pair_mailbox/test_waiting_contract.py
 read-delivery	positive	1	python3 mcp/pair_mailbox/test_read_delivery.py
 pair-duo	positive	1	python3 bin/pair-duo_test.py
+# Round 144: the tmux-free runner. The suite proves the injected config names
+# the role and the room, the child is a pane-free subprocess, and a letter
+# crosses a real room with no tmux in the environment.
+pair-runner	positive	1	python3 bin/pair-runner_test.py
 notes-consistency	positive	1	python3 mcp/pair_mailbox/test_pair_notes_consistency.py
 boardcheck	positive	1	python3 mcp/pair_mailbox/test_boardcheck.py
 boardcheck-isolation	positive	1	python3 mcp/pair_mailbox/test_boardcheck_isolation.py
