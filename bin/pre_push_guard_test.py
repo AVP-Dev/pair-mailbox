@@ -102,6 +102,26 @@ class TestPrePushLaneGuard(unittest.TestCase):
             self.assertEqual(_git(work, "ls-remote", "--heads", "origin", "dev").stdout.strip(),
                              "", "dev reached origin")
 
+    def test_master_stays_guarded_when_the_project_trunk_is_another_branch(self) -> None:
+        """Naming another trunk does NOT hand `master` to direct pushes.
+
+        Round 144's second slice moved the guard to the resolved trunk and
+        left `master` unguarded in a project whose trunk is `dev` — the
+        opposite of what §19/§20 say, and a silent hole: the hook's whole
+        job is to refuse the direction that bypasses the PR gate.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            work, origin = self._repo_with_hook(Path(tmp))
+            (work / ".pair-trunk").write_text("dev\n", encoding="utf-8")
+            r = _git(work, "push", "origin", "master")
+            self.assertNotEqual(r.returncode, 0,
+                                "a direct master push must fail even when the "
+                                "project's trunk is dev")
+            self.assertIn("REFUSED", r.stderr)
+            self.assertIn("refs/heads/master", r.stderr)
+            self.assertEqual(_git(work, "ls-remote", "--heads", "origin", "master").stdout.strip(),
+                             "", "master reached origin")
+
     def test_equal_head_push_is_not_a_guard_signal(self) -> None:
         """Seen live: master already equal to origin answers rc=0 with no hook
         run at all — a no-op push. So 'rc==0, no REFUSED' is ambiguous between

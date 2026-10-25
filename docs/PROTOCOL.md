@@ -1320,9 +1320,14 @@ The trunk is now resolved, in this order, first hit wins:
 Every close-side gate asks the resolver (`mcp/pair_mailbox/trunk.py`) instead of
 naming a branch: the origin-truth comparison, the hotfix-trailer check, the
 pinned round base, the manifest's merge detection, the §20 class table (the
-project's trunk is the trunk class, whatever its name), the branch janitor, and
-the local pre-push guard (the trunk is the branch that receives code only by PR
-merge).
+project's trunk is the trunk class, whatever its name), and the branch janitor.
+
+The local pre-push guard (`bin/git-hooks/pre-push`) refuses a direct push to a
+PROTECTED branch, and there are two of them: the project's trunk, and `master`
+always. Naming another trunk does not hand `master` over to direct pushes — a
+project that moved its trunk still keeps `master` closed, and a guard that
+guarded `dev` while `master` went open was the defect round 144's second slice
+carried into its own merge.
 
 Two rules keep this safe:
 
