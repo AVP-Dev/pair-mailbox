@@ -81,9 +81,26 @@ class TestPrePushLaneGuard(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             work, origin = self._repo_with_hook(Path(tmp))
             r = _git(work, "push", "origin", "master",
-                     env={"PAIR_ALLOW_MASTER_PUSH": "1"})
+                     env={"PAIR_ALLOW_TRUNK_PUSH": "1"})
             self.assertEqual(r.returncode, 0, r.stderr)
-            self.assertIn("PAIR_ALLOW_MASTER_PUSH=1", r.stderr)
+            self.assertIn("PAIR_ALLOW_TRUNK_PUSH=1", r.stderr)
+
+    def test_a_project_trunk_is_the_guarded_branch(self) -> None:
+        """A project whose trunk is `dev` must have `dev` guarded, not master.
+
+        Round 144's shape: the work lands in `dev`, and a guard that still
+        protects `master` alone leaves the real trunk unguarded.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            work, origin = self._repo_with_hook(Path(tmp))
+            (work / ".pair-trunk").write_text("dev\n", encoding="utf-8")
+            _git(work, "checkout", "-q", "-b", "dev")
+            r = _git(work, "push", "origin", "dev")
+            self.assertNotEqual(r.returncode, 0, "a direct dev push must fail")
+            self.assertIn("REFUSED", r.stderr)
+            self.assertIn("refs/heads/dev", r.stderr)
+            self.assertEqual(_git(work, "ls-remote", "--heads", "origin", "dev").stdout.strip(),
+                             "", "dev reached origin")
 
     def test_equal_head_push_is_not_a_guard_signal(self) -> None:
         """Seen live: master already equal to origin answers rc=0 with no hook

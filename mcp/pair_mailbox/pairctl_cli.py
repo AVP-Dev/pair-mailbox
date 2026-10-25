@@ -291,8 +291,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     pr_p.add_argument(
         "--base",
-        default="master",
-        help="base branch for merge-record (default master)",
+        default="",
+        help="base branch for merge-record (default: the project's trunk)",
     )
 
     br_p = sub.add_parser(

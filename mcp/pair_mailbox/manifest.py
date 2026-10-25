@@ -15,8 +15,13 @@ from __future__ import annotations
 import hashlib
 import json
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import trunk  # noqa: E402 - needs sys.path above
 
 
 class ManifestRefused(Exception):
@@ -31,7 +36,8 @@ def _git_commits(project_root: Path, since_round_start: str = "") -> list[dict[s
     """Commits on the current branch: sha + subject. Newest last."""
     try:
         out = subprocess.run(["git", "-C", str(project_root), "log",
-                              "--format=%H %s", "master..HEAD"],
+                              "--format=%H %s",
+                              f"{trunk.resolve_trunk(project_root)}..HEAD"],
                              capture_output=True, text=True, timeout=15).stdout or ""
     except Exception:
         return []
@@ -123,10 +129,15 @@ def _round_merged(state: dict[str, Any], project_root: Path, round_number: int) 
     """Whether round N is MERGED, three-valued (round 103 S1).
 
     Two independent sources, in order: recorded commit evidence of this round
-    naming an origin/master advance (the writer's own record, never trusted
+    naming an origin/<branch> advance (the writer's own record, never trusted
     alone — see below), then git: the evidence tip is reachable from a
-    remote-tracking master ref (LOCAL probe only — never `gh`/network; this
-    runs in derive, which callers run on hot paths).
+    remote-tracking ref of that branch (LOCAL probe only — never `gh`/network;
+    this runs in derive, which callers run on hot paths).
+
+    The branch named in the evidence is the one checked, and the project's
+    trunk (`trunk.resolve_trunk`) is checked too: a round merged into the
+    trunk records "origin/dev X..Y" in a project whose trunk is `dev`, and a
+    legacy row naming `origin/master` still resolves against master.
 
     Fail direction: unknown (no evidence, git broken) returns None and callers
     treat None as NOT merged — an unrecorded merge must look open, never the
@@ -145,20 +156,24 @@ def _round_merged(state: dict[str, Any], project_root: Path, round_number: int) 
         return proc.returncode
 
     tip: str | None = None
+    branch: str | None = None
     for e in (state.get("evidence") or []):
         if int(e.get("round", -1)) != round_number:
             continue
         if e.get("evidence_kind") not in ("commit",) and e.get("kind") not in ("commit",):
             continue
         value = str(e.get("value", ""))
-        # Only an origin/master ADVANCE admits a merge: "origin/master X..Y"
-        # names the tip Y; "origin/master advanced X -> Y" (merge-commit
+        # Only an origin/<branch> ADVANCE admits a merge: "origin/<branch> X..Y"
+        # names the tip Y; "origin/<branch> advanced X -> Y" (merge-commit
         # evidence row, round 102's real shape) names the new tip Y. A bare
         # sha (the branch-push row) does not.
-        for form in (r"origin/master\s+[0-9a-f]{7,40}\.\.[0-9a-f]{7,40}",
-                     r"origin/master\s+advanced\s+([0-9a-f]{7,40})\s*->\s*([0-9a-f]{7,40})"):
+        for form in (r"origin/([A-Za-z0-9._/-]+)\s+[0-9a-f]{7,40}\.\.([0-9a-f]{7,40})",
+                     r"origin/([A-Za-z0-9._/-]+)\s+advanced\s+([0-9a-f]{7,40})\s*->\s*([0-9a-f]{7,40})"):
             for match in re.findall(form, value):
-                tip = match[1] if isinstance(match, tuple) else str(match).rsplit("..", 1)[1].split()[-1]
+                if isinstance(match, tuple):
+                    branch, tip = match[0], match[-1]
+                else:
+                    branch, tip = None, str(match).rsplit("..", 1)[1].split()[-1]
                 break
             if tip:
                 break
@@ -166,13 +181,18 @@ def _round_merged(state: dict[str, Any], project_root: Path, round_number: int) 
             break
     if not tip:
         return None
-    for ref in ("refs/remotes/origin/master", "refs/heads/master"):
-        rc = _run_git("merge-base", "--is-ancestor", tip, ref)
-        if rc == 0:
-            return True
-        if rc == 1:
-            continue  # this ref does not reach it; try the other
-        return None  # broken git: unknown
+    names = [branch] if branch else []
+    trunk_name = trunk.resolve_trunk(project_root)
+    if trunk_name not in names:
+        names.append(trunk_name)
+    for name in names:
+        for ref in (f"refs/remotes/origin/{name}", f"refs/heads/{name}"):
+            rc = _run_git("merge-base", "--is-ancestor", tip, ref)
+            if rc == 0:
+                return True
+            if rc == 1:
+                continue  # this ref does not reach it; try the other
+            return None  # broken git: unknown
     return False
 
 
