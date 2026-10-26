@@ -2553,7 +2553,7 @@ class Pilot:
         # Each rule runs inside its own guard: one rule that throws must not
         # take the rest of the pass with it, and the failure is journalled so
         # it is visible instead of silent.
-        run_rules(bind_rules(self), state, log, journal=self._journal)
+        run_rules(bind_rules(self, log=log), state, log, journal=self._journal)
         # The brief is a RETURN VALUE, not a side effect: the human reads it.
         brief = guarded(lambda: self.startup_brief(state), log,
                         journal=self._journal, kind="pilot_call_failed")

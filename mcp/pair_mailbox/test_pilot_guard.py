@@ -230,5 +230,84 @@ class TestPilotNotesAreAttributable(PilotGuardCase):
         self.assertTrue(ok, why)
 
 
+class TestBlockedComposerIsReported(PilotGuardCase):
+    """A composer holding somebody ELSE's text must be REPORTED, not obeyed.
+
+    The measured silence (2026-10-26, this project's own round 146): the
+    critic's pane sat frozen for 2.8 hours with the human's unsent line in
+    its composer. Every delivery was correctly refused (the text is not ours,
+    so it stays untouched), every wake was raised, every escalation was
+    queued... and the one person who could unblock it never learned that it
+    was blocked.
+
+    The refusal was right. The silence was the defect.
+    """
+
+    def _busy_pane(self, pilot) -> None:
+        """A pane whose composer holds text that is not ours."""
+        import subprocess
+
+        def fake_run(cmd, **kwargs):
+            if "capture-pane" in cmd:
+                out = subprocess.CompletedProcess(cmd, 0, "$ \n", "")
+                return out
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+
+        original = pairpilot.subprocess.run
+        pairpilot.subprocess.run = fake_run
+        self.addCleanup(setattr, pairpilot.subprocess, "run", original)
+        self.addCleanup(setattr, pairpilot, "capture", pairpilot.capture)
+
+    def test_a_busy_composer_is_reported_to_the_human(self) -> None:
+        pilot = self.pilot()
+        pilot.tmux = "/usr/bin/tmux"
+        self.write_state(roles={"agy": {"pane": "%8", "pid": 1, "last_seen": "now"}})
+
+        # A composer that holds a line, read as busy by the real predicate.
+        from composer import composer_line, is_composer_empty
+        line = "> the human's unsent line"
+        self.assertFalse(is_composer_empty(line))
+
+        logged: list[str] = []
+        original_log = pairpilot.log
+        pairpilot.log = logged.append
+        try:
+            import guard
+            guard.blocked_composer_rule(pilot, pilot.state(), logged.append)
+        finally:
+            pairpilot.log = original_log
+
+        self.assertTrue(any("composer holds text that is not ours" in line
+                            for line in logged),
+                        f"the block must be reported; got {logged}")
+        self.assertIn("pilot_composer_blocked", self.transcript_kinds())
+
+    def test_a_free_composer_is_not_reported(self) -> None:
+        pilot = self.pilot()
+        pilot.tmux = None
+        self.write_state(roles={"agy": {"pane": "%8", "pid": 1, "last_seen": "now"}})
+        logged: list[str] = []
+        import guard
+        guard.blocked_composer_rule(pilot, pilot.state(), logged.append)
+        self.assertEqual([], logged)
+        self.assertNotIn("pilot_composer_blocked", self.transcript_kinds())
+
+    def test_the_report_never_types_into_the_composer(self) -> None:
+        """The rule REPORTS. It never erases the human's text."""
+        pilot = self.pilot()
+        pilot.tmux = None
+        self.write_state(roles={"agy": {"pane": "%8", "pid": 1, "last_seen": "now"}})
+        import guard
+        sent: list[list[str]] = []
+        original = pairpilot.subprocess.run
+        pairpilot.subprocess.run = lambda cmd, **kw: sent.append(list(cmd))
+        try:
+            guard.blocked_composer_rule(pilot, pilot.state(), lambda _m: None)
+        finally:
+            pairpilot.subprocess.run = original
+        self.assertFalse(any("send-keys" in " ".join(cmd) for cmd in sent),
+                         "the rule must never type into or erase the composer")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

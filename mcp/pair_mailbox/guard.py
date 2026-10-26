@@ -95,13 +95,15 @@ def run_rules(rules: Iterable[Rule], state: dict, log: Log,
 RULE_ORDER: tuple[str, ...] = (
     "ambiguous", "gone_roles", "unblock", "restart_agent", "dead_pane",
     "poll_wakes", "unread_peers", "pending_answers", "stalled_patches",
-    "check_stalled_busy", "check_monologue", "stale_writer", "idle_roles",
+    "check_stalled_busy", "check_monologue", "check_blocked_composer",
+    "stale_writer", "idle_roles",
     "drop_stale_outbox", "flush_outbox", "preventive_compact",
     "check_server_freshness", "checkpoint", "report_once", "sweep_stamps",
 )
 
 
-def bind_rules(owner: object, order: Iterable[str] = RULE_ORDER) -> list[Rule]:
+def bind_rules(owner: object, order: Iterable[str] = RULE_ORDER,
+               log: Log | None = None) -> list[Rule]:
     """Bind the named rules to `owner`'s methods, in order.
 
     `sweep_stamps` takes no state, so it is wrapped to the same shape as
@@ -109,10 +111,63 @@ def bind_rules(owner: object, order: Iterable[str] = RULE_ORDER) -> list[Rule]:
     """
     bound: list[Rule] = []
     for name in order:
-        method = getattr(owner, name)
-        bound.append(method if name != "sweep_stamps"
-                     else (lambda state, _m=method: _m()))
+        if name == "sweep_stamps":
+            bound.append(lambda state, _m=getattr(owner, name): _m())
+        elif name == "check_blocked_composer":
+            bound.append(lambda state, _o=owner: blocked_composer_rule(_o, state, log))
+        else:
+            bound.append(getattr(owner, name))
     return bound
+
+
+def blocked_composer_rule(owner: object, state: dict, log: Log) -> None:
+    """Say who is blocked by a composer that holds somebody ELSE's text.
+
+    The measured silence (2026-10-26, this project's own round 146): the
+    critic's pane sat frozen for 2.8 hours with the human's unsent line in
+    its composer — typed by hand and never submitted. Every delivery was
+    correctly refused (the text is not ours, so it stays untouched), every
+    wake was raised, every escalation was queued... and the one person who
+    could unblock it never learned that it was blocked.
+
+    The refusal was right. The silence was the defect: the supervisor watches
+    the ROOM, and a room where one role cannot be reached is a fact about the
+    room. So the pilot says it — on the console, where the human looks, and
+    in the journal, so the state is provable. It never types into the composer
+    and never erases the text: that stays the human's, and this rule only
+    REPORTS it.
+
+    Once per role per round: a blocked composer is a standing fact, and a
+    fact repeated every tick is noise.
+    """
+    from composer import capture, composer_line, is_composer_empty, pane_alive
+    tmux = getattr(owner, "tmux", None)
+    if tmux is None:
+        return
+    skip = getattr(owner, "skip", set())
+    remember = getattr(owner, "remember", None)
+    if remember is None:
+        return
+    for role, info in (state.get("roles") or {}).items():
+        if role in skip or not isinstance(info, dict):
+            continue
+        pane = info.get("pane")
+        if not pane or not pane_alive(tmux, pane):
+            continue
+        try:
+            line = composer_line(capture(tmux, pane))
+        except Exception:  # noqa: BLE001 - the pane may vanish between checks
+            continue
+        if line is None or is_composer_empty(line):
+            continue
+        key = f"blocked-composer-{role}-{state.get('round')}"
+        if not remember(key, ttl=600.0):
+            continue
+        text = line.strip()[-80:]
+        log(f"{role}: its composer holds text that is not ours — delivery to it "
+            f"is refused until it is sent or cleared (composer: {text})")
+        owner.store.append_transcript("pilot_composer_blocked", "pairpilot",
+                                      target=role, pane=pane, composer=text)
 
 
 def write_attributed_note(store: object, notes_dir: Path, kind: str, body: str,
