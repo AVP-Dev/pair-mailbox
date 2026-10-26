@@ -37,6 +37,27 @@ SECTION_PATTERNS = (
                               re.IGNORECASE)),
 )
 
+# The isolation strategy is required in `fix` mode only: there the change
+# touches the tree, and WHAT was decided about isolation (in-place branch, one
+# worktree, or a decomposition into slices) is part of the plan the critic
+# signs. In `audit` there are no commits, so there is nothing to isolate —
+# the same exemption `intent_gate` already applies.
+#
+# The heading pattern comes from `isolation.py`, not from a second copy here:
+# the gate that REQUIRES the section and the parser that READS it must agree
+# on the spelling, and two copies of one regex is how they drift apart.
+try:
+    from isolation import STRATEGY_HEADING as _ISOLATION_HEADING
+except ImportError:  # pragma: no cover - isolation sits next in the package
+    _ISOLATION_HEADING = re.compile(
+        r"^#{1,6}\s*(isolation\s+strategy|стратегия\s+изоляции)\b", re.IGNORECASE)
+
+ISOLATION_SECTION = "isolation"
+
+FIX_SECTION_PATTERNS = SECTION_PATTERNS + (
+    (ISOLATION_SECTION, _ISOLATION_HEADING),
+)
+
 # A verdict note: the header carries time and role, the body the plan-ack line.
 NOTE_ENTRY = re.compile(r"^##\s*(\S+)\s+—\s+(\S+)(?:\s*\(note\s+\S+\s+attempt\s+\d+\)\s*)?$")
 ACK_LINE = re.compile(r"\bplan-ack\s+round\s+(\d+)\b", re.IGNORECASE)
@@ -46,17 +67,22 @@ def _plan_path(state_dir: Path) -> Path:
     return Path(state_dir) / PLAN_FILE
 
 
-def parse_plan(path: Path) -> dict[str, Any]:
+def parse_plan(path: Path, mode: str = "fix") -> dict[str, Any]:
     """Parse the plan: the round from the marker and the sections found.
 
     An unreadable/missing file is not an exception but a refusal with a cause:
     the gate tells the human in words why the move is banned.
+
+    `mode` decides which sections are required. In `audit` the isolation
+    strategy is not asked for: there are no commits, so there is nothing to
+    isolate, and demanding a decision nobody needs would be noise.
     """
+    patterns = FIX_SECTION_PATTERNS if mode != "audit" else SECTION_PATTERNS
     try:
         text = path.read_text(encoding="utf-8")
     except OSError as exc:
         return {"ok": False, "why": f".pair/{PLAN_FILE} unreadable: {exc}",
-                "round": None, "missing": list(name for name, _ in SECTION_PATTERNS)}
+                "round": None, "missing": list(name for name, _ in patterns)}
     lines = text.splitlines()
     round_number: int | None = None
     for line in lines[:5]:
@@ -64,16 +90,18 @@ def parse_plan(path: Path) -> dict[str, Any]:
         if match:
             round_number = int(match.group(1))
             break
-    found = {name for name, pattern in SECTION_PATTERNS
+    found = {name for name, pattern in patterns
              if any(pattern.match(line) for line in lines)}
-    missing = [name for name, _ in SECTION_PATTERNS if name not in found]
+    missing = [name for name, _ in patterns if name not in found]
     why = ""
     if round_number is None:
         why = (f"in .pair/{PLAN_FILE} has no round marker: the first line must be "
                f"`round: N` (N — the current round number)")
     elif missing:
         why = (f"in .pair/{PLAN_FILE} misses sections: {', '.join(missing)} "
-               f"(need Goal/Invariants/Acceptance headers)")
+               f"(need Goal/Invariants/Acceptance"
+               + ("/Isolation Strategy" if mode != "audit" else "")
+               + " headers)")
     return {"ok": round_number is not None and not missing,
             "why": why, "round": round_number, "missing": missing}
 
@@ -206,7 +234,8 @@ def gate(state_dir: Path, state: dict[str, Any]) -> dict[str, Any]:
     caller code’s call: here only "may we move forward".
     """
     path = _plan_path(state_dir)
-    plan = parse_plan(path)
+    mode = str(state.get("mode", "fix") or "fix")
+    plan = parse_plan(path, mode=mode)
     if not plan["ok"]:
         return {"ok": False, "why": plan["why"], "ack_via": None}
     round_number = int(state.get("round", 0))
@@ -216,7 +245,7 @@ def gate(state_dir: Path, state: dict[str, Any]) -> dict[str, Any]:
                         f"{round_number}: silently applying another plan "
                         f"beats missing one"),
                 "ack_via": None}
-    if state.get("mode", "fix") == "audit":
+    if mode == "audit":
         return {"ok": True, "why": "audit: the plan is an artefact, no visa needed",
                 "ack_via": "audit"}
     writer = str(state.get("writer") or "")
