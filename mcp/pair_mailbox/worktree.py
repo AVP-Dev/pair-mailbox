@@ -33,6 +33,79 @@ def run_git(cmd: list[str], cwd: Path) -> tuple[int, str, str]:
         return 1, "", str(err)
 
 
+#: The caches and dependencies a worktree SHARES with the main worktree.
+#:
+#: A closed list, not a glob: a glob over the tree would share source files
+#: and tracked data along with the caches, and the worktree would then be
+#: editing the main checkout's files through a symlink. These names are
+#: directories that are rebuilt from the project's own sources, so sharing
+#: them shares nothing but the cost of rebuilding.
+DEFAULT_SHARED = [
+    ".venv",
+    "node_modules",
+    ".pytest_cache",
+    "__pycache__",
+    "dist",
+    "build",
+]
+
+#: The project setting that overrides the list.
+SHARE_SETTING = "worktree-share"
+
+
+def shared_paths(project_root: Path) -> list[str]:
+    """The names this project shares between worktrees.
+
+    The project's own setting wins over the default list: a project with a
+    different dependency layout names its own. The resolution order is the
+    project's order everywhere else (`project_settings.resolve`): the
+    environment, the local ignored file, the committed project file, and the
+    default.
+    """
+    import project_settings
+    return project_settings.resolve_list(
+        project_root, SHARE_SETTING, DEFAULT_SHARED)
+
+
+def _link_shared(source_root: Path, target_dir: Path, names: list[str]) -> dict[str, Any]:
+    """Link the shared caches from `source_root` into `target_dir`.
+
+    Three rules, each learned from what a symlink actually does:
+
+    - **A link is created only when the source exists and the target does
+      not.** A link to a place that is not there is a broken link, and
+      overwriting a directory that is already there loses data.
+    - **A link is created only for a name in the closed list.** Nothing else
+      is shared: the list is the whole permission.
+    - **The link points at the SOURCE worktree's copy, never at the target's
+      own path.** A self-referential link would make the worktree share a
+      directory with itself.
+
+    Returns {linked: [...], skipped: [...], failed: [...]}. A failure to link
+    one cache never fails the worktree: the worktree is created and usable
+    without a shared cache, and the caller is told which ones are missing.
+    """
+    linked: list[str] = []
+    skipped: list[str] = []
+    failed: list[str] = []
+    for name in names:
+        source = source_root / name
+        target = target_dir / name
+        if not source.exists():
+            skipped.append(name)
+            continue
+        if target.exists() or target.is_symlink():
+            skipped.append(name)
+            continue
+        try:
+            target.symlink_to(source.resolve(), target_is_directory=True)
+        except OSError:
+            failed.append(name)
+            continue
+        linked.append(name)
+    return {"linked": linked, "skipped": skipped, "failed": failed}
+
+
 def list_worktrees(repo_dir: Path) -> list[dict[str, Any]]:
     "List the existing git worktrees."
     code, out, _ = run_git(["worktree", "list", "--porcelain"], repo_dir)
@@ -132,6 +205,33 @@ def bootstrap_worktree(
     return _create_worktree(repo_dir, branch, target_dir)
 
 
+def _main_worktree(repo_dir: Path) -> Path | None:
+    """The main worktree of the repository — the one that owns the branch.
+
+    `git worktree list` names the main worktree first, but "first" is a
+    property of the listing, not of the worktree. The unambiguous marker is
+    the `.git` entry itself: in the main worktree it is a **directory**, in a
+    linked worktree it is a **file** pointing at the common dir. Measured on
+    a real pair of worktrees:
+
+        main:    drwxr-xr-x  .git
+        linked:  -rw-r--r--  .git
+
+    The main worktree is the one that holds the project's checked-out
+    caches: the dependencies a worktree shares are the ones installed in the
+    checkout the human works in. A linked worktree is NOT the source — a
+    worktree sharing its own dependency directory with itself would defeat
+    the point of the isolation.
+    """
+    for wt in list_worktrees(repo_dir):
+        path = Path(wt.get("worktree", ""))
+        if not path.exists():
+            continue
+        if (path / ".git").is_dir():
+            return path.resolve()
+    return None
+
+
 def _create_worktree(
     repo_dir: Path,
     branch: str,
@@ -150,12 +250,18 @@ def _create_worktree(
     existing = list_worktrees(repo_dir)
     for wt in existing:
         if Path(wt.get("worktree", "")).resolve() == target_dir:
+            # An existing worktree may still miss its shared caches — it was
+            # created before the sharing existed, or the caches were removed.
+            # Linking what is missing costs nothing and touches nothing that
+            # is already there.
+            shared = _share_caches(repo_dir, target_dir)
             return {
                 "ok": True,
                 "created": False,
                 "worktree": str(target_dir),
                 "branch": wt.get("branch", branch),
                 "message": "worktree already exists",
+                "shared": shared,
             }
 
     # Checking whether the local branch exists
@@ -178,13 +284,32 @@ def _create_worktree(
             "error": err or out or f"git worktree add failed with code {code}",
         }
 
+    shared = _share_caches(repo_dir, target_dir)
     return {
         "ok": True,
         "created": True,
         "worktree": str(target_dir),
         "branch": branch,
         "message": "worktree created successfully",
+        "shared": shared,
     }
+
+
+def _share_caches(repo_dir: Path, target_dir: Path) -> dict[str, Any]:
+    """Link the project's shared caches into a freshly created worktree.
+
+    A failure here never fails the worktree: the worktree is created and
+    perfectly usable without a shared cache — the cache is a convenience, not
+    a dependency of the git work. The caller is told what was linked and what
+    was not, so a missing cache is a fact and not a surprise.
+    """
+    source_root = _main_worktree(repo_dir)
+    if source_root is None or source_root == target_dir.resolve():
+        return {"linked": [], "skipped": [], "failed": [], "source": None}
+    names = shared_paths(repo_dir)
+    res = _link_shared(source_root, target_dir, names)
+    res["source"] = str(source_root)
+    return res
 
 
 def remove_worktree(repo_dir: Path, worktree_dir: Path, force: bool = False) -> bool:

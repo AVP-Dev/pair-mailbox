@@ -1,6 +1,7 @@
 """Unit tests for the worktree.py module (Git Worktrees - S5)."""
 from __future__ import annotations
 
+import os
 import subprocess
 import tempfile
 import unittest
@@ -235,6 +236,125 @@ class TestCleanupAfterMerge(PairTestCase):
             mock_run.return_value = MagicMock(returncode=1, stdout="", stderr="boom")
             name = review_gate._merged_branch(Path("/tmp"), "95")
         self.assertEqual(name, "")
+
+
+class TestSharedCaches(PairTestCase):
+    """Round 148 slice A: the caches are shared, and nothing else is.
+
+    A worktree created from scratch has no `.venv` and no `node_modules`, so
+    every worktree means a full reinstall. Sharing them by symlink is the
+    difference between a second and a second-hour.
+    """
+
+    def _repo_with_caches(self, tmp: Path) -> tuple[Path, Path]:
+        repo = tmp / "repo"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q", "-b", "main"], cwd=str(repo), check=True)
+        subprocess.run(["git", "config", "user.email", "p@t.t"], cwd=str(repo), check=True)
+        subprocess.run(["git", "config", "user.name", "P"], cwd=str(repo), check=True)
+        (repo / "a.txt").write_text("x\n", encoding="utf-8")
+        subprocess.run(["git", "add", "a.txt"], cwd=str(repo), check=True)
+        subprocess.run(["git", "commit", "-qm", "init"], cwd=str(repo), check=True)
+        (repo / ".venv").mkdir()
+        (repo / ".venv" / "marker").write_text("deps\n", encoding="utf-8")
+        (repo / "node_modules").mkdir()
+        (repo / "node_modules" / "pkg").mkdir()
+        return repo, tmp / "wt"
+
+    def test_the_shared_cache_is_linked_into_the_new_worktree(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, wt = self._repo_with_caches(Path(tmp))
+            res = worktree.setup_worktree(repo, "feature", wt,
+                                          visa={"ok": True, "mode": "worktree"})
+            self.assertTrue(res["ok"], res.get("error"))
+            self.assertTrue(wt.exists())
+            link = wt / ".venv"
+            self.assertTrue(link.is_symlink(), "the cache must be a symlink, not a copy")
+            self.assertEqual((link / "marker").read_text(encoding="utf-8"), "deps\n")
+            self.assertEqual((wt / "node_modules" / "pkg").is_dir(), True)
+
+    def test_the_link_points_at_the_main_worktree_not_at_itself(self) -> None:
+        """A worktree sharing its own dependency directory with itself would
+        defeat the point of the isolation."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, wt = self._repo_with_caches(Path(tmp))
+            worktree.setup_worktree(repo, "feature", wt,
+                                     visa={"ok": True, "mode": "worktree"})
+            link = wt / ".venv"
+            self.assertNotEqual(link.resolve(), link.parent.resolve())
+            self.assertEqual(link.resolve(), (repo / ".venv").resolve())
+
+    def test_an_existing_path_is_never_overwritten(self) -> None:
+        """A link to a place that is not there is a broken link; overwriting a
+        directory that is already there loses data."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, wt = self._repo_with_caches(Path(tmp))
+            wt.mkdir(parents=True)
+            (wt / ".venv").mkdir()
+            (wt / ".venv" / "mine").write_text("keep\n", encoding="utf-8")
+            worktree.setup_worktree(repo, "feature", wt,
+                                     visa={"ok": True, "mode": "worktree"})
+            self.assertFalse((wt / ".venv").is_symlink(),
+                             "an existing directory must not be replaced by a link")
+            self.assertEqual((wt / ".venv" / "mine").read_text(encoding="utf-8"), "keep\n")
+
+    def test_only_the_closed_list_is_shared(self) -> None:
+        """A glob over the tree would share source files and tracked data
+        along with the caches."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, wt = self._repo_with_caches(Path(tmp))
+            (repo / "src").mkdir()
+            (repo / "src" / "app.py").write_text("code\n", encoding="utf-8")
+            (repo / "secrets").mkdir()
+            (repo / "secrets" / "token").write_text("s3cret\n", encoding="utf-8")
+            worktree.setup_worktree(repo, "feature", wt,
+                                     visa={"ok": True, "mode": "worktree"})
+            self.assertFalse((wt / "src").exists(), "source must not be shared")
+            self.assertFalse((wt / "secrets").exists(), "secrets must not be shared")
+
+    def test_a_missing_source_leaves_no_broken_link(self) -> None:
+        """A link to a place that is not there is a broken link."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, wt = self._repo_with_caches(Path(tmp))
+            # `.pytest_cache` is in the shared list but NOT in the source:
+            # the project never ran pytest here.
+            self.assertNotIn(".pytest_cache", [p.name for p in repo.iterdir()])
+            worktree.setup_worktree(repo, "feature", wt,
+                                     visa={"ok": True, "mode": "worktree"})
+            self.assertFalse((wt / ".pytest_cache").is_symlink(),
+                             "a cache absent from the source must not be linked")
+            self.assertFalse((wt / ".pytest_cache").exists())
+
+    def test_the_bootstrap_entry_point_shares_too(self) -> None:
+        """The launch environment of a pair needs the dependencies as much as
+        a task's worktree does."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, wt = self._repo_with_caches(Path(tmp))
+            res = worktree.bootstrap_worktree(repo, "room", wt)
+            self.assertTrue(res["ok"], res.get("error"))
+            self.assertTrue((wt / ".venv").is_symlink())
+
+    def test_the_project_setting_overrides_the_default_list(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, _ = self._repo_with_caches(Path(tmp))
+            (repo / ".pair").mkdir()
+            (repo / ".pair" / "worktree-share").write_text(
+                ".venv, custom-cache\n", encoding="utf-8")
+            names = worktree.shared_paths(repo)
+            self.assertEqual(names, [".venv", "custom-cache"])
+
+    def test_the_environment_overrides_the_project_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, _ = self._repo_with_caches(Path(tmp))
+            (repo / ".pair").mkdir()
+            (repo / ".pair" / "worktree-share").write_text(".venv\n", encoding="utf-8")
+            with patch.dict(os.environ, {"PAIR_WORKTREE_SHARE": "from-env"}):
+                self.assertEqual(worktree.shared_paths(repo), ["from-env"])
+
+    def test_the_default_list_is_used_when_the_project_says_nothing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, _ = self._repo_with_caches(Path(tmp))
+            self.assertEqual(worktree.shared_paths(repo), worktree.DEFAULT_SHARED)
 
 
 if __name__ == "__main__":
