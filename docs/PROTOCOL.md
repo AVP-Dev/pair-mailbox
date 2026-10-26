@@ -1530,3 +1530,107 @@ already happened and cannot be undone, so an error there is recorded in the
 transcript (`worktree_cleanup_failed`) and the command still reports success.
 Silence would leave the reader unable to tell "there was nothing to clean" from
 "the cleanup failed and nobody said so" — two states with different actions.
+
+## 22. The three round disciplines: environment, conflict, strategy
+
+Decided by both agents 2026-10-26 (round 148), continuing round 147's
+worktree-first line. Three practices, each with one reason.
+
+### 22.1 A worktree shares the project's caches
+
+A worktree created from scratch has no `.venv` and no `node_modules`. Every
+worktree therefore meant a full reinstall of the dependencies — the cost of
+the isolation was paid in install time, every time.
+
+The shared paths are a CLOSED list, never a glob: `.venv`, `node_modules`,
+`.pytest_cache`, `__pycache__`, `dist`, `build`. A glob would share
+everything under the tree, including the sources. The list is shared as
+SYMLINKS into the main worktree, and a path is linked only when the source
+exists and the target does not: a link to a place that is not there is a
+broken link, and overwriting somebody's directory is data loss.
+
+The setting follows §19's pattern for `trunk`: `PAIR_WORKTREE_SHARE` (the
+environment) → `.pair/worktree-share` (local, ignored) →
+`.pair-worktree-share` (the committed policy) → the closed list. A project
+must not grow a second way of reading configuration.
+
+### 22.2 One way to read a setting
+
+`project_settings.py` is the ONE place that knows the order a project's
+voice is heard in: the environment, the local ignored file, the committed
+project file, the default. Each setting owns only the WHAT (which values
+exist, what each one means) and asks the module for the WHERE.
+
+Without it, each setting invents its own resolution order, and the project
+ends up with three ways to read a setting — three places to look when a
+round refuses for the "wrong" reason, and three chances for two of them to
+disagree. The committed policy file is named `.pair-<name>`, the trunk's
+name (`.pair-trunk`), so the local file and the committed one read as a
+pair: `.pair/merge-strategy` and `.pair-merge-strategy`.
+
+### 22.3 The conflict is found before the merge, not during
+
+Round 147 gave the round branch a clean death: it was merged and deleted.
+The conflict was discovered AT THE MOMENT OF THE MERGE — after the PR was on
+review, after the critic had written a verdict, after the human had read the
+diff. The cost of finding a conflict late is not the conflict; it is
+everything that had to be un-done to find it.
+
+So the question is asked earlier, and asked without touching the repository:
+`git merge-tree --write-tree` computes the merge result in memory. The
+index, the working tree and the history are exactly as they were.
+
+The three answers are kept apart:
+
+| answer | meaning |
+|---|---|
+| `clean` | the merge would succeed |
+| `conflict` | it would not, and git names the files |
+| `unknown` | git could not answer |
+
+`unknown` is NOT `clean`. A gate that answers "no conflicts" when git failed
+is worse than no gate at all: it says the thing the reader wants to hear,
+without having checked anything.
+
+The exit code alone does NOT tell these apart. `git merge-tree` exits 1 both
+for a conflict AND for a revision it cannot resolve, and it exits 128 for
+unrelated histories. The distinction is made on the OUTPUT: git prints the
+sha of the merge result only when it actually computed a merge.
+
+The file names are read from the NUL-separated form (`--name-only -z`), not
+from git's prose: the prose is localized, and a host writing «Конфликт
+слияния в f.txt» would leave an English-word parser with nothing.
+
+The check compares the PR's HEAD — what the merge would ship — against
+`origin/<trunk>`, with the trunk fetched FIRST (a check against a stale
+trunk is a check against a fiction) and the head fetched by SHA if it is not
+in this repository yet (the PR was pushed from elsewhere).
+
+`--force` does NOT bypass it. `--force` bypasses the REVIEW gates; a
+conflict is not a review gate, it is a fact about the two commits, and it
+does not become true because a human wrote a reason next to it.
+
+### 22.4 The merge strategy is a setting
+
+The strategy was hard-wired: `gh pr merge --squash --delete-branch`. A
+project that wanted its rounds rebased or merged as merge commits had no way
+to ask for it except by editing the engine — which is not a setting.
+
+`merge_strategy.py` follows §19's pattern for `trunk`:
+`PAIR_MERGE_STRATEGY` (the environment) → `.pair/merge-strategy` (local,
+ignored) → `.pair-merge-strategy` (the committed policy) → `squash`. The
+default is what makes this safe to land: a project that says nothing keeps
+the behaviour it had, byte for byte.
+
+| strategy | `gh pr merge` flags |
+|---|---|
+| `squash` | `--squash --delete-branch` (the default) |
+| `merge` | `--merge --delete-branch` |
+| `rebase` | `--rebase --delete-branch` |
+
+An invalid value is REFUSED with the admissible values named. It is never
+silently replaced by the default: a project that asked for `rebase` and got
+`squash` would learn it from the trunk's history, where nobody was looking.
+
+`--delete-branch` is kept at every strategy: §19 requires the round's branch
+to die with the round, whatever strategy brought it to the trunk.

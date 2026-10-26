@@ -42,6 +42,9 @@ server-freshness	positive	1	python3 mcp/pair_mailbox/test_server_freshness.py
 heal	positive	1	python3 mcp/pair_mailbox/test_heal.py
 budget	positive	1	python3 mcp/pair_mailbox/test_budget.py
 worktree	positive	1	python3 mcp/pair_mailbox/test_worktree.py
+preflight	positive	1	python3 mcp/pair_mailbox/test_preflight.py
+merge-strategy	positive	1	python3 mcp/pair_mailbox/test_merge_strategy.py
+project-settings	positive	1	python3 mcp/pair_mailbox/test_project_settings.py
 isolation	positive	1	python3 mcp/pair_mailbox/test_isolation.py
 review-gate	positive	1	python3 mcp/pair_mailbox/test_review_gate.py
 obligations	positive	1	python3 mcp/pair_mailbox/test_obligations.py

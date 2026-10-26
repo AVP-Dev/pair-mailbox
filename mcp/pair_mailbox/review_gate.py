@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any
 
 import review
+import merge_strategy
 from trunk import resolve_trunk
 
 
@@ -224,11 +225,27 @@ def check_pr_merge(store: Any, repo_dir: Path, pr_head: str | None = None) -> tu
 
 
 def run_gh_merge(repo_dir: Path, pr_id: str | None) -> tuple[int, str]:
-    """Run the merge through the gh cli."""
+    """Run the merge through the gh cli.
+
+    The strategy comes from the project's setting, not from a hard-wired
+    flag: `squash` by default (the behaviour that existed before the
+    setting existed), `merge` or `rebase` when the project asks for them.
+    `--delete-branch` is always there — §19 requires the round's branch to
+    die with the round.
+
+    An invalid strategy is a REFUSAL with the admissible values named, not a
+    silent fall back to squash: a project that asked for `rebase` and got
+    `squash` would learn it from the trunk's history, where nobody was
+    looking.
+    """
+    try:
+        flags = merge_strategy.merge_flags(repo_dir)
+    except ValueError as exc:
+        return 1, str(exc)
     cmd = ["gh", "pr", "merge"]
     if pr_id:
         cmd.append(pr_id)
-    cmd.extend(["--squash", "--delete-branch"])
+    cmd.extend(flags)
     try:
         proc = subprocess.run(
             cmd,
@@ -398,6 +415,20 @@ def cmd_pr(store: Any, args: argparse.Namespace) -> int:
             print(f"PR merge gate REFUSED: {why_not}", file=sys.stderr)
             return 1
 
+    # The pre-flight conflict check runs on BOTH paths, forced or not.
+    #
+    # `--force` bypasses the REVIEW gates: the critic's verdict, the test
+    # evidence, the freshness rule. A conflict is not a review gate — it is
+    # a fact about the two commits, and it does not become true because a
+    # human wrote a reason next to it. GitHub would refuse the merge
+    # anyway; refusing here says WHY, before the PR was torn down and
+    # rebuilt.
+    pf_ok, pf_why = _preflight_merge(repo_dir, pr_id)
+    if not pf_ok:
+        print(f"PR merge gate REFUSED: pre-flight conflict check: {pf_why}",
+              file=sys.stderr)
+        return 1
+
     code, out = run_gh_merge(repo_dir, pr_id)
     if code != 0:
         print(f"gh pr merge failed (exit {code}):\n{out}", file=sys.stderr)
@@ -424,6 +455,54 @@ def cmd_pr(store: Any, args: argparse.Namespace) -> int:
             error=str(exc),
         )
     return 0
+
+
+def _preflight_merge(repo_dir: Path, pr_id: str | None) -> tuple[bool, str]:
+    """Would the PR's head merge into the trunk without a conflict?
+
+    The trunk is brought up to date first: a check against a stale trunk is a
+    check against a fiction, and the conflict appears exactly when the stale
+    trunk is wrong.
+
+    The comparison is between the PR's **head** and `origin/<trunk>`. The
+    PR's head is what the merge would ship; the local HEAD is what the
+    gate checked, and when they differ the merge would ship something
+    nobody looked at.
+
+    Returns (True, "") when the merge would be clean. Every other answer —
+    a conflict, a git failure, a trunk that cannot be read — is a refusal
+    with a reason. `unknown` is never read as `clean`: a check that says
+    "no conflicts" when git failed says the thing the reader wants to hear
+    without having checked anything.
+    """
+    import preflight
+
+    pr_head, head_err = resolve_pr_head(repo_dir, pr_id)
+    if head_err or not pr_head:
+        return False, (head_err or "the PR's head could not be read")
+
+    trunk_name = resolve_trunk(repo_dir)
+    base = f"origin/{trunk_name}"
+
+    fetched = preflight.fetch_base(repo_dir, "origin", trunk_name)
+    if not fetched["ok"]:
+        return False, (f"the trunk {base} could not be fetched: {fetched['why']}")
+
+    # The PR's head may not be in this repository at all — the PR was
+    # pushed from elsewhere. Without the commit, `merge-tree` can only
+    # answer "unknown", and an unknown is a refusal. Fetching it by SHA is
+    # what makes the check possible.
+    have = preflight.ensure_commit(repo_dir, "origin", pr_head)
+    if not have["ok"]:
+        return False, (f"the PR's head {pr_head[:12]} could not be fetched: "
+                       f"{have['why']}")
+
+    res = preflight.check_merge(repo_dir, pr_head, base)
+    if res["status"] == "clean":
+        return True, ""
+    if res["status"] == "conflict":
+        return False, res["why"]
+    return False, f"the merge could not be checked: {res['why']}"
 
 
 def _cleanup_worktree_after_merge(store: Any, repo_dir: Path, pr_id: str | None,

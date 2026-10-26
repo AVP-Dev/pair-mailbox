@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import subprocess
 import tempfile
 import unittest
@@ -497,8 +498,10 @@ class TestReviewGate(PairTestCase):
         self.assertEqual(res, 1)
         store.append_transcript.assert_not_called()
 
+    @patch("review_gate._preflight_merge", return_value=(True, ""))
     @patch("review_gate.run_gh_merge")
-    def test_cmd_pr_force_with_reason_and_human_ok_records_audit(self, mock_gh: MagicMock) -> None:
+    def test_cmd_pr_force_with_reason_and_human_ok_records_audit(self, mock_gh: MagicMock,
+                                                                  _mock_pf: MagicMock) -> None:
         """CONDITION 3: --force with --reason and human_ok logs into audit/transcript."""
         mock_gh.return_value = (0, "merged")
         store = MagicMock()

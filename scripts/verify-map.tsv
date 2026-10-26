@@ -87,6 +87,15 @@ mcp/pair_mailbox/plan_gate.py	plan-gate
 mcp/pair_mailbox/test_plan_gate.py	plan-gate
 mcp/pair_mailbox/worktree.py	worktree
 mcp/pair_mailbox/test_worktree.py	worktree
+mcp/pair_mailbox/preflight.py	preflight
+mcp/pair_mailbox/test_preflight.py	preflight
+mcp/pair_mailbox/merge_strategy.py	merge-strategy
+mcp/pair_mailbox/test_merge_strategy.py	merge-strategy
+mcp/pair_mailbox/project_settings.py	project-settings
+mcp/pair_mailbox/test_project_settings.py	project-settings
+# The settings module is read by BOTH settings that use it, so a change
+# there must run both of their suites, not only the one the map names.
+follow:mcp/pair_mailbox/project_settings.py	worktree;merge-strategy
 # The shared fixture base: every suite's plan artifact goes through it, so a
 # change there can break any of them. It names the suites that use it.
 mcp/pair_mailbox/pair_test_base.py	plan-gate
