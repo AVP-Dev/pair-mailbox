@@ -33,6 +33,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import tempfile
 import time
 import unittest
 from pathlib import Path
@@ -215,6 +216,50 @@ class TestToolDetection(unittest.TestCase):
 
     def test_read_cmdline_of_a_missing_pid_is_empty(self):
         self.assertEqual(watchdog.read_cmdline(999999999), [])
+
+    def test_a_cli_launched_through_a_runtime_is_not_a_tool(self):
+        """Measured live: `bun /home/alexios/.bun/bin/omp --resume <id>`.
+
+        The executable's basename is `bun`, so the CLI's name is one argument
+        later. Counting it as a tool would exempt the role forever — the
+        detector would never fire for the CLI it watches.
+        """
+        argv = ["/home/alexios/.bun/bin/bun", "/home/alexios/.bun/bin/omp",
+                "--resume", "01a17204-9c6a-766a-b4fa-5ac05c1c627f"]
+        self.assertTrue(watchdog.is_agent_cli_argv(argv))
+
+    def test_the_agent_own_daemon_is_not_a_tool(self):
+        """The agent's own daemon lives for the whole session.
+
+        Measured live (omp): `/home/alexios/.bun/bin/bun …/cli.js
+        __omp_worker_daemon_broker`. It carries no CLI name in its argv, and
+        it lives as long as the session — so if it counted as a tool, the role
+        would be exempt forever and the detector would be blind to exactly the
+        role it exists to watch.
+        """
+        argv = ["/home/alexios/.bun/bin/bun",
+                "/home/alexios/.bun/install/global/node_modules/"
+                "@oh-my-pi/pi-coding-agent/dist/cli.js",
+                "__omp_worker_daemon_broker"]
+        self.assertTrue(watchdog.is_agent_cli_argv(argv))
+
+    def test_a_runtime_without_a_cli_name_is_a_tool(self):
+        """The runtime alone is not the agent: it counts as work.
+
+        Without this the exemption would swallow any `bun` process, and a
+        throwaway `bun -e '…'` probe would read as the agent itself.
+        """
+        self.assertFalse(watchdog.is_agent_cli_argv(
+            ["/home/alexios/.bun/bin/bun", "-e", "console.log(1)"]))
+        self.assertFalse(watchdog.is_agent_cli_argv(
+            ["/home/alexios/.bun/bin/bun", "some-other-project/cli.js"]))
+        self.assertFalse(watchdog.is_agent_cli_argv(
+            ["/home/alexios/.bun/bin/bun",
+             "/home/alexios/.bun/install/global/node_modules/some-other/cli.js"]))
+
+    def test_the_plain_cli_name_is_the_agent(self):
+        self.assertTrue(watchdog.is_agent_cli_argv(["agy"]))
+        self.assertTrue(watchdog.is_agent_cli_argv(["omp"]))
 
     def test_the_current_process_is_a_tool(self):
         """The detector's own process tree: a real `python3` run is work."""

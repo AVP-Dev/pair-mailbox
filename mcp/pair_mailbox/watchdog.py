@@ -73,6 +73,23 @@ AGENT_CLI_NAMES = frozenset({
     "omp", "agy", "opencode", "codex", "claude", "pi",
 })
 
+# Runtimes that launch a CLI. The CLI's name is then one argument later.
+RUNTIME_NAMES = frozenset({"bun", "node"})
+
+# The CLI's entry script, as it appears in the argv of the agent's OWN daemon
+# (`bun …/pi-coding-agent/dist/cli.js __omp_worker_daemon_broker`). The daemon
+# lives for the whole session, so counting it as a tool would exempt the role
+# forever.
+#
+# The bare file name is NOT enough: any project can ship a `cli.js`. The path
+# must carry a known package marker, so a stranger's `cli.js` stays a tool.
+AGENT_ENTRY_SCRIPTS = frozenset({"cli.js"})
+AGENT_PACKAGE_MARKERS = (
+    "pi-coding-agent",
+    "opencode",
+    "@anthropic-ai/claude-code",
+)
+
 
 def read_cmdline(pid: int) -> list[str]:
     """The argv of a pid, or [] when it is gone.
@@ -103,31 +120,54 @@ def is_role_server(pid: int, role: str) -> bool:
     return False
 
 
-def is_agent_cli(pid: int) -> bool:
-    """Whether the process is the agent CLI itself rather than a tool it runs.
+def is_agent_cli_argv(args: list[str]) -> bool:
+    """Whether an argv belongs to the agent CLI (or its own daemon).
 
-    The CLI may be launched through a runtime: the live omp process is
-    `bun /home/alexios/.bun/bin/omp`, so the executable's basename is `bun`
-    and the real name is one argument later. Without the second name the
-    agent's own process would count as a tool, and the detector would never
-    fire for the very CLI it watches.
+    The CLI may be launched through a runtime, and the runtime's argv says
+    more than one word. Measured live, 2026-10-26:
+
+        bun /home/alexios/.bun/bin/omp --resume <id>
+        /home/alexios/.bun/bin/bun …/pi-coding-agent/dist/cli.js __omp_worker_daemon_broker
+
+    So there are three shapes to recognise, not one:
+
+    - the CLI's own name (`omp`, `agy`, …) as argv[0];
+    - a runtime (`bun`) followed by the CLI's name as argv[1];
+    - a runtime followed by the CLI's **entry script** (`cli.js`), which is
+      what the worker daemon looks like — its argv carries no name at all.
+
+    Without the third shape the agent's own daemon would count as a tool, and
+    a daemon lives for the whole session: the role would be exempt forever,
+    and the detector would never fire for the very CLI it watches.
+
+    The check is by argv, never by a substring of the role name: a substring
+    match would exempt somebody else's process and hide a real tool.
     """
-    args = read_cmdline(pid)
     if not args:
         return False
     if Path(args[0]).name in AGENT_CLI_NAMES:
         return True
-    if Path(args[0]).name == "bun" and len(args) > 1:
-        return Path(args[1]).name in AGENT_CLI_NAMES
+    if Path(args[0]).name in RUNTIME_NAMES and len(args) > 1:
+        name = Path(args[1]).name
+        if name in AGENT_CLI_NAMES:
+            return True
+        if name in AGENT_ENTRY_SCRIPTS and any(
+                marker in args[1] for marker in AGENT_PACKAGE_MARKERS):
+            return True
     return False
+
+
+def is_agent_cli(pid: int) -> bool:
+    """Whether the process is the agent CLI itself rather than a tool it runs."""
+    return is_agent_cli_argv(read_cmdline(pid))
 
 
 def tool_pids(pids: list[int], role: str) -> list[int]:
     """The pids among `pids` that are a TOOL: work the agent is actually doing.
 
-    Everything that is neither the agent CLI's own process nor this project's
-    MCP server counts as a tool. A throwaway `python3 -` script (how an agent
-    probes something) is a tool: it is work in progress.
+    Everything that is neither the agent CLI's own process (nor its own daemon)
+    nor this project's MCP server counts as a tool. A throwaway `python3 -`
+    script (how an agent probes something) is a tool: it is work in progress.
     """
     out: list[int] = []
     for pid in pids:
