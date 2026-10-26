@@ -410,4 +410,102 @@ def cmd_pr(store: Any, args: argparse.Namespace) -> int:
         pr_id=pr_id,
         forced=force,
     )
+    # The cleanup runs AFTER the merge, and it must never break the command:
+    # the merge already happened and cannot be undone, so a housekeeping error
+    # that escaped here would hide a real merge behind a failed exit code.
+    try:
+        _cleanup_worktree_after_merge(store, repo_dir, pr_id,
+                                      role=getattr(args, "role", "") or "writer")
+    except Exception as exc:  # noqa: BLE001 - the merge is already done
+        store.append_transcript(
+            "worktree_cleanup_failed",
+            getattr(args, "role", "") or "writer",
+            pr_id=pr_id,
+            error=str(exc),
+        )
     return 0
+
+
+def _cleanup_worktree_after_merge(store: Any, repo_dir: Path, pr_id: str | None,
+                                  role: str = "writer") -> None:
+    """Remove the worktree the merged branch lived in, and say what happened.
+
+    The commits are in the trunk and the branch is gone (`--delete-branch`);
+    the DIRECTORY that held it is left over. §19 makes the merged round branch
+    die by construction, and this makes the directory die with it.
+
+    Two rules, both learned the hard way:
+
+    - **A failed cleanup never turns a successful merge into a failure.** The
+      merge already happened and cannot be undone; refusing to report success
+      would hide a real merge behind a housekeeping error.
+    - **The cleanup is recorded either way.** Silence would leave the reader
+      unable to tell "there was nothing to clean" from "the cleanup failed and
+      nobody said so" — two states with different actions.
+    """
+    try:
+        from worktree import cleanup_worktree_for_branch
+    except ImportError:  # pragma: no cover - worktree sits next in the package
+        return
+    branch = _merged_branch(repo_dir, pr_id)
+    if not branch:
+        store.append_transcript(
+            "worktree_cleanup_skipped",
+            role or "writer",
+            pr_id=pr_id,
+            why="the merged branch could not be read",
+        )
+        return
+    res = cleanup_worktree_for_branch(repo_dir, branch)
+    store.append_transcript(
+        "worktree_cleaned" if res.get("removed") else "worktree_cleanup_skipped",
+        role or "writer",
+        pr_id=pr_id,
+        branch=branch,
+        path=res.get("path"),
+        removed=bool(res.get("removed")),
+        why=res.get("why", ""),
+    )
+
+
+def _merged_branch(repo_dir: Path, pr_id: str | None) -> str:
+    """The branch name of the PR that was just merged.
+
+    Read from GitHub, from the PR itself — `headRefName` is the branch the PR
+    was opened from, which is exactly the branch whose worktree we want to
+    remove. The local HEAD is NOT a substitute: it is the branch the MERGE ran
+    from, usually the trunk, and asking for the trunk's worktree would either
+    do nothing (the right outcome by accident) or try to remove the repository
+    itself (the wrong outcome). A cleanup that targets the wrong branch is
+    worse than no cleanup, because it looks like it worked.
+
+    The remote head branch is deleted by the merge itself, but `headRefName`
+    survives the deletion: GitHub keeps the PR record.
+
+    An empty answer means "unknown", never "no worktree".
+    """
+    name = _pr_head_branch(repo_dir, pr_id)
+    if name:
+        return name
+    return ""
+
+
+def _pr_head_branch(repo_dir: Path, pr_id: str | None) -> str:
+    """`gh pr view --json headRefName` — the branch the PR was opened from."""
+    cmd = ["gh", "pr", "view"]
+    if pr_id:
+        cmd.append(str(pr_id))
+    cmd.extend(["--json", "headRefName", "--jq", ".headRefName"])
+    try:
+        proc = subprocess.run(
+            cmd,
+            cwd=str(repo_dir),
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    if proc.returncode != 0:
+        return ""
+    return (proc.stdout or "").strip()

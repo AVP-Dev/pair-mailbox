@@ -308,7 +308,25 @@ if [[ "$USE_WORKTREE" -eq 1 ]]; then
   else
     BRANCH_NAME="duo/${CRITIC_ROLE}-$(date +%s)"
     echo "pair-duo: creating git worktree at $WT_DIR on branch $BRANCH_NAME"
-    git -C "$PROJECT_ROOT_DIR" worktree add "$WT_DIR" -b "$BRANCH_NAME"
+    # Through the module, not `git worktree add` in the shell: one place owns
+    # the creation, so the paths of every worktree in this repo are the same
+    # code path. This is the LAUNCH environment of the pair (no round exists
+    # yet, so no plan and no critic visa could) — the human asked for it with
+    # --worktree. A worktree for a TASK of a running round goes through
+    # worktree.setup_worktree, which demands the critic's signed plan.
+    _wt_err="$(python3 -c '
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(sys.argv[1]).resolve().parent.parent / "mcp" / "pair_mailbox"))
+import worktree
+res = worktree.bootstrap_worktree(Path(sys.argv[2]), sys.argv[3], Path(sys.argv[4]))
+if not res.get("ok"):
+    print(res.get("error") or "worktree creation failed", file=sys.stderr)
+    sys.exit(1)
+' "$HERE" "$PROJECT_ROOT_DIR" "$BRANCH_NAME" "$WT_DIR" 2>&1)" || {
+      echo "pair-duo: worktree creation failed: $_wt_err" >&2
+      exit 1
+    }
   fi
   CRITIC_DIR="$WT_DIR"
 fi

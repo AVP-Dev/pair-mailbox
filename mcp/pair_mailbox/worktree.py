@@ -74,11 +74,70 @@ def setup_worktree(
     repo_dir: Path,
     branch: str,
     target_dir: Path | None = None,
+    visa: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Create or set up a worktree for the given branch.
+    """Create a worktree that ISOLATES A TASK of the running round.
 
     With no target_dir given, lands in repo_dir / ".worktrees" / branch.
+
+    `visa` is the AGREED isolation strategy of the round that asked for this
+    worktree — the result of `isolation.agreed_strategy`. It is required, and
+    the default is refusal, because the backlog position (P1) says a worktree
+    must not be created before the critic has signed the plan that asked for
+    it. Fail-closed at the API level: a caller that forgets to pass the visa
+    gets a refusal, never a worktree nobody agreed to.
+
+    The visa also says WHICH strategy was agreed. A plan that chose `in-place`
+    (no worktree needed) does not authorise one: the refusal names that.
+
+    For the LAUNCH environment of a pair — a different thing, see
+    `bootstrap_worktree` — use that function instead.
     """
+    if not visa or not visa.get("ok"):
+        why = (visa or {}).get("why") or (
+            "no agreed isolation strategy for this round: the critic must sign "
+            "the round plan before a worktree is created")
+        return {"ok": False, "created": False, "branch": branch,
+                "error": f"worktree creation refused: {why}"}
+    if visa.get("mode") == "in-place":
+        return {"ok": False, "created": False, "branch": branch,
+                "error": ("worktree creation refused: the agreed strategy for this "
+                          "round is `in-place` — no worktree was asked for")}
+
+    return _create_worktree(repo_dir, branch, target_dir)
+
+
+def bootstrap_worktree(
+    repo_dir: Path,
+    branch: str,
+    target_dir: Path | None = None,
+) -> dict[str, Any]:
+    """Create the LAUNCH environment of a pair: the room the round happens in.
+
+    This is a different operation from `setup_worktree`, and the difference is
+    not a loophole but the thing the gate is about:
+
+    - `bootstrap_worktree` runs BEFORE a round exists. There is no round, no
+      plan, no critic to sign anything, and no task whose isolation is being
+      decided. The decision here is the HUMAN's: they typed `pairup
+      --worktree` or `pair-duo --worktree` on the command line.
+    - `setup_worktree` runs DURING a round, to isolate one of the round's
+      tasks. That decision belongs to the writer, and the critic signs it.
+
+    The git work is the same; only the gate differs, and the gate differs
+    because the question differs. The round that starts inside this worktree
+    still declares its own isolation strategy in its plan, and every
+    ADDITIONAL worktree it needs still passes `setup_worktree`.
+    """
+    return _create_worktree(repo_dir, branch, target_dir)
+
+
+def _create_worktree(
+    repo_dir: Path,
+    branch: str,
+    target_dir: Path | None = None,
+) -> dict[str, Any]:
+    """The git work behind both entry points: create or reuse the worktree."""
     repo_dir = Path(repo_dir).resolve()
     if target_dir is None:
         target_dir = repo_dir / ".worktrees" / branch
@@ -143,6 +202,73 @@ def prune_worktrees(repo_dir: Path) -> bool:
     return code == 0
 
 
+def _current_visa(state_dir: Path) -> dict[str, Any]:
+    """The agreed isolation strategy of the round that is running now.
+
+    The state dir holds `state.json` with the round and the writer. When it
+    cannot be read, the answer is a refusal — not a guess. A worktree created
+    on a guess is exactly what this gate exists to prevent.
+    """
+    try:
+        from isolation import agreed_strategy
+    except ImportError:  # pragma: no cover - isolation sits next in the package
+        return {"ok": False, "why": "the isolation module is unavailable"}
+    try:
+        state = json.loads((Path(state_dir) / "state.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        return {"ok": False, "why": f"state.json unreadable: {exc}"}
+    round_number = int(state.get("round", 0) or 0)
+    writer = str(state.get("writer") or "")
+    return agreed_strategy(state_dir, round_number, writer)
+
+
+def cleanup_worktree_for_branch(repo_dir: Path, branch: str) -> dict[str, Any]:
+    """Remove the worktree that held `branch`, then prune the records.
+
+    The worktree a merged round branch lived in has no reason to outlive the
+    merge: the commits are in the trunk, the branch is deleted by the merge
+    itself (`--delete-branch`), and a directory left behind is garbage on the
+    developer's disk. §19 says the merged round branch dies by construction —
+    this makes the DIRECTORY die with it.
+
+    The main worktree is never touched: it is the repository itself, and
+    `git worktree remove` on it would be a catastrophe, not a cleanup.
+
+    Returns {ok, removed, path, pruned, why}. `ok` is False when there was
+    nothing to clean — that is not a failure, it is the normal case for a
+    round that worked in place.
+    """
+    repo_dir = Path(repo_dir).resolve()
+    wanted = branch.strip()
+    if wanted.startswith("refs/heads/"):
+        wanted = wanted[len("refs/heads/"):]
+    main = None
+    target = None
+    for wt in list_worktrees(repo_dir):
+        path = Path(wt.get("worktree", ""))
+        if not path.exists():
+            continue
+        if main is None:
+            main = path.resolve()
+        wt_branch = str(wt.get("branch", "") or "")
+        if wt_branch.startswith("refs/heads/"):
+            wt_branch = wt_branch[len("refs/heads/"):]
+        if wt_branch == wanted and path.resolve() != main:
+            target = path
+            break
+    if target is None:
+        return {"ok": True, "removed": False, "path": None, "pruned": False,
+                "why": f"no worktree held the branch {branch!r}"}
+    removed = remove_worktree(repo_dir, target, force=True)
+    pruned = prune_worktrees(repo_dir)
+    if not removed:
+        return {"ok": False, "removed": False, "path": str(target),
+                "pruned": pruned,
+                "why": f"git worktree remove failed for {target}"}
+    return {"ok": True, "removed": True, "path": str(target), "pruned": pruned,
+            "why": ""}
+
+
 def cmd_worktree(store: Any, args: argparse.Namespace) -> int:
     "The `pairctl worktree` subcommand handler."
     subaction = getattr(args, "worktree_action", None) or "list"
@@ -173,7 +299,9 @@ def cmd_worktree(store: Any, args: argparse.Namespace) -> int:
         if not branch:
             print("pairctl worktree add requires a branch name", file=sys.stderr)
             return 2
-        res = setup_worktree(repo_dir, branch)
+        # The agreed strategy of the current round: the critic's signed plan.
+        visa = _current_visa(state_dir)
+        res = setup_worktree(repo_dir, branch, visa=visa)
         if getattr(args, "json", False):
             print(json.dumps(res, ensure_ascii=False, indent=2))
         else:
