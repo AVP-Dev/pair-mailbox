@@ -14,6 +14,12 @@ Fail closed: when the merged PRs cannot be read (no gh, no auth, no answer) or
 the journal is not where it should be, the check fails. It never reports
 success because it could not look.
 
+One exception, and it is opt-in: `--skip-if-unavailable` turns that refusal
+into a loud SKIPPED for a runner that has neither gh nor the pair's state
+directory - a CI runner, where the journal is not in the repo at all. The skip
+names what was not checked, and it covers only the case where nothing could
+be read: a merge that WAS read and has no event still fails.
+
 Runtime: stdlib. The inputs are the remote (through gh), the pair's state
 directory and the baseline file.
 """
@@ -169,12 +175,24 @@ def main(argv: list[str] | None = None) -> int:
                         help="the pair's state directory (the journal and its archives)")
     parser.add_argument("--baseline", default=str(DEFAULT_BASELINE),
                         help="the file naming the known debt")
+    parser.add_argument("--skip-if-unavailable", action="store_true",
+                        help="exit 0 with a SKIPPED note when the merged PRs or the "
+                             "journal cannot be read, instead of failing closed. For "
+                             "a CI runner that has neither gh nor the pair's state "
+                             "directory: there is nothing to audit there, and a "
+                             "permanent red would teach the reader to ignore the "
+                             "layer. The skip is loud - it names what was not "
+                             "checked - and it never applies to a merge that WAS "
+                             "read: an escape still fails.")
     args = parser.parse_args(argv)
     try:
         merged = merged_pr_numbers(Path(args.repo))
         recorded = journal_pr_merged(Path(args.journal))
         known = read_baseline(Path(args.baseline))
     except AuditError as exc:
+        if args.skip_if_unavailable:
+            print(f"merge-audit: SKIPPED: {exc}")
+            return 0
         print(f"merge-audit: FAILED: {exc}")
         return 2
     escapes, new_escapes, repaid = audit(merged, recorded, known)

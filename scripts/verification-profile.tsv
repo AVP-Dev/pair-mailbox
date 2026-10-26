@@ -110,6 +110,15 @@ eye-deadlock	positive	1	bash scripts/eye-of-sauron_test.sh
 session-finalizer	positive	1	bash skills/session-finalizer/tests/run.sh
 i18n-selftest	positive	1	python3 scripts/i18n_self_test.py
 merge-audit-trail	positive	1	python3 scripts/merge-audit-trail_test.py
+# The AUDIT itself, not only its test (round 150). The layer above proves the
+# logic with fixtures; this one runs the check against the real remote and the
+# real journal, which is the only way its guarantee ("every merged PR has a
+# pr_merged event") is ever exercised on what it was written to catch.
+# `--skip-if-unavailable` covers the one honest case: a CI runner has neither
+# gh's credentials nor the pair's state directory (the journal is gitignored),
+# and there is nothing to audit there. The skip is loud and covers only what
+# could not be READ - a merge that was read and has no event still fails.
+merge-audit	positive	1	python3 scripts/merge-audit-trail.py --skip-if-unavailable
 # The gate that decides which suites an edit runs (round 140). Its own test
 # runs the real gate in a temp git repository: a staged change, a staged new
 # file, an unstaged change, an untracked file and the honest empty case.
