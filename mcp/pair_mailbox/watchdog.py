@@ -91,6 +91,21 @@ AGENT_PACKAGE_MARKERS = (
 )
 
 
+def monologue_reminder(seconds: float) -> str:
+    """The hard reminder the supervisor types after cutting a monologue short.
+
+    It is addressed to the agent, so it says what to DO next, not what the
+    supervisor observed. And it names the duration the rule actually
+    measured: the threshold is configurable, so a fixed "5 minutes" would
+    tell the agent a number the supervisor never used — a false statement,
+    typed straight into the agent's composer.
+    """
+    minutes = max(1, int(round(seconds / 60.0)))
+    return (f"Watchdog: {minutes} minutes of reasoning without a tool call. "
+            "Stop analysing, act: run the tool, write the code, or hand the "
+            "turn to the peer.")
+
+
 def read_cmdline(pid: int) -> list[str]:
     """The argv of a pid, or [] when it is gone.
 

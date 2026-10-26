@@ -139,6 +139,27 @@ class TestMonologueTracker(unittest.TestCase):
         self.assertGreaterEqual(verdict["seconds"], 0.0)
 
 
+class TestMonologueReminder(unittest.TestCase):
+    """The hard reminder must name the duration the rule actually measured.
+
+    The threshold is configurable, so a fixed "5 minutes" would tell the
+    agent a number the supervisor never used — a false statement, typed
+    straight into the agent's composer.
+    """
+
+    def test_the_reminder_names_the_measured_duration(self):
+        self.assertIn("5 minutes", watchdog.monologue_reminder(300.0))
+        self.assertIn("1 minute", watchdog.monologue_reminder(60.0))
+
+    def test_a_short_streak_never_says_zero_minutes(self):
+        self.assertIn("1 minute", watchdog.monologue_reminder(10.0))
+
+    def test_the_reminder_says_what_to_do(self):
+        text = watchdog.monologue_reminder(300.0)
+        self.assertIn("Stop analysing", text)
+        self.assertIn("run the tool", text)
+
+
 class TestToolDetection(unittest.TestCase):
     """Which processes count as work — against real processes, not stubs."""
 

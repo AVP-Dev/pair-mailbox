@@ -72,6 +72,7 @@ try:
     from watchdog import (  # noqa: E402 - the monologue detector
         MonologueTracker,
         descendants,
+        monologue_reminder,
         screen_signature,
         tool_pids,
     )
@@ -140,13 +141,8 @@ DEFAULT_STALL_TIMEOUT = 300.0
 # The signal is: the screen CHANGES (the agent is producing output) AND no tool
 # subprocess is alive (the agent is not doing anything).
 DEFAULT_MAX_BUSY_SECONDS = 300.0
-# The hard reminder the supervisor types after cutting a monologue short. It is
-# addressed to the agent, so it says what to DO next, not what the supervisor
-# observed.
-MONOLOGUE_REMINDER = (
-    "Watchdog: 5 minutes of reasoning without a tool call. Stop analysing, "
-    "act: run the tool, write the code, or hand the turn to the peer."
-)
+# The hard reminder the supervisor types after cutting a monologue short lives
+# in watchdog.py, beside the rule that decides when to send it.
 PROMPT_MARKERS = (">", "›", "❯")
 AUTONOMIES = ("observe", "semi", "auto")
 
@@ -1954,7 +1950,7 @@ class Pilot:
                              f"Sent C-c and queued the reminder.\n")
         except OSError:
             pass
-        self.enqueue(role, MONOLOGUE_REMINDER, state=None, kind="report")
+        self.enqueue(role, monologue_reminder(seconds), state=None, kind="report")
 
     def preventive_compact(self, state: dict) -> None:
         """Preventive /compact for live roles at phase == ‘done’."""
