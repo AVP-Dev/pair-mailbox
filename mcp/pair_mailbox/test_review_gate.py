@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import subprocess
 import tempfile
 import unittest
@@ -859,6 +860,75 @@ class TestPreflightGate(PairTestCase):
                                   pr_id="96", role="omp")
         res = review_gate.cmd_pr(store, args)
         self.assertEqual(res, 0)
+
+
+class TestRunGhMergeFlags(PairTestCase):
+    """Round 148 slice C: the strategy reaches `gh` as the right flag.
+
+    The setting is only real if it changes the command. A resolver that
+    reads `rebase` correctly while the merge still passes `--squash` would
+    satisfy every test of the resolver and ship the old behaviour.
+    """
+
+    def _capture(self, strategy: str | None) -> list[str]:
+        """Run `run_gh_merge` and return the command it built."""
+        seen: list[str] = []
+
+        def fake_run(cmd, **kwargs):  # noqa: ANN001 - a mock stand-in
+            seen.extend(cmd)
+            return MagicMock(returncode=0, stdout="merged", stderr="")
+
+        env = {}
+        if strategy is not None:
+            env["PAIR_MERGE_STRATEGY"] = strategy
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.dict(os.environ, env, clear=False):
+                if strategy is None:
+                    os.environ.pop("PAIR_MERGE_STRATEGY", None)
+                with patch("review_gate.subprocess.run", fake_run):
+                    review_gate.run_gh_merge(Path(tmp), "42")
+        return seen
+
+    def test_the_default_strategy_squashes(self) -> None:
+        cmd = self._capture(None)
+        self.assertIn("--squash", cmd)
+        self.assertIn("--delete-branch", cmd)
+        self.assertNotIn("--merge", cmd)
+        self.assertNotIn("--rebase", cmd)
+
+    def test_the_merge_strategy_merges(self) -> None:
+        cmd = self._capture("merge")
+        self.assertIn("--merge", cmd)
+        self.assertIn("--delete-branch", cmd)
+        self.assertNotIn("--squash", cmd)
+        self.assertNotIn("--rebase", cmd)
+
+    def test_the_rebase_strategy_rebases(self) -> None:
+        cmd = self._capture("rebase")
+        self.assertIn("--rebase", cmd)
+        self.assertIn("--delete-branch", cmd)
+        self.assertNotIn("--squash", cmd)
+        self.assertNotIn("--merge", cmd)
+
+    def test_an_invalid_strategy_refuses_the_merge(self) -> None:
+        """The refusal names the admissible values — a refusal that does not
+        say what would have worked sends the reader looking through the
+        source."""
+        seen: list[str] = []
+
+        def fake_run(cmd, **kwargs):  # noqa: ANN001 - a mock stand-in
+            seen.extend(cmd)
+            return MagicMock(returncode=0, stdout="merged", stderr="")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.dict(os.environ, {"PAIR_MERGE_STRATEGY": "cherry-pick"}):
+                with patch("review_gate.subprocess.run", fake_run):
+                    code, out = review_gate.run_gh_merge(Path(tmp), "42")
+        self.assertEqual(code, 1)
+        self.assertEqual(seen, [], "gh must not run with a refused strategy")
+        self.assertIn("squash", out)
+        self.assertIn("merge", out)
+        self.assertIn("rebase", out)
 
 
 if __name__ == "__main__":

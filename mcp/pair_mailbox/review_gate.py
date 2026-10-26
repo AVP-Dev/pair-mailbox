@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any
 
 import review
+import merge_strategy
 from trunk import resolve_trunk
 
 
@@ -224,11 +225,27 @@ def check_pr_merge(store: Any, repo_dir: Path, pr_head: str | None = None) -> tu
 
 
 def run_gh_merge(repo_dir: Path, pr_id: str | None) -> tuple[int, str]:
-    """Run the merge through the gh cli."""
+    """Run the merge through the gh cli.
+
+    The strategy comes from the project's setting, not from a hard-wired
+    flag: `squash` by default (the behaviour that existed before the
+    setting existed), `merge` or `rebase` when the project asks for them.
+    `--delete-branch` is always there — §19 requires the round's branch to
+    die with the round.
+
+    An invalid strategy is a REFUSAL with the admissible values named, not a
+    silent fall back to squash: a project that asked for `rebase` and got
+    `squash` would learn it from the trunk's history, where nobody was
+    looking.
+    """
+    try:
+        flags = merge_strategy.merge_flags(repo_dir)
+    except ValueError as exc:
+        return 1, str(exc)
     cmd = ["gh", "pr", "merge"]
     if pr_id:
         cmd.append(pr_id)
-    cmd.extend(["--squash", "--delete-branch"])
+    cmd.extend(flags)
     try:
         proc = subprocess.run(
             cmd,
