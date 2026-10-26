@@ -35,7 +35,7 @@ class TestMergeStrategy(PairTestCase):
     def test_the_environment_wins(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            (root / ".merge_strategy").write_text("merge\n", encoding="utf-8")
+            (root / ".pair-merge-strategy").write_text("merge\n", encoding="utf-8")
             with patch.dict(os.environ, {project_settings.env_var(merge_strategy.SETTING): "rebase"}):
                 self.assertEqual(merge_strategy.resolve_merge_strategy(root), "rebase")
                 self.assertEqual(merge_strategy.merge_flags(root),
@@ -45,8 +45,8 @@ class TestMergeStrategy(PairTestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             (root / ".pair").mkdir()
-            (root / ".pair" / "merge_strategy").write_text("merge\n", encoding="utf-8")
-            (root / ".merge_strategy").write_text("rebase\n", encoding="utf-8")
+            (root / ".pair" / "merge-strategy").write_text("merge\n", encoding="utf-8")
+            (root / ".pair-merge-strategy").write_text("rebase\n", encoding="utf-8")
             with patch.dict(os.environ, {}, clear=False):
                 os.environ.pop(project_settings.env_var(merge_strategy.SETTING), None)
                 self.assertEqual(merge_strategy.resolve_merge_strategy(root), "merge")
@@ -54,7 +54,7 @@ class TestMergeStrategy(PairTestCase):
     def test_the_committed_file_wins_over_the_default(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            (root / ".merge_strategy").write_text("rebase\n", encoding="utf-8")
+            (root / ".pair-merge-strategy").write_text("rebase\n", encoding="utf-8")
             with patch.dict(os.environ, {}, clear=False):
                 os.environ.pop(project_settings.env_var(merge_strategy.SETTING), None)
                 self.assertEqual(merge_strategy.resolve_merge_strategy(root), "rebase")
@@ -62,7 +62,7 @@ class TestMergeStrategy(PairTestCase):
     def test_the_first_non_empty_line_is_the_value(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            (root / ".merge_strategy").write_text("\n\n  merge  \n", encoding="utf-8")
+            (root / ".pair-merge-strategy").write_text("\n\n  merge  \n", encoding="utf-8")
             with patch.dict(os.environ, {}, clear=False):
                 os.environ.pop(project_settings.env_var(merge_strategy.SETTING), None)
                 self.assertEqual(merge_strategy.resolve_merge_strategy(root), "merge")
@@ -72,7 +72,7 @@ class TestMergeStrategy(PairTestCase):
         `rebase` gets `squash` and learns it from the trunk's history."""
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            (root / ".merge_strategy").write_text("cherry-pick\n", encoding="utf-8")
+            (root / ".pair-merge-strategy").write_text("cherry-pick\n", encoding="utf-8")
             with patch.dict(os.environ, {}, clear=False):
                 os.environ.pop(project_settings.env_var(merge_strategy.SETTING), None)
                 with self.assertRaises(ValueError) as ctx:

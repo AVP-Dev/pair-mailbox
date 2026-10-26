@@ -35,7 +35,7 @@ class TestProjectSettings(PairTestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = self._root(tmp)
             (root / ".pair" / "thing").write_text("local\n", encoding="utf-8")
-            (root / ".thing").write_text("committed\n", encoding="utf-8")
+            (root / ".pair-thing").write_text("committed\n", encoding="utf-8")
             with patch.dict(os.environ, {project_settings.env_var("thing"): "env"}):
                 self.assertEqual(project_settings.resolve(root, "thing"), "env")
 
@@ -43,7 +43,7 @@ class TestProjectSettings(PairTestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = self._root(tmp)
             (root / ".pair" / "thing").write_text("local\n", encoding="utf-8")
-            (root / ".thing").write_text("committed\n", encoding="utf-8")
+            (root / ".pair-thing").write_text("committed\n", encoding="utf-8")
             with patch.dict(os.environ, {}, clear=False):
                 os.environ.pop(project_settings.env_var("thing"), None)
                 self.assertEqual(project_settings.resolve(root, "thing"), "local")
@@ -51,7 +51,7 @@ class TestProjectSettings(PairTestCase):
     def test_the_committed_file_comes_before_the_default(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = self._root(tmp)
-            (root / ".thing").write_text("committed\n", encoding="utf-8")
+            (root / ".pair-thing").write_text("committed\n", encoding="utf-8")
             with patch.dict(os.environ, {}, clear=False):
                 os.environ.pop(project_settings.env_var("thing"), None)
                 self.assertEqual(project_settings.resolve(root, "thing"), "committed")
@@ -67,7 +67,7 @@ class TestProjectSettings(PairTestCase):
     def test_the_first_non_empty_line_is_the_value(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = self._root(tmp)
-            (root / ".thing").write_text("\n\n  value  \n", encoding="utf-8")
+            (root / ".pair-thing").write_text("\n\n  value  \n", encoding="utf-8")
             with patch.dict(os.environ, {}, clear=False):
                 os.environ.pop(project_settings.env_var("thing"), None)
                 self.assertEqual(project_settings.resolve(root, "thing"), "value")
@@ -84,7 +84,7 @@ class TestProjectSettings(PairTestCase):
         """A file that cannot be read is a file that says nothing."""
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            (root / ".thing").mkdir()  # a DIRECTORY where a file belongs
+            (root / ".pair-thing").mkdir()  # a DIRECTORY where a file belongs
             with patch.dict(os.environ, {}, clear=False):
                 os.environ.pop(project_settings.env_var("thing"), None)
                 self.assertEqual(project_settings.resolve(root, "thing", "fallback"),
@@ -95,7 +95,7 @@ class TestProjectSettings(PairTestCase):
         would invent a second naming convention next to `PAIR_TRUNK`, and a
         project that already reads `PAIR_TRUNK` must not have to learn a
         different rule for the next setting."""
-        self.assertEqual(project_settings.env_var("merge_strategy"),
+        self.assertEqual(project_settings.env_var("merge-strategy"),
                          "PAIR_MERGE_STRATEGY")
         self.assertEqual(project_settings.env_var("worktree-share"),
                          "PAIR_WORKTREE_SHARE")
@@ -110,15 +110,19 @@ class TestProjectSettings(PairTestCase):
                          Path("/p/.pair/thing"))
 
     def test_the_committed_file_beside_the_code(self) -> None:
+        """The name is `.pair-<name>`, the trunk's name (`.pair-trunk`): the
+        local file lives INSIDE the ignored state dir, and the committed one
+        sits beside it with the same prefix, so the pair reads as one thing.
+        """
         self.assertEqual(project_settings.project_file(Path("/p"), "thing"),
-                         Path("/p/.thing"))
+                         Path("/p/.pair-thing"))
 
     def test_the_list_setting_splits_and_drops_the_blanks(self) -> None:
         """A list is a setting, not a sentence: `.venv, node_modules` and
         `.venv,node_modules` are the same list."""
         with tempfile.TemporaryDirectory() as tmp:
             root = self._root(tmp)
-            (root / ".thing").write_text(".venv, node_modules\n", encoding="utf-8")
+            (root / ".pair-thing").write_text(".venv, node_modules\n", encoding="utf-8")
             with patch.dict(os.environ, {}, clear=False):
                 os.environ.pop(project_settings.env_var("thing"), None)
                 self.assertEqual(
@@ -128,7 +132,7 @@ class TestProjectSettings(PairTestCase):
     def test_an_empty_list_falls_back_to_the_default(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = self._root(tmp)
-            (root / ".thing").write_text(" , , \n", encoding="utf-8")
+            (root / ".pair-thing").write_text(" , , \n", encoding="utf-8")
             with patch.dict(os.environ, {}, clear=False):
                 os.environ.pop(project_settings.env_var("thing"), None)
                 self.assertEqual(

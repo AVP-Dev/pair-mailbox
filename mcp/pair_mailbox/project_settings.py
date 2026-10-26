@@ -49,7 +49,7 @@ ENV_VAR = "PAIR_SETTING"
 #: namespace, where a generic name like `MERGE_STRATEGY` would collide with
 #: somebody else's tool.
 ENV_NAMES = {
-    "merge_strategy": "PAIR_MERGE_STRATEGY",
+    "merge-strategy": "PAIR_MERGE_STRATEGY",
     "worktree-share": "PAIR_WORKTREE_SHARE",
 }
 
@@ -71,8 +71,15 @@ def local_file(project_root: Path, name: str) -> Path:
 
 
 def project_file(project_root: Path, name: str) -> Path:
-    """The committed policy file of the project."""
-    return Path(project_root) / ("." + name)
+    """The committed policy file of the project.
+
+    The name is `.pair-<name>`, the trunk's name (`.pair-trunk`): the
+    local file lives INSIDE the ignored state dir, and the committed one
+    sits beside it with the same prefix, so the pair reads as one thing —
+    `.pair/trunk` and `.pair-trunk`, `.pair/merge-strategy` and
+    `.pair-merge-strategy`.
+    """
+    return Path(project_root) / (".pair-" + name)
 
 
 def _first_line(path: Path) -> str:

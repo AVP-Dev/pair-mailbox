@@ -32,7 +32,7 @@ STRATEGY_FLAGS: dict[str, list[str]] = {
 }
 
 #: The name of the setting, as `project_settings` knows it.
-SETTING = "merge_strategy"
+SETTING = "merge-strategy"
 
 
 def valid_strategies() -> list[str]:

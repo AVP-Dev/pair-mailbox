@@ -1554,7 +1554,21 @@ environment) → `.pair/worktree-share` (local, ignored) →
 `.pair-worktree-share` (the committed policy) → the closed list. A project
 must not grow a second way of reading configuration.
 
-### 22.2 The conflict is found before the merge, not during
+### 22.2 One way to read a setting
+
+`project_settings.py` is the ONE place that knows the order a project's
+voice is heard in: the environment, the local ignored file, the committed
+project file, the default. Each setting owns only the WHAT (which values
+exist, what each one means) and asks the module for the WHERE.
+
+Without it, each setting invents its own resolution order, and the project
+ends up with three ways to read a setting — three places to look when a
+round refuses for the "wrong" reason, and three chances for two of them to
+disagree. The committed policy file is named `.pair-<name>`, the trunk's
+name (`.pair-trunk`), so the local file and the committed one read as a
+pair: `.pair/merge-strategy` and `.pair-merge-strategy`.
+
+### 22.3 The conflict is found before the merge, not during
 
 Round 147 gave the round branch a clean death: it was merged and deleted.
 The conflict was discovered AT THE MOMENT OF THE MERGE — after the PR was on
@@ -1596,15 +1610,15 @@ in this repository yet (the PR was pushed from elsewhere).
 conflict is not a review gate, it is a fact about the two commits, and it
 does not become true because a human wrote a reason next to it.
 
-### 22.3 The merge strategy is a setting
+### 22.4 The merge strategy is a setting
 
 The strategy was hard-wired: `gh pr merge --squash --delete-branch`. A
 project that wanted its rounds rebased or merged as merge commits had no way
 to ask for it except by editing the engine — which is not a setting.
 
 `merge_strategy.py` follows §19's pattern for `trunk`:
-`PAIR_MERGE_STRATEGY` (the environment) → `.pair/merge_strategy` (local,
-ignored) → `.merge_strategy` (the committed policy) → `squash`. The
+`PAIR_MERGE_STRATEGY` (the environment) → `.pair/merge-strategy` (local,
+ignored) → `.pair-merge-strategy` (the committed policy) → `squash`. The
 default is what makes this safe to land: a project that says nothing keeps
 the behaviour it had, byte for byte.
 
