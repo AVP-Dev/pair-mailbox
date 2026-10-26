@@ -7,6 +7,10 @@
 mcp/pair_mailbox/composer.py	composer
 mcp/pair_mailbox/test_composer.py	composer
 mcp/pair_mailbox/test_allowlist_bypass.py	composer-bypass
+mcp/pair_mailbox/wait_until.py	wait-until
+mcp/pair_mailbox/test_wait_until.py	wait-until
+bin/pairmcprestart	mcpprestart
+bin/pairmcprestart_test.py	mcpprestart
 mcp/pair_mailbox/pointers.py	pointer
 mcp/pair_mailbox/test_pointer.py	pointer
 mcp/pair_mailbox/test_waiting_contract.py	waiting-contract

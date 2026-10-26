@@ -76,6 +76,8 @@ digest	positive	1	python3 mcp/pair_mailbox/test_digest.py
 panes	positive	1	python3 mcp/pair_mailbox/test_panes.py	serial
 composer	positive	1	python3 mcp/pair_mailbox/test_composer.py	serial
 composer-bypass	positive	1	python3 mcp/pair_mailbox/test_allowlist_bypass.py	serial
+wait-until	positive	1	python3 mcp/pair_mailbox/test_wait_until.py
+mcpprestart	positive	1	python3 bin/pairmcprestart_test.py
 pointer	positive	1	python3 mcp/pair_mailbox/test_pointer.py
 waiting-contract	positive	1	python3 mcp/pair_mailbox/test_waiting_contract.py
 read-delivery	positive	1	python3 mcp/pair_mailbox/test_read_delivery.py

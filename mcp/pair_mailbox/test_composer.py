@@ -8,7 +8,11 @@ Round-32 verdict debt: the permission block never chokes pair tests.
     """
 from __future__ import annotations
 
+import os
+import subprocess
 import sys
+import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -363,6 +367,125 @@ class TestTmuxTimeoutIsBusyNotDeath(unittest.TestCase):
             self.assertEqual(0, composer._send_keys("/usr/bin/tmux", "%7", "Enter").returncode)
         finally:
             composer.subprocess.run = original
+
+
+class TestCaptureJoinsSoftWrappedLines(unittest.TestCase):
+    """`capture` reads the LOGICAL line, not the terminal row.
+
+    The defect this fixes: a pane narrower than the text split every long line
+    into rows, and a regex over the pane read a fragment — a permission prompt
+    split across rows never matched, so the pilot never answered it.
+
+    The tests run on a LIVE tmux pane: stubbing the capture would prove the
+    flag is spelled right, not that tmux joins the rows.
+    """
+
+    WIDTH = 40
+
+    def setUp(self) -> None:
+        from shutil import which
+
+        if not which("tmux"):
+            self.skipTest("tmux not installed")
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.source = Path(self._tmp.name) / "payload.txt"
+        self.session = f"pairtestJ{os.getpid()}"
+        subprocess.run(["tmux", "kill-session", "-t", self.session],
+                       capture_output=True, timeout=10)
+        made = subprocess.run(
+            ["tmux", "new-session", "-d", "-s", self.session,
+             "-x", str(self.WIDTH), "-y", "20",
+             f"sh -c 'cat {self.source}; sleep 30'"],
+            capture_output=True, text=True, timeout=10)
+        if made.returncode != 0:
+            self.skipTest(f"tmux gave no session: {made.stderr}")
+        self.addCleanup(subprocess.run, ["tmux", "kill-session", "-t", self.session],
+                        capture_output=True, timeout=10)
+        self.pane = subprocess.run(
+            ["tmux", "list-panes", "-t", self.session, "-F", "#{pane_id}"],
+            capture_output=True, text=True, timeout=10).stdout.strip()
+        self.addCleanup(self._write, "\n")
+
+    def _write(self, text: str) -> None:
+        """Put text on the pane and wait until the pane shows it."""
+        self.source.write_text(text, encoding="utf-8")
+        # The pane runs `cat` once at start; a rewrite needs a fresh cat. The
+        # simplest honest way: send the text as keys to a shell prompt.
+        subprocess.run(["tmux", "send-keys", "-t", self.pane, "-l", text],
+                       capture_output=True, timeout=10)
+        subprocess.run(["tmux", "send-keys", "-t", self.pane, "Enter"],
+                       capture_output=True, timeout=10)
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            if composer.capture("tmux", self.pane):
+                return
+            time.sleep(0.2)
+
+    def test_a_wrapped_line_comes_back_whole(self) -> None:
+        long_line = "A" * 60
+        self._write(long_line)
+        lines = composer.capture("tmux", self.pane)
+        self.assertIn(long_line, lines,
+                      f"the wrapped line stayed split: {lines!r}")
+
+    def test_the_frame_geometry_survives_the_joining(self) -> None:
+        """A bottom edge wider than the pane must still read as the input field.
+
+        This is the risk `-J` carries: a frame row too wide for the pane wraps,
+        and the plain capture then shows the corner on the first row and the rest
+        of the edge on the second — the corner-led geometry is gone, and the pane
+        reads busy forever. With the joining the edge comes back whole, corner
+        first, and the detector finds it again.
+        """
+        edge = "╹" + "▀" * (self.WIDTH + 20)
+        self._write(edge + "\nstatus line below")
+        lines = composer.capture("tmux", self.pane)
+        self.assertIn(edge, lines,
+                      f"the input-field bottom edge did not survive: {lines!r}")
+        self.assertTrue(composer.is_input_box_border(edge))
+        line = composer.composer_line(lines)
+        self.assertIsNotNone(line,
+                             f"the input field went invisible: {lines!r}")
+
+    def test_a_wrapped_prompt_is_recognized_as_one_line(self) -> None:
+        """The consumer of the fix: a prompt split by the width matches whole.
+
+        `detect_permission_prompt` reads ONE line at a time. A prompt whose
+        marker fell onto the second terminal row was invisible to it — the pilot
+        sat on a permission question it could not see. The marker is pushed past
+        the width on purpose, so the plain capture cannot match it.
+        """
+        prompt = "A" * (self.WIDTH + 5) + " [y/N]"
+        self._write(prompt)
+        lines = composer.capture("tmux", self.pane)
+        self.assertIsNotNone(composer.detect_permission_prompt(lines),
+                             f"the wrapped prompt was invisible: {lines!r}")
+
+    def test_the_old_tmux_falls_back_to_the_plain_capture(self) -> None:
+        """An old tmux without `-J` must not read as an empty pane.
+
+        An empty capture means "no composer visible", which the caller contract
+        reads as BUSY — so a missing flag would silently disable delivery
+        instead of degrading to the old behaviour.
+        """
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(list(cmd))
+            if "-J" in cmd:
+                return subprocess.CompletedProcess(cmd, 1, "", "unknown flag: -J")
+            return subprocess.CompletedProcess(cmd, 0, "plain line\n", "")
+
+        original = composer.subprocess.run
+        composer.subprocess.run = fake_run
+        try:
+            lines = composer.capture("tmux", "%7")
+        finally:
+            composer.subprocess.run = original
+        self.assertEqual(["plain line"], lines)
+        self.assertTrue(any("-J" in cmd for cmd in calls), calls)
+        self.assertTrue(any("-J" not in cmd for cmd in calls), calls)
 
 
 if __name__ == "__main__":

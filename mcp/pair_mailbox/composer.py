@@ -530,12 +530,23 @@ def pane_role_pid(tmux: str, pane: str, role: str) -> int:
 
 
 def capture(tmux: str, pane: str) -> list:
-    r = subprocess.run([tmux, "capture-pane", "-p", "-t", pane],
+    """The pane's visible lines, with soft-wrapped lines joined.
+
+    `-J` (tmux >= 2.3) restores the LOGICAL line: a line the terminal wrapped for
+    width comes back whole. Without it every regex over the pane read a fragment —
+    a permission prompt split across rows never matched.
+    Measured on tmux 3.6: `-J` joins only lines the terminal itself wrapped, so
+    the frame geometry survives; an old tmux without `-J` falls back to the plain
+    capture, because an empty pane reads as "busy".
+    """
+    r = subprocess.run([tmux, "capture-pane", "-p", "-J", "-t", pane],
                        capture_output=True, text=True, timeout=5)
     if r.returncode != 0:
-        return []
-    lines = r.stdout.splitlines()
-    return lines[-CAPTURE_LINES:]
+        r = subprocess.run([tmux, "capture-pane", "-p", "-t", pane],
+                           capture_output=True, text=True, timeout=5)
+        if r.returncode != 0:
+            return []
+    return r.stdout.splitlines()[-CAPTURE_LINES:]
 
 
 # TUI frames: box-drawing and block glyphs. One constant on purpose: the
