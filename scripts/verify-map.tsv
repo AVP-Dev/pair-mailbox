@@ -133,9 +133,9 @@ cli-profiles.json	installer-subset
 scripts/i18n_apply.py	i18n-selftest
 scripts/i18n_extract.py	i18n-selftest
 scripts/i18n_self_test.py	i18n-selftest
-scripts/merge-audit-trail.py	merge-audit-trail
+scripts/merge-audit-trail.py	merge-audit-trail;merge-audit
 scripts/merge-audit-trail_test.py	merge-audit-trail
-scripts/merge-audit-baseline.tsv	merge-audit-trail
+scripts/merge-audit-baseline.tsv	merge-audit-trail;merge-audit
 scripts/verify-changed.sh	changed-file-gate
 scripts/verify-changed_test.sh	changed-file-gate
 scripts/	scripts-check
@@ -196,8 +196,10 @@ scripts/branch-class-check.py	branch-class
 scripts/branch_class_check_test.py	branch-class
 bin/pre_push_guard_test.py	pre-push-guard
 bin/git-hooks/pre-push	pre-push-guard
-docs/PROTOCOL.md	branch-class
-docs/PROTOCOL.ru.md	branch-class
+docs/PROTOCOL.md	branch-class;protocol-parity
+docs/PROTOCOL.ru.md	branch-class;protocol-parity
+scripts/protocol_parity_check.py	protocol-parity;protocol-parity-test
+scripts/protocol_parity_check_test.py	protocol-parity-test
 mcp/pair_mailbox/branch_audit.py	branch-audit
 mcp/pair_mailbox/branch_classes.py	branch-audit
 mcp/pair_mailbox/trunk.py	trunk

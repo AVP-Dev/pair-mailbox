@@ -21,17 +21,33 @@
 #               notes, not in the transcript, so the journal cannot prove
 #               those merges were sanctioned.
 #
-# PR 6 and PR 76 are absent: they were closed without being merged. PR 61 is
-# absent too: it was merged outside the gate, and round 115 repaired it
-# properly - the journal holds a `pr_merge_repaired` event for it.
+# A third stratum, measured 2026-10-26 (round 150):
+#   PRs 61-71 - merged 2026-10-18/19, before THIS project's journal existed.
+#               The oldest event in the journal is 2026-10-20T06:51:11Z
+#               (.pair/transcript-archive/3.jsonl) and its first merge record
+#               is PR #72, so these eleven merges left no trace here and can
+#               never leave one: their events would have to be written into
+#               the past, which is a forgery. The debt is named, not healed.
+#               The round-139 baseline under-named them, and the audit failed
+#               on them from the day it landed.
+#
+# PR 6 and PR 76 are absent: they were closed without being merged.
+#
+# The round-139 header claimed PR 61 was absent because round 115 repaired
+# it - that the journal holds a `pr_merge_repaired` event for it. Measured
+# 2026-10-26: the journal holds NO `pr_merge_repaired` and NO
+# `pr_merge_forced` event at all, only `pr_merged`, and the oldest
+# `pr_merge` row it carries is PR #72. So PR 61 is an escape like its
+# neighbours, and it is named in the third stratum below. The claim that
+# round 115 repaired it belonged to a journal this project no longer holds.
 #
 # A new row here is a decision, not a cleanup: it means a merge escaped the
 # sanctioned path and the debt grew. The honest repair is the merge path
 # (bin/pairctl pr merge) or the repair command
 # (bin/pairctl pr merge-record), never a hand-written event.
 #
-# Measured 2026-10-21 on the round-139 tree: 83 merged PRs, 24 with a merge
-# record, 59 without.
+# Measured 2026-10-26 on the round-150 tree: 96 merged PRs, 26 with a merge
+# record, 70 without, all 70 named here.
 1	merged before the merge gate existed (it arrives with PR #27)
 2	merged before the merge gate existed (it arrives with PR #27)
 3	merged before the merge gate existed (it arrives with PR #27)
@@ -91,3 +107,14 @@
 58	the gate existed, but the journal recorded no merges until PR #62
 59	the gate existed, but the journal recorded no merges until PR #62
 60	the gate existed, but the journal recorded no merges until PR #62
+61	merged 2026-10-18, before this project's journal existed; no event can be written for it
+62	merged 2026-10-18, before this project's journal existed; no event can be written for it
+63	merged 2026-10-18, before this project's journal existed; no event can be written for it
+64	merged 2026-10-18, before this project's journal existed; no event can be written for it
+65	merged 2026-10-18, before this project's journal existed; no event can be written for it
+66	merged 2026-10-18, before this project's journal existed; no event can be written for it
+67	merged 2026-10-19, before this project's journal existed; no event can be written for it
+68	merged 2026-10-19, before this project's journal existed; no event can be written for it
+69	merged 2026-10-19, before this project's journal existed; no event can be written for it
+70	merged 2026-10-19, before this project's journal existed; no event can be written for it
+71	merged 2026-10-19, before this project's journal existed; no event can be written for it
