@@ -115,7 +115,12 @@ import sys, json
 from pathlib import Path
 sys.path.insert(0, sys.argv[1] + "/mcp/pair_mailbox")
 import worktree
-res = worktree.setup_worktree(Path(sys.argv[2]), sys.argv[3])
+# The launch environment of the pair, not a task of a running round: there is
+# no round yet, so no plan and no critic visa could exist. The decision here
+# is the human'"'"'s, who typed --worktree on the command line. A worktree for
+# a TASK of a running round goes through worktree.setup_worktree, which
+# demands the critic'"'"'s signed plan.
+res = worktree.bootstrap_worktree(Path(sys.argv[2]), sys.argv[3])
 print(json.dumps(res))
 ' "$PAIRUP_ROOT" "$_git_root" "$WORKTREE_BRANCH")"
   _wt_ok="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1]).get("ok"))' "$_wt_res")"

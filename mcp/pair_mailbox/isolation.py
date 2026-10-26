@@ -251,3 +251,69 @@ def validate(strategy: dict[str, Any], changed_lines: int) -> tuple[bool, str]:
                            f"the declared slices cannot hold it (limit {limit})")
         return True, ""
     return False, f"unknown isolation mode {mode!r}"
+
+
+def agreed_strategy(state_dir: Any, round_number: int, writer: str) -> dict[str, Any]:
+    """The isolation strategy of THIS round that the critic has signed.
+
+    Three facts must hold, and each one is checked on its own:
+
+    1. the plan file is the plan of this round and carries a parsable
+       isolation strategy;
+    2. the critic's visa for this round is no older than that plan — the
+       stale-verdict principle (`review.is_stale`), so a visa for an earlier
+       revision of the plan does not count;
+    3. the visa is not the writer's own.
+
+    Returns {ok, why, mode, worktrees, slices, ack_role, ack_at}. A refusal
+    names WHICH of the three failed, because "no worktree without agreement"
+    without a reason sends the reader looking in the wrong place.
+    """
+    from datetime import datetime, timezone
+    from pathlib import Path
+
+    # `plan_gate` imports this module for the heading pattern, so the import
+    # here is late on purpose: a module-level import would close a cycle.
+    import plan_gate
+
+    state_dir = Path(state_dir)
+    plan_path = state_dir / plan_gate.PLAN_FILE
+    try:
+        text = plan_path.read_text(encoding="utf-8")
+    except OSError as exc:
+        return {"ok": False, "why": f".pair/{plan_gate.PLAN_FILE} unreadable: {exc}",
+                "mode": None, "worktrees": 0, "slices": 0,
+                "ack_role": None, "ack_at": None}
+
+    plan = plan_gate.parse_plan(plan_path, mode="fix")
+    if not plan["ok"]:
+        return {"ok": False, "why": plan["why"], "mode": None, "worktrees": 0,
+                "slices": 0, "ack_role": None, "ack_at": None}
+    if plan["round"] != round_number:
+        return {"ok": False,
+                "why": (f"the plan marks round: {plan['round']}, but the round is now "
+                        f"{round_number}: another round's plan agrees nothing"),
+                "mode": None, "worktrees": 0, "slices": 0,
+                "ack_role": None, "ack_at": None}
+
+    strategy = parse_strategy(text)
+    if not strategy["ok"]:
+        return {"ok": False, "why": strategy["why"], "mode": None, "worktrees": 0,
+                "slices": 0, "ack_role": None, "ack_at": None}
+
+    try:
+        mtime = datetime.fromtimestamp(plan_path.stat().st_mtime, tz=timezone.utc)
+    except OSError:
+        mtime = datetime.now(timezone.utc)
+    ack = plan_gate.critic_ack(state_dir, round_number, writer, mtime)
+    if not ack.get("ack"):
+        return {"ok": False,
+                "why": (f"the isolation strategy of round {round_number} is not agreed: "
+                        f"{ack.get('why')}"),
+                "mode": strategy["mode"], "worktrees": strategy["worktrees"],
+                "slices": strategy["slices"],
+                "ack_role": None, "ack_at": None}
+
+    return {"ok": True, "why": "", "mode": strategy["mode"],
+            "worktrees": strategy["worktrees"], "slices": strategy["slices"],
+            "ack_role": ack.get("role"), "ack_at": ack.get("at")}
