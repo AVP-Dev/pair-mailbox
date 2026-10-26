@@ -497,8 +497,10 @@ class TestReviewGate(PairTestCase):
         self.assertEqual(res, 1)
         store.append_transcript.assert_not_called()
 
+    @patch("review_gate._preflight_merge", return_value=(True, ""))
     @patch("review_gate.run_gh_merge")
-    def test_cmd_pr_force_with_reason_and_human_ok_records_audit(self, mock_gh: MagicMock) -> None:
+    def test_cmd_pr_force_with_reason_and_human_ok_records_audit(self, mock_gh: MagicMock,
+                                                                  _mock_pf: MagicMock) -> None:
         """CONDITION 3: --force with --reason and human_ok logs into audit/transcript."""
         mock_gh.return_value = (0, "merged")
         store = MagicMock()
@@ -789,6 +791,74 @@ class TestReviewGate(PairTestCase):
         (base / ".pair" / "state.json").write_text("{}", encoding="utf-8")
         store = Store(base / ".pair", allow_create=True)
         return store, base
+
+
+class TestPreflightGate(PairTestCase):
+    """Round 148 slice B: the conflict is found BEFORE the merge, not during.
+
+    A conflict discovered at the moment of the merge costs the whole review:
+    the PR was on review, the critic had written a verdict, the human had
+    read the diff. The cost of finding a conflict late is not the conflict.
+    """
+
+    @patch("review_gate._preflight_merge", return_value=(False, "feature conflicts with origin/dev in f.txt"))
+    @patch("review_gate.run_gh_merge")
+    @patch("review_gate.check_pr_merge", return_value=(True, ""))
+    @patch("review_gate.resolve_pr_head", return_value=("abc123", ""))
+    def test_a_conflict_refuses_the_merge(self, _m1: MagicMock, _m2: MagicMock,
+                                          _m3: MagicMock, _m4: MagicMock) -> None:
+        store = MagicMock()
+        store.read.return_value = {"round": 148, "phase": "verify"}
+        args = argparse.Namespace(pr_action="merge", force=False, reason="",
+                                  pr_id="96", role="omp")
+        res = review_gate.cmd_pr(store, args)
+        self.assertEqual(res, 1)
+
+    @patch("review_gate._preflight_merge", return_value=(False, "feature conflicts with origin/dev in f.txt"))
+    @patch("review_gate.run_gh_merge")
+    @patch("review_gate.check_pr_merge", return_value=(True, ""))
+    def test_force_does_not_bypass_a_conflict(self, _m1: MagicMock, _m2: MagicMock,
+                                              _m3: MagicMock) -> None:
+        """`--force` bypasses the REVIEW gates. A conflict is not a review
+        gate — it is a fact about the two commits, and it does not become
+        true because a human wrote a reason next to it."""
+        store = MagicMock()
+        store.read.return_value = {
+            "round": 148, "phase": "verify",
+            "human_ok": [{"round": 148, "phase": "verify"}],
+        }
+        args = argparse.Namespace(pr_action="merge", force=True, reason="human said so",
+                                  pr_id="96", role="human")
+        res = review_gate.cmd_pr(store, args)
+        self.assertEqual(res, 1)
+
+    @patch("review_gate._preflight_merge", return_value=(False, "the merge could not be checked: git failed"))
+    @patch("review_gate.run_gh_merge")
+    @patch("review_gate.check_pr_merge", return_value=(True, ""))
+    @patch("review_gate.resolve_pr_head", return_value=("abc123", ""))
+    def test_an_unknown_check_is_not_a_clean_check(self, _m1: MagicMock, _m2: MagicMock,
+                                                   _m3: MagicMock, _m4: MagicMock) -> None:
+        """A check that says "no conflicts" when git failed says the thing
+        the reader wants to hear without having checked anything."""
+        store = MagicMock()
+        store.read.return_value = {"round": 148, "phase": "verify"}
+        args = argparse.Namespace(pr_action="merge", force=False, reason="",
+                                  pr_id="96", role="omp")
+        res = review_gate.cmd_pr(store, args)
+        self.assertEqual(res, 1)
+
+    @patch("review_gate._preflight_merge", return_value=(True, ""))
+    @patch("review_gate.run_gh_merge", return_value=(0, "merged"))
+    @patch("review_gate.check_pr_merge", return_value=(True, ""))
+    @patch("review_gate.resolve_pr_head", return_value=("abc123", ""))
+    def test_a_clean_check_lets_the_merge_through(self, _m1: MagicMock, _m2: MagicMock,
+                                                  _m3: MagicMock, _m4: MagicMock) -> None:
+        store = MagicMock()
+        store.read.return_value = {"round": 148, "phase": "verify"}
+        args = argparse.Namespace(pr_action="merge", force=False, reason="",
+                                  pr_id="96", role="omp")
+        res = review_gate.cmd_pr(store, args)
+        self.assertEqual(res, 0)
 
 
 if __name__ == "__main__":
