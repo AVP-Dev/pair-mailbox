@@ -282,5 +282,88 @@ class TestNumberedMenuKeys(unittest.TestCase):
         self.assertIsNone(composer.menu_allow_key(lines))
 
 
+class TestTmuxTimeoutIsBusyNotDeath(unittest.TestCase):
+    """A `tmux send-keys` timeout is BUSY — never the death of the caller.
+
+    The measured death (2026-10-25, this project's own supervisor): one
+    `send-keys` into a pane whose CLI had stopped consuming input hung for
+    the full 5-second timeout and raised `subprocess.TimeoutExpired`. The
+    pilot's `flush_outbox` caught `ComposerBusy` and nothing else, so the
+    exception escaped, the whole supervisor died, and EVERY rule it carried
+    went dark with it — including the monologue watchdog. A dead supervisor
+    is the one failure no watchdog can notice.
+    """
+
+    def test_timeout_becomes_composer_busy(self) -> None:
+        import subprocess
+
+        def fake_run(cmd, **kwargs):
+            raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout", 5))
+
+        original = composer.subprocess.run
+        composer.subprocess.run = fake_run
+        try:
+            with self.assertRaises(composer.ComposerBusy):
+                composer._send_keys("/usr/bin/tmux", "%7", "-l", "hello")
+        finally:
+            composer.subprocess.run = original
+
+    def test_type_text_timeout_becomes_composer_busy(self) -> None:
+        """`type_text` is on the delivery path: a timeout must not kill the pilot."""
+        import subprocess
+
+        def fake_run(cmd, **kwargs):
+            raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout", 5))
+
+        original = composer.subprocess.run
+        composer.subprocess.run = fake_run
+        try:
+            with self.assertRaises(composer.ComposerBusy):
+                composer.type_text("/usr/bin/tmux", "%7", "hello")
+        finally:
+            composer.subprocess.run = original
+
+    def test_submit_verified_timeout_becomes_composer_busy(self) -> None:
+        import subprocess
+
+        def fake_run(cmd, **kwargs):
+            raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout", 5))
+
+        original = composer.subprocess.run
+        composer.subprocess.run = fake_run
+        try:
+            with self.assertRaises(composer.ComposerBusy):
+                composer.submit_verified("/usr/bin/tmux", "%7", "body")
+        finally:
+            composer.subprocess.run = original
+
+    def test_erase_timeout_becomes_composer_busy(self) -> None:
+        import subprocess
+
+        def fake_run(cmd, **kwargs):
+            raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout", 5))
+
+        original = composer.subprocess.run
+        composer.subprocess.run = fake_run
+        try:
+            with self.assertRaises(composer.ComposerBusy):
+                composer.erase("/usr/bin/tmux", "%7", 3)
+        finally:
+            composer.subprocess.run = original
+
+    def test_a_working_pane_still_returns_the_result(self) -> None:
+        """The wrapper is not a blanket failure: a healthy tmux still reports rc."""
+        import subprocess
+
+        done = subprocess.CompletedProcess(["tmux"], 0, "", "")
+
+        original = composer.subprocess.run
+        composer.subprocess.run = lambda cmd, **kwargs: done
+        try:
+            self.assertEqual(0, composer._send_keys("/usr/bin/tmux", "%7", "Enter").returncode)
+        finally:
+            composer.subprocess.run = original
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

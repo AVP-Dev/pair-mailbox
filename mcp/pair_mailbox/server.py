@@ -1978,10 +1978,21 @@ class PairSession:
                 return self._ring_refused(target, kind, pane, reason)
         from pointers import ring_prompt
         prompt = ring_prompt(self.role, kind, detail)
-        first = subprocess.run([tmux, "send-keys", "-t", pane, "-l", prompt],
-                               capture_output=True, text=True, timeout=5)
-        second = subprocess.run(tmux_command().split() + ["send-keys", "-t", pane, "Enter"],
-                                capture_output=True, text=True, timeout=5)
+        # A tmux timeout is BUSY, not death: the same measured hang that killed
+        # the supervisor on 2026-10-25 would kill this MCP server too, and a
+        # dead server cannot answer pair_read. The ring is best-effort by
+        # design — the mailbox letter is the guarantee — so a timeout is a
+        # recorded miss and nothing more.
+        try:
+            first = subprocess.run([tmux, "send-keys", "-t", pane, "-l", prompt],
+                                   capture_output=True, text=True, timeout=5)
+            second = subprocess.run(tmux_command().split() + ["send-keys", "-t", pane, "Enter"],
+                                    capture_output=True, text=True, timeout=5)
+        except subprocess.TimeoutExpired as expired:
+            reason = f"send-keys timed out: {expired}"
+            self.store.append_transcript("doorbell_enter_unverified", self.role,
+                                         to=target, bell_kind=kind, pane=pane, reason=reason)
+            return {"rung": False, "why": reason, "pane": pane}
         if first.returncode != 0 or second.returncode != 0:
             reason = (f"send-keys text rc={first.returncode} enter rc={second.returncode}"
                       + (f" {second.stderr.strip()[:120]}" if second.stderr else ""))
@@ -1998,8 +2009,14 @@ class PairSession:
                 return True
             return line is not None and prompt in line
         if _retained():
-            retry = subprocess.run([tmux, "send-keys", "-t", pane, "Enter"],
-                                   capture_output=True, text=True, timeout=5)
+            try:
+                retry = subprocess.run([tmux, "send-keys", "-t", pane, "Enter"],
+                                       capture_output=True, text=True, timeout=5)
+            except subprocess.TimeoutExpired as expired:
+                reason = f"send-keys Enter timed out: {expired}"
+                self.store.append_transcript("doorbell_enter_unverified", self.role,
+                                             to=target, bell_kind=kind, pane=pane, reason=reason)
+                return {"rung": False, "why": reason, "pane": pane}
             if _retained():
                 reason = ("composer retained prompt after Enter "
                           f"(rc=0 both sends, retry rc={retry.returncode})")

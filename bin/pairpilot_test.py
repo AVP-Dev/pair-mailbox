@@ -3499,6 +3499,198 @@ class TestPushGates(PilotCase):
                          "a delivered report spends the human's trigger")
 
 
+class _FakeClock:
+    """A clock the test moves by hand.
+
+    The detector's whole rule is a duration, so the tests must control time
+    rather than sleep. Patching the pilot's own `time` module leaves every
+    other module in the process on the real clock.
+    """
+
+    def __init__(self, start: float = 1_000_000.0) -> None:
+        self.now = start
+
+    def time(self) -> float:
+        return self.now
+
+    def sleep(self, seconds: float) -> None:
+        self.now += seconds
+
+
+class TestMonologueDetector(PilotCase):
+    """The monologue detector: streaming reasoning with no tool gets cut.
+
+    The defect it answers was measured in round 144: an agent spent four
+    hours streaming reasoning, and the supervisor had no word for that state.
+    `ComposerBusy` was the wrong word — it describes the INPUT FIELD, and
+    during a monologue the field reads EMPTY (measured on the live pane).
+
+    So the signal is the pane's CONTENT changing while no tool subprocess is
+    alive. These tests pin the three properties that make it safe:
+
+    - a live tool (a long test run) is never cut;
+    - a waiting agent (a rotating spinner, no content) is never cut;
+    - a real monologue is cut, and the cut is recorded.
+
+    The properties of the streak arithmetic itself live in
+    `mcp/pair_mailbox/test_watchdog.py`, beside the module that owns them.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        self._orig_capture = pairpilot.capture
+        self._orig_pane_alive = pairpilot.pane_alive
+        self._orig_deliver = pairpilot.deliver
+        self._orig_run = pairpilot.subprocess.run
+        self._orig_belongs = pairpilot.pane_belongs_to_project
+        self._orig_pane_pid = pairpilot.pane_pid
+        self._orig_time = pairpilot.time
+        self._orig_composer_line = pairpilot.composer_line
+        self._orig_is_empty = pairpilot.is_composer_empty
+        self.delivered_commands = []
+        self.sent_keys = []
+        self.clock = _FakeClock()
+        pairpilot.time = self.clock
+        pairpilot.pane_alive = lambda tmux, pane: True
+        pairpilot.pane_belongs_to_project = lambda tmux, pane, root: (True, "")
+        pairpilot.deliver = lambda pane, text, wait_for_empty=0.0, submit=True: (
+            self.delivered_commands.append((pane, text)) or {"delivered": True})
+        # The composer reads EMPTY during a monologue (measured on the live
+        # pane, round 146). That is exactly the state the old signal missed,
+        # so the tests keep it that way — the detector must work anyway.
+        pairpilot.composer_line = lambda lines: "╰─"
+        pairpilot.is_composer_empty = lambda line: True
+
+        def mock_run(cmd, *args, **kwargs):
+            self.sent_keys.append(cmd)
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+        pairpilot.subprocess.run = mock_run
+
+    def tearDown(self) -> None:
+        pairpilot.capture = self._orig_capture
+        pairpilot.pane_alive = self._orig_pane_alive
+        pairpilot.deliver = self._orig_deliver
+        pairpilot.subprocess.run = self._orig_run
+        pairpilot.pane_belongs_to_project = self._orig_belongs
+        pairpilot.pane_pid = self._orig_pane_pid
+        pairpilot.time = self._orig_time
+        pairpilot.composer_line = self._orig_composer_line
+        pairpilot.is_composer_empty = self._orig_is_empty
+        super().tearDown()
+
+    def _pilot_with_streaming(self, lines, has_tool: bool, threshold: float = 10.0):
+        """A pilot whose role streams `lines`, with or without a live tool."""
+        self.write_state(writer="omp", roles={"omp": {"pane": "%3", "last_seen": ago(10)}})
+        pilot = self.pilot()
+        pilot.tmux = str(self.fake_tmux)
+        pilot.max_busy_seconds = threshold
+        pilot.monologue_tracker = pairpilot.MonologueTracker(threshold)
+        pairpilot.capture = lambda tmux, pane: lines
+        pairpilot.pane_pid = lambda tmux, pane: 4242
+        # The tool's own process is the evidence: one live child under the pane
+        # means work in progress.
+        pairpilot.descendants = lambda root: ([4243] if has_tool else [])
+        pairpilot.tool_pids = lambda pids, role: ([4243] if has_tool else [])
+        return pilot
+
+    def test_a_monologue_is_cut_and_recorded(self) -> None:
+        """The defect itself: the screen moves, no tool, five minutes pass."""
+        screen = ["reasoning line 1"]
+        pilot = self._pilot_with_streaming(screen, has_tool=False)
+        pilot.tick()
+        self.assertNotIn("pilot_monologue_cut", self.transcript_kinds())
+
+        # The agent keeps talking; the streak grows past the threshold.
+        screen[-1] = "reasoning line 2"
+        self.clock.now += 60.0
+        pilot.tick()
+
+        self.assertIn("pilot_monologue_cut", self.transcript_kinds())
+        self.assertTrue(any("C-c" in cmd for cmd in self.sent_keys),
+                        "the monologue is interrupted")
+        self.assertTrue(any("Watchdog" in text for _, text in self.delivered_commands),
+                        "and the agent is told to act")
+
+    def test_a_long_test_run_is_never_cut(self) -> None:
+        """A live tool process is work, however long the screen changes."""
+        screen = ["test output 1"]
+        pilot = self._pilot_with_streaming(screen, has_tool=True)
+        pilot.tick()
+        screen[-1] = "test output 2"
+        self.clock.now += 3600.0
+        pilot.tick()
+        self.assertNotIn("pilot_monologue_cut", self.transcript_kinds())
+        self.assertFalse(any("C-c" in cmd for cmd in self.sent_keys))
+
+    def test_a_waiting_agent_is_never_cut(self) -> None:
+        """A rotating spinner is not output: the agent is waiting, not talking."""
+        screen = ["⠋ waiting for the model"]
+        pilot = self._pilot_with_streaming(screen, has_tool=False)
+        pilot.tick()
+        screen[-1] = "⠙ waiting for the model"
+        self.clock.now += 3600.0
+        pilot.tick()
+        self.assertNotIn("pilot_monologue_cut", self.transcript_kinds())
+
+    def test_a_frozen_screen_is_never_cut(self) -> None:
+        """Silence is another defect's business — the stalled-screen check owns it."""
+        screen = ["same content"]
+        pilot = self._pilot_with_streaming(screen, has_tool=False)
+        pilot.tick()
+        self.clock.now += 3600.0
+        pilot.tick()
+        self.assertNotIn("pilot_monologue_cut", self.transcript_kinds())
+
+    def test_a_sealed_patch_stops_the_cut(self) -> None:
+        """A reviewer under a sealed patch is not interrupted."""
+        screen = ["reviewing the patch"]
+        pilot = self._pilot_with_streaming(screen, has_tool=False)
+        state = self.read_state()
+        state["patches"] = {"p1": {"sealed": True, "applied": False}}
+        (self.state_dir / "state.json").write_text(
+            json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+        pilot.tick()
+        screen[-1] = "reviewing the patch, still"
+        self.clock.now += 3600.0
+        pilot.tick()
+        self.assertNotIn("pilot_monologue_cut", self.transcript_kinds())
+
+    def test_a_foreign_pane_is_never_cut(self) -> None:
+        """Not proven ours: never read it, never type into it."""
+        screen = ["someone else's screen"]
+        pilot = self._pilot_with_streaming(screen, has_tool=False)
+        pairpilot.pane_belongs_to_project = lambda tmux, pane, root: (False, "foreign project")
+        pilot.tick()
+        screen[-1] = "someone else's screen, still"
+        self.clock.now += 3600.0
+        pilot.tick()
+        self.assertNotIn("pilot_monologue_cut", self.transcript_kinds())
+        self.assertFalse(any("C-c" in cmd for cmd in self.sent_keys))
+
+    def test_the_cut_resets_the_streak(self) -> None:
+        """After a cut the clock starts again — a second monologue is cut too."""
+        screen = ["reasoning 1"]
+        pilot = self._pilot_with_streaming(screen, has_tool=False)
+        pilot.tick()
+        screen[-1] = "reasoning 2"
+        self.clock.now += 60.0
+        pilot.tick()
+        self.assertIn("pilot_monologue_cut", self.transcript_kinds())
+
+        # The streak is gone: the next observation starts from zero.
+        self.assertEqual(pilot.monologue_tracker.streak_seconds("omp", 1e12), 0.0)
+
+    def test_the_supervisor_does_not_speak_without_a_tool(self) -> None:
+        """The whole point: no tool, no matter how long the screen moves."""
+        screen = ["line 1"]
+        pilot = self._pilot_with_streaming(screen, has_tool=False)
+        pilot.tick()
+        screen[-1] = "line 2"
+        self.clock.now += 3600.0
+        pilot.tick()
+        self.assertIn("pilot_monologue_cut", self.transcript_kinds())
+
+
 class PilotStateResolutionCase(unittest.TestCase):
     """The supervisor watches the room the shared resolver names.
 

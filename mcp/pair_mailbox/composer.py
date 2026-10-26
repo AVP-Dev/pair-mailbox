@@ -102,6 +102,29 @@ class ComposerBusy(Exception):
     pass
 
 
+def _send_keys(tmux: str, pane: str, *keys: str) -> subprocess.CompletedProcess:
+    """One `tmux send-keys`, with a timeout that reads as BUSY, not as death.
+
+    The measured crash (2026-10-25, this project's own supervisor): `tmux
+    send-keys` into a pane whose CLI had stopped consuming input hung for
+    the full 5-second timeout and raised `subprocess.TimeoutExpired`. The
+    pilot's `flush_outbox` caught `ComposerBusy` and nothing else, so the
+    exception escaped, the whole supervisor died, and EVERY rule it carried
+    — including the monologue watchdog — went dark with it. A dead
+    supervisor is the one failure the watchdog cannot notice.
+
+    So a tmux timeout is what it physically is: the pane did not answer in
+    time. It becomes `ComposerBusy`, the one exception every caller already
+    knows how to handle, and the delivery is simply skipped for this tick.
+    """
+    try:
+        return subprocess.run([tmux, "send-keys", "-t", pane] + list(keys),
+                              capture_output=True, text=True, timeout=5)
+    except subprocess.TimeoutExpired as expired:
+        raise ComposerBusy(
+            f"tmux send-keys timed out into {pane}: {expired}") from expired
+
+
 def _tmux() -> str:
     """tmux, prefixed with the project's socket when one is named.
 
@@ -790,23 +813,20 @@ def type_text(tmux: str, pane: str, text: str) -> None:
     parts = chunks(text)
     for index, chunk in enumerate(parts):
         piece = chunk + " " if index < len(parts) - 1 else chunk
-        subprocess.run([tmux, "send-keys", "-t", pane, "-l", piece],
-                       capture_output=True, text=True, timeout=5)
+        _send_keys(tmux, pane, "-l", piece)
         time.sleep(0.04)
 
 
 def erase(tmux: str, pane: str, count: int) -> None:
     if count <= 0:
         return
-    r = subprocess.run([tmux, "send-keys", "-t", pane, "-N", str(count), "BSpace"],
-                       capture_output=True, text=True, timeout=5)
+    r = _send_keys(tmux, pane, "-N", str(count), "BSpace")
     if r.returncode != 0:
         batch = 50
         remaining = count
         while remaining > 0:
             cur = min(remaining, batch)
-            subprocess.run([tmux, "send-keys", "-t", pane] + ["BSpace"] * cur,
-                           capture_output=True, text=True, timeout=5)
+            _send_keys(tmux, pane, *(["BSpace"] * cur))
             remaining -= cur
             time.sleep(0.01)
 
@@ -1353,13 +1373,10 @@ def resolve_permission_prompt(tmux: str, pane: str, allow: list[str] | None = No
         key = menu_allow_key(lines)
         keys = [key, "Enter"] if key else ["Enter"]
         for key in keys:
-            subprocess.run([tmux, "send-keys", "-t", pane, key],
-                           capture_output=True, text=True, timeout=5)
+            _send_keys(tmux, pane, key)
     else:
-        subprocess.run([tmux, "send-keys", "-t", pane, "y"],
-                       capture_output=True, text=True, timeout=5)
-        subprocess.run([tmux, "send-keys", "-t", pane, "Enter"],
-                       capture_output=True, text=True, timeout=5)
+        _send_keys(tmux, pane, "y")
+        _send_keys(tmux, pane, "Enter")
     return {"approved": True, "verdict": "allow", "prompt": prompt,
             "why": decision["why"], "matched": decision["matched"],
             "menu": bool(menu)}
@@ -1373,12 +1390,10 @@ def submit_verified(tmux: str, pane: str, body: str) -> str:
     capture, retry once, capture again. Retained means the text still sits in
     the composer — the caller must say so durably, never claim submitted.
     """
-    subprocess.run([tmux, "send-keys", "-t", pane, "Enter"],
-                   capture_output=True, text=True, timeout=5)
+    _send_keys(tmux, pane, "Enter")
     if not tail_present(capture(tmux, pane), body):
         return "submitted"
-    subprocess.run([tmux, "send-keys", "-t", pane, "Enter"],
-                   capture_output=True, text=True, timeout=5)
+    _send_keys(tmux, pane, "Enter")
     return "retained" if tail_present(capture(tmux, pane), body) else "submitted"
 
 def deliver(pane: str, text: str, wait_for_empty: float = 0.0, submit: bool = True) -> dict:
