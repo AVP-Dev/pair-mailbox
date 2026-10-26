@@ -163,9 +163,30 @@ class TestMonologueReminder(unittest.TestCase):
 class TestToolDetection(unittest.TestCase):
     """Which processes count as work — against real processes, not stubs."""
 
+    @staticmethod
+    def _wait_for_exec(pid: int) -> bool:
+        """Wait until the child has actually execve'd.
+
+        `Popen` returns as soon as the fork succeeds — the child may not have
+        execve'd yet, and until it does `/proc/<pid>/cmdline` is EMPTY. The
+        watchdog reads exactly that file, and "no argv" reads as "the process
+        is gone", so a tool spawned at that instant is invisible.
+
+        Measured here: 137 of 300 spawns had an empty cmdline at the moment
+        `Popen` returned. A fixed `sleep` is a guess that loses under load —
+        this waits on the condition instead.
+        """
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline:
+            if watchdog.read_cmdline(pid):
+                return True
+            time.sleep(0.01)
+        return False
+
     def test_a_real_child_process_is_a_tool(self):
         child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
         try:
+            self.assertTrue(self._wait_for_exec(child.pid))
             tools = watchdog.tool_pids([child.pid], "omp")
             self.assertIn(child.pid, tools)
         finally:
@@ -186,10 +207,7 @@ class TestToolDetection(unittest.TestCase):
             "server.py", "--role", "omp",
         ])
         try:
-            # execve may not have completed when Popen returned: /proc/<pid>/cmdline
-            # is still the shell's own argv. Without this pause the test would
-            # fail for a reason that has nothing to do with the rule.
-            time.sleep(0.05)
+            self.assertTrue(self._wait_for_exec(server.pid))
             self.assertTrue(watchdog.is_role_server(server.pid, "omp"))
             self.assertNotIn(server.pid, watchdog.tool_pids([server.pid], "omp"))
         finally:
@@ -204,6 +222,7 @@ class TestToolDetection(unittest.TestCase):
             "server.py", "--role", "agy",
         ])
         try:
+            self.assertTrue(self._wait_for_exec(server.pid))
             self.assertFalse(watchdog.is_role_server(server.pid, "omp"))
             self.assertIn(server.pid, watchdog.tool_pids([server.pid], "omp"))
         finally:
@@ -218,6 +237,7 @@ class TestToolDetection(unittest.TestCase):
             "server.py",
         ])
         try:
+            self.assertTrue(self._wait_for_exec(server.pid))
             self.assertFalse(watchdog.is_role_server(server.pid, "omp"))
             self.assertIn(server.pid, watchdog.tool_pids([server.pid], "omp"))
         finally:
@@ -228,6 +248,7 @@ class TestToolDetection(unittest.TestCase):
         """The CLI is the agent doing the monologue, not a tool it runs."""
         cli = subprocess.Popen(["sleep", "30"])
         try:
+            self.assertTrue(self._wait_for_exec(cli.pid))
             # `sleep` is not a known CLI name, so it counts as a tool; the
             # exemption is by name and must not be a blanket exemption.
             self.assertIn(cli.pid, watchdog.tool_pids([cli.pid], "omp"))
