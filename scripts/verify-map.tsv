@@ -196,8 +196,10 @@ scripts/branch-class-check.py	branch-class
 scripts/branch_class_check_test.py	branch-class
 bin/pre_push_guard_test.py	pre-push-guard
 bin/git-hooks/pre-push	pre-push-guard
-docs/PROTOCOL.md	branch-class
-docs/PROTOCOL.ru.md	branch-class
+docs/PROTOCOL.md	branch-class;protocol-parity
+docs/PROTOCOL.ru.md	branch-class;protocol-parity
+scripts/protocol_parity_check.py	protocol-parity;protocol-parity-test
+scripts/protocol_parity_check_test.py	protocol-parity-test
 mcp/pair_mailbox/branch_audit.py	branch-audit
 mcp/pair_mailbox/branch_classes.py	branch-audit
 mcp/pair_mailbox/trunk.py	trunk

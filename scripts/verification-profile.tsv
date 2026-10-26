@@ -109,6 +109,14 @@ file-size-gate-tests	positive	1	bash scripts/file-size-gate_test.sh
 eye-deadlock	positive	1	bash scripts/eye-of-sauron_test.sh
 session-finalizer	positive	1	bash skills/session-finalizer/tests/run.sh
 i18n-selftest	positive	1	python3 scripts/i18n_self_test.py
+# The Russian mirror is a deliberate mirror of the original, and it drifted for
+# years: it lacked §9b, §17 and the §6 plan-gate subsection, and nothing
+# compared the two files. This layer compares their STRUCTURE - every section
+# and subsection, by number, in order. The prose is a translation and cannot
+# be compared mechanically; the skeleton can, and the skeleton is what a
+# reader navigates by.
+protocol-parity	positive	1	python3 scripts/protocol_parity_check.py
+protocol-parity-test	positive	1	python3 scripts/protocol_parity_check_test.py
 merge-audit-trail	positive	1	python3 scripts/merge-audit-trail_test.py
 # The AUDIT itself, not only its test (round 150). The layer above proves the
 # logic with fixtures; this one runs the check against the real remote and the
