@@ -62,12 +62,19 @@ try:
         load_allow_patterns,
         pane_alive,
         pane_key,
+        pane_pid,
         pane_role_pid,
         resolve_permission_prompt,
         ring_refusal_reason,
     )
     from panes import pane_belongs_to_project  # noqa: E402 - the pane's project membership
     from pointers import clear_own_pointer, ring_prompt  # noqa: E402 - the pointer shapes
+    from watchdog import (  # noqa: E402 - the monologue detector
+        MonologueTracker,
+        descendants,
+        screen_signature,
+        tool_pids,
+    )
 except Exception as error:  # noqa: BLE001 - the reason must stay visible
     print(f"pairpilot: could not attach composer: {error}", file=sys.stderr)
     raise SystemExit(1)
@@ -123,6 +130,23 @@ DEFAULT_PATCH_GRACE = 1800.0
 DEFAULT_RESTART_LIMIT = 3
 DEFAULT_RESTART_WINDOW = 600.0
 DEFAULT_STALL_TIMEOUT = 300.0
+# How long an agent may stream its reasoning without touching a tool before the
+# supervisor cuts it off. Five minutes: a long thought is a minute, an hour of
+# monologue is the defect this measures (round 146: four hours, unobserved).
+#
+# The signal is NOT `ComposerBusy`: the composer is the INPUT FIELD, and during
+# a monologue it reads EMPTY (measured on the live pane, 2026-10-26). Reading
+# it as "the agent is working, hands off" is what left the four hours unwatched.
+# The signal is: the screen CHANGES (the agent is producing output) AND no tool
+# subprocess is alive (the agent is not doing anything).
+DEFAULT_MAX_BUSY_SECONDS = 300.0
+# The hard reminder the supervisor types after cutting a monologue short. It is
+# addressed to the agent, so it says what to DO next, not what the supervisor
+# observed.
+MONOLOGUE_REMINDER = (
+    "Watchdog: 5 minutes of reasoning without a tool call. Stop analysing, "
+    "act: run the tool, write the code, or hand the turn to the peer."
+)
 PROMPT_MARKERS = (">", "›", "❯")
 AUTONOMIES = ("observe", "semi", "auto")
 
@@ -188,7 +212,8 @@ class Pilot:
                  restart_window: float = DEFAULT_RESTART_WINDOW,
                  outbox_ttl: float = DEFAULT_OUTBOX_TTL,
                  wake_grace: float = DEFAULT_WAKE_GRACE,
-                 stall_timeout: float = DEFAULT_STALL_TIMEOUT) -> None:
+                 stall_timeout: float = DEFAULT_STALL_TIMEOUT,
+                 max_busy_seconds: float = DEFAULT_MAX_BUSY_SECONDS) -> None:
         self.state_dir = state_dir
         self.silence = silence
         self.interval = interval
@@ -202,6 +227,13 @@ class Pilot:
         self.outbox_ttl = max(1.0, float(outbox_ttl))
         self.stall_timeout = max(1.0, float(stall_timeout))
         self._screen_hashes: dict[str, tuple[str, float]] = {}
+        # The monologue detector's own state: one streak per role and the
+        # last content signature of each pane. Both live here, not in the
+        # tracker, because the signature is a fact about the PANE while the
+        # streak is a fact about the ROLE.
+        self.monologue_tracker = MonologueTracker(max_busy_seconds)
+        self._monologue_screens: dict[str, str] = {}
+        self.max_busy_seconds = max(1.0, float(max_busy_seconds))
         # Store knows root — the state directory itself: server.py does exactly
         # the same. With state_dir.parent we would read a missing state.json.
         # Bootstrap door (round 115 S4): pairup raises the pilot on a fresh project,
@@ -1791,6 +1823,139 @@ class Pilot:
             except OSError:
                 pass
 
+    def check_monologue(self, state: dict) -> None:
+        """Cut an agent that reasons out loud for minutes without doing anything.
+
+        The defect this answers was measured in round 144: an agent spent four
+        hours streaming reasoning — no tool, no code, no handover — and the
+        supervisor had no word for that state. `ComposerBusy` was the wrong
+        word: it describes the INPUT FIELD, and during a monologue the field
+        reads EMPTY (measured on the live pane, 2026-10-26). The pilot saw
+        "not busy", did nothing, and the four hours passed unwatched.
+
+        So the signal is two facts, both read from the machine:
+
+        - the pane's CONTENT changed (the agent is producing output);
+        - no tool subprocess is alive under the pane (the agent is not working).
+
+        A long test run keeps a subprocess alive and is never cut. A frozen
+        screen is another defect's business (`check_stalled_busy`). A waiting
+        agent's spinner is normalised away, so waiting for the network is not
+        mistaken for output.
+
+        The gates are the same ones `check_stalled_busy` uses: no sealed patch
+        under review, live pane only, and the role's own CLI must be provably
+        in the pane — the supervisor never types into a pane it cannot prove
+        is ours.
+        """
+        if self.tmux is None:
+            return
+        if autonomy(state) == "observe":
+            # In observe mode the supervisor does not type into anybody's
+            # composer. It may still report — but the report goes to the
+            # journal, not to the agent.
+            return
+        for _p, rec in (state.get("patches") or {}).items():
+            if rec.get("sealed") and not rec.get("applied"):
+                # A sealed patch is being reviewed; interrupting the reviewer
+                # would cost more than the monologue it saves.
+                return
+
+        now = time.time()
+        for role, info in (state.get("roles") or {}).items():
+            if role in self.skip or not isinstance(info, dict):
+                continue
+            pane = info.get("pane")
+            if not pane:
+                self.monologue_tracker.forget(role)
+                continue
+            try:
+                if not pane_alive(self.tmux, pane):
+                    self.monologue_tracker.forget(role)
+                    continue
+                ours, why = pane_belongs_to_project(self.tmux, pane, self.store.project_root)
+            except Exception:  # noqa: BLE001 - the pane may vanish between checks
+                continue
+            if not ours:
+                # Not proven ours: never read it, never type into it.
+                self.monologue_tracker.forget(role)
+                continue
+
+            try:
+                lines = capture(self.tmux, pane)
+            except Exception:  # noqa: BLE001
+                continue
+            signature = screen_signature(lines)
+
+            has_tool = self.pane_has_tool(pane, role)
+            verdict = self.monologue_tracker.observe(
+                role, streaming=(signature != self._monologue_screens.get(role)),
+                has_tool=has_tool, now=now)
+            self._monologue_screens[role] = signature
+            if verdict["verdict"] != "monologue":
+                continue
+
+            key = f"monologue-cut-{role}-{state.get('round')}"
+            if not self.remember(key, ttl=self.max_busy_seconds * 2):
+                continue
+            self.cut_monologue(role, pane, verdict["seconds"])
+            self.monologue_tracker.forget(role)
+            self._monologue_screens.pop(role, None)
+
+    def pane_has_tool(self, pane: str, role: str) -> bool:
+        """Whether a tool subprocess is alive under the pane.
+
+        The pane's shell is the root: under it live the agent CLI, this
+        project's MCP server, and whatever the agent is running right now. The
+        CLI and the server are not tools — they live for the whole session,
+        and counting them would exempt every role forever.
+
+        The tool's OWN process is the evidence, never its name: a test suite,
+        a `git` call and a `gh` call are all work, and none of them is called
+        "tool".
+        """
+        try:
+            root = pane_pid(self.tmux, pane)
+        except Exception:  # noqa: BLE001
+            return False
+        if not root:
+            return False
+        pids = descendants(root)
+        return bool(tool_pids(pids, role))
+
+    def cut_monologue(self, role: str, pane: str, seconds: float) -> None:
+        """Interrupt the monologue and demand an action.
+
+        C-c first: the agent is mid-generation, and the reminder typed into a
+        busy composer would be swallowed by the very stream it is meant to
+        stop. Then the reminder — through the queue, so it survives a busy
+        composer instead of being lost in it.
+
+        The journal row is the record: `pilot_monologue_cut` says who was cut,
+        after how long, and that a tool was absent.
+        """
+        log(f"{role}: {int(seconds)}s of reasoning with no tool call — cutting it short")
+        try:
+            subprocess.run([self.tmux, "send-keys", "-t", pane, "C-c"],
+                           capture_output=True, text=True, timeout=5)
+        except Exception as exc:  # noqa: BLE001
+            log(f"{role}: monologue cut failed: {exc}")
+        self.store.append_transcript("pilot_monologue_cut", "pairpilot",
+                                     target=role, pane=pane,
+                                     duration_seconds=int(seconds),
+                                     reason="streaming without a tool subprocess")
+        try:
+            notes_dir = self.state_dir / "notes"
+            notes_dir.mkdir(parents=True, exist_ok=True)
+            with (notes_dir / "fix.md").open("a", encoding="utf-8") as handle:
+                handle.write(f"\n## {now_iso()} — pairpilot\n\n"
+                             f"Monologue cut: {role} streamed reasoning for "
+                             f"{int(seconds)}s with no tool subprocess alive. "
+                             f"Sent C-c and queued the reminder.\n")
+        except OSError:
+            pass
+        self.enqueue(role, MONOLOGUE_REMINDER, state=None, kind="report")
+
     def preventive_compact(self, state: dict) -> None:
         """Preventive /compact for live roles at phase == ‘done’."""
         if state.get("phase") != "done" or self.tmux is None:
@@ -2385,6 +2550,7 @@ class Pilot:
         self.pending_answers(state)
         self.stalled_patches(state)
         self.check_stalled_busy(state)
+        self.check_monologue(state)
         self.stale_writer(state)
         self.idle_roles(state)
         self.drop_stale_outbox(state)
@@ -2594,6 +2760,9 @@ def main() -> int:
                              "list. Empty means confirm nothing.")
     parser.add_argument("--stall-timeout", type=float, default=DEFAULT_STALL_TIMEOUT,
                         help="seconds an agent may stay busy with identical screen before auto-compact")
+    parser.add_argument("--max-busy-seconds", type=float, default=DEFAULT_MAX_BUSY_SECONDS,
+                        help="seconds an agent may stream reasoning without touching a tool "
+                             "before the supervisor cuts it short")
     parser.add_argument("--once", action="store_true", help="single pass and exit")
     args = parser.parse_args()
 
@@ -2614,7 +2783,8 @@ def main() -> int:
                   reply_repeat=args.reply_repeat,
                   patch_grace=args.patch_grace, launch=launch, allow=allow,
                   restart_limit=args.restart_limit, restart_window=args.restart_window,
-                  outbox_ttl=args.outbox_ttl, stall_timeout=args.stall_timeout)
+                  outbox_ttl=args.outbox_ttl, stall_timeout=args.stall_timeout,
+                  max_busy_seconds=args.max_busy_seconds)
     if args.ask:
         # A named trigger file instead of <state>/ask: useful when several
         # supervisors watch one state dir and only one of them may speak.
