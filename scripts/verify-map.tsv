@@ -90,6 +90,9 @@ bin/pairpilot	supervisor
 bin/pairpilot_test.py	supervisor
 mcp/pair_mailbox/watchdog.py	watchdog
 mcp/pair_mailbox/test_watchdog.py	watchdog
+mcp/pair_mailbox/guard.py	supervisor
+mcp/pair_mailbox/test_guard.py	supervisor
+mcp/pair_mailbox/test_pilot_guard.py	supervisor
 bin/pairboard	board-cli
 bin/pairboard_test.py	board-cli
 bin/pairchat	pairchat-check

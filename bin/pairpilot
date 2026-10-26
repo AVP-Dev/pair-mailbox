@@ -67,6 +67,7 @@ try:
         resolve_permission_prompt,
         ring_refusal_reason,
     )
+    from guard import bind_rules, guarded, run_rules  # noqa: E402 - one rule must not kill the pass
     from panes import pane_belongs_to_project  # noqa: E402 - the pane's project membership
     from pointers import clear_own_pointer, ring_prompt  # noqa: E402 - the pointer shapes
     from watchdog import (  # noqa: E402 - the monologue detector
@@ -235,6 +236,7 @@ class Pilot:
         # Bootstrap door (round 115 S4): pairup raises the pilot on a fresh project,
         # so a state.json may not exist yet — see store_core.Store.__init__.
         self.store = Store(state_dir, allow_create=True)
+        self._journal = lambda kind, **f: self.store.append_transcript(kind, "pairpilot", **f)
         self.outbox = state_dir / "pilot"
         self.outbox.mkdir(parents=True, exist_ok=True)
         self.wake_root = state_dir / "wake"
@@ -2516,6 +2518,14 @@ class Pilot:
     # ------------------------------------------------------------------ tick
 
     def tick(self) -> dict:
+        """One pass over the room. A rule that fails must not kill the supervisor.
+
+        The measured death and the reason for the guard: `mcp/pair_mailbox/guard.py`.
+        """
+        return guarded(self._tick, log, journal=self._journal,
+                       kind="pilot_tick_failed") or {}
+
+    def _tick(self) -> dict:
         state = self.state()
         # Roles sitting on a shared pane are indistinguishable: never poke them.
         self.skip = {role for names in self.shared_panes(state).values() for role in names}
@@ -2532,36 +2542,15 @@ class Pilot:
                         log(f"{role} sits in my own pane {self.own_pane} — leaving it alone")
                         self.store.append_transcript("pilot_own_pane", "pairpilot",
                                                      target=role, pane=self.own_pane)
-        self.ambiguous(state)
-        self.gone_roles(state)
-        self.unblock(state)
-        self.restart_agent(state)
-        self.dead_pane(state)
-        self.unread_peers(state)
-        # Polling runs BEFORE raising new wake-ups and before printing: whoever already
-        # woke has its wake-up dropped silently, and nothing lands in the print queue.
-        # If polling ran after flush_outbox, the tick where the role just woke would
-        # still print into its composer.
-        self.poll_wakes(state)
-        self.pending_answers(state)
-        self.stalled_patches(state)
-        self.check_stalled_busy(state)
-        self.check_monologue(state)
-        self.stale_writer(state)
-        self.idle_roles(state)
-        self.drop_stale_outbox(state)
-        self.flush_outbox(state)
-        self.preventive_compact(state)
-        self.check_server_freshness(state)
-        self.checkpoint(state)
-        brief = self.startup_brief(state)
+        # Each rule runs inside its own guard: one rule that throws must not
+        # take the rest of the pass with it, and the failure is journalled so
+        # it is visible instead of silent.
+        run_rules(bind_rules(self), state, log, journal=self._journal)
+        # The brief is a RETURN VALUE, not a side effect: the human reads it.
+        brief = guarded(lambda: self.startup_brief(state), log,
+                        journal=self._journal, kind="pilot_call_failed")
         if brief:
             log(brief)
-        self.report_once(state)
-        # Sweeper LAST (opencode seq 1505): before the work it could delete a
-        # stamp a check in this same tick was about to consult — a duplicate
-        # nudge in the same tick, the exact spam stamps prevent.
-        self.sweep_stamps()
         return state
 
 
