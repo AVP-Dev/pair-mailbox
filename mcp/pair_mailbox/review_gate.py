@@ -410,4 +410,78 @@ def cmd_pr(store: Any, args: argparse.Namespace) -> int:
         pr_id=pr_id,
         forced=force,
     )
+    # The cleanup runs AFTER the merge, and it must never break the command:
+    # the merge already happened and cannot be undone, so a housekeeping error
+    # that escaped here would hide a real merge behind a failed exit code.
+    try:
+        _cleanup_worktree_after_merge(store, repo_dir, pr_id,
+                                      role=getattr(args, "role", "") or "writer")
+    except Exception as exc:  # noqa: BLE001 - the merge is already done
+        store.append_transcript(
+            "worktree_cleanup_failed",
+            getattr(args, "role", "") or "writer",
+            pr_id=pr_id,
+            error=str(exc),
+        )
     return 0
+
+
+def _cleanup_worktree_after_merge(store: Any, repo_dir: Path, pr_id: str | None,
+                                  role: str = "writer") -> None:
+    """Remove the worktree the merged branch lived in, and say what happened.
+
+    The commits are in the trunk and the branch is gone (`--delete-branch`);
+    the DIRECTORY that held it is left over. §19 makes the merged round branch
+    die by construction, and this makes the directory die with it.
+
+    Two rules, both learned the hard way:
+
+    - **A failed cleanup never turns a successful merge into a failure.** The
+      merge already happened and cannot be undone; refusing to report success
+      would hide a real merge behind a housekeeping error.
+    - **The cleanup is recorded either way.** Silence would leave the reader
+      unable to tell "there was nothing to clean" from "the cleanup failed and
+      nobody said so" — two states with different actions.
+    """
+    try:
+        from worktree import cleanup_worktree_for_branch
+    except ImportError:  # pragma: no cover - worktree sits next in the package
+        return
+    branch = _merged_branch(repo_dir, pr_id)
+    if not branch:
+        store.append_transcript(
+            "worktree_cleanup_skipped",
+            role or "writer",
+            pr_id=pr_id,
+            why="the merged branch could not be read",
+        )
+        return
+    res = cleanup_worktree_for_branch(repo_dir, branch)
+    store.append_transcript(
+        "worktree_cleaned" if res.get("removed") else "worktree_cleanup_skipped",
+        role or "writer",
+        pr_id=pr_id,
+        branch=branch,
+        path=res.get("path"),
+        removed=bool(res.get("removed")),
+        why=res.get("why", ""),
+    )
+
+
+def _merged_branch(repo_dir: Path, pr_id: str | None) -> str:
+    """The branch name of the PR that was just merged.
+
+    Read from the local branch that carries the merge: the PR head may already
+    be deleted remotely, and asking GitHub for a branch that is gone answers
+    nothing useful. An empty answer means "unknown", never "no worktree".
+    """
+    try:
+        proc = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            cwd=str(repo_dir), capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    name = (proc.stdout or "").strip()
+    if not name or name == "HEAD":
+        return ""
+    return name

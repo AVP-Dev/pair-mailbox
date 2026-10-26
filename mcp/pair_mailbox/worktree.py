@@ -222,6 +222,53 @@ def _current_visa(state_dir: Path) -> dict[str, Any]:
     return agreed_strategy(state_dir, round_number, writer)
 
 
+def cleanup_worktree_for_branch(repo_dir: Path, branch: str) -> dict[str, Any]:
+    """Remove the worktree that held `branch`, then prune the records.
+
+    The worktree a merged round branch lived in has no reason to outlive the
+    merge: the commits are in the trunk, the branch is deleted by the merge
+    itself (`--delete-branch`), and a directory left behind is garbage on the
+    developer's disk. §19 says the merged round branch dies by construction —
+    this makes the DIRECTORY die with it.
+
+    The main worktree is never touched: it is the repository itself, and
+    `git worktree remove` on it would be a catastrophe, not a cleanup.
+
+    Returns {ok, removed, path, pruned, why}. `ok` is False when there was
+    nothing to clean — that is not a failure, it is the normal case for a
+    round that worked in place.
+    """
+    repo_dir = Path(repo_dir).resolve()
+    wanted = branch.strip()
+    if wanted.startswith("refs/heads/"):
+        wanted = wanted[len("refs/heads/"):]
+    main = None
+    target = None
+    for wt in list_worktrees(repo_dir):
+        path = Path(wt.get("worktree", ""))
+        if not path.exists():
+            continue
+        if main is None:
+            main = path.resolve()
+        wt_branch = str(wt.get("branch", "") or "")
+        if wt_branch.startswith("refs/heads/"):
+            wt_branch = wt_branch[len("refs/heads/"):]
+        if wt_branch == wanted and path.resolve() != main:
+            target = path
+            break
+    if target is None:
+        return {"ok": True, "removed": False, "path": None, "pruned": False,
+                "why": f"no worktree held the branch {branch!r}"}
+    removed = remove_worktree(repo_dir, target, force=True)
+    pruned = prune_worktrees(repo_dir)
+    if not removed:
+        return {"ok": False, "removed": False, "path": str(target),
+                "pruned": pruned,
+                "why": f"git worktree remove failed for {target}"}
+    return {"ok": True, "removed": True, "path": str(target), "pruned": pruned,
+            "why": ""}
+
+
 def cmd_worktree(store: Any, args: argparse.Namespace) -> int:
     "The `pairctl worktree` subcommand handler."
     subaction = getattr(args, "worktree_action", None) or "list"
