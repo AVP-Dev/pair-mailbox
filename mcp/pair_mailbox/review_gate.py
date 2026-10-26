@@ -471,17 +471,41 @@ def _cleanup_worktree_after_merge(store: Any, repo_dir: Path, pr_id: str | None,
 def _merged_branch(repo_dir: Path, pr_id: str | None) -> str:
     """The branch name of the PR that was just merged.
 
-    Read from the local branch that carries the merge: the PR head may already
-    be deleted remotely, and asking GitHub for a branch that is gone answers
-    nothing useful. An empty answer means "unknown", never "no worktree".
+    Read from GitHub, from the PR itself — `headRefName` is the branch the PR
+    was opened from, which is exactly the branch whose worktree we want to
+    remove. The local HEAD is NOT a substitute: it is the branch the MERGE ran
+    from, usually the trunk, and asking for the trunk's worktree would either
+    do nothing (the right outcome by accident) or try to remove the repository
+    itself (the wrong outcome). A cleanup that targets the wrong branch is
+    worse than no cleanup, because it looks like it worked.
+
+    The remote head branch is deleted by the merge itself, but `headRefName`
+    survives the deletion: GitHub keeps the PR record.
+
+    An empty answer means "unknown", never "no worktree".
     """
+    name = _pr_head_branch(repo_dir, pr_id)
+    if name:
+        return name
+    return ""
+
+
+def _pr_head_branch(repo_dir: Path, pr_id: str | None) -> str:
+    """`gh pr view --json headRefName` — the branch the PR was opened from."""
+    cmd = ["gh", "pr", "view"]
+    if pr_id:
+        cmd.append(str(pr_id))
+    cmd.extend(["--json", "headRefName", "--jq", ".headRefName"])
     try:
         proc = subprocess.run(
-            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-            cwd=str(repo_dir), capture_output=True, text=True, timeout=10)
+            cmd,
+            cwd=str(repo_dir),
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
     except (OSError, subprocess.SubprocessError):
         return ""
-    name = (proc.stdout or "").strip()
-    if not name or name == "HEAD":
+    if proc.returncode != 0:
         return ""
-    return name
+    return (proc.stdout or "").strip()

@@ -1448,3 +1448,85 @@ Two corrections to first instinct, both from the critic:
 §19 said a merged round branch dies by construction. §20 says the same for every
 mortal class, and says what may never die: the trunk, the support lines, and a
 branch nobody has proven merged.
+
+## 21. Worktree-first: the isolation strategy is declared and agreed
+
+Decided by both agents 2026-10-26 (round 147, P1 in the backlog), after the human
+asked for the worktree-first discipline for parallel agent work.
+
+The problem this solves is not "worktrees are nice". It is that a writer's
+isolation decision, taken alone, goes wrong in both directions: too much
+machinery for a typo fix (a worktree per sentence), or one thousand-line system
+change in a single PR nobody can review. Both are the same defect — a decision
+that was never examined.
+
+### 21.1 The plan states the strategy
+
+In `mode=fix` the round plan carries a fourth section, `# Isolation Strategy`
+(`# Стратегия изоляции`), and the plan gate refuses the move without it. In
+`audit` it is not required: there are no commits, so there is nothing to
+isolate.
+
+The section declares one mode:
+
+| mode | meaning | worktrees |
+|---|---|---|
+| `in-place` | the whole change is one slice on the round branch | 0 |
+| `worktree` | one slice, in one isolated worktree | 1 |
+| `decomposed` | the change is split into `slices` sequential slices | 0 or one per slice |
+
+The declaration is the `mode:` field and only that. Prose is not a decision:
+"No worktree is needed here" would otherwise declare a worktree, and "the branch
+is round-147" would declare `in-place` — both from a sentence that said the
+opposite. A fenced block is documentation, not a declaration.
+
+### 21.2 The critic signs it
+
+The strategy is part of the plan, so the critic's ordinary `plan-ack round N`
+covers it. No second kind of visa is invented: the visa already answers "is this
+plan agreed", and the strategy is in the plan. A worktree for a task of a
+running round cannot be created without that visa — `worktree.setup_worktree`
+refuses without one, and refuses when the agreed mode is `in-place`.
+
+A **slice** is not a **worktree**. `decomposed` with `worktrees: 0` means
+sequential slices on the round branch, which is what §19 asks for; `worktrees: N`
+means one worktree per slice, which is what a parallel run needs. Claiming
+worktrees that were never created would be a decoration, so the count the plan
+declares is the count that was actually used.
+
+### 21.3 The thresholds are checked against the fact
+
+| size of the change | strategy |
+|---|---|
+| up to 50 changed lines | `in-place` |
+| 51 to 300 changed lines | `worktree` |
+| more than 300 changed lines | `decomposed` into 2-3 slices |
+
+The thresholds are checked against the **measured diff**, never against what the
+plan claimed. A declared "small fix" that turns into 400 lines is refused: the
+rule against the promise is decoration, and a rule against the fact is a rule.
+
+### 21.4 Two different worktrees
+
+The launch environment of a pair and the isolation of a task inside a round are
+different operations, and the gate differs because the question differs:
+
+- **The launch environment** (`pairup --worktree`, `pair-duo --worktree`) exists
+  before any round does. There is no round, no plan, no critic to sign
+  anything, and no task whose isolation is being decided. The decision is the
+  human's — they asked for it on the command line.
+- **A task's worktree** exists during a round, to isolate one of its slices.
+  That decision belongs to the writer, and the critic signs it.
+
+### 21.5 The worktree dies with the branch
+
+§19 makes a merged round branch die by construction. The directory that held it
+dies with it: after a successful `bin/pairctl pr merge`, the worktree of the
+merged branch is removed and the records are pruned. The main worktree is never
+touched — the repository itself is not garbage.
+
+A failed cleanup never turns a successful merge into a failure. The merge
+already happened and cannot be undone, so an error there is recorded in the
+transcript (`worktree_cleanup_failed`) and the command still reports success.
+Silence would leave the reader unable to tell "there was nothing to clean" from
+"the cleanup failed and nobody said so" — two states with different actions.

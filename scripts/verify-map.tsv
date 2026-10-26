@@ -81,6 +81,15 @@ mcp/pair_mailbox/test_review.py	review
 mcp/pair_mailbox/review.py	review
 mcp/pair_mailbox/test_review_gate.py	review-gate
 mcp/pair_mailbox/review_gate.py	review-gate
+mcp/pair_mailbox/isolation.py	isolation
+mcp/pair_mailbox/test_isolation.py	isolation
+mcp/pair_mailbox/plan_gate.py	plan-gate
+mcp/pair_mailbox/test_plan_gate.py	plan-gate
+mcp/pair_mailbox/worktree.py	worktree
+mcp/pair_mailbox/test_worktree.py	worktree
+# The shared fixture base: every suite's plan artifact goes through it, so a
+# change there can break any of them. It names the suites that use it.
+mcp/pair_mailbox/pair_test_base.py	plan-gate
 mcp/pair_mailbox/test_digest.py	digest
 mcp/pair_mailbox/digest.py	digest
 mcp/pair_mailbox/test_board_hosts.py	board-hosts

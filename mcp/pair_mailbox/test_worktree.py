@@ -5,7 +5,7 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from pair_test_base import PairTestCase
 import worktree
@@ -156,6 +156,85 @@ class TestWorktreeNeedsAnAgreedStrategy(PairTestCase):
         res = worktree.bootstrap_worktree(self.repo, "room/launch")
         self.assertTrue(res["ok"], res.get("error"))
         self.assertTrue(res["created"])
+
+
+class TestCleanupAfterMerge(PairTestCase):
+    """Round 147 slice D: the worktree dies with the branch it held.
+
+    The commits are in the trunk and the branch is gone (`--delete-branch`);
+    the DIRECTORY that held it is left over. §19 makes the merged round branch
+    die by construction, and this makes the directory die with it.
+    """
+
+    def _repo_with_worktree(self, tmp: Path) -> tuple[Path, Path]:
+        repo = tmp / "repo"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q"], cwd=str(repo), check=True)
+        subprocess.run(["git", "config", "user.email", "p@t.t"], cwd=str(repo), check=True)
+        subprocess.run(["git", "config", "user.name", "P"], cwd=str(repo), check=True)
+        (repo / "a.txt").write_text("x\n", encoding="utf-8")
+        subprocess.run(["git", "add", "a.txt"], cwd=str(repo), check=True)
+        subprocess.run(["git", "commit", "-qm", "init"], cwd=str(repo), check=True)
+        wt = repo / ".worktrees" / "round-147"
+        subprocess.run(["git", "worktree", "add", "-b", "round-147", str(wt)],
+                       cwd=str(repo), check=True, capture_output=True)
+        return repo, wt
+
+    def test_the_worktree_of_the_merged_branch_is_removed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, wt = self._repo_with_worktree(Path(tmp))
+            self.assertTrue(wt.exists())
+            res = worktree.cleanup_worktree_for_branch(repo, "round-147")
+            self.assertTrue(res["ok"], res["why"])
+            self.assertTrue(res["removed"])
+            self.assertFalse(wt.exists())
+
+    def test_the_main_worktree_is_never_removed(self) -> None:
+        """The repository itself is not garbage: `git worktree remove` on it
+        would be a catastrophe, not a cleanup."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, _ = self._repo_with_worktree(Path(tmp))
+            res = worktree.cleanup_worktree_for_branch(repo, "master")
+            self.assertTrue(res["ok"])
+            self.assertFalse(res["removed"])
+            self.assertTrue(repo.exists())
+
+    def test_nothing_to_clean_is_not_a_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, _ = self._repo_with_worktree(Path(tmp))
+            res = worktree.cleanup_worktree_for_branch(repo, "no-such-branch")
+            self.assertTrue(res["ok"])
+            self.assertFalse(res["removed"])
+            self.assertIn("no worktree held", res["why"])
+
+    def test_the_branch_comes_from_github_not_from_the_local_head(self) -> None:
+        """The cleanup must target the MERGED branch, not the branch the merge
+        ran from.
+
+        The local HEAD is usually the trunk. Asking for the trunk's worktree
+        would either do nothing (the right outcome by accident) or try to
+        remove the repository itself (the wrong outcome). A cleanup that
+        targets the wrong branch is worse than no cleanup, because it looks
+        like it worked.
+        """
+        import review_gate
+        with patch("review_gate.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0,
+                                              stdout="round-146-supervisor-watchdog\n",
+                                              stderr="")
+            name = review_gate._merged_branch(Path("/tmp"), "95")
+        self.assertEqual(name, "round-146-supervisor-watchdog")
+        cmd = mock_run.call_args[0][0]
+        self.assertIn("headRefName", " ".join(cmd))
+
+    def test_an_unreadable_pr_leaves_the_branch_unknown(self) -> None:
+        """An empty answer means "unknown", never "no worktree" — and never
+        the local HEAD as a substitute."""
+        import review_gate
+        with patch("review_gate.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=1, stdout="", stderr="boom")
+            name = review_gate._merged_branch(Path("/tmp"), "95")
+        self.assertEqual(name, "")
 
 
 if __name__ == "__main__":
