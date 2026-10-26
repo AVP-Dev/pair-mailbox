@@ -241,41 +241,53 @@ class TestBlockedComposerIsReported(PilotGuardCase):
     was blocked.
 
     The refusal was right. The silence was the defect.
+
+    The room here is FAKE, and it must stay fake. The first version of this
+    test pointed at the live pane `%8` and asked the REAL tmux about it, so it
+    passed only while that pane happened to hold text, and failed the moment
+    the human's draft was submitted. A test whose verdict depends on what the
+    operator is typing is not a test — the critic found exactly that.
     """
 
-    def _busy_pane(self, pilot) -> None:
-        """A pane whose composer holds text that is not ours."""
-        import subprocess
+    def _room(self, pilot, composer_lines: list[str]) -> None:
+        """A room of one pane, with a composer of the given content.
+
+        `pane_alive` and `capture` are mocked in the module the rule imports
+        them from — `guard` does a lazy `from composer import ...`, so the
+        names are looked up at call time on the `composer` module itself.
+        """
+        import composer
+        original_alive = composer.pane_alive
+        original_capture = composer.capture
+        original_run = composer.subprocess.run
 
         def fake_run(cmd, **kwargs):
             if "capture-pane" in cmd:
-                out = subprocess.CompletedProcess(cmd, 0, "$ \n", "")
-                return out
+                import subprocess
+                return subprocess.CompletedProcess(cmd, 0, "\n".join(composer_lines), "")
             return subprocess.CompletedProcess(cmd, 0, "", "")
 
-        original = pairpilot.subprocess.run
-        pairpilot.subprocess.run = fake_run
-        self.addCleanup(setattr, pairpilot.subprocess, "run", original)
-        self.addCleanup(setattr, pairpilot, "capture", pairpilot.capture)
+        composer.pane_alive = lambda tmux, pane: True
+        composer.capture = lambda tmux, pane: list(composer_lines)
+        composer.subprocess.run = fake_run
+        self.addCleanup(setattr, composer, "pane_alive", original_alive)
+        self.addCleanup(setattr, composer, "capture", original_capture)
+        self.addCleanup(setattr, composer.subprocess, "run", original_run)
+
+    def _run_rule(self, pilot) -> list[str]:
+        """Run the rule; return what it said."""
+        logged: list[str] = []
+        import guard
+        guard.blocked_composer_rule(pilot, pilot.state(), logged.append)
+        return logged
 
     def test_a_busy_composer_is_reported_to_the_human(self) -> None:
         pilot = self.pilot()
         pilot.tmux = "/usr/bin/tmux"
         self.write_state(roles={"agy": {"pane": "%8", "pid": 1, "last_seen": "now"}})
+        self._room(pilot, ["> the human's unsent line"])
 
-        # A composer that holds a line, read as busy by the real predicate.
-        from composer import composer_line, is_composer_empty
-        line = "> the human's unsent line"
-        self.assertFalse(is_composer_empty(line))
-
-        logged: list[str] = []
-        original_log = pairpilot.log
-        pairpilot.log = logged.append
-        try:
-            import guard
-            guard.blocked_composer_rule(pilot, pilot.state(), logged.append)
-        finally:
-            pairpilot.log = original_log
+        logged = self._run_rule(pilot)
 
         self.assertTrue(any("composer holds text that is not ours" in line
                             for line in logged),
@@ -284,27 +296,40 @@ class TestBlockedComposerIsReported(PilotGuardCase):
 
     def test_a_free_composer_is_not_reported(self) -> None:
         pilot = self.pilot()
+        pilot.tmux = "/usr/bin/tmux"
+        self.write_state(roles={"agy": {"pane": "%8", "pid": 1, "last_seen": "now"}})
+        self._room(pilot, ["> "])
+
+        logged = self._run_rule(pilot)
+
+        self.assertEqual([], logged)
+        self.assertNotIn("pilot_composer_blocked", self.transcript_kinds())
+
+    def test_no_tmux_is_not_a_block(self) -> None:
+        """With no tmux there is no room to look at, and nothing to report."""
+        pilot = self.pilot()
         pilot.tmux = None
         self.write_state(roles={"agy": {"pane": "%8", "pid": 1, "last_seen": "now"}})
-        logged: list[str] = []
-        import guard
-        guard.blocked_composer_rule(pilot, pilot.state(), logged.append)
+
+        logged = self._run_rule(pilot)
+
         self.assertEqual([], logged)
         self.assertNotIn("pilot_composer_blocked", self.transcript_kinds())
 
     def test_the_report_never_types_into_the_composer(self) -> None:
         """The rule REPORTS. It never erases the human's text."""
         pilot = self.pilot()
-        pilot.tmux = None
+        pilot.tmux = "/usr/bin/tmux"
         self.write_state(roles={"agy": {"pane": "%8", "pid": 1, "last_seen": "now"}})
-        import guard
+        self._room(pilot, ["> the human's unsent line"])
         sent: list[list[str]] = []
-        original = pairpilot.subprocess.run
-        pairpilot.subprocess.run = lambda cmd, **kw: sent.append(list(cmd))
+        import composer
+        original_run = composer.subprocess.run
+        composer.subprocess.run = lambda cmd, **kw: sent.append(list(cmd))
         try:
-            guard.blocked_composer_rule(pilot, pilot.state(), lambda _m: None)
+            self._run_rule(pilot)
         finally:
-            pairpilot.subprocess.run = original
+            composer.subprocess.run = original_run
         self.assertFalse(any("send-keys" in " ".join(cmd) for cmd in sent),
                          "the rule must never type into or erase the composer")
 
