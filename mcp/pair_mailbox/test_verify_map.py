@@ -104,10 +104,17 @@ class TestVerifyMap(unittest.TestCase):
     def test_every_suite_the_map_names_exists_in_the_profile(self) -> None:
         """A suite name in the map is a lookup key into the profile: it is how
         verify-changed.sh finds the command to run. A name that is neither in
-        the profile nor a pseudo-suite is a suite that cannot be launched."""
+        the profile nor a pseudo-suite is a suite that cannot be launched.
+
+        A row may name SEVERAL suites, separated by `;` — `verify-changed.sh`
+        splits on it and runs each one (`for s in $(echo "$suites" | tr ';' ' ')`).
+        A file read by two suites must run both of them, not only the one the
+        map names, so every name in the cell is checked.
+        """
         suites = _profile_suites()
-        unknown = sorted({suite for _, suite in _map_rows()
-                          if suite not in suites and not _is_pseudo(suite)})
+        unknown = sorted({name for _, cell in _map_rows()
+                          for name in (n.strip() for n in cell.split(";"))
+                          if name and name not in suites and not _is_pseudo(name)})
         self.assertEqual(unknown, [],
                          "verify-map.tsv names suites the profile does not "
                          f"define: {unknown}")

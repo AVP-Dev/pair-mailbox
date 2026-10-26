@@ -5,16 +5,10 @@ passed `--squash --delete-branch`. A project that wants its rounds rebased
 or merged as merge commits had no way to ask for it — except by editing the
 engine, which is not a setting.
 
-This module is the setting. It follows `trunk.py`'s pattern exactly, because
-a project must not grow a second way of reading configuration:
-
-1. `PAIR_MERGE_STRATEGY` — the environment, for one process.
-2. `<project>/.pair/merge-strategy` — the LOCAL setting of this workspace.
-3. `<project>/.pair-merge-strategy` — the COMMITTED policy of the project.
-4. `squash` — the default.
-
-The default is what makes this safe to land: a project that says nothing
-keeps the behaviour it had, byte for byte.
+This module owns the WHAT (which strategies exist, what flag each one
+needs); `project_settings` owns the WHERE (the order the project's voice is
+heard in). The split is the one the project uses for every setting: the
+order is the trunk's order, and there is exactly one place that knows it.
 
 An invalid value is REFUSED, with the admissible values named. It is never
 silently replaced by the default: a project that asked for `rebase` and got
@@ -22,8 +16,9 @@ silently replaced by the default: a project that asked for `rebase` and got
 """
 from __future__ import annotations
 
-import os
 from pathlib import Path
+
+import project_settings
 
 #: The strategy a project gets when it says nothing. The behaviour that
 #: existed before the setting existed — byte for byte.
@@ -36,27 +31,8 @@ STRATEGY_FLAGS: dict[str, list[str]] = {
     "rebase": ["--rebase"],
 }
 
-#: The environment variable that overrides everything, for one process.
-ENV_VAR = "PAIR_MERGE_STRATEGY"
-
-#: The local, ignored setting of one workspace.
-LOCAL_FILE = Path(".pair") / "merge-strategy"
-
-#: The committed policy of the project.
-PROJECT_FILE = Path(".pair-merge-strategy")
-
-
-def _first_line(path: Path) -> str:
-    """The first non-empty line of a file, or "" when it cannot be read."""
-    try:
-        text = path.read_text(encoding="utf-8")
-    except OSError:
-        return ""
-    for line in text.splitlines():
-        name = line.strip()
-        if name:
-            return name
-    return ""
+#: The name of the setting, as `project_settings` knows it.
+SETTING = "merge_strategy"
 
 
 def valid_strategies() -> list[str]:
@@ -67,35 +43,16 @@ def valid_strategies() -> list[str]:
 def resolve_merge_strategy(project_root: Path | str | None = None) -> str:
     """The merge strategy of a project, or a refusal.
 
-    `project_root` is the project directory (not the `.pair` state dir): the
-    settings live beside the code, the state dir holds the runtime. `None`
-    means the current directory.
-
-    The resolution order is "first hit wins", the same as
-    `trunk.resolve_trunk`:
-
-    - the environment, for one process;
-    - the local, ignored file — one workspace's choice;
-    - the committed file — everybody's policy;
-    - the default.
+    The project's voice is heard in `project_settings`' order — the
+    environment, the local ignored file, the committed project file, the
+    default — and the default is `squash`.
 
     Raises `ValueError` when the value found is not a strategy gh knows. The
     message names the admissible values, because a refusal that does not say
     what would have worked sends the reader looking through the source.
     """
-    root = Path(project_root) if project_root is not None else Path.cwd()
-    env = os.environ.get(ENV_VAR, "").strip()
-    if env:
-        name = env
-    else:
-        name = ""
-        for rel in (LOCAL_FILE, PROJECT_FILE):
-            found = _first_line(root / rel)
-            if found:
-                name = found
-                break
-        if not name:
-            name = DEFAULT_STRATEGY
+    name = project_settings.resolve(
+        project_root, SETTING, DEFAULT_STRATEGY).strip()
     if name not in STRATEGY_FLAGS:
         raise ValueError(
             f"invalid merge strategy {name!r}; valid strategies are: "
