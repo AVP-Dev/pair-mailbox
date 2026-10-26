@@ -171,5 +171,64 @@ class TestOneRuleCannotKillTheSupervisor(PilotGuardCase):
                          "the second tick writes nothing about the same file")
 
 
+class TestPilotNotesAreAttributable(PilotGuardCase):
+    """A note the pilot writes must be PROVABLE against the journal.
+
+    The measured block (2026-10-26, this project's own round 146): the
+    monologue cut wrote `notes/fix.md` by hand — a timestamp and a role, and
+    nothing else. The notes-consistency gate reads the note's own sha and
+    attempt and matches them against the journal's `note` rows; a note with
+    no sha cannot be attributed, so the gate called it forged and BLOCKED the
+    round close. The supervisor's own record of its work was the thing that
+    stopped the round from shipping.
+
+    So the pilot writes notes the way the server writes them: normalized body,
+    sha, attempt counted from the journal, and a `note` row carrying both.
+    """
+
+    def test_the_note_carries_a_sha_and_an_attempt(self) -> None:
+        pilot = self.pilot()
+        self.write_state()
+        pilot._note("fix", "a monologue was cut")
+        text = (self.state_dir / "notes" / "fix.md").read_text(encoding="utf-8")
+        self.assertIn("(note ", text, "the header must carry the sha and the attempt")
+        self.assertRegex(text, r"\(note [0-9a-f]{12} attempt 1\)")
+
+    def test_the_journal_row_proves_the_note(self) -> None:
+        pilot = self.pilot()
+        self.write_state()
+        pilot._note("fix", "a monologue was cut")
+        rows = [json.loads(line) for line
+                in (self.state_dir / "transcript.jsonl").read_text(encoding="utf-8").splitlines()
+                if line.strip()]
+        note_rows = [r for r in rows if r.get("kind") == "note"]
+        self.assertTrue(note_rows, "the note must leave a journal row")
+        self.assertEqual("fix", note_rows[-1]["note_kind"])
+        self.assertTrue(note_rows[-1]["note_sha"])
+        self.assertEqual(1, note_rows[-1]["note_attempt"])
+
+    def test_the_same_body_twice_is_attributed_not_swallowed(self) -> None:
+        pilot = self.pilot()
+        self.write_state()
+        pilot._note("fix", "the same body")
+        pilot._note("fix", "the same body")
+        rows = [json.loads(line) for line
+                in (self.state_dir / "transcript.jsonl").read_text(encoding="utf-8").splitlines()
+                if line.strip()]
+        note_rows = [r for r in rows if r.get("kind") == "note"]
+        self.assertEqual([1, 2], [r["note_attempt"] for r in note_rows],
+                         "the second identical body is attempt 2, not a silent duplicate")
+
+    def test_the_note_passes_the_consistency_gate(self) -> None:
+        """The gate is the point: a pilot note must not block the close."""
+        sys.path.insert(0, str(ROOT / "mcp" / "pair_mailbox"))
+        from pair_notes_consistency import check_notes
+        pilot = self.pilot()
+        self.write_state()
+        pilot._note("fix", "a monologue was cut")
+        ok, why = check_notes(self.state_dir)
+        self.assertTrue(ok, why)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

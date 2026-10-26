@@ -20,6 +20,7 @@ every failure is journalled, so it is visible instead of merely absent.
 """
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Callable, Iterable
 
 Rule = Callable[[dict], object]
@@ -112,3 +113,50 @@ def bind_rules(owner: object, order: Iterable[str] = RULE_ORDER) -> list[Rule]:
         bound.append(method if name != "sweep_stamps"
                      else (lambda state, _m=method: _m()))
     return bound
+
+
+def write_attributed_note(store: object, notes_dir: Path, kind: str, body: str,
+                           role: str = "pairpilot") -> str:
+    """Append a note the way the server writes it — with sha and attempt.
+
+    The measured block (2026-10-26, this project's own round 146): the
+    monologue cut wrote `notes/fix.md` by hand — a timestamp and a role, and
+    nothing else. The notes-consistency gate reads the note's own sha and
+    attempt and matches them against the journal's `note` rows; a note with
+    no sha cannot be attributed, so the gate called it forged and BLOCKED the
+    round close. The supervisor's own record of its work was the thing that
+    stopped the round from shipping.
+
+    So the body is normalized, hashed, the attempt is counted from the
+    journal, and a `note` row lands carrying the sha and the attempt — one
+    writer of that shape, so the gate's rule and the writer cannot drift.
+
+    Returns the sha it wrote, or "" when the body was empty.
+    """
+    import hashlib
+    body = (body or "").strip()
+    if not body:
+        return ""
+    normalized = "\n".join(line.rstrip() for line in body.splitlines()).strip()
+    body_sha = hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:12]
+    attempt = 1
+    for row in store.read_transcript(limit=50):
+        if row.get("kind") != "note" or row.get("note_kind") != kind:
+            continue
+        if row.get("role") == role and str(row.get("note_sha", "")) == body_sha:
+            attempt = int(row.get("note_attempt", 0)) + 1
+    notes_dir.mkdir(parents=True, exist_ok=True)
+    target = notes_dir / f"{kind}.md"
+    stamp = _utcnow()
+    with store.lock():
+        with target.open("a", encoding="utf-8") as stream:
+            stream.write(f"\n## {stamp} — {role} "
+                         f"(note {body_sha} attempt {attempt})\n\n{normalized}\n")
+    store.append_transcript("note", role, note_kind=kind, chars=len(body),
+                            note_sha=body_sha, note_attempt=attempt)
+    return body_sha
+
+
+def _utcnow() -> str:
+    from datetime import datetime, timezone
+    return datetime.now(timezone.utc).isoformat()

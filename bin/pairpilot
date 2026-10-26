@@ -67,7 +67,12 @@ try:
         resolve_permission_prompt,
         ring_refusal_reason,
     )
-    from guard import bind_rules, guarded, run_rules  # noqa: E402 - one rule must not kill the pass
+    from guard import (  # noqa: E402 - one rule must not kill the pass
+        bind_rules,
+        guarded,
+        run_rules,
+        write_attributed_note,
+    )
     from panes import pane_belongs_to_project  # noqa: E402 - the pane's project membership
     from pointers import clear_own_pointer, ring_prompt  # noqa: E402 - the pointer shapes
     from watchdog import (  # noqa: E402 - the monologue detector
@@ -1811,15 +1816,21 @@ class Pilot:
                                          duration_seconds=int(stalled_duration))
             # Recording the incident in notes
             try:
-                notes_dir = self.state_dir / "notes"
-                notes_dir.mkdir(parents=True, exist_ok=True)
-                note_file = notes_dir / "fix.md"
-                with note_file.open("a", encoding="utf-8") as f:
-                    f.write(f"\n## {now_iso()} — pairpilot\n\n"
-                            f"Smart Auto-Compact: {role} stuck in ‘Working...’ for "
-                            f"{int(stalled_duration)}with no screen change. Sent Escape + /compact.\n")
+                self._note("fix",
+                           f"Smart Auto-Compact: {role} stuck in ‘Working...’ for "
+                           f"{int(stalled_duration)}s with no screen change. "
+                           f"Sent Escape + /compact.")
             except OSError:
                 pass
+
+    def _note(self, kind: str, body: str) -> None:
+        """Append a note the way the server does — with sha and attempt.
+
+        The shape and the reason live in `mcp/pair_mailbox/guard.py`: a note
+        with no sha cannot be attributed, so the consistency gate called it
+        forged and BLOCKED the round close.
+        """
+        write_attributed_note(self.store, self.state_dir / "notes", kind, body)
 
     def check_monologue(self, state: dict) -> None:
         """Cut an agent that reasons out loud for minutes without doing anything.
@@ -1943,13 +1954,10 @@ class Pilot:
                                      duration_seconds=int(seconds),
                                      reason="streaming without a tool subprocess")
         try:
-            notes_dir = self.state_dir / "notes"
-            notes_dir.mkdir(parents=True, exist_ok=True)
-            with (notes_dir / "fix.md").open("a", encoding="utf-8") as handle:
-                handle.write(f"\n## {now_iso()} — pairpilot\n\n"
-                             f"Monologue cut: {role} streamed reasoning for "
-                             f"{int(seconds)}s with no tool subprocess alive. "
-                             f"Sent C-c and queued the reminder.\n")
+            self._note("fix",
+                       f"Monologue cut: {role} streamed reasoning for "
+                       f"{int(seconds)}s with no tool subprocess alive. "
+                       f"Sent C-c and queued the reminder.")
         except OSError:
             pass
         self.enqueue(role, monologue_reminder(seconds), state=None, kind="report")

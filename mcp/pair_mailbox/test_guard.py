@@ -18,7 +18,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from guard import guarded, run_rules  # noqa: E402
+from guard import guarded, run_rules, write_attributed_note  # noqa: E402
 
 
 class TestGuardedTurnsAFailureIntoARecord(unittest.TestCase):
@@ -101,6 +101,73 @@ class TestRunRulesKeepsGoing(unittest.TestCase):
         state = {"phase": "verify"}
         run_rules((lambda s: seen.append(s),), state, lambda _m: None)
         self.assertEqual([state], seen)
+
+
+class TestWriteAttributedNote(unittest.TestCase):
+    """A note the supervisor writes must be PROVABLE against the journal.
+
+    The measured block (2026-10-26, this project's own round 146): the
+    monologue cut wrote `notes/fix.md` by hand — a timestamp and a role, and
+    nothing else. The notes-consistency gate reads the note's own sha and
+    attempt and matches them against the journal's `note` rows; a note with
+    no sha cannot be attributed, so the gate called it forged and BLOCKED the
+    round close. The supervisor's own record of its work was the thing that
+    stopped the round from shipping.
+    """
+
+    def _store(self, tmp: Path):
+        import sys
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from server import Store
+        return Store(tmp, allow_create=True)
+
+    def test_the_header_carries_the_sha_and_the_attempt(self) -> None:
+        import re
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            store = self._store(root)
+            sha = write_attributed_note(store, root / "notes", "fix", "a body")
+            text = (root / "notes" / "fix.md").read_text(encoding="utf-8")
+            self.assertTrue(re.search(r"\(note [0-9a-f]{12} attempt 1\)", text), text)
+            self.assertEqual(sha, text.split("note ")[1].split(" ")[0])
+
+    def test_the_journal_row_carries_the_same_sha(self) -> None:
+        import json
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            store = self._store(root)
+            sha = write_attributed_note(store, root / "notes", "fix", "a body")
+            rows = [json.loads(line) for line
+                    in (root / "transcript.jsonl").read_text(encoding="utf-8").splitlines()
+                    if line.strip()]
+            note_rows = [r for r in rows if r.get("kind") == "note"]
+            self.assertEqual(1, len(note_rows))
+            self.assertEqual(sha, note_rows[0]["note_sha"])
+            self.assertEqual(1, note_rows[0]["note_attempt"])
+
+    def test_the_same_body_twice_is_attributed_not_swallowed(self) -> None:
+        import json
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            store = self._store(root)
+            write_attributed_note(store, root / "notes", "fix", "same body")
+            write_attributed_note(store, root / "notes", "fix", "same body")
+            rows = [json.loads(line) for line
+                    in (root / "transcript.jsonl").read_text(encoding="utf-8").splitlines()
+                    if line.strip()]
+            attempts = [r["note_attempt"] for r in rows if r.get("kind") == "note"]
+            self.assertEqual([1, 2], attempts)
+
+    def test_an_empty_body_writes_nothing(self) -> None:
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            store = self._store(root)
+            self.assertEqual("", write_attributed_note(store, root / "notes", "fix", "   "))
+            self.assertFalse((root / "notes" / "fix.md").exists())
 
 
 if __name__ == "__main__":
