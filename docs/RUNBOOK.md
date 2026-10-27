@@ -40,9 +40,18 @@ code; for the daily start use `pairup`.
 | `--install` | put a shim into `~/.local/bin`, exit (once) |
 | `--writer <role>` | pin this project's writer and start |
 | `--swap <cli>` | replace the critic pane with another CLI; writer and authority untouched |
-| `--worktree, -w <branch>` | run pair in an isolated git worktree |
+| `--worktree, -w <branch>` | run pair in an isolated git worktree — the DEFAULT since round 153 |
+| `--in-place` | opt out of the worktree: run pair in the current checkout |
 | `--task "..."` | record the task in the shared list before starting |
 | `--state <dir>` | explicit state dir (default: walk-up from cwd, else git root) |
+
+Since round 153 a launch runs in `.worktrees/chore/pair-<project>-<hash8>` by default: the
+branch name is derived from the project path, so the same project always lands in the
+same worktree and two projects never share one. The pair's `.pair` state stays in the
+MAIN checkout, so the supervisor and the gates see one round and one writer with no
+state split. Every worktree's lifecycle is recorded in `.pair/worktree-log.jsonl`,
+which is never rotated — so the trail of a merged worktree outlives the directory and
+the branch it held.
 
 ## Running pairup from anywhere
 

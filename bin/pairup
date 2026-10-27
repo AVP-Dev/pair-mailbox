@@ -58,11 +58,12 @@ _resolve_reason="$(printf '%s' "$_resolved" | sed -n '2p')"
 
 usage() {
   sed -n '2,14p' "$0" | sed 's/^# //; s/^#//'
-  echo "usage: pairup [--install] [--writer <role>] [--swap <cli>] [--worktree <branch>] [--task TEXT] [--state DIR]"
+  echo "usage: pairup [--install] [--writer <role>] [--swap <cli>] [--worktree <branch>] [--in-place] [--task TEXT] [--state DIR]"
   echo "  --install    place shim in ~/.local/bin (once), exit"
   echo "  --writer <role> assign this project's writer and launch the pair"
   echo "  --swap <cli> recreate the critic pane with a new CLI, leave the writer alone"
-  echo "  --worktree, -w <branch> run the pair in an isolated git worktree"
+  echo "  --worktree, -w <branch> run the pair in an isolated git worktree (the DEFAULT)"
+  echo "  --in-place    run the pair in this checkout (opt out of the worktree)"
   echo "  --task TEXT  record a task before launch"
   echo "  --state DIR  explicit state dir (default: walk-up from cwd)"
 }
@@ -70,6 +71,11 @@ TASK=""
 SWAP=""
 WANT_WRITER=""
 WORKTREE_BRANCH=""
+IN_PLACE=""
+# The directory the agents WORK in. It is the worktree when the launch made
+# one, and the project's own checkout otherwise. The STATE dir is a separate
+# thing — the gates read the state, the agents edit the tree.
+LAUNCH_DIR=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --install)
@@ -86,6 +92,7 @@ while [ $# -gt 0 ]; do
     --task) TASK="${2:-}"; shift 2 || { echo "error: --task needs text" >&2; exit 2; } ;;
     --writer) WANT_WRITER="${2:-}"; shift 2 || { echo "error: --writer needs a role" >&2; exit 2; } ;;
     --worktree|-w) WORKTREE_BRANCH="${2:-}"; shift 2 || { echo "error: --worktree needs a branch" >&2; exit 2; } ;;
+    --in-place) IN_PLACE="1"; shift ;;
     --duo) echo "pairup: --duo removed: use bin/pair-duo <cli> for two copies of the SAME CLI (roles <cli>-writer and <cli>-critic). The critic of a pairup pair is a different CLI: pairup --swap <cli>" >&2; exit 2 ;;
     --state) STATE_DIR="${2:-}"; shift 2 || { echo "error: --state needs a dir" >&2; exit 2; } ;;
     -h|--help) usage; exit 0 ;;
@@ -104,11 +111,26 @@ case "$_resolve_reason" in
     ;;
 esac
 
-if [ -n "$WORKTREE_BRANCH" ]; then
+# The worktree is the DEFAULT (round 153): the launch environment of a pair
+# is an isolated checkout, so a dirty main worktree cannot swallow the round
+# and two launches cannot share one tree. `--in-place` is the explicit
+# opt-out for the operator who wants the pair in THIS checkout.
+if [ -z "$IN_PLACE" ]; then
   _git_root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
   if [ -z "$_git_root" ]; then
-    echo "pairup: --worktree requires running inside a git repository" >&2
+    echo "pairup: a worktree needs a git repository — use --in-place to run without one" >&2
     exit 1
+  fi
+  if [ -z "$WORKTREE_BRANCH" ]; then
+    # The name is DERIVED from the project path, so the same project always
+    # lands in the same worktree and two projects never share one branch.
+    WORKTREE_BRANCH="$(python3 -c '
+import sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[1] + "/mcp/pair_mailbox")
+import worktree
+print(worktree.default_branch(Path(sys.argv[2])))
+' "$PAIRUP_ROOT" "$_git_root")"
   fi
   _wt_res="$(python3 -c '
 import sys, json
@@ -117,9 +139,9 @@ sys.path.insert(0, sys.argv[1] + "/mcp/pair_mailbox")
 import worktree
 # The launch environment of the pair, not a task of a running round: there is
 # no round yet, so no plan and no critic visa could exist. The decision here
-# is the human'"'"'s, who typed --worktree on the command line. A worktree for
-# a TASK of a running round goes through worktree.setup_worktree, which
-# demands the critic'"'"'s signed plan.
+# is the human'"'"'s — the launch defaults to a worktree, and --in-place is
+# the opt-out. A worktree for a TASK of a running round goes through
+# worktree.setup_worktree, which demands the critic'"'"'s signed plan.
 res = worktree.bootstrap_worktree(Path(sys.argv[2]), sys.argv[3])
 print(json.dumps(res))
 ' "$PAIRUP_ROOT" "$_git_root" "$WORKTREE_BRANCH")"
@@ -130,13 +152,19 @@ print(json.dumps(res))
     exit 1
   fi
   _target_wt="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1]).get("worktree"))' "$_wt_res")"
-  echo "pairup: switching to worktree $_target_wt"
+  echo "pairup: switching to worktree $_target_wt (--in-place to stay in this checkout)"
   cd "$_target_wt"
   # The pair state stays in the main repo by default, so the supervisor
   # and the gates see one round and one writer with no state split.
   if [ -z "$STATE_DIR" ]; then
     STATE_DIR="$_git_root/.pair"
   fi
+  # The panes work in the WORKTREE; the state stays in the MAIN checkout.
+  # Two directories, two jobs: the state is what the gates read, and the
+  # working tree is what the agents edit. Conflating them is what made the
+  # worktree opt-in useless — the launch cd'ed into the worktree and the
+  # panes cd'ed straight back out of it.
+  LAUNCH_DIR="$_target_wt"
 fi
 
 if [ -z "$STATE_DIR" ]; then
@@ -198,6 +226,11 @@ EOF
 fi
 STATE_DIR="$(cd -- "$STATE_DIR" && pwd -P)"
 PROJECT_DIR="$(dirname -- "$STATE_DIR")"
+# The panes work in the LAUNCH dir (the worktree by default, the checkout with
+# --in-place). The state stays with the project that owns it, so the gates
+# read one room whichever tree the agents work in.
+[ -z "$LAUNCH_DIR" ] && LAUNCH_DIR="$PROJECT_DIR"
+LAUNCH_DIR="$(cd -- "$LAUNCH_DIR" && pwd -P)"
 export PAIR_STATE="$STATE_DIR"
 
 PAIRCTL="$PAIRUP_ROOT/bin/pairctl"
@@ -350,7 +383,7 @@ if [ -n "$SWAP" ]; then
     exit 1
   fi
   echo "pairup: writer $writer stays, critic -> $SWAP"
-  "$PAIRUP_ROOT/bin/pair-duo" --swap-critic "$SWAP" --state "$STATE_DIR" --project "$PROJECT_DIR" || exit $?
+  "$PAIRUP_ROOT/bin/pair-duo" --swap-critic "$SWAP" --state "$STATE_DIR" --project "$LAUNCH_DIR" || exit $?
   # The writer launches RIGHT HERE: otherwise the human stays in an empty shell
   # not knowing how to use a single pane. The critic is already next door.
   writer_cmd="$(python3 -c "import json; p=json.load(open('$PAIRUP_ROOT/cli-profiles.json')); print(p.get('$writer',{}).get('launch','') or '$writer')")"
@@ -361,7 +394,7 @@ if [ -n "$SWAP" ]; then
   # must stay intact ("role comes from config, never from env"). The role of a
   # pane is its MCP config entry, and PAIR_STATE still pins the shared dir.
   export PAIR_STATE="$STATE_DIR"
-  cd "$PROJECT_DIR"
+  cd "$LAUNCH_DIR"
   echo "=== PAIR WRITER: $writer ==="
   [ -f "$STATE_DIR/task-banner.txt" ] && cat "$STATE_DIR/task-banner.txt"
   exec $writer_cmd
@@ -498,13 +531,13 @@ raise_daemon "$writer"
 # first. So: unset the inherited names, then export this project's room.
 # PAIR_TRUST_ENV is not honoured here: a pane is spawned by pairup, which has
 # already resolved the room deliberately.
-writer_init="unset PAIR_ROLE PAIR_TRUST_ENV; export PAIR_STATE='$STATE_DIR'; cd '$PROJECT_DIR'; echo '=== PAIR WRITER: $writer ==='; [ -f '$STATE_DIR/task-banner.txt' ] && cat '$STATE_DIR/task-banner.txt'; $writer_cmd"
-critic_init="unset PAIR_ROLE PAIR_TRUST_ENV; export PAIR_STATE='$STATE_DIR'; cd '$PROJECT_DIR'; echo '=== PAIR CRITIC: $critic ==='; [ -f '$STATE_DIR/task-banner.txt' ] && cat '$STATE_DIR/task-banner.txt'; $critic_cmd"
+writer_init="unset PAIR_ROLE PAIR_TRUST_ENV; export PAIR_STATE='$STATE_DIR'; cd '$LAUNCH_DIR'; echo '=== PAIR WRITER: $writer ==='; [ -f '$STATE_DIR/task-banner.txt' ] && cat '$STATE_DIR/task-banner.txt'; $writer_cmd"
+critic_init="unset PAIR_ROLE PAIR_TRUST_ENV; export PAIR_STATE='$STATE_DIR'; cd '$LAUNCH_DIR'; echo '=== PAIR CRITIC: $critic ==='; [ -f '$STATE_DIR/task-banner.txt' ] && cat '$STATE_DIR/task-banner.txt'; $critic_cmd"
 title_writer="$(title_for "$writer" writer)"
 title_critic="$(title_for "$critic" critic)"
 
 if [ -n "${TMUX:-}" ]; then
-  tmux split-window -h -c "$PROJECT_DIR" "$SHELL -c \"$critic_init\""
+  tmux split-window -h -c "$LAUNCH_DIR" "$SHELL -c \"$critic_init\""
   tmux select-pane -T "$title_critic" -t '{last}' 2>/dev/null || true
   tmux select-pane -T "$title_writer" 2>/dev/null || true
   tmux select-pane -L 2>/dev/null || true
@@ -512,8 +545,8 @@ if [ -n "${TMUX:-}" ]; then
   echo "pairup: writer: $writer_cmd"
   eval "$writer_init"
 else
-  tmux new-session -d -s "$session" -n "pair" -c "$PROJECT_DIR" "$SHELL -c \"$writer_init\""
-  tmux split-window -t "$session" -h -c "$PROJECT_DIR" "$SHELL -c \"$critic_init\""
+  tmux new-session -d -s "$session" -n "pair" -c "$LAUNCH_DIR" "$SHELL -c \"$writer_init\""
+  tmux split-window -t "$session" -h -c "$LAUNCH_DIR" "$SHELL -c \"$critic_init\""
   tmux select-layout -t "$session" even-horizontal 2>/dev/null || true
   tmux select-pane -T "$title_writer" -t "$session:0.0" 2>/dev/null || true
   tmux select-pane -T "$title_critic" -t "$session:0.1" 2>/dev/null || true

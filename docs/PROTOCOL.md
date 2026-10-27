@@ -1224,15 +1224,39 @@ step, while the boundary rests on `deny`, which the human sees and can change.
 When multiple pairs run in parallel, or when switching between tasks without dirtying
 the main working tree, git worktrees provide filesystem isolation.
 
-- `pairup --worktree <branch>` (alias `-w <branch>`):
-  Automatically provisions `.worktrees/<branch>` via `git worktree add`, switches into it,
-  and scopes `.pair` state locally.
+- **`pairup` runs in a worktree by default (round 153).** A launch provisions
+  `.worktrees/chore/pair-<project>-<hash8>` via `git worktree add` and switches into it, so a
+  dirty main working tree cannot swallow the round and two launches cannot share one
+  tree. The branch name is DERIVED from the resolved project path: the same project
+  always lands in the same worktree, and two projects never share a branch.
+- `pairup --in-place` opts out: the pair runs in the checkout it was launched from.
+  Outside a git repository the launch refuses and names this flag.
+- `pairup --worktree <branch>` (alias `-w <branch>`) names the branch explicitly.
 - `pairctl worktree list [--json]`:
   Lists registered worktrees across the repository.
 - `pairctl worktree prune [--json]`:
   Cleans stale worktree administrative records (`git worktree prune`).
 - `pairctl worktree remove [--target <path/branch>] [--force]`:
   Removes an allocated worktree.
+
+### 17a. The durable worktree lifecycle journal
+
+`.pair/worktree-log.jsonl` records the lifecycle of every worktree: `created`,
+`committed`, `merged`, `removed`. It is append-only JSONL and it is NEVER rotated.
+
+It exists because the trail cannot live on the transcript. The transcript rotates
+(four archives, the oldest deleted), and a merge record that rides on it leaves the
+window: round 152 measured ten merges (PRs 72–75 and 77–82) lost that way, and a
+merge that fell out of the window is indistinguishable from a merge that escaped the
+gate. The journal is written to the MAIN repository's `.pair`, never the worktree's
+own — a linked worktree's directory is removed with `git worktree remove --force`,
+and a journal that died with it would record nothing about the worktree that died.
+
+The commits a branch carried are captured BEFORE the merge: the merge deletes the
+branch (`--delete-branch`), and after that the shas are reachable only through the
+squash commit, which is a different sha. A trail that recorded only the squash would
+lose the very thing the trail exists for — which commits the branch held.
+
 ## 18. Diagnose against the tree, not against your own harness
 
 A diagnosis that cannot be wrong is not a measurement. Round 115 put a price on

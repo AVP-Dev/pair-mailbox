@@ -429,6 +429,13 @@ def cmd_pr(store: Any, args: argparse.Namespace) -> int:
               file=sys.stderr)
         return 1
 
+    # The branch's own commits are captured BEFORE the merge: the merge
+    # deletes the branch (`--delete-branch`), and after that the shas are
+    # reachable only through the squash commit, which is a different sha.
+    # Captured late, the journal would say "something was merged" and name
+    # no commit — the same shape as a merge that escaped the gate.
+    pre_commits = _pre_merge_commits(repo_dir, pr_id)
+
     code, out = run_gh_merge(repo_dir, pr_id)
     if code != 0:
         print(f"gh pr merge failed (exit {code}):\n{out}", file=sys.stderr)
@@ -441,6 +448,9 @@ def cmd_pr(store: Any, args: argparse.Namespace) -> int:
         pr_id=pr_id,
         forced=force,
     )
+    _journal_merge(store, repo_dir, pr_id,
+                   getattr(args, "role", "") or "writer",
+                   pre_commits=pre_commits)
     # The cleanup runs AFTER the merge, and it must never break the command:
     # the merge already happened and cannot be undone, so a housekeeping error
     # that escaped here would hide a real merge behind a failed exit code.
@@ -455,6 +465,76 @@ def cmd_pr(store: Any, args: argparse.Namespace) -> int:
             error=str(exc),
         )
     return 0
+
+
+def _pre_merge_commits(repo_dir: Path, pr_id: str | None) -> list[str]:
+    """The commits the PR's head branch holds above the trunk, oldest first.
+
+    Read BEFORE the merge, while the branch still exists. A failure to read
+    them is an empty list, not an exception: the merge proceeds and the
+    journal records the merge without the commit list, which is a weaker
+    record but an honest one.
+    """
+    branch = _merged_branch(repo_dir, pr_id)
+    if not branch:
+        return []
+    try:
+        from worktree import branch_commits
+    except ImportError:  # pragma: no cover - worktree sits next in the package
+        return []
+    try:
+        return branch_commits(repo_dir, branch, resolve_trunk(repo_dir))
+    except Exception:  # noqa: BLE001 - a weaker record, never a failed merge
+        return []
+
+
+def _journal_merge(store: Any, repo_dir: Path, pr_id: str | None,
+                   role: str, pre_commits: list[str] | None = None) -> None:
+    """Write the merge into the DURABLE worktree journal.
+
+    The transcript rotates: four archives, the oldest deleted. A merge
+    record that rides on the transcript leaves the window, and a merge that
+    left the window is indistinguishable from a merge that escaped the gate.
+    The journal in `.pair/worktree-log.jsonl` is never rotated, so the trail
+    of every merged worktree survives the room that made it.
+
+    The commits are captured HERE, before the cleanup removes the worktree
+    and the merge deletes the branch: after that the shas are reachable only
+    through the squash commit, which is a different sha.
+
+    A failure to write the journal is recorded in the transcript and does
+    NOT fail the merge: the merge already happened and cannot be undone.
+    But it is recorded, because a silent missing record is exactly the
+    escape the journal exists to make visible.
+    """
+    try:
+        from worktree import journal_merge, journal_state_dir
+    except ImportError:  # pragma: no cover - worktree sits next in the package
+        return
+    branch = _merged_branch(repo_dir, pr_id)
+    if not branch:
+        return
+    try:
+        base = resolve_trunk(repo_dir)
+        res = journal_merge(repo_dir, branch, base, pr_id=str(pr_id or ""),
+                            commits=pre_commits)
+    except Exception as exc:  # noqa: BLE001 - the merge is already done
+        store.append_transcript(
+            "worktree_journal_failed",
+            role or "writer",
+            pr_id=pr_id,
+            branch=branch,
+            error=str(exc),
+        )
+        return
+    store.append_transcript(
+        "worktree_merged",
+        role or "writer",
+        pr_id=pr_id,
+        branch=branch,
+        commits=res.get("commits") or [],
+        journal=str(Path(res["state_dir"]) / "worktree-log.jsonl"),
+    )
 
 
 def _preflight_merge(repo_dir: Path, pr_id: str | None) -> tuple[bool, str]:
