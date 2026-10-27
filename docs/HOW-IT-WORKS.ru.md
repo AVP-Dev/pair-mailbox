@@ -242,9 +242,11 @@ bin/pairctl roster           # кто зарегистрирован
 ## Git Worktrees (S5)
 
 Для изоляции файловой системы и параллельной работы нескольких пар:
-- `pairup --worktree <ветка>` (или `-w <ветка>`) создаёт `.worktrees/<ветка>` и изолирует сессию.
+- `pairup` по умолчанию работает В worktree (раунд 153): `.worktrees/chore/pair-<проект>-<hash8>`, имя ветки выводится из пути проекта. `pairup --in-place` — явный выход, пара работает в текущем checkout.
+- `pairup --worktree <ветка>` (или `-w <ветка>`) задаёт ветку явно.
 - `pairctl worktree list` выводит все активные деревья.
 - `pairctl worktree prune` очищает удалённые деревья.
+- `.pair/worktree-log.jsonl` — постоянный журнал жизненного цикла (`created`, `committed`, `merged`, `removed`). Его никогда не ротируют, поэтому след слитого worktree переживает и каталог worktree, и ветку, которую он держал.
 
 ## Машинный гейт слияния PR и Feature Freeze (раунд 60)
 

@@ -10,6 +10,7 @@ Functions:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import subprocess
@@ -51,6 +52,89 @@ DEFAULT_SHARED = [
 
 #: The project setting that overrides the list.
 SHARE_SETTING = "worktree-share"
+
+#: The durable worktree lifecycle journal: `.pair/worktree-log.jsonl`.
+#:
+#: It is NOT the transcript. The transcript rotates (four archives, the oldest
+#: deleted), and a rotated-away record is indistinguishable from a record that
+#: never existed. The lifecycle of a worktree outlives the room that created
+#: it: the directory is removed with `git worktree remove --force`, the branch
+#: is deleted by the merge, and the squash merge replaces the branch's commits
+#: with one new sha on the trunk. Everything that says "that worktree existed,
+#: held these commits, and died at this merge" must therefore live somewhere
+#: that is never rotated and never removed with the worktree.
+WORKTREE_LOG_FILE = "worktree-log.jsonl"
+
+#: The lifecycle events the journal knows.
+JOURNAL_EVENTS = ("created", "committed", "merged", "removed")
+
+
+def worktree_journal_path(state_dir: Path | str) -> Path:
+    """Where the durable journal lives: inside the state dir, never rotated."""
+    return Path(state_dir) / WORKTREE_LOG_FILE
+
+
+def worktree_journal_append(state_dir: Path | str, event: str,
+                             **fields: Any) -> dict[str, Any]:
+    """Append one lifecycle event to the durable journal.
+
+    The journal is append-only JSONL: one JSON object per line, so a torn
+    write at the end of the file costs at most the last line, and every
+    earlier line is still readable. A journal that is rewritten whole is a
+    journal that can lose everything the moment the write fails.
+
+    The write is append-only and O(1) per event: a worktree lifecycle is
+    short and the journal is read linearly when asked.
+
+    Returns the record that was written. An unreadable or unwritable journal
+    raises — the caller decides whether that is fatal, and a caller that
+    swallows it is the reason the record goes missing.
+    """
+    if event not in JOURNAL_EVENTS:
+        raise ValueError(
+            f"unknown worktree journal event {event!r}: "
+            f"one of {', '.join(JOURNAL_EVENTS)}")
+    from store_core import utcnow
+    record: dict[str, Any] = {"event": event, "at": utcnow()}
+    for key, value in fields.items():
+        if value is None:
+            continue
+        record[key] = value
+    path = worktree_journal_path(state_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
+        handle.flush()
+    return record
+
+
+def worktree_journal_read(state_dir: Path | str) -> list[dict[str, Any]]:
+    """Every journal record, oldest first.
+
+    A line that cannot be parsed is SKIPPED, not fatal: a journal that a
+    single torn line makes unreadable is worse than a journal with one hole
+    in it. The skipped line is the honest cost of appending without a
+    transaction, and the rest of the trail is still evidence.
+    """
+    path = worktree_journal_path(state_dir)
+    if not path.is_file():
+        return []
+    records: list[dict[str, Any]] = []
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(row, dict):
+            records.append(row)
+    return records
 
 
 def shared_paths(project_root: Path) -> list[str]:
@@ -232,6 +316,58 @@ def _main_worktree(repo_dir: Path) -> Path | None:
     return None
 
 
+def default_branch(repo_dir: Path) -> str:
+    """The branch a launch worktree gets when nobody named one.
+
+    The name is DERIVED, not asked for: `chore/pair-<project>-<hash8>`, where
+    the hash is over the resolved project path. It has to be stable across
+    launches (the same project must land in the same worktree, or every
+    launch would create another one), and it has to be unique across
+    projects (two projects in one checkout would otherwise fight over one
+    branch). The hash gives both: the same path always yields the same
+    name, and two paths never do.
+
+    The `chore/` prefix is not decoration. The §20 branch-class table reads
+    the class from the NAME, and a name outside the known patterns is an
+    ANOMALY — a branch no rule can protect and the janitor may never delete.
+    A launch worktree's branch is ephemeral by nature, and it must land in
+    the ephemeral class so it can be cleaned up once it is merged.
+    """
+    root = Path(repo_dir).resolve()
+    digest = hashlib.sha256(str(root).encode("utf-8")).hexdigest()[:8]
+    name = root.name or "project"
+    return f"chore/pair-{name}-{digest}"
+
+
+def journal_state_dir(repo_dir: Path) -> Path:
+    """The state dir the journal is written to: the MAIN repository's `.pair`.
+
+    Not the worktree's own `.pair`: a linked worktree's directory is removed
+    with `git worktree remove --force`, and a journal that died with the
+    worktree would record nothing about the worktree that died. The main
+    worktree is the one that owns the project, so its `.pair` is where the
+    lifecycle of every worktree belongs.
+    """
+    repo_dir = Path(repo_dir)
+    main = _main_worktree(repo_dir)
+    return (main if main is not None else repo_dir.resolve()) / ".pair"
+
+
+def branch_commits(repo_dir: Path, branch: str, base: str) -> list[str]:
+    """The commits `branch` holds above `base`, oldest first.
+
+    Read at removal time, because that is the last moment the branch's own
+    history is still reachable: the merge deletes the branch and the squash
+    merge replaces its commits with one new sha on the trunk. A trail that
+    did not capture the shas before that moment could only say "something was
+    merged", which is exactly what an escape looks like.
+    """
+    code, out, _ = run_git(["log", "--format=%H", f"{base}..{branch}"], repo_dir)
+    if code != 0 or not out:
+        return []
+    return [line.strip() for line in out.splitlines() if line.strip()]
+
+
 def _create_worktree(
     repo_dir: Path,
     branch: str,
@@ -285,6 +421,7 @@ def _create_worktree(
         }
 
     shared = _share_caches(repo_dir, target_dir)
+    _journal_created(repo_dir, branch, target_dir)
     return {
         "ok": True,
         "created": True,
@@ -293,6 +430,26 @@ def _create_worktree(
         "message": "worktree created successfully",
         "shared": shared,
     }
+
+
+def _journal_created(repo_dir: Path, branch: str, target_dir: Path) -> None:
+    """Write the `created` event, and never fail the worktree over it.
+
+    The worktree exists; that is the fact the caller came for. A journal
+    that could not be written is a fact the CALLER must know about, but it
+    does not un-create the directory — and the writer that ignores the
+    refusal would lose the record silently. So the failure is reported in the
+    result rather than raised, and the merge gate reads the journal, not the
+    return value.
+    """
+    try:
+        worktree_journal_append(
+            journal_state_dir(repo_dir), "created",
+            branch=branch, path=str(target_dir),
+            head=run_git(["rev-parse", "HEAD"], target_dir)[1],
+        )
+    except (OSError, ValueError):
+        return
 
 
 def _share_caches(repo_dir: Path, target_dir: Path) -> dict[str, Any]:
@@ -347,6 +504,47 @@ def _current_visa(state_dir: Path) -> dict[str, Any]:
     return agreed_strategy(state_dir, round_number, writer)
 
 
+def journal_merge(repo_dir: Path, branch: str, base: str, pr_id: str = "",
+                  path: str = "", commits: list[str] | None = None) -> dict[str, Any]:
+    """Record the merge of a worktree's branch, and the commits it carried.
+
+    The commits are captured BEFORE the merge, by the caller: the merge
+    deletes the branch (`--delete-branch`), and after that the shas are
+    reachable only through the squash commit on the trunk, which is a
+    DIFFERENT sha. A trail that recorded only the squash would lose the
+    very thing the trail exists for — which commits the branch held.
+
+    `commits` given by the caller wins; when it is absent the commits are
+    read here, which is correct only while the branch still exists.
+
+    Writes one `committed` event per sha and one `merged` event naming
+    them. Returns what was written; a failure to write raises, because the
+    caller is the merge gate, where a lost record is an escape.
+    """
+    state_dir = journal_state_dir(repo_dir)
+    shas = list(commits) if commits is not None else branch_commits(repo_dir, branch, base)
+    for sha in shas:
+        worktree_journal_append(state_dir, "committed", branch=branch,
+                                 path=path or None, sha=sha)
+    merged = worktree_journal_append(state_dir, "merged", branch=branch,
+                                     path=path or None, pr=pr_id or None,
+                                     commits=shas or None)
+    return {"merged": merged, "commits": shas, "state_dir": str(state_dir)}
+
+
+def journal_removal(repo_dir: Path, branch: str, path: str,
+                    commits: list[str] | None = None) -> dict[str, Any]:
+    """Record that the worktree's directory was removed.
+
+    The removal is the last event of the lifecycle: after it, the branch is
+    gone, the directory is gone, and the journal is the only place that says
+    the worktree ever existed.
+    """
+    return worktree_journal_append(
+        journal_state_dir(repo_dir), "removed", branch=branch, path=path,
+        commits=commits or None)
+
+
 def cleanup_worktree_for_branch(repo_dir: Path, branch: str) -> dict[str, Any]:
     """Remove the worktree that held `branch`, then prune the records.
 
@@ -390,8 +588,17 @@ def cleanup_worktree_for_branch(repo_dir: Path, branch: str) -> dict[str, Any]:
         return {"ok": False, "removed": False, "path": str(target),
                 "pruned": pruned,
                 "why": f"git worktree remove failed for {target}"}
+    # The removal is journaled AFTER the directory is gone: the event says
+    # what actually happened, not what was attempted. A journal write that
+    # fails here is reported in the result — the directory is already gone
+    # and raising would not bring it back.
+    journal_error = ""
+    try:
+        journal_removal(repo_dir, wanted, str(target))
+    except (OSError, ValueError) as exc:
+        journal_error = str(exc)
     return {"ok": True, "removed": True, "path": str(target), "pruned": pruned,
-            "why": ""}
+            "why": "", "journal_error": journal_error}
 
 
 def cmd_worktree(store: Any, args: argparse.Namespace) -> int:

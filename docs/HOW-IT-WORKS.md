@@ -253,9 +253,11 @@ if it found something after closing.
 ## Git Worktrees (S5)
 
 To run parallel pairs or avoid context clashes across branches:
-- `pairup --worktree <branch>` (or `-w <branch>`) creates `.worktrees/<branch>` and isolates the session.
+- `pairup` runs in a worktree BY DEFAULT (round 153): `.worktrees/chore/pair-<project>-<hash8>`, with the branch name derived from the project path. `pairup --in-place` opts out and runs in the current checkout.
+- `pairup --worktree <branch>` (or `-w <branch>`) names the branch explicitly.
 - `pairctl worktree list` shows all active trees.
 - `pairctl worktree prune` cleans up deleted trees.
+- `.pair/worktree-log.jsonl` is the durable lifecycle journal (`created`, `committed`, `merged`, `removed`). It is never rotated, so the trail of a merged worktree outlives both the worktree directory and the branch it held.
 
 ## Machine PR Merge Gate & Feature Freeze (Round 60)
 

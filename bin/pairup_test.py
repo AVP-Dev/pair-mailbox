@@ -199,5 +199,125 @@ class PairupStateOwnershipCase(unittest.TestCase):
                          "PAIR_TRUST_ENV=1 is the operator's deliberate override")
 
 
+class PairupWorktreeDefaultCase(unittest.TestCase):
+    """Round 153: the worktree is the DEFAULT, and `--in-place` opts out.
+
+    The launch environment of a pair is an isolated checkout: a dirty main
+    worktree must not swallow the round, and two launches must not share one
+    tree. The opt-out is explicit — a silent default would be a surprise to
+    the operator who expects the pair in the checkout they are standing in.
+    """
+
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp(prefix="pairup-wt-"))
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.proj = self.tmp / "proj"
+        self.proj.mkdir()
+        subprocess.run(["git", "init", "-q", str(self.proj)], check=True)
+        subprocess.run(["git", "config", "user.email", "p@t.t"], check=True)
+        subprocess.run(["git", "config", "user.name", "P"], check=True)
+        (self.proj / "a.txt").write_text("x\n", encoding="utf-8")
+        subprocess.run(["git", "add", "a.txt"], cwd=str(self.proj), check=True)
+        subprocess.run(["git", "commit", "-qm", "init"], cwd=str(self.proj), check=True)
+
+    def _block(self) -> str:
+        """The launch-isolation block of pairup: the part that decides
+        whether the pair runs in a worktree or in this checkout.
+
+        The block itself contains a nested `if [ -z "$STATE_DIR" ]`, so the
+        end anchor is the OUTER one — the one that opens the "no state" case
+        and carries the comment that belongs to it.
+        """
+        text = PAIRUP.read_text(encoding="utf-8")
+        start = text.index("# The worktree is the DEFAULT (round 153)")
+        end = text.index('if [ -z "$STATE_DIR" ]; then\n  # No state', start)
+        return text[start:end]
+
+    def _run(self, args: str = "", in_place: bool = False) -> subprocess.CompletedProcess:
+        """Run the launch-isolation block with the flags the parser would have
+        set. `in_place` sets the variable BEFORE the block, exactly where the
+        flag parser leaves it — setting it after would test nothing."""
+        env = dict(__import__("os").environ)
+        env["PAIRUP_ROOT"] = str(ROOT)
+        env.pop("PAIR_STATE", None)
+        env.pop("PAIR_TRUST_ENV", None)
+        env.pop("TMUX", None)
+        prefix = "IN_PLACE=1\n" if in_place else ""
+        script = "PAIRUP_ROOT=%s\n%s%s\nprintf 'CWD=%%s' \"$PWD\"\n" % (
+            ROOT, prefix, self._block())
+        return subprocess.run(["bash", "-c", script + args], capture_output=True,
+                              text=True, env=env, timeout=120, cwd=str(self.proj))
+
+    def test_without_a_flag_the_pair_lands_in_a_worktree(self) -> None:
+        proc = self._run("")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("switching to worktree", proc.stdout)
+        cwd = proc.stdout.split("CWD=")[-1].strip()
+        self.assertNotEqual(cwd, str(self.proj),
+                            "the default launch must leave the checkout it was run in")
+        self.assertIn(".worktrees", cwd)
+
+    def test_the_default_worktree_is_reused_not_duplicated(self) -> None:
+        """The name is derived from the project path, so a second launch lands
+        in the SAME worktree instead of creating another one."""
+        first = self._run("")
+        second = self._run("")
+        self.assertEqual(first.returncode, 0, first.stderr)
+        self.assertEqual(second.returncode, 0, second.stderr)
+        self.assertEqual(first.stdout.split("CWD=")[-1].strip(),
+                         second.stdout.split("CWD=")[-1].strip())
+
+    def test_in_place_stays_in_the_checkout(self) -> None:
+        """The opt-out is explicit and total: no worktree, no switch."""
+        in_place = self._run(in_place=True)
+        self.assertEqual(in_place.returncode, 0, in_place.stderr)
+        self.assertNotIn("switching to worktree", in_place.stdout)
+        self.assertEqual(in_place.stdout.split("CWD=")[-1].strip(), str(self.proj))
+
+    def test_outside_a_git_repository_the_launch_refuses_with_the_way_out(self) -> None:
+        plain = self.tmp / "plain"
+        plain.mkdir()
+        env = dict(__import__("os").environ)
+        env["PAIRUP_ROOT"] = str(ROOT)
+        env.pop("PAIR_STATE", None)
+        env.pop("PAIR_TRUST_ENV", None)
+        script = "PAIRUP_ROOT=%s\n%s\n" % (ROOT, self._block())
+        proc = subprocess.run(["bash", "-c", script], capture_output=True,
+                              text=True, env=env, timeout=60, cwd=str(plain))
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("--in-place", proc.stderr)
+
+    def test_the_flag_table_names_the_default_and_the_opt_out(self) -> None:
+        text = PAIRUP.read_text(encoding="utf-8")
+        self.assertIn("--in-place", text)
+        self.assertIn("--worktree", text)
+        proc = subprocess.run([str(PAIRUP), "--help"], capture_output=True,
+                              text=True, timeout=60)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("--in-place", proc.stdout)
+        self.assertIn("(the DEFAULT)", proc.stdout)
+
+    def test_the_panes_work_in_the_worktree_and_the_state_stays_in_the_project(self) -> None:
+        """Two directories, two jobs. The agents EDIT the worktree; the gates
+        READ the state, and the state belongs to the project that owns it.
+
+        Conflating them is what made `--worktree` useless: the launch cd'ed
+        into the worktree and the panes cd'ed straight back out of it.
+        """
+        text = PAIRUP.read_text(encoding="utf-8")
+        self.assertIn("LAUNCH_DIR", text)
+        # The pane init strings and the tmux calls must all name the launch
+        # dir, never the project dir.
+        for line in text.splitlines():
+            if "init=" in line or "tmux " in line:
+                if "PROJECT_DIR" in line and "LAUNCH_DIR" not in line:
+                    # The socket hash is derived from the project dir on
+                    # purpose: the server is per PROJECT, not per tree.
+                    if "sha256sum" in line or "cksum" in line or "_RESOLVED" in line:
+                        continue
+                    self.fail(f"the panes must work in the launch dir: {line.strip()}")
+        self.assertIn("cd '$LAUNCH_DIR'", text)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

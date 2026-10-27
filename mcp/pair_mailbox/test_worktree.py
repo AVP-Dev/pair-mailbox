@@ -357,5 +357,240 @@ class TestSharedCaches(PairTestCase):
             self.assertEqual(worktree.shared_paths(repo), worktree.DEFAULT_SHARED)
 
 
+class TestDurableJournal(PairTestCase):
+    """Round 153: the worktree lifecycle trail that never rotates.
+
+    The transcript rotates: four archives, the oldest deleted. A merge
+    record that rides on it leaves the window, and a merge that left the
+    window is indistinguishable from a merge that escaped the gate. The
+    journal in `.pair/worktree-log.jsonl` is append-only and never rotated.
+    """
+
+    def test_the_journal_lives_in_the_state_dir_and_is_not_the_transcript(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            state = Path(tmp) / ".pair"
+            path = worktree.worktree_journal_path(state)
+            self.assertEqual(path.name, "worktree-log.jsonl")
+            self.assertEqual(path.parent, state)
+
+    def test_an_append_is_read_back_in_order(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            state = Path(tmp) / ".pair"
+            worktree.worktree_journal_append(state, "created", branch="b")
+            worktree.worktree_journal_append(state, "merged", branch="b", pr="7")
+            rows = worktree.worktree_journal_read(state)
+            self.assertEqual([r["event"] for r in rows], ["created", "merged"])
+            self.assertEqual(rows[1]["pr"], "7")
+
+    def test_an_unknown_event_is_refused(self) -> None:
+        """A journal that accepts any word is a journal nobody can read."""
+        with tempfile.TemporaryDirectory() as tmp:
+            state = Path(tmp) / ".pair"
+            with self.assertRaises(ValueError):
+                worktree.worktree_journal_append(state, "escaped")
+
+    def test_the_journal_is_append_only_and_never_rewritten(self) -> None:
+        """A second append must not truncate the first: a journal rewritten
+        whole loses everything the moment the write fails."""
+        with tempfile.TemporaryDirectory() as tmp:
+            state = Path(tmp) / ".pair"
+            worktree.worktree_journal_append(state, "created", branch="b")
+            first = worktree.worktree_journal_path(state).read_text(encoding="utf-8")
+            worktree.worktree_journal_append(state, "removed", branch="b")
+            second = worktree.worktree_journal_path(state).read_text(encoding="utf-8")
+            self.assertTrue(second.startswith(first))
+
+    def test_a_torn_line_does_not_hide_the_rest(self) -> None:
+        """One unreadable line costs that line, not the trail."""
+        with tempfile.TemporaryDirectory() as tmp:
+            state = Path(tmp) / ".pair"
+            worktree.worktree_journal_append(state, "created", branch="b")
+            path = worktree.worktree_journal_path(state)
+            with path.open("a", encoding="utf-8") as handle:
+                handle.write("{torn\n")
+            worktree.worktree_journal_append(state, "merged", branch="b")
+            rows = worktree.worktree_journal_read(state)
+            self.assertEqual([r["event"] for r in rows], ["created", "merged"])
+
+    def test_an_empty_journal_reads_as_no_records(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(worktree.worktree_journal_read(Path(tmp) / ".pair"), [])
+
+    def test_the_journal_survives_the_removal_of_the_worktree(self) -> None:
+        """The whole point: `git worktree remove --force` deletes the
+        directory, and the record of that worktree must not die with it."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp) / "repo"
+            repo.mkdir()
+            subprocess.run(["git", "init", "-q"], cwd=str(repo), check=True)
+            subprocess.run(["git", "config", "user.email", "p@t.t"], cwd=str(repo), check=True)
+            subprocess.run(["git", "config", "user.name", "P"], cwd=str(repo), check=True)
+            (repo / "a.txt").write_text("x\n", encoding="utf-8")
+            subprocess.run(["git", "add", "a.txt"], cwd=str(repo), check=True)
+            subprocess.run(["git", "commit", "-qm", "init"], cwd=str(repo), check=True)
+            wt = repo / ".worktrees" / "room"
+            res = worktree.bootstrap_worktree(repo, "room", wt)
+            self.assertTrue(res["ok"], res.get("error"))
+            state = worktree.journal_state_dir(repo)
+            self.assertTrue(worktree.worktree_journal_path(state).is_file())
+            worktree.cleanup_worktree_for_branch(repo, "room")
+            self.assertFalse(wt.exists())
+            rows = worktree.worktree_journal_read(state)
+            events = [r["event"] for r in rows]
+            self.assertIn("created", events)
+            self.assertIn("removed", events)
+
+    def test_the_journal_goes_to_the_main_repository_not_the_worktree(self) -> None:
+        """A linked worktree's `.pair` dies with the worktree; the trail of
+        that worktree must live in the main checkout."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp) / "repo"
+            repo.mkdir()
+            subprocess.run(["git", "init", "-q"], cwd=str(repo), check=True)
+            subprocess.run(["git", "config", "user.email", "p@t.t"], cwd=str(repo), check=True)
+            subprocess.run(["git", "config", "user.name", "P"], cwd=str(repo), check=True)
+            (repo / "a.txt").write_text("x\n", encoding="utf-8")
+            subprocess.run(["git", "add", "a.txt"], cwd=str(repo), check=True)
+            subprocess.run(["git", "commit", "-qm", "init"], cwd=str(repo), check=True)
+            wt = repo / ".worktrees" / "room"
+            worktree.bootstrap_worktree(repo, "room", wt)
+            state = worktree.journal_state_dir(repo)
+            self.assertEqual(state, repo / ".pair")
+
+    def test_the_merge_journal_names_the_commits_it_carried(self) -> None:
+        """The commits are captured BEFORE the branch dies: after the merge
+        the shas are reachable only through the squash, which is a different
+        sha."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp) / "repo"
+            repo.mkdir()
+            subprocess.run(["git", "init", "-q"], cwd=str(repo), check=True)
+            subprocess.run(["git", "config", "user.email", "p@t.t"], cwd=str(repo), check=True)
+            subprocess.run(["git", "config", "user.name", "P"], cwd=str(repo), check=True)
+            (repo / "a.txt").write_text("x\n", encoding="utf-8")
+            subprocess.run(["git", "add", "a.txt"], cwd=str(repo), check=True)
+            subprocess.run(["git", "commit", "-qm", "init"], cwd=str(repo), check=True)
+            base = subprocess.run(["git", "rev-parse", "HEAD"], cwd=str(repo),
+                                  capture_output=True, text=True).stdout.strip()
+            wt = repo / ".worktrees" / "room"
+            worktree.bootstrap_worktree(repo, "room", wt)
+            (wt / "b.txt").write_text("y\n", encoding="utf-8")
+            subprocess.run(["git", "add", "b.txt"], cwd=str(wt), check=True)
+            subprocess.run(["git", "commit", "-qm", "work"], cwd=str(wt), check=True)
+            sha = subprocess.run(["git", "rev-parse", "HEAD"], cwd=str(wt),
+                                 capture_output=True, text=True).stdout.strip()
+            state = worktree.journal_state_dir(repo)
+            res = worktree.journal_merge(repo, "room", base, pr_id="12")
+            self.assertEqual(res["commits"], [sha])
+            rows = worktree.worktree_journal_read(state)
+            committed = [r for r in rows if r["event"] == "committed"]
+            merged = [r for r in rows if r["event"] == "merged"]
+            self.assertEqual([r["sha"] for r in committed], [sha])
+            self.assertEqual(merged[0]["pr"], "12")
+            self.assertEqual(merged[0]["commits"], [sha])
+
+    def test_the_merge_journal_uses_the_commits_the_caller_captured(self) -> None:
+        """After the branch is deleted, reading it back finds nothing — so the
+        caller's pre-merge capture must win."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp) / "repo"
+            repo.mkdir()
+            (repo / ".pair").mkdir()
+            res = worktree.journal_merge(repo, "gone", "base", pr_id="3",
+                                         commits=["deadbeef"])
+            self.assertEqual(res["commits"], ["deadbeef"])
+
+    def test_the_default_branch_is_stable_and_unique(self) -> None:
+        """The same project always lands in the same worktree; two projects
+        never share a branch."""
+        with tempfile.TemporaryDirectory() as tmp:
+            one = Path(tmp) / "one"
+            two = Path(tmp) / "two"
+            one.mkdir()
+            two.mkdir()
+            first = worktree.default_branch(one)
+            self.assertEqual(first, worktree.default_branch(one))
+            self.assertNotEqual(first, worktree.default_branch(two))
+            self.assertTrue(first.startswith("chore/pair-"))
+
+    def test_the_derived_branch_is_in_the_ephemeral_class(self) -> None:
+        """§20 reads the class from the NAME. A name outside the known
+        patterns is an ANOMALY: a branch no rule can protect and the janitor
+        may never delete. A launch worktree's branch must be cleanable."""
+        import branch_classes
+        with tempfile.TemporaryDirectory() as tmp:
+            name = worktree.default_branch(Path(tmp))
+            self.assertEqual(branch_classes.classify(name), "ephemeral")
+
+
+class TestMergeGateJournalsTheTrail(PairTestCase):
+    """Round 153: the merge leaves a record that never rotates.
+
+    The transcript rotates: four archives, the oldest deleted. Ten merge
+    records were lost that way before this round — a merge that fell out of
+    the window is indistinguishable from a merge that escaped the gate. The
+    durable journal in `.pair/worktree-log.jsonl` is the answer.
+    """
+
+    def _repo(self, tmp: Path) -> Path:
+        repo = tmp / "repo"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q"], cwd=str(repo), check=True)
+        subprocess.run(["git", "config", "user.email", "p@t.t"], cwd=str(repo), check=True)
+        subprocess.run(["git", "config", "user.name", "P"], cwd=str(repo), check=True)
+        (repo / "a.txt").write_text("x\n", encoding="utf-8")
+        subprocess.run(["git", "add", "a.txt"], cwd=str(repo), check=True)
+        subprocess.run(["git", "commit", "-qm", "init"], cwd=str(repo), check=True)
+        return repo
+
+    def test_the_merge_gate_journals_the_merge(self) -> None:
+        import review_gate
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self._repo(Path(tmp))
+            store = MagicMock()
+            with patch.object(review_gate, "_merged_branch", return_value="room"):
+                review_gate._journal_merge(store, repo, "7", "writer",
+                                           pre_commits=["abc1234"])
+            rows = worktree.worktree_journal_read(worktree.journal_state_dir(repo))
+            merged = [r for r in rows if r["event"] == "merged"]
+            committed = [r for r in rows if r["event"] == "committed"]
+            self.assertEqual(len(merged), 1)
+            self.assertEqual(merged[0]["pr"], "7")
+            self.assertEqual(merged[0]["commits"], ["abc1234"])
+            self.assertEqual([r["sha"] for r in committed], ["abc1234"])
+
+    def test_the_commits_are_captured_before_the_branch_dies(self) -> None:
+        """After the merge the branch is gone; the capture must happen
+        before, or the journal names no commit at all."""
+        import review_gate
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self._repo(Path(tmp))
+            wt = repo / ".worktrees" / "room"
+            worktree.bootstrap_worktree(repo, "room", wt)
+            (wt / "b.txt").write_text("y\n", encoding="utf-8")
+            subprocess.run(["git", "add", "b.txt"], cwd=str(wt), check=True)
+            subprocess.run(["git", "commit", "-qm", "work"], cwd=str(wt), check=True)
+            sha = subprocess.run(["git", "rev-parse", "HEAD"], cwd=str(wt),
+                                 capture_output=True, text=True).stdout.strip()
+            # Without GitHub naming the branch there is nothing to capture.
+            self.assertEqual(review_gate._pre_merge_commits(repo, "7"), [])
+            with patch.object(review_gate, "_merged_branch", return_value="room"):
+                captured = review_gate._pre_merge_commits(repo, "7")
+            self.assertEqual(captured, [sha])
+
+    def test_a_journal_failure_is_recorded_and_never_fails_the_merge(self) -> None:
+        """The merge already happened; a lost record must not hide it, but it
+        must not be silent either."""
+        import review_gate
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self._repo(Path(tmp))
+            store = MagicMock()
+            with patch.object(review_gate, "_merged_branch", return_value="room"), \
+                 patch("worktree.journal_merge", side_effect=OSError("disk full")):
+                review_gate._journal_merge(store, repo, "7", "writer")
+            kinds = [call.args[0] for call in store.append_transcript.call_args_list]
+            self.assertIn("worktree_journal_failed", kinds)
+
+
 if __name__ == "__main__":
     unittest.main()
