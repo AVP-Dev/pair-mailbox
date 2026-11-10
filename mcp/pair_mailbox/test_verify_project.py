@@ -60,6 +60,16 @@ class TempProject:
 
 
 class TestWorktreeLock(unittest.TestCase):
+    def test_check_cannot_consume_the_remaining_profile(self) -> None:
+        project = TempProject()
+        self.addCleanup(project.cleanup)
+        project.profile.write_text("reader\tpositive\t1\tcat >/dev/null\n"
+                                   "failure\tpositive\t1\texit 7\n")
+        result = project.run_gate()
+        self.assertNotEqual(result.returncode, 0,
+                            "stdin-reading check swallowed the following failing check")
+        self.assertIn("failure: failed", result.stderr)
+
     def test_a_second_gate_in_the_same_worktree_is_refused(self) -> None:
         """The loser must be told, not left to delete the winner's evidence."""
         project = TempProject(command="sleep 2")

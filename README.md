@@ -49,6 +49,10 @@
 # 2. Start pairing from your project repo
 pairup --task "fix retry jitter handling in client"
 
+# SSH: select both CLIs and an isolated worktree
+pairup --writer codex --swap agy --worktree fix/my-task
+
+
 # 3. Done. The pair collaborates in tmux and opens a verified PR.
 ```
 

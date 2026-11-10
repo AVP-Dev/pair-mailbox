@@ -49,6 +49,10 @@
 # 2. Запуск в любом вашем проекте
 pairup --task "починить обработку 502 ошибок и jitter ретраев"
 
+# Через SSH: писатель codex, критик agy, отдельный worktree
+pairup --writer codex --swap agy --worktree fix/my-task
+
+
 # 3. Готово. Два агента в tmux доводят задачу до проверенного PR.
 ```
 
