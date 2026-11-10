@@ -24,6 +24,7 @@ mcp/pair_mailbox/test_pair_notes_consistency.py	notes-consistency
 mcp/pair_mailbox/test_boardcheck.py	boardcheck
 mcp/pair_mailbox/test_boardcheck_isolation.py	boardcheck-isolation
 bin/boardcheck.py	boardcheck
+mcp/pair_mailbox/mcp_socket_client.py	socket-client
 mcp/pair_mailbox/test_client_redial.py	client-redial
 mcp/pair_mailbox/test_lock_liveness.py	lock-liveness
 mcp/pair_mailbox/test_lock_reaper.py	lock-reaper
@@ -101,6 +102,7 @@ mcp/pair_mailbox/test_project_settings.py	project-settings
 # The settings module is read by BOTH settings that use it, so a change
 # there must run both of their suites, not only the one the map names.
 follow:mcp/pair_mailbox/project_settings.py	worktree;merge-strategy
+follow:mcp/pair_mailbox/mcp_socket_client.py	client-redial
 # The shared fixture base: every suite's plan artifact goes through it, so a
 # change there can break any of them. It names the suites that use it.
 mcp/pair_mailbox/pair_test_base.py	plan-gate
