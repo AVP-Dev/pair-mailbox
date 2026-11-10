@@ -57,6 +57,20 @@ class ResolveStateDirCase(unittest.TestCase):
     def tearDown(self) -> None:
         self._tmp.cleanup()
 
+    def test_linked_worktree_uses_main_room_without_trust_override(self) -> None:
+        subprocess.run(["git", "-c", "user.name=T", "-c", "user.email=t@t.t",
+                        "commit", "--allow-empty", "-qm", "init"],
+                       cwd=self.project, check=True)
+        linked = self.project.parent / "linked"
+        subprocess.run(["git", "worktree", "add", "-qb", "linked", str(linked)],
+                       cwd=self.project, check=True, capture_output=True)
+        for env in ({}, {"PAIR_STATE": str(self.state)},
+                    {"PAIR_STATE": str(self.foreign)}):
+            with self.subTest(env=env):
+                room, _ = resolve_state_dir(env=env, cwd=linked)
+                self.assertEqual(room, self.state.resolve())
+        self.assertFalse((linked / ".pair").exists())
+
     def test_the_room_underfoot_is_the_answer(self) -> None:
         room, reason = resolve_state_dir(env={}, cwd=self.sub)
         self.assertEqual(self.state.resolve(), room.resolve(),

@@ -209,3 +209,4 @@ mcp/pair_mailbox/branch_audit.py	branch-audit
 mcp/pair_mailbox/branch_classes.py	branch-audit
 mcp/pair_mailbox/trunk.py	trunk
 mcp/pair_mailbox/test_trunk.py	trunk
+mcp/pair_mailbox/serve.sh	serve-guard

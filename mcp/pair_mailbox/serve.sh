@@ -115,7 +115,24 @@ while [ -n "$_d" ] && [ "$_d" != "/" ]; do
   _d="$(dirname -- "$_d")"
 done
 _state_top="$(cd -- "$proj_root" 2>/dev/null && git rev-parse --show-toplevel 2>/dev/null || true)"
-if [ -n "$_code_top" ] && [ -n "$_state_top" ] && [ "$_code_top" != "$_state_top" ]; then
+# Worktrees of one repository share Git metadata; independent clones do not.
+_code_common=""
+_state_common=""
+if [ -n "$_code_top" ]; then
+  _code_common="$(git -C "$_code_top" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
+fi
+if [ -n "$_state_top" ]; then
+  _state_common="$(git -C "$_state_top" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
+fi
+_same_repository=""
+if [ -n "$_code_common" ] && [ -n "$_state_common" ] &&
+   [ "$(cd -- "$_code_common" && pwd -P)" = "$(cd -- "$_state_common" && pwd -P)" ]; then
+  case "$_code_top" in
+    /tmp|/tmp/*|/var/tmp|/var/tmp/*|/dev/shm|/dev/shm/*) ;;
+    *) _same_repository=1;;
+  esac
+fi
+if [ -n "$_code_top" ] && [ -n "$_state_top" ] && [ "$_code_top" != "$_state_top" ] && [ -z "$_same_repository" ]; then
   # Two projects, one server code. The multi-project model: the autonomy repo
   # (pair-mailbox itself, the engine) is install.sh's ROOT, and the target
   # project is wherever pairup raised .pair. The engine is NOT copied into every
