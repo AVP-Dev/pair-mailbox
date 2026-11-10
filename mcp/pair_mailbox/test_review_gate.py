@@ -500,16 +500,12 @@ class TestReviewGate(PairTestCase):
 
     @patch("review_gate._preflight_merge", return_value=(True, ""))
     @patch("review_gate.run_gh_merge")
-    def test_cmd_pr_force_with_reason_and_human_ok_records_audit(self, mock_gh: MagicMock,
-                                                                  _mock_pf: MagicMock) -> None:
-        """CONDITION 3: --force with --reason and human_ok logs into audit/transcript."""
+    def test_cmd_pr_force_records_only_a_successful_merge(self, mock_gh: MagicMock,
+                                                          _mock_pf: MagicMock) -> None:
+        """The force marker follows success; a failed merge must leave no record."""
         mock_gh.return_value = (0, "merged")
         store = MagicMock()
-        store.read.return_value = {
-            "round": 60,
-            "phase": "verify",
-            "human_ok": [{"round": 60, "phase": "verify"}],
-        }
+        store.read.return_value = {"round": 60, "phase": "verify", "human_ok": [{"round": 60, "phase": "verify"}]}
         args = argparse.Namespace(
             pr_action="merge",
             force=True,
@@ -525,6 +521,10 @@ class TestReviewGate(PairTestCase):
             reason="urgent fix approved by human",
             pr_id="123",
         )
+        store.reset_mock()
+        mock_gh.return_value = (1, "merge failed")
+        self.assertEqual(1, review_gate.cmd_pr(store, args))
+        store.append_transcript.assert_not_called()
 
     @patch("review_gate.run_gh_merge")
     @patch("review_gate.resolve_pr_head", return_value=("", "gh not authenticated"))
@@ -690,11 +690,7 @@ class TestReviewGate(PairTestCase):
 
 
     def test_merge_record_writes_event_with_real_merge_commit(self) -> None:
-        """The audit repair names GitHub's merge commit, not the writer's claim.
-
-        Round 115 merged with a hand-run `gh pr merge`, so the merge happened
-        and the transcript never learned of it. The repair reads the remote.
-        """
+        """The repair records GitHub's merged commit after a hand-run merge."""
         with tempfile.TemporaryDirectory() as tmp:
             store, _ = self._store_with(tmp)
             args = argparse.Namespace(
@@ -711,6 +707,12 @@ class TestReviewGate(PairTestCase):
             self.assertEqual(row["merge_commit"], "80fe82259cd9")
             self.assertEqual(row["head_oid"], "2336d091870b")
             self.assertEqual(row["base"], "master")
+            from worktree import worktree_journal_read
+            durable = worktree_journal_read(store.root)
+            self.assertTrue(any(item.get("event") == "pr_merge_repaired"
+                                and item.get("pr") == "61"
+                                and item.get("merge_commit") == "80fe82259cd9"
+                                for item in durable))
 
     def test_merge_record_refuses_head_that_github_did_not_merge(self) -> None:
         """A wrong --head must refuse: a trail repaired by hand is still a claim."""

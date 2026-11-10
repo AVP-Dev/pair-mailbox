@@ -66,7 +66,8 @@ SHARE_SETTING = "worktree-share"
 WORKTREE_LOG_FILE = "worktree-log.jsonl"
 
 #: The lifecycle events the journal knows.
-JOURNAL_EVENTS = ("created", "committed", "merged", "removed")
+JOURNAL_EVENTS = ("created", "committed", "merged", "removed", "pr_merged",
+                  "pr_merge_repaired")
 
 
 def worktree_journal_path(state_dir: Path | str) -> Path:

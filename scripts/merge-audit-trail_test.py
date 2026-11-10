@@ -34,6 +34,10 @@ def event(pr_id: int) -> str:
     return json.dumps({"kind": "pr_merged", "pr_id": pr_id, "role": "writer"})
 
 
+def durable_event(pr_id: int) -> str:
+    return json.dumps({"event": "merged", "pr": str(pr_id), "role": "writer"})
+
+
 class MergeAuditTrailTest(unittest.TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
@@ -97,6 +101,31 @@ class MergeAuditTrailTest(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
         self.assertIn("2 merged PRs, 2 with a merge record", proc.stdout)
 
+    def test_durable_record_survives_transcript_rotation(self) -> None:
+        """A merge remains auditable after every transcript copy has rotated past it."""
+        (self.journal / "transcript.jsonl").write_text("new activity\n", encoding="utf-8")
+        (self.journal / "transcript-archive" / "1.jsonl").write_text(
+            "older activity\n", encoding="utf-8")
+        (self.journal / "worktree-log.jsonl").write_text(
+            durable_event(7) + "\n" + json.dumps(
+                {"event": "pr_merge_repaired", "pr": "8"}) + "\n" + json.dumps(
+                {"event": "pr_merged", "pr": "9"}) + "\n", encoding="utf-8")
+        self.baseline.write_text("", encoding="utf-8")
+        write_gh(self.bin, "#!/bin/sh\necho '[{\"number\": 7}, {\"number\": 8}, {\"number\": 9}]'\n")
+        proc = self.run_audit(path=f"{self.bin}:{os.environ['PATH']}")
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertIn("3 merged PRs, 3 with a merge record", proc.stdout)
+
+    def test_legacy_transcript_is_fallback_when_durable_log_has_no_merge(self) -> None:
+        """Existing rooms keep working until all their old events rotate away."""
+        (self.journal / "transcript.jsonl").write_text(event(7) + "\n", encoding="utf-8")
+        (self.journal / "worktree-log.jsonl").write_text("{}\n", encoding="utf-8")
+        self.baseline.write_text("", encoding="utf-8")
+        write_gh(self.bin, "#!/bin/sh\necho '[{\"number\": 7}]'\n")
+        proc = self.run_audit(path=f"{self.bin}:{os.environ['PATH']}")
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertIn("1 merged PRs, 1 with a merge record", proc.stdout)
+
     def test_a_repaired_or_forced_merge_counts_as_recorded(self) -> None:
         """The journal records a merge in three ways; all of them are records."""
         (self.journal / "transcript.jsonl").write_text(
@@ -155,7 +184,7 @@ class MergeAuditTrailTest(unittest.TestCase):
         write_gh(self.bin, "#!/bin/sh\necho '[{\"number\": 7}]'\n")
         proc = self.run_audit(path=f"{self.bin}:{os.environ['PATH']}")
         self.assertEqual(proc.returncode, 2, proc.stdout + proc.stderr)
-        self.assertIn("no transcript", proc.stdout)
+        self.assertIn("no merge journal", proc.stdout)
 
     def test_a_missing_baseline_fails_closed(self) -> None:
         """The debt must be named: a check that cannot say what is known cannot pass."""

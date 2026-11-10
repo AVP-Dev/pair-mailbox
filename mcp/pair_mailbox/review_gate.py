@@ -356,6 +356,16 @@ def _cmd_pr_merge_record(store: Any, args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 1
+    try:
+        from worktree import journal_state_dir, worktree_journal_append
+        worktree_journal_append(
+            journal_state_dir(repo_dir), "pr_merge_repaired", pr=str(pr_id),
+            merge_commit=merge_sha, head_oid=head_oid, base=base,
+            role=getattr(args, "role", "") or "writer")
+    except Exception as exc:  # noqa: BLE001 - don't claim a durable repair without its record
+        print(f"cannot write durable merge repair record for PR {pr_id}: {exc}",
+              file=sys.stderr)
+        return 1
     store.append_transcript(
         "pr_merge_repaired",
         getattr(args, "role", "") or "writer",
@@ -366,7 +376,7 @@ def _cmd_pr_merge_record(store: Any, args: argparse.Namespace) -> int:
     )
     print(
         f"audit repaired: PR {pr_id} merged as {merge_sha[:12]} into {base}; "
-        "transcript now knows what a hand-run merge hid"
+        "durable journal and transcript now know what a hand-run merge hid"
     )
     return 0
 
@@ -396,12 +406,6 @@ def cmd_pr(store: Any, args: argparse.Namespace) -> int:
         if not human_ok_for_round(state):
             print("PR merge gate REFUSED: --force requires human authority (pairctl ok for current round)", file=sys.stderr)
             return 1
-        store.append_transcript(
-            "pr_merge_forced",
-            getattr(args, "role", "") or "human",
-            reason=reason,
-            pr_id=getattr(args, "pr_id", None),
-        )
     else:
         pr_head, head_err = resolve_pr_head(repo_dir, pr_id)
         if head_err:
@@ -442,12 +446,31 @@ def cmd_pr(store: Any, args: argparse.Namespace) -> int:
         return code
 
     print(f"PR merge successful: {out}")
-    store.append_transcript(
-        "pr_merged",
-        getattr(args, "role", "") or "writer",
-        pr_id=pr_id,
-        forced=force,
-    )
+    if force:
+        store.append_transcript(
+            "pr_merge_forced",
+            getattr(args, "role", "") or "human",
+            reason=reason,
+            pr_id=pr_id,
+        )
+    durable_merge_recorded = False
+    try:
+        from worktree import journal_state_dir, worktree_journal_append
+        worktree_journal_append(
+            journal_state_dir(repo_dir), "pr_merged", pr=str(pr_id or ""),
+            role=getattr(args, "role", "") or "writer", forced=force)
+        durable_merge_recorded = True
+    except Exception as exc:  # noqa: BLE001 - merge already happened; leave visible audit debt
+        store.append_transcript("pr_merge_journal_failed",
+                                getattr(args, "role", "") or "writer",
+                                pr_id=pr_id, error=str(exc))
+    if durable_merge_recorded:
+        store.append_transcript(
+            "pr_merged",
+            getattr(args, "role", "") or "writer",
+            pr_id=pr_id,
+            forced=force,
+        )
     _journal_merge(store, repo_dir, pr_id,
                    getattr(args, "role", "") or "writer",
                    pre_commits=pre_commits)
