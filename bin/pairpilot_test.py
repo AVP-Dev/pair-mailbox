@@ -1452,6 +1452,11 @@ class TestTmuxPaths(PilotCase):
         pilot.tick()
         self.assertIn("pilot_pane_missing", self.transcript_kinds())
 
+    def test_unblock_uses_configured_allowlist_when_no_flag_was_given(self) -> None:
+        pilot = self.fake_tmux_pilot(); pilot.allow = None; configured, received = [r"\bgit\s+status\b"], []
+        pilot.allowlist = lambda: configured; pairpilot.resolve_permission_prompt = lambda tmux, pane, allow=None: received.append(allow) or {"verdict": "none", "approved": False, "prompt": "", "why": "", "matched": None}
+        pilot.unblock({"roles": {"codex": {"pane": "%7"}}}); self.assertEqual([configured], received)
+
     def test_live_pid_without_pane_heals_the_roster(self) -> None:
         """No pane in the roster, but the role process lives sitting in a pane: heal the
         record, never bury the role. Or deliver goes blind at a live neighbour."""

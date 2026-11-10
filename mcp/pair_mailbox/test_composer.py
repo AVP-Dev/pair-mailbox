@@ -15,6 +15,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -284,6 +285,43 @@ class TestNumberedMenuKeys(unittest.TestCase):
     def test_deny_only_menu_has_no_key(self) -> None:
         lines = ["1) Deny   2) No, and tell me why"]
         self.assertIsNone(composer.menu_allow_key(lines))
+
+    def test_codex_numbered_yes_prompt_is_a_menu_with_command_context(self) -> None:
+        lines = ["Would you like to run the following command?",
+                 "git status --short",
+                 "› 1. Yes, just this once",
+                 "  2. No, and tell Codex what to do differently"]
+        prompt = composer.detect_permission_menu(lines)
+        self.assertEqual(lines[0], prompt)
+        self.assertEqual("1", composer.menu_allow_key(lines))
+        context = composer.extract_permission_context(lines, prompt)
+        self.assertIn("git status --short", context)
+        self.assertEqual("allow", composer.permission_verdict(
+            context, [r"\bgit\s+status\b"])["verdict"])
+
+    def test_codex_numbered_yes_prompt_chooses_numbered_allow(self) -> None:
+        lines = ["Would you like to run the following command?",
+                 "git status --short", "1. Yes, just this once",
+                 "2. No, and tell Codex what to do differently"]
+        sent = []
+        with mock.patch.object(composer, "pane_alive", return_value=True), \
+                mock.patch.object(composer, "capture", return_value=lines), \
+                mock.patch.object(composer, "_send_keys",
+                                  side_effect=lambda tmux, pane, key: sent.append(key)):
+            result = composer.resolve_permission_prompt(
+                "tmux", "%7", allow=[r"\bgit\s+status\b"])
+        self.assertTrue(result["approved"])
+        self.assertEqual(["1", "Enter"], sent)
+
+    def test_codex_numbered_yes_prompt_still_refuses_off_allowlist_command(self) -> None:
+        lines = ["Would you like to run the following command?",
+                 "rm -rf /important",
+                 "1. Yes, just this once",
+                 "2. No, and tell Codex what to do differently"]
+        prompt = composer.detect_permission_menu(lines)
+        result = composer.permission_verdict(
+            composer.extract_permission_context(lines, prompt), [r"\bgit\s+status\b"])
+        self.assertEqual("refuse", result["verdict"])
 
 
 class TestTmuxTimeoutIsBusyNotDeath(unittest.TestCase):

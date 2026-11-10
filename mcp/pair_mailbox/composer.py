@@ -880,12 +880,11 @@ PERMISSION_PATTERNS = (
 # Prompt menu: the TUI shows no "[y/N]" but an option list with a select-and-
 # confirm hint. Different keys there, and "y" never means agreement.
 PERMISSION_MENU_MARKERS = (
-    r"allow\s+once",
-    r"always\s+allow",
-    r"enter\s+confirm",
-    r"(?:⇆|⇄|\btab\b)\s*select",
+    r"(?:allow\s+once|always\s+allow|enter\s+confirm|(?:⇆|⇄|\btab\b)\s*select|\d+\s*[).:\]]\s*yes\b)",
 )
-PERMISSION_HEADER = re.compile(r"permission\s+(?:required|needed)", re.IGNORECASE)
+PERMISSION_HEADER = re.compile(
+    r"permission\s+(?:required|needed)|would\s+you\s+like\s+to\s+run\s+the\s+following\s+command\?",
+    re.IGNORECASE)
 
 # The menu item allowing the op, with its digit. Two live menu kinds in real
 # TUIs: horizontal (`Allow once · Always allow · Reject` with `⇆ select`) — Enter
@@ -894,7 +893,7 @@ PERMISSION_HEADER = re.compile(r"permission\s+(?:required|needed)", re.IGNORECAS
 # only when the item explicitly allows: `Allow once` beats `Always allow` — least
 # privilege.
 MENU_ALLOW_ITEM = re.compile(
-    r"^\s*(\d+)\s*[).:\]]\s*(Allow\s+once|Always\s+allow|Allow|Yes)\b", re.IGNORECASE)
+    r"^\s*(?:[›>•]\s*)?(\d+)\s*[).:\]]\s*(Allow\s+once|Always\s+allow|Allow|Yes)\b", re.IGNORECASE)
 
 
 def menu_allow_key(lines: list) -> str | None:

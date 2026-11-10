@@ -2391,7 +2391,7 @@ class Pilot:
         but a result: the pane stays blocked, and the human must learn it."""
         if self.tmux is None or autonomy(state) == "observe":
             return
-        allow = self.allow
+        allow = self.allowlist()
         for role, info in (state.get("roles") or {}).items():
             pane = info.get("pane")
             if not pane or role in self.skip or not pane_alive(self.tmux, pane):
