@@ -155,7 +155,7 @@ def head_reachable_from(root: Path, ref: str, head: str = "") -> bool | None:
     return None
 
 
-def delivery_floor(root: Path) -> tuple[str, str]:
+def delivery_floor(root: Path, head: str | None = None) -> tuple[str, str]:
     """The reachability floor: is HEAD visible from any remote-tracking ref?
 
     Returns `(status, detail)` with status one of:
@@ -167,7 +167,7 @@ def delivery_floor(root: Path) -> tuple[str, str]:
       damage after the earlier git calls succeeded). Loud, never a pass,
       never a hard block.
     """
-    head = git_head(root)
+    head = git_head(root) if head is None else head
     if not head:
         return "unknown", "not a git repository: delivery cannot be checked"
     refs = remote_tracking_refs(root)
@@ -386,7 +386,7 @@ def _run_gh(root: Path, *args: str) -> tuple[int, str]:
     return proc.returncode, (proc.stdout or "").strip()
 
 
-def origin_truth(root: Path, round_base: str) -> tuple[str, str]:
+def origin_truth(root: Path, round_base: str, head: str | None = None) -> tuple[str, str]:
     """Round 105 slice 2b: does the LOCAL head match what origin carries?
 
     The floor answers for local head only — "HEAD is reachable from some
@@ -407,7 +407,7 @@ def origin_truth(root: Path, round_base: str) -> tuple[str, str]:
     """
     if not round_base:
         return "unknown", "no round_base recorded: nothing to diff against (pin it at round open)"
-    head = git_head(root)
+    head = git_head(root) if head is None else head
     if not head:
         return "unknown", "not a git repository: origin truth cannot be checked"
     if not _run_git(root, "rev-parse", "--verify", f"{round_base}^{{commit}}"):
@@ -432,14 +432,14 @@ def origin_truth(root: Path, round_base: str) -> tuple[str, str]:
     return "aligned", f"local head equals {trunk_ref}"
 
 
-def snapshot(root: Path) -> dict[str, Any]:
+def snapshot(root: Path, head: str | None = None) -> dict[str, Any]:
     """A revision snapshot binding a request/verdict.
 
     U1: coverage unions commit files with real tracked-dirty ones (head_files ∪
     tracked-dirty), so dirty-file presence never pushes commit files out of the
     verdict coverage.
     """
-    head = git_head(root)
+    head = git_head(root) if head is None else head
     dirty = dirty_files(root, include_untracked=False)
     h_files = head_files(root, head)
     if h_files:

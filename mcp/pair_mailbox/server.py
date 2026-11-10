@@ -801,7 +801,7 @@ class PairSession:
 
     # ---------------------------------------------------------------- helpers
 
-    def _git_fingerprint(self) -> Any:
+    def _git_fingerprint(self, head: str | None = None) -> Any:
         """The HEAD+dirty snapshot plus the delivery floor, for the fingerprint.
 
         Quenched into `None`: no git means no telling two states apart on this
@@ -816,8 +816,11 @@ class PairSession:
             from review import delivery_floor
             from review import snapshot as git_snapshot
 
-            snap = git_snapshot(self.store.project_root)
-            status, _ = delivery_floor(self.store.project_root)
+            if head is None:
+                from review import git_head
+                head = git_head(self.store.project_root)
+            snap = git_snapshot(self.store.project_root, head=head)
+            status, _ = delivery_floor(self.store.project_root, head=head)
             snap["delivery"] = status
             return snap
         except Exception:  # noqa: BLE001 - the snapshot must never drop the cache
@@ -1311,10 +1314,30 @@ class PairSession:
 
     def tool_pair_state(self) -> dict[str, Any]:
         """Read the shared state, the roster, and this role's standing."""
+        from panes import pane_identity_cache
+        with pane_identity_cache():
+            return self._tool_pair_state_cached()
+
+    def _tool_pair_state_cached(self) -> dict[str, Any]:
+        """Build the answer while this request's pane snapshot cache is active."""
         with self.store.lock():
             state = self.store._load()
             self._register(state)
             self.store._save(state)
+
+        # One HEAD snapshot feeds this whole answer: fingerprint, close advisory,
+        # and delivery floor. It is not retained across calls, so a push between
+        # pair_state calls still moves the cache key and displayed blocker.
+        request_head: str | None = None
+        needs_head = (state.get("mode", "fix") != "audit"
+                      or bool(state.get("verdicts"))
+                      or bool(state.get("round_base")))
+        if needs_head:
+            try:
+                from review import git_head
+                request_head = git_head(self.store.project_root)
+            except Exception:  # noqa: BLE001 - gitless environments stay unknown
+                request_head = ""
 
         # Cache: unchanged state answers short instead of full (~939 tokens, called 3-4
         # times per round by agents). The fingerprint counts in statecache — knowing
@@ -1332,7 +1355,7 @@ class PairSession:
                                   self.store.obligations_root.glob("*.json")],
                 inbox_names=[p.name for p in self._inbox_files()],
                 peer_inbox_names=self._peer_inbox_names(state),
-                git_snapshot=self._git_fingerprint,
+                git_snapshot=lambda: self._git_fingerprint(request_head),
                 alive=alive,
                 restart_line=restart_trace.restarts_last(self.store.root),
             )
@@ -1448,7 +1471,13 @@ class PairSession:
             "peers": self._peer_status(state, writer),
             # What else blocks the round close. The agent must see it BEFORE spending a move
             # on a doomed pair_advance("done").
-            "closing_blocked_by": self._done_blockers(state),
+            # Full note/transcript consistency is a close-time check; running it
+            # on every orientation read scans the entire rotating journal.
+            "closing_blocked_by": self._done_blockers(
+                state, include_note_check=False, head=request_head),
+            "closing_checks_deferred": [
+                "note/transcript consistency is checked on pair_advance('done')"
+            ],
             "evidence_this_round": [
                 {"kind": item.get("kind"), "value": item.get("value"), "ok": item.get("ok"),
                  "role": item.get("role")}
@@ -1467,7 +1496,7 @@ class PairSession:
             # is network on the hot path — but the writer must not be surprised
             # at close. Local floor status rides along; PR state is verified at
             # advance-to-done, where the message names the exact cure.
-            "delivery": self._delivery_advisory(state, autonomy, mode),
+            "delivery": self._delivery_advisory(state, autonomy, mode, head=request_head),
             "how_to_transfer_authority": (
                 "Only the human can move write authority: `pairctl assign <role>`. "
                 "A peer message never transfers it, in either direction."
@@ -1475,7 +1504,7 @@ class PairSession:
         }
 
     def _delivery_advisory(self, state: dict[str, Any], autonomy: str,
-                           mode: str) -> dict[str, str]:
+                           mode: str, head: str | None = None) -> dict[str, str]:
         """Local delivery posture for the state answer, never the network.
 
         Floor status is local git; the ceiling line states the rule without
@@ -1487,7 +1516,7 @@ class PairSession:
         try:
             from review import delivery_floor
 
-            floor_status, floor_detail = delivery_floor(self.store.project_root)
+            floor_status, floor_detail = delivery_floor(self.store.project_root, head=head)
         except Exception:  # noqa: BLE001 - advisory never drops the answer
             floor_status, floor_detail = "unknown", "delivery check failed to run"
         ceiling = (
@@ -1548,7 +1577,8 @@ class PairSession:
     def unresolved_patches(self, state: dict[str, Any]) -> list[dict[str, Any]]:
         return unresolved_patches(state)
 
-    def _done_blockers(self, state: dict[str, Any]) -> list[str]:
+    def _done_blockers(self, state: dict[str, Any], *, include_note_check: bool = True,
+                       head: str | None = None) -> list[str]:
         blockers = done_blockers(state)
         # The review queue and stale verdicts (the review-queue card).
         # The writer never blocks mid-work; the block sits here, before the result lands.
@@ -1564,7 +1594,7 @@ class PairSession:
             # carries commits THIS state does not, so the round would ship a
             # tree that is not what was reviewed.
             truth, truth_why = origin_truth(self.store.project_root,
-                                            str(state.get("round_base") or ""))
+                                            str(state.get("round_base") or ""), head=head)
             if truth == "behind":
                 blockers.append(f"the round is not against current origin: {truth_why}. ")
             elif truth == "ahead":
@@ -1576,10 +1606,11 @@ class PairSession:
             # entry with no journal row is a hand-edit, and a foreign agent's
             # write into our kind file is exactly that shape hiding. Refuses at
             # close, never repaired here: the writer sees their own edit.
-            from pair_notes_consistency import check_notes
-            notes_ok, notes_why = check_notes(self.store.root)
-            if not notes_ok:
-                blockers.append(f"the notes disagree with the journal: {notes_why}. ")
+            if include_note_check:
+                from pair_notes_consistency import check_notes
+                notes_ok, notes_why = check_notes(self.store.root)
+                if not notes_ok:
+                    blockers.append(f"the notes disagree with the journal: {notes_why}. ")
             # Round 106 slice E: the board's own machine leg. Round 105 drifted
             # three times post-commit and once pre-commit — a row claiming
             # `delivered <sha>` for another commit's sha, a prerequisite's sha,
@@ -1625,7 +1656,7 @@ class PairSession:
             if verdicts:
                 last = verdicts[-1]
                 old = last.get("rev") or {}
-                current = git_head(self.store.project_root)
+                current = git_head(self.store.project_root) if head is None else head
                 if current:
                     stale, why = is_stale(old, current,
                                           changed_between(self.store.project_root,
@@ -1673,7 +1704,7 @@ class PairSession:
             try:
                 from review import delivery_floor
 
-                floor_status, floor_detail = delivery_floor(self.store.project_root)
+                floor_status, floor_detail = delivery_floor(self.store.project_root, head=head)
             except Exception:  # noqa: BLE001 - the floor never drops the close
                 floor_status, floor_detail = "unknown", "delivery check failed to run"
             if floor_status == "undelivered":

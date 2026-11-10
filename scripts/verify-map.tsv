@@ -108,6 +108,7 @@ mcp/pair_mailbox/test_project_settings.py	project-settings
 # The settings module is read by BOTH settings that use it, so a change
 # there must run both of their suites, not only the one the map names.
 follow:mcp/pair_mailbox/project_settings.py	worktree;merge-strategy
+follow:mcp/pair_mailbox/panes.py	panes
 follow:mcp/pair_mailbox/mcp_socket_client.py	client-redial
 # The shared fixture base: every suite's plan artifact goes through it, so a
 # change there can break any of them. It names the suites that use it.

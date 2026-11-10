@@ -280,6 +280,11 @@ def pane_key(tmux: TmuxCommand, pane) -> str:
 
 
 def pane_identity(tmux: TmuxCommand, pane: str) -> dict:
+    from panes import cached_pane_identity
+    return cached_pane_identity(tmux, pane, lambda: _pane_identity_snapshot(tmux, pane))
+
+
+def _pane_identity_snapshot(tmux: TmuxCommand, pane: str) -> dict:
     """Who exactly sits in the pane: not "alive or not" but "ours or not".
 
     One `#{pane_dead}` never suffices, and that was the cross-project hole. The `%N`

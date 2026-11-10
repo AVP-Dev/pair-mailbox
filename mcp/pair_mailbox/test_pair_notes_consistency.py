@@ -14,6 +14,7 @@ import json
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -158,6 +159,23 @@ class TestNotesConsistency(PairTestCase):
         self.assertTrue(any("notes disagree with the journal" in b for b in blockers),
                         f"an orphaned note must block the close; blockers: {blockers}")
         self.assertTrue(any("cafe1234abcd" in b for b in blockers))
+
+    def test_pair_state_defers_full_note_scan_but_close_still_checks(self) -> None:
+        import pair_notes_consistency as pnc
+        self.writer.tool_pair_note(kind="decision", text="the real one")
+        target = self.store.notes_root / "decision.md"
+        target.write_text(target.read_text(encoding="utf-8") +
+                          f"\n## {self._stamped_now()} — reviewer-agent "
+                          "(note cafe1234abcd attempt 1)\n\nforged decision\n",
+                          encoding="utf-8")
+        with mock.patch.object(pnc, "check_notes", wraps=pnc.check_notes) as check:
+            state = self.writer.tool_pair_state()
+            check.assert_not_called()
+            blockers = self.writer._done_blockers(self.store.read())
+        check.assert_called_once()
+        self.assertIn("pair_advance('done')", state["closing_checks_deferred"][0])
+        self.assertTrue(any("notes disagree with the journal" in b for b in blockers),
+                        "deferring the full scan must not weaken the close gate")
 
 
     def test_rotated_journal_row_is_not_an_orphan(self) -> None:

@@ -18,6 +18,8 @@ ours — or worse, reject the just-born agent.
 from __future__ import annotations
 
 import time
+from contextlib import contextmanager
+from contextvars import ContextVar
 from pathlib import Path
 
 # How long to wait for tmux to set the cwd of a newborn pane. Measured:
@@ -25,6 +27,46 @@ from pathlib import Path
 # and ~0.3s later the right one. A value with margin: longer waits happen only
 # at new-pane registration, not on every ring.
 PANE_CWD_SETTLE_SECONDS = 0.6
+
+_PANE_IDENTITY_CACHE: ContextVar[dict[tuple[tuple[str, ...], str], dict] | None] = ContextVar(
+    "pane_identity_cache", default=None)
+
+
+@contextmanager
+def pane_identity_cache():
+    """Share pane snapshots only within one caller's request."""
+    token = _PANE_IDENTITY_CACHE.set({})
+    try:
+        yield
+    finally:
+        _PANE_IDENTITY_CACHE.reset(token)
+
+
+def _identity_key(tmux: str | list[str], pane: str) -> tuple[tuple[str, ...], str]:
+    command = tuple(tmux) if isinstance(tmux, (list, tuple)) else (str(tmux),)
+    return command, str(pane)
+
+
+def cached_pane_identity(tmux: str | list[str], pane: str, resolver) -> dict:
+    cache = _PANE_IDENTITY_CACHE.get()
+    if cache is None:
+        return resolver()
+    key = _identity_key(tmux, pane)
+    if key not in cache:
+        cache[key] = resolver()
+    return dict(cache[key])
+
+
+def refresh_pane_identity(tmux: str | list[str], pane: str) -> dict:
+    """Force the deliberate second snapshot used for a newborn pane."""
+    cache = _PANE_IDENTITY_CACHE.get()
+    key = _identity_key(tmux, pane)
+    if cache is not None:
+        cache.pop(key, None)
+    fresh = composer.pane_identity(tmux, pane)
+    if cache is not None:
+        cache[key] = fresh
+    return dict(fresh)
 
 
 def _settle_pane_identity(tmux: str | list[str], pane: str, ident: dict, project_root) -> dict:
@@ -41,7 +83,7 @@ def _settle_pane_identity(tmux: str | list[str], pane: str, ident: dict, project
     if _identity_proves_ours(ident, project_root):
         return ident
     time.sleep(PANE_CWD_SETTLE_SECONDS)
-    return composer.pane_identity(tmux, pane)
+    return refresh_pane_identity(tmux, pane)
 
 
 def _identity_proves_ours(ident: dict, project_root) -> bool:
