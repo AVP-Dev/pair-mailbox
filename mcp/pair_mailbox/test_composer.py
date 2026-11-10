@@ -100,7 +100,10 @@ class TestPiFramedInput(unittest.TestCase):
     TOKENS = "↑22k ↓2.8k R216k CH98.3% $0.003 2.1%/1.0M (auto) muse-spark"
 
     def idle(self) -> list:
-        return ["output top", self.SEP, self.SEP, "~/work/gala (main)", self.TOKENS]
+        # Preserve the empty prompt row from capture-pane instead of collapsing
+        # it to adjacent separators; this composer has no classic prompt marker.
+        return ["output top", self.SEP, " ", self.SEP,
+                "~/work/gala (main)", self.TOKENS]
 
     def busy(self) -> list:
         return ["output top", self.SEP, "worked text", self.SEP,
@@ -108,7 +111,7 @@ class TestPiFramedInput(unittest.TestCase):
 
     def test_idle_frame_reads_empty(self) -> None:
         line = composer.composer_line(self.idle())
-        self.assertIsNotNone(line)
+        self.assertEqual(self.SEP, line)
         self.assertTrue(composer.is_composer_empty(line))
 
     def test_busy_frame_reads_busy(self) -> None:
