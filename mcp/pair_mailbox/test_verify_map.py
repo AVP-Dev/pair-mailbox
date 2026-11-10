@@ -126,6 +126,16 @@ class TestVerifyMap(unittest.TestCase):
         self.assertGreater(len(rows), 50,
                            "the map should carry the repo's file-to-suite table")
 
+    def test_every_tracked_file_has_a_map_row(self) -> None:
+        """New source or static-only files must not silently select UNKNOWN."""
+        paths = [path for path, _ in _map_rows() if not path.startswith("follow:")]
+        missing = sorted(
+            file for file in _tracked()
+            if not any(file == path or (path.endswith("/") and file.startswith(path))
+                       for path in paths)
+        )
+        self.assertEqual(missing, [], f"tracked files missing from verify-map.tsv: {missing}")
+
 
 class TestVerifyChangedRouting(unittest.TestCase):
     """The changed-file gate must SELECT what the map promises.
