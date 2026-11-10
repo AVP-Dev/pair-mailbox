@@ -7,6 +7,10 @@ template copies on creation, an existing one is never overwritten.
 from __future__ import annotations
 
 import json
+import os
+import hashlib
+import time
+import shlex
 import shutil
 import subprocess
 import tempfile
@@ -214,8 +218,8 @@ class PairupWorktreeDefaultCase(unittest.TestCase):
         self.proj = self.tmp / "proj"
         self.proj.mkdir()
         subprocess.run(["git", "init", "-q", str(self.proj)], check=True)
-        subprocess.run(["git", "config", "user.email", "p@t.t"], check=True)
-        subprocess.run(["git", "config", "user.name", "P"], check=True)
+        subprocess.run(["git", "config", "user.email", "p@t.t"], cwd=self.proj, check=True)
+        subprocess.run(["git", "config", "user.name", "P"], cwd=self.proj, check=True)
         (self.proj / "a.txt").write_text("x\n", encoding="utf-8")
         subprocess.run(["git", "add", "a.txt"], cwd=str(self.proj), check=True)
         subprocess.run(["git", "commit", "-qm", "init"], cwd=str(self.proj), check=True)
@@ -317,6 +321,185 @@ class PairupWorktreeDefaultCase(unittest.TestCase):
                         continue
                     self.fail(f"the panes must work in the launch dir: {line.strip()}")
         self.assertIn("cd '$LAUNCH_DIR'", text)
+
+
+class PairupTmuxLaunchCase(unittest.TestCase):
+    """Run the complete launcher against real isolated tmux servers.
+
+    CLI fixtures stay alive in their panes; these tests exercise launching,
+    terminal attachment and isolation, not model inference or authentication.
+    """
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory(prefix="pairup-launch-")
+        self.addCleanup(self.tmp.cleanup)
+        self.base = Path(self.tmp.name)
+        self.project = self.base / "project"
+        self.project.mkdir()
+        subprocess.run(["git", "init", "-q", str(self.project)], check=True)
+        self.home = self.base / "home"
+        self.home.mkdir()
+        self.commands = self.base / "bin"
+        self.commands.mkdir()
+        for cli in ("codex", "agy", "claude"):
+            command = self.commands / cli
+            command.write_text("#!/bin/sh\nprintf '%s\\n' \"$PWD|$PAIR_STATE|" + cli + "\" > \"$PWD/" + cli + ".started\"\nexec sleep 120\n")
+            command.chmod(0o755)
+        self.env = dict(os.environ)
+        self.env.update(HOME=str(self.home), PATH=str(self.commands) + os.pathsep + self.env["PATH"], TERM="xterm-256color")
+        for key in ("PAIR_STATE", "PAIR_ROLE", "PAIR_TRUST_ENV", "TMUX", "PAIR_TMUX_SOCKET", "PAIR_FORCE_SOCKET", "PAIR_PANE_SOCKET"):
+            self.env.pop(key, None)
+        digest = hashlib.sha256(str(self.project.resolve()).encode()).hexdigest()[:8]
+        self.socket = "pair-project-" + digest
+        self.foreign = "pair-test-foreign-" + digest
+        self.procs = []
+        self.addCleanup(self.cleanup)
+
+    def tmux(self, *args: str, foreign: bool = False) -> subprocess.CompletedProcess:
+        return subprocess.run(["tmux", "-L", self.foreign if foreign else self.socket, *args],
+                              capture_output=True, text=True, timeout=10)
+
+    def cleanup(self) -> None:
+        for socket in (self.socket, self.foreign):
+            subprocess.run(["tmux", "-L", socket, "kill-server"], capture_output=True)
+        for proc in self.procs:
+            if proc.poll() is None:
+                proc.kill()
+            proc.communicate(timeout=10)
+        pidfile = self.project / ".pair" / "pilot.pid"
+        if pidfile.exists():
+            try:
+                os.kill(int(pidfile.read_text()), 15)
+            except ProcessLookupError:
+                pass
+
+    def launch(self, critic: str = "agy", foreign: bool = False) -> subprocess.Popen:
+        env = dict(self.env)
+        if foreign:
+            probe = self.tmux("display-message", "-p", "-t", "foreign", "#{socket_path}", foreign=True)
+            self.assertEqual(probe.returncode, 0, probe.stderr)
+            env["TMUX"] = probe.stdout.strip() + ",1,0"
+        command = shlex.join([str(PAIRUP), "--in-place", "--writer", "codex", "--swap", critic])
+        proc = subprocess.Popen(["script", "-e", "-q", "-c", command, "/dev/null"], cwd=self.project,
+                                env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        self.procs.append(proc)
+        return proc
+
+    def await_launch(self, proc: subprocess.Popen, critic: str) -> None:
+        deadline = time.monotonic() + 20
+        while time.monotonic() < deadline:
+            clients = self.tmux("list-clients", "-F", "#{client_pid}")
+            if (self.project / (critic + ".started")).exists() and clients.stdout.strip():
+                return
+            if proc.poll() is not None:
+                self.fail("launcher exited: " + str(proc.communicate()))
+            time.sleep(.1)
+        self.fail("pair did not start with attached SSH-like terminal")
+
+    def detach(self, proc: subprocess.Popen) -> None:
+        result = self.tmux("detach-client", "-a", "-s", self.socket)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        out, err = proc.communicate(timeout=10)
+        self.assertEqual(proc.returncode, 0, out + err)
+
+    def test_fresh_ssh_launch_reattach_and_replace_critic(self) -> None:
+        first = self.launch()
+        self.await_launch(first, "agy")
+        panes = self.tmux("list-panes", "-a", "-F", "#{pane_id}|#{pane_pid}|#{pane_title}").stdout
+        self.assertEqual(len(panes.splitlines()), 2, panes)
+        pilot_pid = int((self.project / ".pair" / "pilot.pid").read_text())
+        pilot_env = Path(f"/proc/{pilot_pid}/environ").read_bytes().split(b"\0")
+        self.assertIn(("PAIR_PANE_SOCKET=" + self.socket).encode(), pilot_env)
+
+        writer = [line for line in panes.splitlines() if "(writer)" in line][0]
+        self.detach(first)
+        second = self.launch()
+        self.await_launch(second, "agy")
+        self.assertEqual(self.tmux("list-panes", "-a", "-F", "#{pane_id}|#{pane_pid}|#{pane_title}").stdout, panes)
+        self.detach(second)
+        third = self.launch("claude")
+        self.await_launch(third, "claude")
+        after = self.tmux("list-panes", "-a", "-F", "#{pane_id}|#{pane_pid}|#{pane_title}").stdout
+        self.assertEqual(len(after.splitlines()), 2, after)
+        self.assertIn(writer, after)
+        self.assertIn("project:claude (critic)", after)
+        self.detach(third)
+
+    def test_live_writer_change_refuses_without_changing_authority(self) -> None:
+        proc = self.launch()
+        self.await_launch(proc, "agy")
+        self.detach(proc)
+        before = self.tmux("list-panes", "-a", "-F", "#{pane_id}|#{pane_pid}").stdout
+        state = json.loads((self.project / ".pair" / "state.json").read_text())
+        command = shlex.join([str(PAIRUP), "--in-place", "--writer", "agy", "--swap", "codex"])
+        result = subprocess.run(["script", "-e", "-q", "-c", command, "/dev/null"],
+                                cwd=self.project, env=self.env, capture_output=True,
+                                text=True, timeout=20)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("authority left unchanged", result.stdout)
+        after = json.loads((self.project / ".pair" / "state.json").read_text())
+        self.assertEqual(after.get("writer"), state.get("writer"))
+        self.assertEqual(after.get("policy"), state.get("policy"))
+        self.assertEqual(self.tmux("list-panes", "-a", "-F", "#{pane_id}|#{pane_pid}").stdout, before)
+
+    def test_old_supervisor_is_restarted_on_the_project_socket(self) -> None:
+        first = self.launch()
+        self.await_launch(first, "agy")
+        self.detach(first)
+        pidfile = self.project / ".pair" / "pilot.pid"
+        old_pid = int(pidfile.read_text())
+        os.kill(old_pid, 15)
+        env = dict(self.env, PAIR_PANE_SOCKET="foreign-test-socket")
+        stale = subprocess.Popen(["python3", str(ROOT / "bin" / "pairpilot"),
+                                  "--state", str(self.project / ".pair")],
+                                 env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        self.procs.append(stale)
+        pidfile.write_text(str(stale.pid))
+        second = self.launch()
+        self.await_launch(second, "agy")
+        new_pid = int(pidfile.read_text())
+        self.assertNotEqual(new_pid, stale.pid)
+        self.assertIn(("PAIR_PANE_SOCKET=" + self.socket).encode(),
+                      Path(f"/proc/{new_pid}/environ").read_bytes().split(b"\0"))
+        self.detach(second)
+
+    def test_unstoppable_supervisor_does_not_spawn_a_second_instance(self) -> None:
+        first = self.launch()
+        self.await_launch(first, "agy")
+        self.detach(first)
+        pidfile = self.project / ".pair" / "pilot.pid"
+        os.kill(int(pidfile.read_text()), 15)
+        fixture = self.commands / "pairpilot"
+        ready = self.base / "ready"
+        fixture.write_text("import signal,time\nfrom pathlib import Path\n"
+                           "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+                           + f"Path({str(ready)!r}).touch()\n" + "time.sleep(120)\n")
+        stale = subprocess.Popen(["python3", str(fixture), "--state", str(self.project / ".pair")],
+                                 env=dict(self.env, PAIR_PANE_SOCKET="old-socket"))
+        self.procs.append(stale)
+        deadline = time.monotonic() + 5
+        while not ready.exists() and time.monotonic() < deadline:
+            time.sleep(.05)
+        self.assertTrue(ready.exists())
+        pidfile.write_text(str(stale.pid))
+        command = shlex.join([str(PAIRUP), "--in-place", "--writer", "codex", "--swap", "agy"])
+        result = subprocess.run(["script", "-e", "-q", "-c", command, "/dev/null"],
+                                cwd=self.project, env=self.env, capture_output=True,
+                                text=True, timeout=15)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("refusing to start a second instance", result.stdout)
+        self.assertEqual(int(pidfile.read_text()), stale.pid)
+        self.assertIsNone(stale.poll())
+
+    def test_foreign_tmux_is_not_split_or_reused(self) -> None:
+        foreign = self.tmux("new-session", "-d", "-s", "foreign", "sleep 120", foreign=True)
+        self.assertEqual(foreign.returncode, 0, foreign.stderr)
+        before = self.tmux("list-panes", "-a", "-F", "#{pane_id}|#{pane_pid}", foreign=True).stdout
+        proc = self.launch(foreign=True)
+        self.await_launch(proc, "agy")
+        self.assertEqual(self.tmux("list-panes", "-a", "-F", "#{pane_id}|#{pane_pid}", foreign=True).stdout, before)
+        self.assertEqual(len(self.tmux("list-panes", "-a").stdout.splitlines()), 2)
+        self.detach(proc)
 
 
 if __name__ == "__main__":
