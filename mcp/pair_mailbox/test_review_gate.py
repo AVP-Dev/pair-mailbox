@@ -702,17 +702,17 @@ class TestReviewGate(PairTestCase):
                 return_value=(0, "MERGED 80fe82259cd9 2336d091870b"),
             ):
                 code = review_gate.cmd_pr(store, args)
-            self.assertEqual(code, 0)
+                second_code = review_gate.cmd_pr(store, args)
+            self.assertEqual((code, second_code), (0, 0))
+            self.assertEqual(sum(row.get("kind") == "pr_merge_repaired"
+                                 for row in store.read_transcript()), 1)
             row = self._last_kind(store, "pr_merge_repaired")
-            self.assertEqual(row["merge_commit"], "80fe82259cd9")
-            self.assertEqual(row["head_oid"], "2336d091870b")
-            self.assertEqual(row["base"], "master")
+            self.assertEqual((row["merge_commit"], row["head_oid"], row["base"]),
+                             ("80fe82259cd9", "2336d091870b", "master"))
             from worktree import worktree_journal_read
-            durable = worktree_journal_read(store.root)
-            self.assertTrue(any(item.get("event") == "pr_merge_repaired"
-                                and item.get("pr") == "61"
-                                and item.get("merge_commit") == "80fe82259cd9"
-                                for item in durable))
+            self.assertEqual([item.get("merge_commit") for item in worktree_journal_read(store.root)
+                              if item.get("event") == "pr_merge_repaired" and item.get("pr") == "61"],
+                             ["80fe82259cd9"])
 
     def test_merge_record_refuses_head_that_github_did_not_merge(self) -> None:
         """A wrong --head must refuse: a trail repaired by hand is still a claim."""

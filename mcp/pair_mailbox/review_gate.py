@@ -17,6 +17,7 @@ The module implements strict machine protection against PR merges before review 
 from __future__ import annotations
 
 import argparse
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -356,8 +357,33 @@ def _cmd_pr_merge_record(store: Any, args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 1
+    from worktree import journal_state_dir, worktree_journal_append, worktree_journal_read
+    pr_text = str(pr_id)
+    record_kinds = {"merged", "pr_merged", "pr_merge_repaired"}
+    already_recorded = any(
+        row.get("event") in record_kinds and str(row.get("pr") or "") == pr_text
+        for row in worktree_journal_read(journal_state_dir(repo_dir))
+    )
+    transcript_rows = store.read_transcript()
+    archive_dir = store.root / "transcript-archive"
+    if archive_dir.is_dir():
+        for archive in archive_dir.glob("*.jsonl"):
+            try:
+                transcript_rows.extend(
+                    json.loads(line) for line in archive.read_text(encoding="utf-8").splitlines()
+                    if line.strip()
+                )
+            except (OSError, json.JSONDecodeError):
+                continue
+    already_recorded = already_recorded or any(
+        row.get("kind") in record_kinds
+        and str(row.get("pr_id") or row.get("pr") or "") == pr_text
+        for row in transcript_rows
+    )
+    if already_recorded:
+        print(f"PR {pr_id} is already recorded in the merge journal")
+        return 0
     try:
-        from worktree import journal_state_dir, worktree_journal_append
         worktree_journal_append(
             journal_state_dir(repo_dir), "pr_merge_repaired", pr=str(pr_id),
             merge_commit=merge_sha, head_oid=head_oid, base=base,
