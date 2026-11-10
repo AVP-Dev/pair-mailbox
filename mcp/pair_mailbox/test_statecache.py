@@ -10,6 +10,7 @@ was, worse than an extra full answer.
 from __future__ import annotations
 
 import os
+import json
 import sys
 import tempfile
 import unittest
@@ -244,6 +245,18 @@ class TestCacheOverARealSession(PairTestCase):
         self.peer.tool_pair_state()
         self.writer.tool_pair_claim(reason="writer")
         self.advance_phases()
+
+    def test_pair_state_heartbeat_does_not_rewrite_state_json(self) -> None:
+        from unittest import mock
+        store = self.writer.store
+        before = store.state_path.read_bytes()
+        with mock.patch.object(store, "_save", wraps=store._save) as save:
+            self.writer.tool_pair_state()
+        save.assert_not_called()
+        self.assertEqual(before, store.state_path.read_bytes())
+        heartbeat = json.loads(store.heartbeat_path.read_text())
+        self.assertIn(self.writer.role, heartbeat["roles"])
+        self.assertEqual(self.writer.store.read()["updated_at"], heartbeat["updated_at"])
 
     def test_evidence_becomes_visible_on_the_next_call(self) -> None:
         """The agent must see the reason upfront, never spend a turn on a known refusal."""

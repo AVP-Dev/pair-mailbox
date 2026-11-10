@@ -230,6 +230,7 @@ class Store:
         self.obligations_root = root / "obligations"
         self.notifications_root = root / "notifications"
         self.state_path = root / "state.json"
+        self.heartbeat_path = root / "heartbeats.json"
         self.transcript_path = root / "transcript.jsonl"
         self.lock_path = root / ".lock"
         for directory in (self.root, self.mailbox_root, self.notes_root,
@@ -329,11 +330,67 @@ class Store:
                 "reason": "", "closed_at": None, "closed_by": None,
             }]
         state.setdefault("tasks", [])
+        try:
+            heartbeats = json.loads(self.heartbeat_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            heartbeats = {}
+        if isinstance(heartbeats, dict):
+            if isinstance(heartbeats.get("updated_at"), str):
+                state["updated_at"] = heartbeats["updated_at"]
+            roles = heartbeats.get("roles", {})
+            for role, timestamp in (roles.items() if isinstance(roles, dict) else ()):
+                if isinstance(role, str) and isinstance(timestamp, str):
+                    entry = state.get("roles", {}).get(role)
+                    if isinstance(entry, dict):
+                        entry["last_seen"] = timestamp
         return state
 
     def _save(self, state: dict[str, Any]) -> None:
         state["updated_at"] = utcnow()
         atomic_write_json(self.state_path, state)
+        self.heartbeat_path.unlink(missing_ok=True)
+
+    @staticmethod
+    def _without_heartbeat(state: dict[str, Any]) -> dict[str, Any]:
+        """State fields other than the volatile heartbeat timestamp."""
+        result = dict(state)
+        result.pop("updated_at", None)
+        roles = result.get("roles")
+        if isinstance(roles, dict):
+            result["roles"] = {
+                role: ({key: value for key, value in entry.items() if key != "last_seen"}
+                       if isinstance(entry, dict) else entry)
+                for role, entry in roles.items()
+            }
+        return result
+
+    def heartbeat_signature(self, state: dict[str, Any]) -> str:
+        """Snapshot persisted fields without copying the large nested state."""
+        return json.dumps(self._without_heartbeat(state), ensure_ascii=False,
+                          sort_keys=True, separators=(",", ":"))
+
+    def save_if_heartbeat_only(self, before: str, state: dict[str, Any]) -> bool:
+        """Persist a heartbeat separately; return True when the full state was saved."""
+        if before != self.heartbeat_signature(state):
+            self._save(state)
+            return True
+        heartbeats: dict[str, Any] = {"roles": {}}
+        try:
+            loaded = json.loads(self.heartbeat_path.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                if isinstance(loaded.get("roles"), dict):
+                    heartbeats["roles"].update({k: v for k, v in loaded["roles"].items()
+                                                if isinstance(k, str) and isinstance(v, str)})
+        except (OSError, json.JSONDecodeError):
+            pass
+        for role, entry in state.get("roles", {}).items():
+            if isinstance(entry, dict) and isinstance(entry.get("last_seen"), str):
+                heartbeats["roles"][role] = entry["last_seen"]
+        state["updated_at"] = utcnow()
+        heartbeats["updated_at"] = state["updated_at"]
+        if heartbeats["roles"]:
+            atomic_write_json(self.heartbeat_path, heartbeats)
+        return False
 
     class _Lock:
         _holders: dict[Path, tuple[int, Any]] = {}
@@ -413,8 +470,23 @@ class Store:
         """Run fn(state) under the lock and persist the result."""
         with self.lock():
             state = self._load()
+            before = self.heartbeat_signature(state)
+            before_heartbeats = {
+                role: entry.get("last_seen")
+                for role, entry in state.get("roles", {}).items()
+                if isinstance(entry, dict) and isinstance(entry.get("last_seen"), str)
+            }
             result = fn(state)
-            self._save(state)
+            if before == self.heartbeat_signature(state):
+                after_heartbeats = {
+                    role: entry.get("last_seen")
+                    for role, entry in state.get("roles", {}).items()
+                    if isinstance(entry, dict) and isinstance(entry.get("last_seen"), str)
+                }
+                if before_heartbeats != after_heartbeats:
+                    self.save_if_heartbeat_only(before, state)
+            else:
+                self._save(state)
             return result
 
     def append_transcript(self, kind: str, role: str, **fields: Any) -> None:

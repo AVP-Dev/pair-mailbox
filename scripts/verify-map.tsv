@@ -5,6 +5,7 @@
 # The -check suffix (scripts-check, docs-check, pairchat-check): no separate suite,
 # covered by static (verify-changed.sh: static always runs).
 mcp/pair_mailbox/composer.py	composer
+mcp/pair_mailbox/store_core.py	store-core
 mcp/pair_mailbox/test_composer.py	composer
 mcp/pair_mailbox/test_allowlist_bypass.py	composer-bypass
 mcp/pair_mailbox/wait_until.py	wait-until
@@ -56,6 +57,7 @@ mcp/pair_mailbox/test_liveness.py	liveness
 mcp/pair_mailbox/statecache.py	statecache
 mcp/pair_mailbox/test_statecache.py	statecache
 mcp/pair_mailbox/server.py	protocol
+follow:mcp/pair_mailbox/server.py	statecache
 mcp/pair_mailbox/test_protocol.py	protocol
 mcp/pair_mailbox/test_protocol_budgets.py	protocol
 mcp/pair_mailbox/token_budget.py	protocol

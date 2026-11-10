@@ -1322,8 +1322,9 @@ class PairSession:
         """Build the answer while this request's pane snapshot cache is active."""
         with self.store.lock():
             state = self.store._load()
+            before = self.store.heartbeat_signature(state)
             self._register(state)
-            self.store._save(state)
+            self.store.save_if_heartbeat_only(before, state)
 
         # One HEAD snapshot feeds this whole answer: fingerprint, close advisory,
         # and delivery floor. It is not retained across calls, so a push between
