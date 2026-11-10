@@ -11,6 +11,10 @@ mcp/pair_mailbox/wait_until.py	wait-until
 mcp/pair_mailbox/test_wait_until.py	wait-until
 mcp/pair_mailbox/picker.py	picker
 mcp/pair_mailbox/test_picker.py	picker
+scripts/bin_test_coverage.py	bin-test-coverage
+scripts/bin_test_coverage_test.py	bin-test-coverage
+bin/	bin-test-coverage
+scripts/bin-test-exemptions.json	docs-check
 bin/pairmcprestart	mcpprestart
 bin/pairmcprestart_test.py	mcpprestart
 mcp/pair_mailbox/pointers.py	pointer

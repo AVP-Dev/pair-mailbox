@@ -67,6 +67,7 @@ board-cli	positive	1	python3 bin/pairboard_test.py
 doctor	positive	1	python3 bin/pairdoctor_test.py
 pairmcpdoctor	positive	1	python3 bin/pairmcpdoctor_test.py
 picker	positive	1	PYTHONPATH=mcp/pair_mailbox python3 -m unittest test_picker -q
+bin-test-coverage	positive	1	python3 scripts/bin_test_coverage_test.py && python3 scripts/bin_test_coverage.py
 pairup	positive	1	python3 bin/pairup_test.py
 pairrestart	positive	1	python3 bin/pairrestart_test.py && python3 mcp/pair_mailbox/test_restart_trace.py
 manifest	positive	1	python3 mcp/pair_mailbox/test_manifest.py
