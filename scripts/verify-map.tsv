@@ -123,6 +123,8 @@ bin/pairup	pairup
 bin/pairup_test.py	pairup
 bin/pairdoctor	doctor
 bin/pairdoctor_test.py	doctor
+bin/pairmcpdoctor	pairmcpdoctor
+bin/pairmcpdoctor_test.py	pairmcpdoctor
 bin/pairrestart	pairrestart
 bin/pairrestart_test.py	pairrestart
 mcp/pair_mailbox/restart_trace.py	pairrestart

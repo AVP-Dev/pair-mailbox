@@ -7,12 +7,11 @@ through the CLI's own /mcp picker (the measured sequence bin/pairmcprestart
 implements). Two guards make it safe to run on a timer, from a cron, from the
 pilot, or by hand at the same moment:
 
-1. PER-ROLE LOCK. `fcntl.flock(LOCK_EX|LOCK_NB)` on `.pair/.server-<role>.lock`,
-   the same file the server itself takes on start (server.py:914-923). A doctor
-   holding it for role X means no second doctor, no pilot, no human script
-   touches X concurrently. The kernel releases it if the holder dies, so a
-   crashed doctor never wedges the role. The lock is held only around the
-   reconnect, never across the checks.
+1. PER-ROLE DOCTOR LOCK. `fcntl.flock(LOCK_EX|LOCK_NB)` on
+   `.pair/.doctor-<role>.lock` serializes doctors without occupying
+   `.server-<role>.lock`, which the replacement server must acquire during
+   reconnect. The kernel releases the doctor lock if its process dies. The
+   lock is held only around the reconnect, never across the checks.
 2. READ-BEFORE-WRITE. The pane is captured before any key is sent: a role whose
    pair row already reads Connected is left strictly alone. That is the mistake
    that cost a working context7 its state — space toggles, and toggling a live
@@ -93,13 +92,15 @@ def server_pid(role: str) -> str:
 
 
 def role_lock(role: str):
-    """The per-role singleton lock, the same file the server takes.
+    """The doctor's per-role single-flight lock, distinct from the server lock.
 
     Held LOCK_EX|LOCK_NB: a second taker refuses instead of waiting, because a
     doctor that blocks on a stuck peer is a doctor that stops checking the others.
-    The kernel releases on process death, so no crash wedges a role.
+    The replacement server must be able to take `.server-<role>.lock` while this
+    lock is held, so the doctor uses its own `.doctor-<role>.lock` file. The
+    kernel releases it if the holder dies, so no crash wedges recovery.
     """
-    path = STATE / f".server-{role}.lock"
+    path = STATE / f".doctor-{role}.lock"
     handle = path.open("a+")
     try:
         fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
