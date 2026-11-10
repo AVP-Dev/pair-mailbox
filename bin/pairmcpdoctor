@@ -33,6 +33,7 @@ import argparse
 import errno
 import fcntl
 import json
+import os
 import subprocess
 import sys
 import time
@@ -75,20 +76,52 @@ def state_roles() -> list[str]:
 
 
 def pane_of(role: str) -> str:
-    """The pane whose CLI process IS this role (its process name is the CLI)."""
+    """The role CLI pane inside this project's root, on the resolved socket."""
     code, out = tmux("list-panes", "-a", "-F",
-                     "#{pane_id}|#{session_name}|#{pane_index}|#{pane_current_command}")
+                     "#{pane_id}|#{session_name}|#{pane_index}|#{pane_current_command}|#{pane_current_path}")
+    root = ROOT.resolve()
     for line in out.splitlines():
-        pane_id, _session, _index, command = (line.split("|") + [""] * 4)[:4]
-        if command.strip().lower().startswith(role):
+        fields = (line.split("|", 4) + [""] * 5)[:5]
+        pane_id, _session, _index, command, cwd = fields
+        if not cwd:
+            continue
+        try:
+            Path(cwd).resolve().relative_to(root)
+        except (OSError, RuntimeError, ValueError):
+            continue
+        if command.strip().lower() == role.lower():
             return pane_id.strip()
     return ""
 
 
 def server_pid(role: str) -> str:
-    proc = subprocess.run(["pgrep", "-f", f"server.py --role {role}"],
-                          capture_output=True, text=True, timeout=10)
-    return proc.stdout.strip().splitlines()[0] if proc.stdout.strip() else ""
+    """Find only this project's server process for the exact role."""
+    wanted = STATE.resolve()
+    for entry in Path("/proc").iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            argv = [part.decode(errors="replace") for part in
+                    (entry / "cmdline").read_bytes().split(b"\0") if part]
+            if not argv or not any(Path(arg).name == "server.py" for arg in argv):
+                continue
+            if "--role" not in argv or argv[argv.index("--role") + 1] != role:
+                continue
+            if "--state" in argv:
+                raw_state = argv[argv.index("--state") + 1]
+            else:
+                raw_state = next((arg.split("=", 1)[1] for arg in argv
+                                  if arg.startswith("--state=")), "")
+            if not raw_state:
+                continue
+            state = Path(raw_state)
+            if not state.is_absolute():
+                state = Path(os.readlink(entry / "cwd")) / state
+            if state.resolve() == wanted:
+                return entry.name
+        except (OSError, RuntimeError, ValueError, IndexError):
+            continue
+    return ""
 
 
 def role_lock(role: str):
@@ -191,6 +224,9 @@ def main() -> int:
         if args.check:
             print(f"[check] {role} @ {pane or '-'}: server "
                   f"{'alive pid ' + pid if pid else 'DOWN'}")
+            continue
+        if not pane:
+            print(f"[skip ] {role}: no pane in this project — nothing to recover")
             continue
         if pid:
             quiet += 1

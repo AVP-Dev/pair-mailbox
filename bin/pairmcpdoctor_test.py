@@ -5,6 +5,7 @@ import importlib.util
 import fcntl
 from importlib.machinery import SourceFileLoader
 import json
+import os
 import select
 import subprocess
 import sys
@@ -31,14 +32,93 @@ class DoctorLockCase(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.state = Path(self.tmp.name) / ".pair"
         self.state.mkdir()
+        self.project = Path(self.tmp.name) / "project"
+        self.project.mkdir()
         (self.state / "state.json").write_text(json.dumps(
             {"round": 900, "mode": "fix", "writer": "testrole", "roles": {},
              "phase": "implement", "seq": 0}), encoding="utf-8")
         self.doctor = load_doctor()
         self.doctor.STATE = self.state
+        self.doctor.ROOT = self.project
 
     def tearDown(self) -> None:
         self.tmp.cleanup()
+
+    def fake_tmux(self, output: str) -> tuple[Path, Path]:
+        bindir = Path(self.tmp.name) / "bin"
+        bindir.mkdir(exist_ok=True)
+        fake = bindir / "tmux"
+        log = Path(self.tmp.name) / "tmux.jsonl"
+        fake.write_text(
+            "#!/usr/bin/env python3\nimport json, sys\n"
+            f"open({str(log)!r}, 'a').write(json.dumps(sys.argv[1:]) + '\\n')\n"
+            f"print({output!r}, end='')\n", encoding="utf-8")
+        fake.chmod(0o755)
+        return fake, log
+
+    def test_pane_selection_uses_project_root_and_socket(self) -> None:
+        local = self.project / "src"
+        local.mkdir()
+        foreign = Path(self.tmp.name) / "foreign"
+        foreign.mkdir()
+        rows = (f"%foreign|foreign-session|0|codex|{foreign}\n"
+                f"%local|local-session|0|codex|{local}\n")
+        fake, log = self.fake_tmux(rows)
+        env = os.environ.copy()
+        os.environ.update(PATH=f"{fake.parent}{os.pathsep}{env.get('PATH', '')}",
+                          PAIR_PANE_SOCKET="pair-doctor-test")
+        try:
+            self.assertEqual("%local", self.doctor.pane_of("codex"))
+            calls = [json.loads(line) for line in log.read_text().splitlines()]
+        finally:
+            os.environ.clear()
+            os.environ.update(env)
+        self.assertEqual([["-L", "pair-doctor-test", "list-panes", "-a", "-F",
+                           "#{pane_id}|#{session_name}|#{pane_index}|#{pane_current_command}|#{pane_current_path}" ]],
+                         calls)
+
+    def test_doctor_never_reconnects_to_a_foreign_only_pane(self) -> None:
+        foreign = Path(self.tmp.name) / "foreign"
+        foreign.mkdir()
+        fake, log = self.fake_tmux(f"%foreign|other|0|codex|{foreign}\n")
+        env = os.environ.copy()
+        os.environ.update(PATH=f"{fake.parent}{os.pathsep}{env.get('PATH', '')}",
+                          PAIR_PANE_SOCKET="pair-doctor-test")
+        argv = sys.argv
+        sys.argv = [str(DOCTOR), "--role", "codex"]
+        try:
+            self.assertEqual(0, self.doctor.main())
+            calls = [json.loads(line) for line in log.read_text().splitlines()]
+        finally:
+            sys.argv = argv
+            os.environ.clear()
+            os.environ.update(env)
+        self.assertEqual(1, len(calls))
+        self.assertEqual("list-panes", calls[0][2])
+
+    def test_server_pid_ignores_same_role_in_foreign_project(self) -> None:
+        script = Path(self.tmp.name) / "server.py"
+        script.write_text("import time; print('ready', flush=True); time.sleep(60)",
+                          encoding="utf-8")
+        foreign_state = Path(self.tmp.name) / "foreign" / ".pair"
+        foreign_state.mkdir(parents=True)
+
+        def start(state: Path) -> subprocess.Popen:
+            return subprocess.Popen(
+                [sys.executable, str(script), "--role", "codex", "--state", str(state)],
+                cwd=str(self.project), stdout=subprocess.PIPE, text=True)
+
+        foreign_proc = start(foreign_state)
+        local_proc = start(self.state)
+        try:
+            self.assertEqual("ready", foreign_proc.stdout.readline().strip())
+            self.assertEqual("ready", local_proc.stdout.readline().strip())
+            self.assertEqual(str(local_proc.pid), self.doctor.server_pid("codex"))
+        finally:
+            for proc in (foreign_proc, local_proc):
+                proc.terminate()
+                proc.wait(timeout=5)
+                proc.stdout.close()
 
     def test_doctors_are_single_flight_per_role(self) -> None:
         first = self.doctor.role_lock("testrole")
