@@ -716,8 +716,8 @@ from store_core import (  # noqa: E402,F401 - re-export, the seam's public face
 )
 
 
-def tmux_command() -> str:
-    """tmux, prefixed with this project's socket when one is named.
+def tmux_command() -> list[str]:
+    """tmux argv, with this project's socket as separate arguments when named.
 
     Condition (c) of the per-project-socket slice (round 106 slice C): ONE
     resolver for every tmux call site in the tree. A single tmux server serves
@@ -733,8 +733,8 @@ def tmux_command() -> str:
     exe = shutil.which("tmux") or "tmux"
     socket = (os.environ.get("PAIR_PANE_SOCKET") or "").strip()
     if socket and socket != "default":
-        return f"{exe} -L {socket}"
-    return exe
+        return [exe, "-L", socket]
+    return [exe]
 
 
 def same_pane(left, right) -> bool:
@@ -1871,7 +1871,7 @@ class PairSession:
                                      to=target, bell_kind=kind, pane=pane, reason=reason)
         return {"rung": False, "why": reason}
 
-    def _clear_own_pointer(self, tmux: str, pane: str) -> int:
+    def _clear_own_pointer(self, tmux: list[str], pane: str) -> int:
         """Erase our own leftover pointer from a neighbour's composer.
 
         A ring or a pointer the neighbour never accepted stays in its composer:
@@ -1922,7 +1922,7 @@ class PairSession:
             return self._ring_refused(target, kind, pane, "tmux not found in PATH")
         try:
             probe = subprocess.run(
-                [tmux, "display-message", "-p", "-t", pane, "#{pane_dead}"],
+                tmux + ["display-message", "-p", "-t", pane, "#{pane_dead}"],
                 capture_output=True, text=True, timeout=5,
             )
         except OSError as exc:
@@ -1942,7 +1942,7 @@ class PairSession:
             # another composer. Fallback is display-message (a popup with no printing) plus
             # mailbox. No silence, no injection.
             try:
-                subprocess.run([tmux, "display-message", "-t", pane,
+                subprocess.run(tmux + ["display-message", "-t", pane,
                                 "-d", "4000",
                                 f"[pair] {kind} from {self.role} — take it from the mailbox"],
                                capture_output=True, text=True, timeout=5)
@@ -1984,9 +1984,9 @@ class PairSession:
         # design — the mailbox letter is the guarantee — so a timeout is a
         # recorded miss and nothing more.
         try:
-            first = subprocess.run([tmux, "send-keys", "-t", pane, "-l", prompt],
+            first = subprocess.run(tmux + ["send-keys", "-t", pane, "-l", prompt],
                                    capture_output=True, text=True, timeout=5)
-            second = subprocess.run(tmux_command().split() + ["send-keys", "-t", pane, "Enter"],
+            second = subprocess.run(tmux_command() + ["send-keys", "-t", pane, "Enter"],
                                     capture_output=True, text=True, timeout=5)
         except subprocess.TimeoutExpired as expired:
             reason = f"send-keys timed out: {expired}"
@@ -2010,7 +2010,7 @@ class PairSession:
             return line is not None and prompt in line
         if _retained():
             try:
-                retry = subprocess.run([tmux, "send-keys", "-t", pane, "Enter"],
+                retry = subprocess.run(tmux + ["send-keys", "-t", pane, "Enter"],
                                        capture_output=True, text=True, timeout=5)
             except subprocess.TimeoutExpired as expired:
                 reason = f"send-keys Enter timed out: {expired}"
@@ -2163,7 +2163,7 @@ class PairSession:
             # Fallback is display-message + mailbox only.
             import subprocess as _sp
             try:
-                _sp.run([_tmux(), "display-message", "-t", pane,
+                _sp.run(_tmux() + ["display-message", "-t", pane,
                          "-d", "4000",
                         # Round 103 S2: the pointer carries its mail seq so a
                         # reader can tell this pointer's vintage — one stale

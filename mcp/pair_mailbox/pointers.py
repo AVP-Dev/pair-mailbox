@@ -81,7 +81,7 @@ def own_pointer_length(line: str | None, role: str) -> int:
     return 0
 
 
-def clear_own_pointer(tmux: str, pane: str, role: str) -> int:
+def clear_own_pointer(tmux: str | list[str], pane: str, role: str) -> int:
     """Erase our own leftover pointer from a neighbour's composer.
 
     Returns the number of characters erased - zero when there was nothing of

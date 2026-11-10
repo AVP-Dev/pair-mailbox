@@ -27,7 +27,7 @@ from pathlib import Path
 PANE_CWD_SETTLE_SECONDS = 0.6
 
 
-def _settle_pane_identity(tmux: str, pane: str, ident: dict, project_root) -> dict:
+def _settle_pane_identity(tmux: str | list[str], pane: str, ident: dict, project_root) -> dict:
     """Re-asks the pane cwd when the first poll never proved it ours.
 
     Birth race, measured: right after `split-window -c <dir>` tmux returns
@@ -56,7 +56,7 @@ def _identity_proves_ours(ident: dict, project_root) -> bool:
     return theirs == ours or ours in theirs.parents
 
 
-def pane_belongs_to_project(tmux: str, pane: str, project_root) -> tuple:
+def pane_belongs_to_project(tmux: str | list[str], pane: str, project_root) -> tuple:
     """Whether the pane is provably FROM THIS project. `(True, "")` or `(False, reason)`.
 
     Unlike `pane_is_foreign` there is NO "is the pane alive" question here, and the
@@ -103,7 +103,7 @@ def pane_belongs_to_project(tmux: str, pane: str, project_root) -> tuple:
 import composer
 
 
-def pane_is_foreign(tmux: str, pane: str, project_root) -> tuple:
+def pane_is_foreign(tmux: str | list[str], pane: str, project_root) -> tuple:
     """Is the pane provably not ours? Fail-closed: unproven ours means no printing.
 
     Returns (True, reason) when the pane must not be printed to, (False, "") when

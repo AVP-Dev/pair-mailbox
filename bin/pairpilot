@@ -260,7 +260,7 @@ class Pilot:
         # firing twice. See `push_allowed` and `consume_trigger`.
         self.ask_file = state_dir / "ask"
         try:
-            self.tmux: str | None = _tmux()
+            self.tmux: list[str] | None = _tmux()
         except Exception:
             self.tmux = None
         # The pane the supervisor itself lives in. Usually the operator pane,
@@ -1028,7 +1028,7 @@ class Pilot:
         the last resort for a pane that refuses everything else.
         """
         try:
-            subprocess.run([self.tmux, "display-message", "-t", pane,
+            subprocess.run(self.tmux + ["display-message", "-t", pane,
                             "-d", "4000", pointer],
                            capture_output=True, timeout=5)
             return True
@@ -1799,7 +1799,7 @@ class Pilot:
             compact_ok = self.supports_compact(role)
             log(f"{role}: stuck in Working... {int(stalled_duration)}with (zero-delta) — sending Escape" + (" and /compact" if compact_ok else " (CLI has no /compact — Escape only)"))
             try:
-                subprocess.run([self.tmux, "send-keys", "-t", pane, "Escape"],
+                subprocess.run(self.tmux + ["send-keys", "-t", pane, "Escape"],
                                capture_output=True, text=True, timeout=5)
                 time.sleep(1.0)
                 if compact_ok:
@@ -1945,7 +1945,7 @@ class Pilot:
         """
         log(f"{role}: {int(seconds)}s of reasoning with no tool call — cutting it short")
         try:
-            subprocess.run([self.tmux, "send-keys", "-t", pane, "C-c"],
+            subprocess.run(self.tmux + ["send-keys", "-t", pane, "C-c"],
                            capture_output=True, text=True, timeout=5)
         except Exception as exc:  # noqa: BLE001
             log(f"{role}: monologue cut failed: {exc}")
@@ -2080,7 +2080,7 @@ class Pilot:
         if self.tmux is None:
             return []
         try:
-            out = subprocess.run([self.tmux, "list-panes", "-a", "-F", "#{pane_id}"],
+            out = subprocess.run(self.tmux + ["list-panes", "-a", "-F", "#{pane_id}"],
                                  capture_output=True, text=True, timeout=5).stdout
         except Exception:
             return []
@@ -2259,7 +2259,7 @@ class Pilot:
                 # or a debugger, it belongs to the human, and -k would kill it.
                 # A restart fires only where the pane is truly dead, and a held
                 # pane is left to the human with a transcript record.
-                [self.tmux, "respawn-pane", "-t", pane, command],
+                self.tmux + ["respawn-pane", "-t", pane, command],
                 capture_output=True, text=True, timeout=15)
             if result.returncode == 0:
                 self.store.append_transcript("pilot_restart", "pairpilot", target=role,

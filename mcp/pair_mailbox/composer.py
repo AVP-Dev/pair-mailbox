@@ -21,6 +21,7 @@ import shutil
 import subprocess
 import time
 import json
+from collections.abc import Sequence
 from pathlib import Path
 
 # A live line scrolls; take the snapshot window with margin.
@@ -102,52 +103,45 @@ class ComposerBusy(Exception):
     pass
 
 
-def _send_keys(tmux: str, pane: str, *keys: str) -> subprocess.CompletedProcess:
+TmuxCommand = str | Sequence[str]
+
+
+def _tmux_args(tmux: TmuxCommand, *args: str) -> list[str]:
+    """Append a tmux subcommand; accept legacy string callers too."""
+    prefix = [tmux] if isinstance(tmux, str) else list(tmux)
+    return prefix + list(args)
+
+
+def _send_keys(tmux: TmuxCommand, pane: str, *keys: str) -> subprocess.CompletedProcess:
     """One `tmux send-keys`, with a timeout that reads as BUSY, not as death.
 
-    The measured crash (2026-10-25, this project's own supervisor): `tmux
-    send-keys` into a pane whose CLI had stopped consuming input hung for
-    the full 5-second timeout and raised `subprocess.TimeoutExpired`. The
-    pilot's `flush_outbox` caught `ComposerBusy` and nothing else, so the
-    exception escaped, the whole supervisor died, and EVERY rule it carried
-    — including the monologue watchdog — went dark with it. A dead
-    supervisor is the one failure the watchdog cannot notice.
-
-    So a tmux timeout is what it physically is: the pane did not answer in
-    time. It becomes `ComposerBusy`, the one exception every caller already
-    knows how to handle, and the delivery is simply skipped for this tick.
+    A stuck pane can make `send-keys` time out. Convert it to `ComposerBusy` so
+    callers skip this delivery; otherwise the timeout can terminate pairpilot,
+    taking every supervisor rule, including the monologue watchdog, with it.
     """
     try:
-        return subprocess.run([tmux, "send-keys", "-t", pane] + list(keys),
+        return subprocess.run(_tmux_args(tmux, "send-keys", "-t", pane, *keys),
                               capture_output=True, text=True, timeout=5)
     except subprocess.TimeoutExpired as expired:
         raise ComposerBusy(
             f"tmux send-keys timed out into {pane}: {expired}") from expired
 
 
-def _tmux() -> str:
-    """tmux, prefixed with the project's socket when one is named.
+def _tmux() -> list[str]:
+    """Resolve tmux argv and keep PAIR_PANE_SOCKET separate from its executable.
 
-    Condition (c) of the per-project-socket slice (round 106): ONE resolver for
-    every tmux call site. A single tmux server serves every project on the box,
-    so plain `tmux` makes another project's panes visible and addressable here —
-    that is how a message once landed in galatour's pane. The socket name comes
-    from PAIR_PANE_SOCKET (exported by pairup from the resolved project root) and
-    is never read from state.json, so binding needs no state file.
-
-    Legacy fallback: with no socket named, plain tmux — the live pair on the
-    default socket stays reachable, and the transition never blinds it.
+    Without a named socket, use the default server for legacy pairs.
     """
     exe = shutil.which("tmux")
     if not exe:
         raise ComposerBusy("tmux not found in PATH")
     socket = (os.environ.get("PAIR_PANE_SOCKET") or "").strip()
     if socket and socket != "default":
-        return f"{exe} -L {socket}"
-    return exe
+        return [exe, "-L", socket]
+    return [exe]
 
 
-def pane_alive(tmux: str, pane: str) -> bool:
+def pane_alive(tmux: TmuxCommand, pane: str) -> bool:
     """Whether the tmux pane lives, and whether it is a pane at all.
 
     A line unlike a pane is no pane: without this check tmux answered `-t opencode`
@@ -209,7 +203,7 @@ def pane_ref_format(pane: str) -> str:
     return ""
 
 
-def session_address(tmux: str, pane: str) -> str:
+def session_address(tmux: TmuxCommand, pane: str) -> str:
     """The stable pane address: `<session>:<window>.<pane>`, or "" when it fails.
 
     A measured, important limit: the session name isolates projects ONLY when every
@@ -218,8 +212,8 @@ def session_address(tmux: str, pane: str) -> str:
     and the path check are two independent lines, never one replacing the other.
     """
     r = subprocess.run(
-        [tmux, "display-message", "-p", "-t", pane,
-         "#{session_name}:#{window_index}.#{pane_index}"],
+        _tmux_args(tmux, "display-message", "-p", "-t", pane,
+                   "#{session_name}:#{window_index}.#{pane_index}"),
         capture_output=True, text=True, timeout=5)
     out = r.stdout.strip()
     if r.returncode != 0 or not out or out.startswith(":"):
@@ -238,7 +232,7 @@ def session_address(tmux: str, pane: str) -> str:
     return out
 
 
-def same_pane(tmux: str, left, right) -> bool:
+def same_pane(tmux: TmuxCommand, left, right) -> bool:
     """One pane recorded in two shapes. Fail-closed.
 
     String comparison was the quiet breakage here: our own pane arrives from the
@@ -265,7 +259,7 @@ def same_pane(tmux: str, left, right) -> bool:
     return bool(left_addr) and left_addr == right_addr
 
 
-def pane_key(tmux, pane) -> str:
+def pane_key(tmux: TmuxCommand, pane) -> str:
     """The pane-grouping key, identical for both reference shapes.
 
     Needed where panes compare pairwise or group into a table: past the move to
@@ -285,7 +279,7 @@ def pane_key(tmux, pane) -> str:
     return address or str(pane)
 
 
-def pane_identity(tmux: str, pane: str) -> dict:
+def pane_identity(tmux: TmuxCommand, pane: str) -> dict:
     """Who exactly sits in the pane: not "alive or not" but "ours or not".
 
     One `#{pane_dead}` never suffices, and that was the cross-project hole. The `%N`
@@ -301,8 +295,8 @@ def pane_identity(tmux: str, pane: str) -> dict:
     different panes.
     """
     r = subprocess.run(
-        [tmux, "display-message", "-p", "-t", pane,
-         "#{pane_dead}\t#{pane_current_path}\t#{session_name}:#{window_index}.#{pane_index}\t#{session_id}\t#{pane_id}"],
+        _tmux_args(tmux, "display-message", "-p", "-t", pane,
+                   "#{pane_dead}\t#{pane_current_path}\t#{session_name}:#{window_index}.#{pane_index}\t#{session_id}\t#{pane_id}"),
         capture_output=True, text=True, timeout=5)
     # tmux answers a NONEXISTENT pane with code 0 and empty output — exactly the
     # same fact over which the phantom pane once counted as living. So return code
@@ -355,7 +349,7 @@ def _ancestor_chain(pid: int) -> set:
     return chain
 
 
-def find_pane_of_pid(tmux: str, pid: int) -> str:
+def find_pane_of_pid(tmux: TmuxCommand, pid: int) -> str:
     """The pane in whose tree the pid lives — or "".
 
     The reverse path: the pid ancestor chain up to some live pane pane_pid.
@@ -366,7 +360,7 @@ def find_pane_of_pid(tmux: str, pid: int) -> str:
     if not chain:
         return ""
     try:
-        out = subprocess.run([tmux, "list-panes", "-a", "-F", "#{pane_id} #{pane_pid}"],
+        out = subprocess.run(_tmux_args(tmux, "list-panes", "-a", "-F", "#{pane_id} #{pane_pid}"),
                              capture_output=True, text=True, timeout=5).stdout
     except Exception:
         return ""
@@ -377,7 +371,7 @@ def find_pane_of_pid(tmux: str, pid: int) -> str:
     return ""
 
 
-def find_own_pane(tmux: str) -> str:
+def find_own_pane(tmux: TmuxCommand) -> str:
     """The pane whose process tree calls — or "".
 
     TMUX_PANE may miss in the MCP server environment (inherited from the CLI),
@@ -387,7 +381,7 @@ def find_own_pane(tmux: str) -> str:
     return find_pane_of_pid(tmux, os.getpid())
 
 
-def pane_is_foreign(tmux: str, pane: str, project_root) -> tuple:
+def pane_is_foreign(tmux: TmuxCommand, pane: str, project_root) -> tuple:
     """Is the pane provably not ours? Fail-closed: unproven ours means no printing.
 
     The logic moved to `panes`: same birth race and the "foreign project" vs "dead
@@ -402,14 +396,14 @@ def pane_is_foreign(tmux: str, pane: str, project_root) -> tuple:
     return impl(tmux, pane, project_root)
 
 
-def pane_belongs_to_project(tmux: str, pane: str, project_root) -> tuple:
+def pane_belongs_to_project(tmux: TmuxCommand, pane: str, project_root) -> tuple:
     """Whether the pane belongs to this project. The logic lives in `panes`."""
     from panes import pane_belongs_to_project as impl
 
     return impl(tmux, pane, project_root)
 
 
-def pane_pid(tmux: str, pane: str) -> int:
+def pane_pid(tmux: TmuxCommand, pane: str) -> int:
     """The PANE PROCESS pid — usually a shell, not the agent. Not "the role pid".
 
     Returning it under "the pid of the process holding the pane" would hold only
@@ -429,7 +423,7 @@ def pane_pid(tmux: str, pane: str) -> int:
     if not (ident["exists"] and ident["alive"]):
         return 0
     r = subprocess.run(
-        [tmux, "display-message", "-p", "-t", pane, "#{pane_pid}"],
+        _tmux_args(tmux, "display-message", "-p", "-t", pane, "#{pane_pid}"),
         capture_output=True, text=True, timeout=5)
     out = r.stdout.strip()
     if r.returncode != 0 or not out.isdigit():
@@ -507,7 +501,7 @@ def find_role_pid(root: int, role: str) -> int:
     return 0
 
 
-def pane_role_pid(tmux: str, pane: str, role: str) -> int:
+def pane_role_pid(tmux: TmuxCommand, pane: str, role: str) -> int:
     """The ROLE server pid, when its process lives in this pane, else 0.
 
     The actual question the supervisor needs, and it never equals `pane_pid`:
@@ -529,7 +523,7 @@ def pane_role_pid(tmux: str, pane: str, role: str) -> int:
     return find_role_pid(pane_pid(tmux, pane), role)
 
 
-def capture(tmux: str, pane: str) -> list:
+def capture(tmux: TmuxCommand, pane: str) -> list:
     """The pane's visible lines, with soft-wrapped lines joined.
 
     `-J` (tmux >= 2.3) restores the LOGICAL line: a line the terminal wrapped for
@@ -539,10 +533,10 @@ def capture(tmux: str, pane: str) -> list:
     the frame geometry survives; an old tmux without `-J` falls back to the plain
     capture, because an empty pane reads as "busy".
     """
-    r = subprocess.run([tmux, "capture-pane", "-p", "-J", "-t", pane],
+    r = subprocess.run(_tmux_args(tmux, "capture-pane", "-p", "-J", "-t", pane),
                        capture_output=True, text=True, timeout=5)
     if r.returncode != 0:
-        r = subprocess.run([tmux, "capture-pane", "-p", "-t", pane],
+        r = subprocess.run(_tmux_args(tmux, "capture-pane", "-p", "-t", pane),
                            capture_output=True, text=True, timeout=5)
         if r.returncode != 0:
             return []
@@ -814,7 +808,7 @@ def chunks(text: str, size: int = CHUNK_BYTES) -> list:
     return out
 
 
-def type_text(tmux: str, pane: str, text: str) -> None:
+def type_text(tmux: TmuxCommand, pane: str, text: str) -> None:
     """Type in chunks, restoring the separator that chunking consumed.
 
     chunks() joins words with a space and drops it at every boundary, so sending the
@@ -828,7 +822,7 @@ def type_text(tmux: str, pane: str, text: str) -> None:
         time.sleep(0.04)
 
 
-def erase(tmux: str, pane: str, count: int) -> None:
+def erase(tmux: TmuxCommand, pane: str, count: int) -> None:
     if count <= 0:
         return
     r = _send_keys(tmux, pane, "-N", str(count), "BSpace")
@@ -1337,7 +1331,7 @@ def permission_verdict(prompt: str, allow: list[str] | None = None) -> dict:
             return {"verdict": "refuse", "matched": None,
                     "why": "not on the permission allowlist"}
     return {"verdict": "allow", "matched": None, "why": "on the allowlist"}
-def resolve_permission_prompt(tmux: str, pane: str, allow: list[str] | None = None) -> dict:
+def resolve_permission_prompt(tmux: TmuxCommand, pane: str, allow: list[str] | None = None) -> dict:
     """Check if the pane is stalled waiting for a permission confirmation and confirm it.
 
     Returns a verdict dict: {approved, verdict, prompt, why, matched}. A refusal is
@@ -1393,7 +1387,7 @@ def resolve_permission_prompt(tmux: str, pane: str, allow: list[str] | None = No
             "menu": bool(menu)}
 
 
-def submit_verified(tmux: str, pane: str, body: str) -> str:
+def submit_verified(tmux: TmuxCommand, pane: str, body: str) -> str:
     """Press Enter and prove the composer took it: 'submitted' or 'retained'.
 
     Round 97 fixed the rc-trust in _ring (retained prompt after rc=0); the

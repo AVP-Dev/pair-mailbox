@@ -98,20 +98,23 @@ class TestProjectSocket(unittest.TestCase):
                            capture_output=True, timeout=10)
 
     def test_resolver_prefixes_the_socket(self) -> None:
-        """Condition (c): one resolver for every call site. composer._tmux()
-        must return the flag-prefixed command when the env names a socket, and
-        plain `tmux` when it does not — never a second convention."""
+        """Both project resolvers return executable argv, not a shell fragment."""
         sys.path.insert(0, str(ROOT / "mcp" / "pair_mailbox"))
         import os
         import composer
+        import server
         saved = os.environ.pop("PAIR_PANE_SOCKET", None)
         try:
             os.environ["PAIR_PANE_SOCKET"] = self.socket
-            self.assertIn(f"-L {self.socket}", composer._tmux())
+            exe = composer.shutil.which("tmux")
+            self.assertEqual([exe, "-L", self.socket], composer._tmux())
+            self.assertEqual([exe, "-L", self.socket], server.tmux_command())
             os.environ["PAIR_PANE_SOCKET"] = "default"
-            self.assertNotIn("-L", composer._tmux())
+            self.assertEqual([exe], composer._tmux())
+            self.assertEqual([exe], server.tmux_command())
             os.environ.pop("PAIR_PANE_SOCKET", None)
-            self.assertNotIn("-L", composer._tmux())
+            self.assertEqual([exe], composer._tmux())
+            self.assertEqual([exe], server.tmux_command())
         finally:
             if saved is not None:
                 os.environ["PAIR_PANE_SOCKET"] = saved
