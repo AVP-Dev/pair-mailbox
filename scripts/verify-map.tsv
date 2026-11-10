@@ -16,6 +16,7 @@ mcp/pair_mailbox/test_pointer.py	pointer
 mcp/pair_mailbox/test_waiting_contract.py	waiting-contract
 mcp/pair_mailbox/read_delivery.py	read-delivery
 mcp/pair_mailbox/test_read_delivery.py	read-delivery
+bin/pair-duo	pair-duo
 bin/pair-duo_test.py	pair-duo
 bin/pair-runner	pair-runner
 bin/pair-runner_test.py	pair-runner

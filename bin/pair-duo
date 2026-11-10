@@ -37,7 +37,11 @@ _INHERITED_STATE="${PAIR_STATE:-}"
 # Ask the shared resolver which room is ours. It prints the room and the
 # reason on two lines; the reason is what the refusal is made of.
 _resolve_state_dir() {
-  "$ROOT/mcp/pair_mailbox/state_resolve.sh" "$1"
+  if [ -n "${1:-}" ]; then
+    "$ROOT/mcp/pair_mailbox/state_resolve.sh" --from-argv "$1"
+  else
+    "$ROOT/mcp/pair_mailbox/state_resolve.sh"
+  fi
 }
 
 USE_WORKTREE=0
