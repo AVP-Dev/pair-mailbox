@@ -31,6 +31,7 @@ ROOT = Path(__file__).resolve().parent.parent
 STATE = ROOT / ".pair"
 sys.path.insert(0, str(ROOT / "mcp" / "pair_mailbox"))
 from wait_until import wait_for_condition  # noqa: E402
+from picker import pair_row_state, pair_row_visible, picker_open  # noqa: E402
 KNOWN_ROLES = ("omp", "opencode", "agy", "claude", "pi", "codex")
 # opencode's picker keys, measured: /mcp opens it, arrows move, space toggles
 # the selected entry (reconnect when it is down), enter/esc closes.
@@ -69,7 +70,7 @@ def tmux(*args: str) -> tuple[int, str]:
 
 def _screen(pane: str) -> str:
     """The pane's visible text, or "" when the pane cannot be read."""
-    code, out = tmux("capture-pane", "-t", pane, "-p")
+    code, out = tmux("capture-pane", "-t", pane, "-p", "-J")
     return out if code == 0 else ""
 
 
@@ -80,13 +81,12 @@ def _picker_open(pane: str) -> bool:
     CLI's own prompt never shows "MCP" as a list header, so the header is the
     honest signal that the picker drew.
     """
-    text = _screen(pane).lower()
-    return "mcp" in text and ("server" in text or "search" in text)
+    return picker_open(_screen(pane))
 
 
 def _pair_row_visible(pane: str) -> bool:
     """Whether the filtered picker shows the pair row."""
-    return any("pair" in line.lower() for line in _screen(pane).splitlines())
+    return pair_row_visible(_screen(pane))
 
 
 def pane_of(role: str) -> str:
@@ -164,10 +164,8 @@ def reconnect(role: str, pane: str, check: bool) -> int:
     # sleeping a fixed time.
     wait_for_condition(lambda: _pair_row_visible(pane), timeout=FILTER_TIMEOUT,
                        interval=0.2)
-    _code, screen = tmux("capture-pane", "-t", pane, "-p")
-    row = [ln for ln in screen.splitlines() if "pair" in ln.lower()]
-    joined = " ".join(row).lower()
-    if "pair" in joined and "connected" in joined and "not connected" not in joined:
+    _code, screen = tmux("capture-pane", "-t", pane, "-p", "-J")
+    if pair_row_state(screen) == "connected":
         tmux("send-keys", "-t", pane, "Escape")
         print(f"pairmcprestart: {label} already Connected — nothing to toggle")
         return 0

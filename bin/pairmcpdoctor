@@ -36,14 +36,21 @@ import json
 import os
 import subprocess
 import sys
-import time
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "mcp" / "pair_mailbox"))
+from picker import pair_row_state as classify_pair_row  # noqa: E402
+from picker import pair_row_visible, picker_open  # noqa: E402
+from wait_until import wait_for_condition  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 STATE = ROOT / ".pair"
 KNOWN_ROLES = ("omp", "opencode", "agy", "claude", "pi", "codex")
 MENU = "/mcp"
 PAIR_ROW_INDEX = 2  # context7 is the first row, pair the second — measured
+PICKER_TIMEOUT = 15.0
+FILTER_TIMEOUT = 10.0
+HANDSHAKE_TIMEOUT = 30.0
 
 
 def _tmux_cmd():
@@ -161,18 +168,13 @@ def pair_row_state(pane: str) -> str:
     `disabled` — switched off, space re-enables;
     `absent` — the picker is not open.
     """
-    code, screen = tmux("capture-pane", "-t", pane, "-p")
-    rows = [ln for ln in screen.splitlines() if "pair" in ln.lower()]
-    joined = " ".join(rows).lower()
-    if "connected" in joined and "not connected" not in joined and "not " not in joined:
-        return "connected"
-    if "failed" in joined or "error" in joined:
-        return "failed"
-    if "disabled" in joined:
-        return "disabled"
-    if rows:
-        return "present"
-    return "absent"
+    code, screen = tmux("capture-pane", "-t", pane, "-p", "-J")
+    return classify_pair_row(screen) if code == 0 else "absent"
+
+
+def _screen(pane: str) -> str:
+    code, screen = tmux("capture-pane", "-t", pane, "-p", "-J")
+    return screen if code == 0 else ""
 
 
 def reconnect(role: str, pane: str) -> str:
@@ -184,7 +186,9 @@ def reconnect(role: str, pane: str) -> str:
     is transient; an earlier attempt looked connected and vanished).
     """
     send(pane, MENU, enter=True)
-    time.sleep(6)
+    if not wait_for_condition(lambda: picker_open(_screen(pane)),
+                              timeout=PICKER_TIMEOUT, interval=0.25):
+        return "failed (the /mcp picker never appeared; the CLI may be busy)"
     # The picker opens on the SEARCH box with the caret in it — arrows there move
     # the caret, not the row (measured). So do not fight the focus: USE it. Typing
     # `pair` filters the list down to the pair row alone and the caret sits on it,
@@ -192,17 +196,17 @@ def reconnect(role: str, pane: str) -> str:
     # first and both left the highlight on context7 — the row Space would DISABLE,
     # the opposite of healing.
     send(pane, "pair")
-    time.sleep(2)
+    wait_for_condition(lambda: pair_row_visible(_screen(pane)),
+                       timeout=FILTER_TIMEOUT, interval=0.2)
     if pair_row_state(pane) == "connected":
         return "already-connected"
     send(pane, "space")
     # NO Escape after space: quitting the picker aborts a pending handshake — the
     # successful run never left the picker, and a version that pressed Escape
     # failed every time. The process appearing is the only honest signal.
-    for _ in range(10):
-        time.sleep(3)
-        if server_pid(role):
-            return "reconnected"
+    if wait_for_condition(lambda: bool(server_pid(role)),
+                          timeout=HANDSHAKE_TIMEOUT, interval=0.5):
+        return "reconnected"
     return f"failed (row reads {pair_row_state(pane)!r}, no process appeared)"
 
 

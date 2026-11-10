@@ -11,6 +11,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -128,6 +129,45 @@ class DoctorLockCase(unittest.TestCase):
         finally:
             self.doctor.fcntl.flock(first.fileno(), self.doctor.fcntl.LOCK_UN)
             first.close()
+
+    def test_reconnect_timeout_does_not_type_filter_or_toggle(self) -> None:
+        sends = []
+        self.doctor.send = lambda pane, text, enter=False: sends.append((text, enter))
+        self.doctor.wait_for_condition = lambda predicate, **kwargs: False
+        outcome = self.doctor.reconnect("codex", "%1")
+        self.assertIn("picker never appeared", outcome)
+        self.assertEqual([("/mcp", True)], sends)
+
+    def test_reconnect_waits_are_bounded_and_not_fixed_sleeps(self) -> None:
+        source = DOCTOR.read_text(encoding="utf-8")
+        self.assertNotIn("time.sleep(", source)
+        self.assertIn("timeout=PICKER_TIMEOUT", source)
+        self.assertIn("timeout=FILTER_TIMEOUT", source)
+        self.assertIn("timeout=HANDSHAKE_TIMEOUT", source)
+
+    def test_wrapped_connected_row_uses_logical_capture(self) -> None:
+        calls = []
+        self.doctor.tmux = lambda *args: (calls.append(args) or
+                                           (0, "pair — Connected\n"))
+        self.assertEqual("connected", self.doctor.pair_row_state("%1"))
+        self.assertEqual(("capture-pane", "-t", "%1", "-p", "-J"), calls[0])
+
+    def test_live_server_is_left_untouched(self) -> None:
+        fake, log = self.fake_tmux("")
+        env = os.environ.copy()
+        os.environ.update(PATH=f"{fake.parent}{os.pathsep}{env.get('PATH', '')}")
+        argv = sys.argv
+        sys.argv = [str(DOCTOR), "--role", "codex"]
+        self.doctor.server_pid = lambda role: "12345"
+        try:
+            self.assertEqual(0, self.doctor.main())
+            calls = [json.loads(line) for line in log.read_text().splitlines()]
+        finally:
+            sys.argv = argv
+            os.environ.clear()
+            os.environ.update(env)
+        self.assertEqual(1, len(calls))
+        self.assertEqual("list-panes", calls[0][0])
 
     def test_replacement_server_starts_while_doctor_lock_is_held(self) -> None:
         doctor_lock = self.doctor.role_lock("testrole")
