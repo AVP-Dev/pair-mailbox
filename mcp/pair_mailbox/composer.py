@@ -21,7 +21,7 @@ import shutil
 import subprocess
 import time
 import json
-from collections.abc import Sequence
+from typing import Sequence, Union
 from pathlib import Path
 
 # A live line scrolls; take the snapshot window with margin.
@@ -103,7 +103,7 @@ class ComposerBusy(Exception):
     pass
 
 
-TmuxCommand = str | Sequence[str]
+TmuxCommand = Union[str, Sequence[str]]
 
 
 def _tmux_args(tmux: TmuxCommand, *args: str) -> list[str]:
