@@ -99,6 +99,22 @@ class LaunchMembership(unittest.TestCase):
         self.tree[10]["start"] = "new birth"
         self.assertIsNone(self.enrolled())
 
+    def test_exec_wrapper_with_generic_script_retains_owner_identity(self):
+        self.tree[10]["argv"] = ["node", "/package/index.js"]
+        self.assertEqual(self.enrolled(), self.state)
+
+    def test_generic_script_alias_identifies_nested_cli(self):
+        script = Path(self.tmp.name) / "index.js"
+        script.touch()
+        alias = Path(self.tmp.name) / "codex"
+        alias.symlink_to(script)
+        self.tree[10]["argv"] = ["node", str(script)]
+        self.tree[11] = {"pid": 11, "ppid": 10, "start": "later",
+                         "argv": ["node", str(script)]}
+        self.tree[12]["ppid"] = 11
+        with patch.object(context.shutil, "which", side_effect=lambda name: str(alias) if name == "codex" else None):
+            self.assertIsNone(self.enrolled())
+
     def test_socket_role_cannot_select_another_profile_or_escape_path(self):
         for role in ("agy", "codex-../writer", "codex/bad"):
             with patch.dict(os.environ, {"PAIR_ROLE": role}):

@@ -6,6 +6,7 @@ import json
 import os
 import re
 import shlex
+import shutil
 import socket
 import subprocess
 import sys
@@ -57,6 +58,13 @@ def cli_name(info: dict) -> str:
         script = Path(argv[1]).stem
         if profile_for(script) == script:
             return script
+        # npm/shell wrappers can exec a generic index.js instead of the CLI name.
+        target = Path(argv[1]).resolve()
+        profiles = json.loads((ROOT / "cli-profiles.json").read_text(encoding="utf-8"))
+        for name in profiles:
+            executable = shutil.which(name) if not name.startswith("_") else None
+            if executable and Path(executable).resolve() == target:
+                return name
     return ""
 
 
@@ -77,12 +85,13 @@ def enrolled_state(configured_role: str, env: dict | None = None) -> Path | None
             if not info:
                 return None
             name = cli_name(info)
-            if name:
+            if name or pid == owner:
                 # npm's launcher may directly own the native CLI executable.
                 wrapper = Path((root.get("argv") or [""])[0]).name.lower()
                 direct_wrapper = (info["ppid"] == owner and
+                                  Path(info["argv"][0]).name.lower() == expected and
                                   wrapper in ("node", "bun", "sh", "bash"))
-                if name != expected or (pid != owner and not direct_wrapper):
+                if pid != owner and (name != expected or not direct_wrapper):
                     return None
                 if profile_for(configured_role) != expected:
                     raise ValueError("paired CLI profile does not match this MCP configuration")
