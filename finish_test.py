@@ -51,6 +51,11 @@ class FinishCase(unittest.TestCase):
         self.assertEqual(finish.main(["--no-pair"]), 0)
         self.assertEqual(len(self.calls), 2)
 
+    def test_no_pair_still_applies_explicit_autonomy(self):
+        self.assertEqual(finish.main(["--no-pair", "--autonomy", "semi"]), 0)
+        self.assertEqual(self.calls[-1][0][-2:], ["autonomy", "semi"])
+        self.assertEqual(len(self.calls), 3)
+
 
 if __name__ == "__main__":
     unittest.main()

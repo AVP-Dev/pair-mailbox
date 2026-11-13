@@ -49,6 +49,10 @@ def main(argv=None) -> int:
         result = run([*ctl, "roles", "--writer", writer])
         if result.returncode:
             return result.returncode
+    if args.autonomy:
+        result = run([*ctl, "autonomy", args.autonomy])
+        if result.returncode:
+            return result.returncode
     if args.no_pair:
         print("Verified and installed; no model sessions launched.")
         return 0
