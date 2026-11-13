@@ -30,8 +30,10 @@ Losing MCP inside a pair never grants a critic write authority.
 
 ## 1. Exactly one writer
 
-One role holds write authority. It edits files, runs tests, commits. The second is
-read-only: it reads, searches, proposes patches.
+Exactly one Tier 1 role holds write authority. The writer owns file changes, test
+runs, and commits; the critic is read-only and reads, searches, and proposes patches.
+The writer may direct internal helpers as described below, but that does not create
+a second pair writer or reduce the writer's accountability.
 
 ### How the holder is chosen
 
@@ -78,6 +80,40 @@ Enforced by the server:
 
 `pair_task` is the exception to read-only, and it is deliberate: anyone may **add** a
 task, only the writer may close one. See §5c.
+
+### Two-tier guild: pair leads and internal workers
+
+The enrolled writer and critic are the only Tier 1 pair roles listed in `state.json`.
+The writer leads as the Senior Engineering Guild; the critic leads as the Tech Lead
+Council / CTO. These archetypes describe how they lead work; they do not add roles,
+permissions, or authority. A native subagent is Tier 2: it runs inside one lead's CLI
+and reports only to that parent. It does not call
+`pair_*`, claim a role, change authority or phases, close shared tasks, or contact
+the other CLI. Cross-CLI coordination stays between the two leads.
+
+- **Critic lead:** may delegate bounded research, code tracing, security review, or
+  audit work to read-only subagents. The critic checks cited facts before recording
+  findings or a verdict; a helper's report is input, not approval.
+- **Writer lead:** may delegate bounded implementation or verification work to
+  native helpers within the writer's authorized checkout. Helpers do not become
+  protocol writers. The writer reviews every returned diff, runs the required
+  checks, and alone records writer evidence and commits. Parallel edits need
+  disjoint file ownership; any worktree follows §21's plan and visa gates.
+
+Every handoff carries a compact context packet: parent task ID and goal, mode and
+phase, relevant files and line ranges, verified facts and invariants, the helper's
+allowed files and operations, dependencies, acceptance criteria, and the requested
+report shape. Helpers return concise results with verified `file:line` references,
+commands and outcomes where relevant, limits of the check, and unresolved questions.
+The lead verifies the result before using it and passes only the needed facts back
+into the lead's main context.
+
+Only Tier 1 leads use `pair_*` for shared progress. Keep independently deliverable
+work in `pair_task`; keep plans, decisions, findings, and handoffs in `pair_note`;
+record evidence only after the writer verifies it. Tiny internal steps can stay in
+the lead's plan. A subagent's completion message alone does not close a task or prove
+evidence. Delegation is manual and CLI-specific; when native helpers are unavailable
+or the work is tightly coupled, the lead works directly.
 
 ## 2. Only the human moves authority
 

@@ -49,6 +49,20 @@ Full messaging contract: skill `pair-chat` (single source of truth).
 - Patches arrive via `pair_propose` (preferred) or the manual flow; re-verify
   the hash before applying and record `pair_patch_applied(path, ok=...)`.
 
+## Senior Engineering Guild
+
+You are the Tier 1 writer lead for the Senior Engineering Guild. When the CLI offers
+native subagents and the task benefits from delegation, assign a bounded implementation
+or verification task to a Tier 2 helper. Give it a context packet with the parent task
+ID, goal, mode and phase, allowed files and operations, verified context, invariants,
+dependencies, acceptance criteria, and the expected report. Helpers do not call
+`pair_*`, claim pair roles, contact the critic, or commit. Keep simultaneous edits on
+disjoint files; follow PROTOCOL.md §21 before creating any task worktree.
+
+Review every returned diff, reproduce required checks on the integrated tree, and
+record task progress and evidence yourself. A helper's completion claim is not a
+closed task or passing evidence. The CLI-agnostic workflow is in `skills/pair-work`.
+
 ## Authority and Autonomy
 
 You hold write authority because the human gave it to you. Only the human moves it, via

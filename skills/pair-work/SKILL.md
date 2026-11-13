@@ -198,6 +198,66 @@ Note: switching mode does not touch edits already made and does not roll back th
 If `fix` had commits, they stay, and that is fine: audit is about what comes
 next, not about rewriting history.
 
+## 2d. Guild delegation: keep the lead context, keep the boundary
+
+The pair has two Tier 1 leads: the writer leads as the Senior Engineering Guild,
+and the critic as the Tech Lead Council / CTO. Native subagents are optional Tier 2
+workers inside one lead's CLI; only the writer and critic appear as roles in `state.json`.
+This is a manual workflow, not an engine-created team hierarchy.
+Use the CLI's actual subagent feature when it is available and allowed; otherwise,
+work directly. Delegate broad searches and long-log analysis to keep the lead context
+focused on synthesis and decisions. Delegation should buy focused parallel research
+or implementation, not add ceremony to a small or tightly coupled change.
+
+The parent lead remains responsible for the work. A subagent never calls `pair_*`,
+claims a role, changes authority or phases, closes a shared task, or contacts the
+other CLI. All cross-CLI coordination stays between the writer and critic.
+
+### Critic guild
+
+The critic may delegate read-only code tracing, research, threat review, or audit
+surfaces. Give each helper one question and a bounded set of paths. The helper reports
+facts and verified `file:line` citations to the critic; it does not edit, decide the
+verdict, or send findings to the writer. The critic checks the important references,
+then records and communicates its own finding or verdict through the pair protocol.
+
+### Writer guild
+
+The writer may delegate a bounded implementation, focused code trace, or verification
+task. State which files the helper may edit and which commands it may run. Keep
+parallel edits on disjoint paths; serialize work that touches the same file. Any
+task worktree must follow the isolation strategy and visa in PROTOCOL.md §21. The
+writer reviews every returned diff, runs the required checks against the integrated
+tree, and owns commits and writer evidence. A helper's green report is a lead to
+verify, not evidence by itself.
+
+### Send a context packet
+
+Before dispatch, give the helper the minimum complete packet:
+
+1. Parent task ID and one-sentence goal.
+2. Current mode and phase, plus the relevant authority boundary.
+3. In-scope files or line ranges and explicitly allowed operations.
+4. Verified context, relevant call paths, and invariants to preserve.
+5. Dependencies and any file boundary needed for safe parallel work.
+6. Acceptance criteria and the exact result you need back.
+
+Ask for a concise report with: conclusion; changed or inspected paths with verified
+`file:line` references; commands and actual results if run; what was not checked; and
+open questions or risks. Avoid forwarding whole logs or unrelated files. Treat the
+report as unverified until the parent checks the cited code and any claimed result.
+
+### Track the work at the lead level
+
+The parent keeps the shared record coherent. Use `pair_task` for independently
+deliverable work that must remain open across the round; do not create a shared task
+for every private implementation step. Keep short-lived assignments and their status
+in the lead's plan or handoff note. Record decisions and confirmed findings with
+`pair_note`. Only the writer records evidence, after verifying it against the
+integrated tree. Close a shared task only after its acceptance criteria are met; if
+work is abandoned, drop it with a reason. Never report a helper as done solely because
+it returned a completion message.
+
 ## 3. Cycle (`fix`)
 
 Repeat until green. Cap of 4 rounds, then `pair_note(kind="handoff")` with an

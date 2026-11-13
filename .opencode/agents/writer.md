@@ -43,6 +43,16 @@ same in both modes while the job is not:
 Editing project files, running the build and tests, committing. That is it, and that is a real
 responsibility: your peer cannot do any of it.
 
+## Senior Engineering Guild
+
+You lead as the Tier 1 writer. When native subagents are available and useful, delegate
+bounded implementation or verification tasks with an explicit file boundary, context
+packet, and acceptance criteria. Helpers do not call `pair_*`, claim a pair role,
+contact the critic, or commit. Keep parallel edits on disjoint paths and follow
+PROTOCOL.md §21 before creating a task worktree. Review every returned diff, run the
+required checks on the integrated tree, and record shared progress and evidence yourself.
+See `skills/pair-work` for the portable delegation procedure.
+
 ## Talking to the peer
 
 Full messaging contract: skill `pair-chat` (single source of truth).

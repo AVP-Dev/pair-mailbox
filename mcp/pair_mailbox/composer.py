@@ -73,7 +73,7 @@ TUI_HINT_PHRASES = (
     r"to scroll",
     r"commands?",
     r"ctrl\+[a-z]\s+[a-z][a-z ]*",
-    r"(?:[a-z]+\s+)*to (?:change|scroll|select|confirm|switch|exit|navigate|toggle)",
+    r"(?:[a-z]+\s+)*to (?:change|scroll|select|confirm|switch|exit|navigate|toggle|submit|cancel)",
     r"Ask (?:Codex|\w+) to do anything",
 )
 
@@ -957,7 +957,10 @@ def extract_permission_context(lines: list, prompt: str) -> str:
     """
     text = [line.strip() for line in lines if line.strip()]
     header_index = max((i for i, line in enumerate(text) if PERMISSION_HEADER.search(line)), default=-1)
-    dialog = "\n".join(text[header_index:]) if header_index >= 0 else ""
+    dialog = "\n".join(
+        line for line in (text[header_index:] if header_index >= 0 else [])
+        if not any(re.search(phrase, line, re.IGNORECASE) for phrase in TUI_HINT_PHRASES)
+    )
     if dialog and any(re.search(m, dialog, re.IGNORECASE) for m in PERMISSION_MENU_MARKERS):
         return " ".join(dialog.split())
     tail = [line for line in text if line.strip()][-OVERSCAN_LINES:]

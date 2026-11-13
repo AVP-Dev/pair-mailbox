@@ -329,6 +329,18 @@ class TestNumberedMenuKeys(unittest.TestCase):
         joined = " ".join(lines)
         self.assertEqual("allow", composer.permission_verdict(joined, composer.DEFAULT_ALLOW_PATTERNS)["verdict"])
 
+    def test_codex_mcp_permission_prompt_with_footer_hints_approved(self) -> None:
+        header = 'Allow the pair MCP server to run tool "pair_read"?'
+        lines = [header, "reason: Read agy mailbox message",
+                 "› 1. Allow                   Run the tool and continue",
+                 "  2. Allow for this session  Run the tool",
+                 "  3. Always allow            Run the tool",
+                 "  4. Cancel                  Cancel",
+                 "enter to submit | esc to cancel"]
+        context = composer.extract_permission_context(lines, composer.detect_permission_menu(lines))
+        self.assertNotIn("esc to cancel", context)
+        self.assertEqual("allow", composer.permission_verdict(context, composer.DEFAULT_ALLOW_PATTERNS)["verdict"])
+
     def test_codex_numbered_yes_prompt_chooses_numbered_allow(self) -> None:
         lines = ["Would you like to run the following command?",
                  "git status --short", "1. Yes, just this once",

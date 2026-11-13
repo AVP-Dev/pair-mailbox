@@ -8,8 +8,10 @@ MCP initialization. A `.pair` directory, available tools or inherited environmen
 variables do not assign a role. A standalone MCP initialization needs no claim,
 peer or mailbox. If an enrolled pair loses MCP, retain its assigned write boundary
 and repair the connection; a critic does not become a writer on disconnect.
-Native subagents do their delegated work and report to the parent; they do not
-claim a separate pair role or negotiate with its peer.
+Native subagents do their delegated work and report only to their parent CLI;
+they do not claim a pair role, call pair tools, or negotiate with the parent's
+peer. In a pair, the writer and critic are the only Tier 1 roles listed in
+`state.json`.
 
 In an enrolled pair, this project is worked by **two agents at once**, on different CLIs, against the same task. One of
 them is you.
@@ -41,8 +43,9 @@ the round rather than committing code. So the table above reads differently: `ed
 `commit` and `propose patches` are all off for both. See [`docs/PROTOCOL.md`](docs/PROTOCOL.md)
 §10a, and `bin/pairctl status` for the mode of any project.
 
-If `you_are_writer` is true you are the `writer` agent. If not, you are the `critic` / `explorer`
-role on the other CLI, and your value is entirely in finding things and proving them.
+If `you_are_writer` is true you are the `writer` agent. If not, you are the `critic`
+on the other CLI, and your value is entirely in finding things and proving them.
+An explorer is an internal researcher, not a third enrolled role.
 
 ## Roles
 
@@ -57,7 +60,7 @@ one.
 | role name | runs in | agent files |
 |---|---|---|
 | `opencode` | OpenCode | `.opencode/agents/writer.md` |
-| `agy` | Antigravity CLI | `.agents/agents/pair-writer/agent.md`, `pair-critic`, `pair-explorer` |
+| `agy` | Antigravity CLI | `.agents/agents/pair-writer/agent.md`, `pair-critic` |
 | `codex` | Codex CLI | — |
 | `claude` | Claude Code | — |
 | `pi` | Pi Coding Agent | — |
@@ -75,13 +78,28 @@ wires the bare CLI name as the role.
 
 To add a CLI: append an object to `cli-profiles.json` and run `./install.sh <name>`.
 
-### `verifier` is not a role
+`pair-explorer` is an internal researcher, not an additional profile or pair role.
 
-`.opencode/agents/verifier.md` is a read-only subagent that runs **inside** the `opencode`
-process. It is not the peer and has no peer: the other agent is on a different CLI and reaches the
-writer over `pair_*`. Its findings come back as ordinary subagent output.
+### Internal agents are not pair roles
 
-Keep that distinction. An agent that believes it has a peer will start negotiating with it.
+`.agents/agents/pair-explorer/agent.md` and `.opencode/agents/verifier.md` describe
+Tier 2 agents that run inside a parent CLI. The explorer researches for its parent;
+the verifier checks the writer's diff. Neither is the peer, neither calls pair tools,
+and neither contacts the other CLI. Their reports return as ordinary subagent output.
+
+The two Tier 1 leads keep the pair contract: the writer leads as the Senior
+Engineering Guild, responsible for implementation and verification; the critic
+leads as the Tech Lead Council / CTO, responsible for architecture, requirement
+coverage, and adversarial review.
+These are working archetypes, not new protocol roles or permissions. A critic may
+delegate read-only research and audit work. A writer may delegate bounded
+implementation or verification work within the writer's authority. The parent lead
+sets scope, checks returned work, and remains accountable for findings, diffs,
+evidence, and progress. Follow the context-packet and delegation procedure in
+`skills/pair-work/SKILL.md` and the boundaries in `docs/PROTOCOL.md`.
+
+Keep the distinction clear: an internal agent that believes it has a pair peer will
+start negotiating with the wrong process.
 
 ## Communicating
 
