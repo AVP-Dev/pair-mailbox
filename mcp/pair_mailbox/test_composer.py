@@ -171,6 +171,7 @@ class TestTuiHintsAreNotContent(unittest.TestCase):
         "❯ ctrl+x commands",
         "❯ ↑↓ to scroll",
         "❯",
+        "› Ask Codex to do anything",
     ]
 
     def test_hint_tail_reads_empty(self) -> None:
@@ -316,6 +317,18 @@ class TestNumberedMenuKeys(unittest.TestCase):
         self.assertEqual("allow", composer.permission_verdict(
             context, [r"\bgit\s+status\b"])["verdict"])
 
+    def test_codex_mcp_permission_prompt_detection_and_approval(self) -> None:
+        header = 'Allow the pair MCP server to run tool "pair_claim"?'
+        lines = [header, "reason: I am the explicitly launched codex writer",
+                 "› 1. Allow                   Run the tool and continue",
+                 "  2. Allow for this session  Run the tool",
+                 "  3. Always allow            Run the tool",
+                 "  4. Cancel                  Cancel"]
+        self.assertEqual(header, composer.detect_permission_menu(lines))
+        self.assertEqual("1", composer.menu_allow_key(lines))
+        joined = " ".join(lines)
+        self.assertEqual("allow", composer.permission_verdict(joined, composer.DEFAULT_ALLOW_PATTERNS)["verdict"])
+
     def test_codex_numbered_yes_prompt_chooses_numbered_allow(self) -> None:
         lines = ["Would you like to run the following command?",
                  "git status --short", "1. Yes, just this once",
@@ -339,6 +352,25 @@ class TestNumberedMenuKeys(unittest.TestCase):
         result = composer.permission_verdict(
             composer.extract_permission_context(lines, prompt), [r"\bgit\s+status\b"])
         self.assertEqual("refuse", result["verdict"])
+
+
+class TestSubmitVerifiedUsesComposerLine(unittest.TestCase):
+    def test_old_screen_history_does_not_trigger_another_enter(self) -> None:
+        lines = ["body already submitted", "› Ask Codex to do anything"]
+        with mock.patch.object(composer, "capture", return_value=lines), \
+                mock.patch.object(composer, "_send_keys") as send:
+            result = composer.submit_verified("tmux", "%7", "body already submitted")
+        self.assertEqual("submitted", result)
+        send.assert_called_once_with("tmux", "%7", "Enter")
+
+    def test_text_still_in_composer_gets_one_retry(self) -> None:
+        lines = ["old output", "❯ body still in composer"]
+        with mock.patch.object(composer, "capture", side_effect=[lines, lines]) as capture, \
+                mock.patch.object(composer, "_send_keys") as send:
+            result = composer.submit_verified("tmux", "%7", "body still in composer")
+        self.assertEqual("retained", result)
+        self.assertEqual(2, capture.call_count)
+        self.assertEqual(2, send.call_count)
 
 
 class TestTmuxTimeoutIsBusyNotDeath(unittest.TestCase):

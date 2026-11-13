@@ -74,6 +74,7 @@ TUI_HINT_PHRASES = (
     r"commands?",
     r"ctrl\+[a-z]\s+[a-z][a-z ]*",
     r"(?:[a-z]+\s+)*to (?:change|scroll|select|confirm|switch|exit|navigate|toggle)",
+    r"Ask (?:Codex|\w+) to do anything",
 )
 
 
@@ -883,7 +884,7 @@ PERMISSION_MENU_MARKERS = (
     r"(?:allow\s+once|always\s+allow|enter\s+confirm|(?:⇆|⇄|\btab\b)\s*select|\d+\s*[).:\]]\s*yes\b)",
 )
 PERMISSION_HEADER = re.compile(
-    r"permission\s+(?:required|needed)|would\s+you\s+like\s+to\s+(?:run\s+the\s+following\s+command|make\s+the\s+following\s+edits|grant\s+these\s+permissions|send\s+input\s+to\s+the\s+existing\s+terminal)\?",
+    r"permission\s+(?:required|needed)|would\s+you\s+like\s+to\s+(?:run\s+the\s+following\s+command|make\s+the\s+following\s+edits|grant\s+these\s+permissions|send\s+input\s+to\s+the\s+existing\s+terminal)\?|allow\s+(?:the\s+)?(?:\S+\s+)?(?:mcp\s+server|tool)\b[^\n]*\?",
     re.IGNORECASE)
 
 # The menu item allowing the op, with its digit. Two live menu kinds in real
@@ -910,7 +911,7 @@ def menu_allow_key(lines: list) -> str | None:
         if not match:
             continue
         digit, label = match.group(1), match.group(2).lower()
-        if label == "allow once" or label == "yes":
+        if label == "allow once" or label == "allow" or label == "yes":
             return digit
         if "always" in label and always is None:
             always = digit
@@ -1175,6 +1176,8 @@ DEFAULT_ALLOW_PATTERNS = (
     # local git: §10 demands a branch and a commit, so this is allowed;
     r"\bgit\s+(?:status|diff|log|show|branch|remote|describe|rev-parse|add|commit|"
     r"checkout|switch|stash|tag|blame|shortlog|reflog)\b",
+    # pair MCP tools
+    r'\b(?:Allow\s+(?:the\s+)?pair\s+MCP\s+server\s+to\s+run\s+tool\s+"pair_[a-z_]+"|pair_[a-z_]+)\b',
     # shipping the work: push into a feature branch and PR. The ban on push into
     # main/master plus --force sits in NEVER_ALLOW_PATTERNS, checked first.
     r"\bgit\s+push\b",
@@ -1390,18 +1393,16 @@ def resolve_permission_prompt(tmux: TmuxCommand, pane: str, allow: list[str] | N
 
 
 def submit_verified(tmux: TmuxCommand, pane: str, body: str) -> str:
-    """Press Enter and prove the composer took it: 'submitted' or 'retained'.
-
-    Round 97 fixed the rc-trust in _ring (retained prompt after rc=0); the
-    pilot path (deliver) sent Enter blind. One predicate for both: Enter,
-    capture, retry once, capture again. Retained means the text still sits in
-    the composer — the caller must say so durably, never claim submitted.
-    """
+    """Press Enter, retry once while needed, and report whether text remains."""
     _send_keys(tmux, pane, "Enter")
-    if not tail_present(capture(tmux, pane), body):
-        return "submitted"
-    _send_keys(tmux, pane, "Enter")
-    return "retained" if tail_present(capture(tmux, pane), body) else "submitted"
+    for attempt in range(2):
+        cline = composer_line(lines := capture(tmux, pane))
+        if ((cline is not None and is_composer_empty(cline))
+                or not tail_present(lines if cline is None else [cline], body)):
+            return "submitted"
+        if not attempt:
+            _send_keys(tmux, pane, "Enter")
+    return "retained"
 
 def deliver(pane: str, text: str, wait_for_empty: float = 0.0, submit: bool = True) -> dict:
     """Deliver text into the neighbour composer. Returns a report of what happened.
