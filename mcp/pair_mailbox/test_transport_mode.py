@@ -60,18 +60,8 @@ class TransportModeCase(unittest.TestCase):
         state = json.loads((self.proj / ".pair" / "state.json").read_text(encoding="utf-8"))
         self.assertEqual(state.get("transport"), "child")
 
-    def test_pairup_reads_the_mode_without_env(self) -> None:
-        """The human-restart case, the whole point: pairup is invoked with a
-        CLEAN environment (no PAIR_TRANSPORT) and still raises the daemon."""
-        (self.proj / ".pair" / "state.json").write_text(json.dumps(
-            {"round": 905, "mode": "fix", "roles": {}, "phase": "implement",
-             "transport": "socket"}), encoding="utf-8")
-        # the raise_daemon block is shell inside pairup; extract its mode read
-        pairup = (ROOT / "bin" / "pairup").read_text(encoding="utf-8")
-        self.assertIn('st.get("transport")', pairup,
-                      "pairup must read the persisted mode, not an env var")
-        self.assertNotIn('[ "${PAIR_TRANSPORT:-}" = "socket" ]', pairup,
-                         "an env-only gate is exactly the defect")
+    # A real enrolled socket launch without PAIR_TRANSPORT is covered by
+    # test_launch_context.LaunchMembership, including the persisted mode.
 
     def test_missing_state_does_not_raise(self) -> None:
         """A project with no state.json: the installer must not create a stray

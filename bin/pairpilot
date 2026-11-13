@@ -2082,13 +2082,15 @@ class Pilot:
                     f"{self.launch_command(role)!r}. Waiting on the human.")
                 continue
             self.note_restart(role)
+            from launch_context import launch_shell
+            paired_command = launch_shell(role, self.state_dir, command)
             result = subprocess.run(
                 # Without -k. tmux refuses to restart a live pane, and that is
                 # exactly what is wanted: if the dead agent’s pane holds a shell
                 # or a debugger, it belongs to the human, and -k would kill it.
                 # A restart fires only where the pane is truly dead, and a held
                 # pane is left to the human with a transcript record.
-                [self.tmux, "respawn-pane", "-t", pane, command],
+                [self.tmux, "respawn-pane", "-t", pane, paired_command],
                 capture_output=True, text=True, timeout=15)
             if result.returncode == 0:
                 self.store.append_transcript("pilot_restart", "pairpilot", target=role,

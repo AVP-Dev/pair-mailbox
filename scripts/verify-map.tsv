@@ -2,6 +2,10 @@
 # Used by scripts/verify-changed.sh: past an edit runs static plus only the touched
 # suites instead of the whole layer (5.5 min down to seconds).
 # Suite names use scripts/verification-profile.tsv.
+mcp/pair_mailbox/launch_context.py	launch-context
+mcp/pair_mailbox/test_launch_context.py	launch-context
+mcp/pair_mailbox/instruction_block.py	instruction-block
+mcp/pair_mailbox/test_instruction_block.py	instruction-block
 # The -check suffix (scripts-check, docs-check, pairchat-check): no separate suite,
 # covered by static (verify-changed.sh: static always runs).
 mcp/pair_mailbox/composer.py	composer

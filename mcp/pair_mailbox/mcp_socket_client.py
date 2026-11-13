@@ -16,10 +16,12 @@ journal survive untouched.
 Usage (from an MCP config's command array):
     python3 mcp_socket_client.py <role> [--state DIR] [--socket PATH]
 
+Unenrolled global clients complete MCP startup without joining any pair.
+Enrolled clients reuse or start a detached daemon, whose lifetime is independent
+of the CLI. Explicit diagnostic --state/--socket calls remain connect-only.
+
 Exit paths, deliberate:
-- daemon missing -> EXIT 4 with one line telling pairup to raise it, because the
-  client's job is to connect, not to spawn: a client that silently spawned would
-  rebuild the child-process lifetime this slice exists to remove.
+- diagnostic daemon missing -> EXIT 4 with a named remedy.
 - stdin closed (the CLI is gone or restarting) -> exit 0. The CLI's death is not
   an error of the transport; the daemon keeps serving the next connector.
 """
@@ -89,8 +91,8 @@ def _redial(path: str, deadline: float):
     ONCE, a dying daemon left it reporting `pair Failed` for the rest of the
     session, and reconnect granularity was the SESSION rather than the event.
 
-    Why bounded and not a supervisor: the client must never spawn a daemon, never
-    manage a role, never outlive its CLI. It dials, and if nothing answers inside
+    Redial never starts a daemon or claims a role, and cannot outlive its CLI.
+    It dials, and if nothing answers inside
     the window it reports the same failure it reports today — with the same
     remedy. The window is seconds, not forever: an operator needs to know.
     """
@@ -120,8 +122,8 @@ def _redial_seconds() -> float:
 def pump(sock: socket.socket, stdin, stdout, path: str) -> int:
     """Frames in both directions until the CLI closes stdin.
 
-    One line in, one line out: the daemon's framing IS the CLI's framing, so the
-    client adds nothing to the protocol and can never desynchronise it.
+    Notifications have no reply. Forward asynchronous server events while waiting
+    for the response matching the current request, so initialize cannot wedge.
     """
     reader = sock.makefile("r", encoding="utf-8", newline="\n")
     writer = sock.makefile("w", encoding="utf-8", newline="\n")
@@ -134,6 +136,28 @@ def pump(sock: socket.socket, stdin, stdout, path: str) -> int:
             if not line:
                 continue
             try:
+                frame = json.loads(line)
+            except ValueError:
+                frame = {}
+            notification = isinstance(frame, dict) and "method" in frame and "id" not in frame
+            request_id = frame.get("id") if isinstance(frame, dict) else None
+            def read_response():
+                while True:
+                    try:
+                        reply = reader.readline()
+                    except OSError:
+                        return ""
+                    if not reply:
+                        return ""
+                    try:
+                        response = json.loads(reply)
+                    except ValueError:
+                        return reply
+                    if isinstance(response, dict) and response.get("id") == request_id:
+                        return reply
+                    stdout.write(reply)
+                    stdout.flush()
+            try:
                 writer.write(line + "\n")
                 writer.flush()
             except (BrokenPipeError, ConnectionResetError, OSError):
@@ -141,7 +165,9 @@ def pump(sock: socket.socket, stdin, stdout, path: str) -> int:
                 # which is the same fact as an empty reply — treat them alike.
                 reply = ""
             else:
-                reply = reader.readline()
+                if notification:
+                    continue
+                reply = read_response()
             if not reply:
                 # the daemon died under us: not a protocol error, a dead transport
                 window = _redial_seconds()
@@ -166,7 +192,9 @@ def pump(sock: socket.socket, stdin, stdout, path: str) -> int:
                         try:
                             writer.write(line + "\n")
                             writer.flush()
-                            reply = reader.readline()
+                            if notification:
+                                continue
+                            reply = read_response()
                         except (BrokenPipeError, ConnectionResetError, OSError):
                             reply = ""
                         if reply:
@@ -198,8 +226,18 @@ def main(argv: list[str]) -> int:
     if not argv or argv[0] in ("-h", "--help"):
         print(__doc__.strip())
         return 0 if argv else 2
-    state_dir = _resolve_state_dir(argv)
+    from launch_context import configured_role, enrolled_state, ensure_daemon, standalone
+    explicit = any(arg in ("--state", "--socket") or arg.startswith(("--state=", "--socket="))
+                   for arg in argv[1:])
+    enrolled = enrolled_state(argv[0]) if not explicit else None
+    if not explicit and enrolled is None:
+        return standalone()
+    state_dir = enrolled or _resolve_state_dir(argv)
     path = _resolve_socket(state_dir, argv)
+    if enrolled is not None:
+        role = configured_role(argv[0])
+        path = str(state_dir / f".server-{role}.sock")
+        ensure_daemon(role, state_dir)
     if not os.path.exists(path):
         print(f"pair client: no daemon at {path} — pairup raises it "
               f"(pairrestart --role <role> refreshes it)", file=sys.stderr)

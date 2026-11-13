@@ -41,7 +41,7 @@ def _git_repo(path: Path) -> Path:
 class DuoRoleCase(unittest.TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
-        base = Path(self._tmp.name)
+        base = Path(self._tmp.name).resolve()
         self.project = _git_repo(base / "proj")
         self.state = self.project / ".pair"
         self.state.mkdir(parents=True)
@@ -125,7 +125,7 @@ class DuoStateResolutionCase(unittest.TestCase):
 
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
-        base = Path(self._tmp.name)
+        base = Path(self._tmp.name).resolve()
         self.project = _git_repo(base / "proj")
         self.state = self.project / ".pair"
         self.state.mkdir(parents=True)

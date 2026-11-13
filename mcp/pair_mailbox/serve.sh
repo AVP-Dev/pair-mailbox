@@ -32,6 +32,18 @@ while [ "$#" -gt 0 ]; do
     esac
 done
 
+# A global MCP entry is availability, not membership in a project's pair.
+# Explicit --state remains the low-level operator/diagnostic entry point.
+if [ -z "$_state_from_argv" ]; then
+    _launch_module="$(cd -- "$(dirname -- "$0")" && pwd -P)/launch_context.py"
+    _enrolled="$(python3 "$_launch_module" probe "$role")" || exit 2
+    if [ -z "$_enrolled" ]; then
+        exec python3 "$_launch_module" standalone
+    fi
+    state="$_enrolled"
+    _state_from_argv=1
+fi
+
 # Ask the shared resolver which room is ours. It prints the room and the
 # reason on two lines; the reason is what the refusal is made of.
 #
@@ -150,7 +162,7 @@ if [ -n "$_code_top" ] && [ -n "$_state_top" ] && [ "$_code_top" != "$_state_top
   fi
   _scratch=""
   case "$_code_top" in
-    /tmp|/tmp/*|/var/tmp|/var/tmp/*|/dev/shm|/dev/shm/*) _scratch="$_code_top";;
+    /tmp|/tmp/*|/private/tmp|/private/tmp/*|/var/tmp|/var/tmp/*|/private/var/tmp|/private/var/tmp/*|/dev/shm|/dev/shm/*) _scratch="$_code_top";;
   esac
   # Round 108's scar, unconditional: the measured defect was a config left
   # pointing at /tmp/wire_test, and a scratch root can NEVER serve a role —

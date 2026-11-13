@@ -18,6 +18,7 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
@@ -38,6 +39,30 @@ def _install_mod():
 
 
 _INSTALL = _install_mod()
+
+
+class CodexMcpConfigCase(unittest.TestCase):
+    def test_transport_and_launch_environment_are_written_to_toml(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "config.toml"
+            profile = json.loads(json.dumps(_INSTALL.PROFILES["codex"]))
+            profile["mcp"]["path"] = str(path)
+            for transport in ("", "socket"):
+                path.write_text('model = "keep-me"\n[mcp_servers.pair]\ncommand = "old"\n'
+                                'args = []\nenv_vars = ["MY_EXISTING_VAR"]\n'
+                                '[mcp_servers.other]\ncommand = "keep-other"\n')
+                with patch.dict(os.environ, {"PAIR_TRANSPORT": transport}), \
+                        patch.object(_INSTALL, "persist_transport"):
+                    argv = _INSTALL.write_mcp(profile, "codex")
+                text = path.read_text()
+                self.assertEqual(_INSTALL.argv_from_toml(text), argv)
+                forwarded = json.loads(re.search(r"(?m)^env_vars = (\[.*\])$", text).group(1))
+                for name in ("PAIR_LAUNCH_PID", "PAIR_LAUNCH_START", "PAIR_LAUNCH_PROFILE",
+                             "PAIR_STATE", "PAIR_ROLE", "MY_EXISTING_VAR"):
+                    self.assertIn(name, forwarded)
+                self.assertIn('model = "keep-me"', text)
+                self.assertIn('command = "keep-other"', text)
+                self.assertTrue(path.with_suffix(".toml.bak").exists())
 
 def run_install(home: Path, *args: str) -> subprocess.CompletedProcess:
     # The nested test_protocol.py run (~3 min) stays out: the verify layer runs the

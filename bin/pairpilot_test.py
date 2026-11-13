@@ -23,6 +23,7 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "mcp" / "pair_mailbox"))
+from launch_context import launch_shell
 
 _spec = importlib.util.spec_from_loader("pairpilot", None)
 pairpilot = importlib.util.module_from_spec(_spec)
@@ -1951,7 +1952,7 @@ class TestRestart(PilotCase):
         # What asserts is the restart fact in the right pane with the right command, not
         # which call number it was: `self.calls[0]` claims order, breaking on any edit
         # in neighbouring code.
-        self.assertEqual([[str(self.fake_tmux), "respawn-pane", "-t", "%999999", "agy --resume"]],
+        self.assertEqual([[str(self.fake_tmux), "respawn-pane", "-t", "%999999", launch_shell("agy", self.state_dir, "agy --resume")]],
                          self.respawns(),
                          "a fallen writer restarts in its own pane")
         self.assertIn("pilot_restart", self.transcript_kinds())
@@ -2089,7 +2090,7 @@ class TestRestart(PilotCase):
         pilot = self.pilot_with_launch()
         pairpilot.pane_role_pid = lambda tmux, pane, role: self.DEAD_PID
         pilot.tick()
-        self.assertEqual([[str(self.fake_tmux), "respawn-pane", "-t", "%999999", "agy --resume"]],
+        self.assertEqual([[str(self.fake_tmux), "respawn-pane", "-t", "%999999", launch_shell("agy", self.state_dir, "agy --resume")]],
                          self.respawns(),
                          "a dead pid in the pane means the role rises")
         self.assertNotIn("pilot_pid_stale_pane_alive", self.transcript_kinds())

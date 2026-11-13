@@ -5,6 +5,11 @@ description: Hold a real conversation with the other agent in this two-agent pai
 
 # Pair chat
 
+Session scope: use this correspondence contract only in an explicitly enrolled
+pair. Standalone CLIs and native subagents work on their task without claiming a
+pair role or waiting for an unavailable peer. A paired connection failure does
+not grant a critic write authority.
+
 > The single source of truth for pair correspondence is this file.
 > Mentions in `AGENTS.md`, `docs/PROTOCOL.md`, `docs/HOW-IT-WORKS.md` are
 > context, not contract: on divergence this file and the code in

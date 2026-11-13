@@ -7,8 +7,10 @@ template copies on creation, an existing one is never overwritten.
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -39,6 +41,84 @@ def _snippet() -> str:
     start = text.index('mkdir -p "$_root/.pair/mailbox"')
     end = text.index('STATE_DIR="$_root/.pair"', start)
     return text[start:end]
+
+
+class PairupLaunchCase(unittest.TestCase):
+    """Exercise the real entry point with local stand-ins, never the user's tmux."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        base = Path(self.tmp.name)
+        self.project = base / "project's space"
+        self.project.mkdir()
+        self.home = base / "home"
+        self.home.mkdir()
+        self.bin = base / "bin"
+        self.bin.mkdir()
+        self.log = base / "tmux.jsonl"
+        self.marker = base / "session-exists"
+        subprocess.run(["git", "init", "-q", str(self.project)], check=True)
+        for name in ("codex", "agy", "pgrep"):
+            path = self.bin / name
+            path.write_text("#!/bin/sh\nexit 0\n")
+            path.chmod(0o755)
+        tmux = self.bin / "tmux"
+        tmux.write_text("#!" + sys.executable + "\n" +
+            "import json, os, sys\nfrom pathlib import Path\n" +
+            "args=sys.argv[1:]\n" +
+            "with open(os.environ['PAIR_TEST_LOG'], 'a') as log: log.write(json.dumps(args)+'\\n')\n" +
+            "if args[:1]==['-L']: args=args[2:]\n" +
+            "marker=Path(os.environ['PAIR_TEST_MARKER'])\n" +
+            "if args[:1]==['has-session']: sys.exit(0 if marker.exists() else 1)\n" +
+            "if args[:1]==['new-session']: marker.touch()\n")
+        tmux.chmod(0o755)
+        self.env = {k: v for k, v in os.environ.items()
+                    if not k.startswith("PAIR_") and k not in ("TMUX", "TMUX_PANE")}
+        self.env.update(HOME=str(self.home), PATH=str(self.bin) + os.pathsep + os.environ["PATH"],
+                        PAIR_TEST_LOG=str(self.log), PAIR_TEST_MARKER=str(self.marker))
+
+    def launch(self, *args):
+        return subprocess.run(["bash", str(PAIRUP), *args], cwd=self.project,
+                              env=self.env, capture_output=True, text=True, timeout=30)
+
+    def calls(self):
+        return [json.loads(line) for line in self.log.read_text().splitlines()]
+
+    def test_fresh_launch_records_literal_task_and_second_launch_attaches(self):
+        task = 'Inspect "auth"; $(touch SHOULD_NOT_EXIST) — проверка'
+        first = self.launch(task)
+        self.assertEqual(first.returncode, 0, first.stderr + first.stdout)
+        state = json.loads((self.project / ".pair/state.json").read_text())
+        self.assertEqual(state["writer"], "codex")
+        self.assertEqual(state["tasks"][0]["text"], task)
+        second = self.launch()
+        self.assertEqual(second.returncode, 0, second.stderr + second.stdout)
+        calls = self.calls()
+        self.assertEqual(sum("new-session" in call for call in calls), 1)
+        self.assertEqual(sum("split-window" in call for call in calls), 1)
+        self.assertFalse((self.project / "SHOULD_NOT_EXIST").exists())
+        created = next(call for call in calls if "new-session" in call)
+        self.assertEqual(created[0], "-L", "use the project's socket consistently")
+        self.assertIn("launch_context.py", created[-1])
+        executed = subprocess.run(["sh", "-c", created[-1]], cwd=self.project,
+                                  env=self.env, text=True, capture_output=True, timeout=10)
+        self.assertEqual(executed.returncode, 0, executed.stderr)
+
+    def test_launch_inside_foreign_tmux_creates_its_own_session(self):
+        self.env["TMUX"] = "/tmp/foreign-tmux,123,0"
+        result = self.launch("--task", "inspect")
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        split = next(call for call in self.calls() if "split-window" in call)
+        self.assertEqual(split[0], "-L")
+        self.assertIn("-t", split)
+
+    def test_missing_custom_state_is_rejected_without_creating_a_different_room(self):
+        target = Path(self.tmp.name) / "custom-state"
+        result = self.launch("--state", str(target))
+        self.assertEqual(result.returncode, 2)
+        self.assertFalse(target.exists())
+        self.assertFalse((target.parent / ".pair").exists())
 
 
 class PairupEngineSanctionCase(unittest.TestCase):
@@ -140,7 +220,7 @@ class PairupStateOwnershipCase(unittest.TestCase):
     """
 
     def setUp(self) -> None:
-        self.tmp = Path(tempfile.mkdtemp(prefix="pairup-own-"))
+        self.tmp = Path(tempfile.mkdtemp(prefix="pairup-own-")).resolve()
         self.addCleanup(shutil.rmtree, self.tmp, True)
         self.proj = self.tmp / "proj"
         self.proj.mkdir()

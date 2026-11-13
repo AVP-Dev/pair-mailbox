@@ -126,6 +126,21 @@ class ThinClientCase(unittest.TestCase):
         self.assertIn("no daemon", combined)
         self.assertIn("pairup", combined)
 
+    def test_initialize_notification_does_not_block_tools_list(self) -> None:
+        self._daemon()
+        client = self._client()
+        request = "\n".join(json.dumps(frame) for frame in (
+            {"jsonrpc": "2.0", "id": 10, "method": "initialize", "params": {
+                "protocolVersion": "2024-11-05", "clientInfo": {"name": "test"}}},
+            {"jsonrpc": "2.0", "method": "notifications/initialized"},
+            {"jsonrpc": "2.0", "id": 11, "method": "tools/list"},
+        )) + "\n"
+        output, errors = client.communicate(request, timeout=10)
+        self.assertEqual(client.returncode, 0, errors)
+        replies = [json.loads(line) for line in output.splitlines()]
+        self.assertEqual([reply["id"] for reply in replies], [10, 11])
+        self.assertTrue(replies[1]["result"]["tools"])
+
     def test_daemon_death_is_recovered_by_a_new_daemon_not_the_client(self) -> None:
         """The other half of the ruling: a daemon death is recovered by the
         supervisor raising a daemon, and a fresh client then works. The client

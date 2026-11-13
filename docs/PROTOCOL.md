@@ -8,6 +8,14 @@ attention. Anything not here is not a rule.
 See also `AGENTS.md` — that is the shape of the pair. This file is the part that
 must not drift apart from the code.
 
+This contract applies to explicitly enrolled pair sessions. Ordinary CLI starts
+work independently, including native subagents; global MCP availability and old
+`.pair` state assign no role. `pairup` binds a CLI process and starts its task.
+Unbound MCP starts answer initialize and expose no pair tools without taking a
+role lock. Enrolled socket clients may start their detached role daemon; an
+explicit low-level `--state`/`--socket` diagnostic retains the operator path.
+Losing MCP inside a pair never grants a critic write authority.
+
 > Language: this is the English original. The Russian mirror is
 > [`PROTOCOL.ru.md`](./PROTOCOL.ru.md).
 >

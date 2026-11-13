@@ -170,6 +170,12 @@ cd pair-mailbox
 
 ### 3. Launching a Pair Session
 
+Ordinary `codex`, `agy` and other CLI launches work independently, including native
+subagents. The installed pair MCP entry completes startup with an empty tool list
+outside an explicit pair; old `.pair` state and inherited variables assign no role.
+Use `pairup "your task"` to start a pair. Repeating `pairup` attaches to that pair.
+Codex pairing uses `--no-daemon`; Codex and agy receive an initial interactive task.
+
 From your project directory — one command, seconds:
 
 ```bash

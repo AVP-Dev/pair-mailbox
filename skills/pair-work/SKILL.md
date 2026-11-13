@@ -5,6 +5,11 @@ description: Full autonomous collaboration with the peer agent. The two of you p
 
 # Autonomous pair work
 
+Session scope: this workflow requires an explicitly enrolled pair. In a standalone
+CLI, perform the task independently with native subagents; an installed MCP entry
+or old `.pair` directory does not assign a critic role. Use `pairup` when the user
+explicitly requests a pair. A disconnected enrolled critic retains its write boundary.
+
 > Language: this is the English original. The Russian mirror is [SKILL.ru.md](./SKILL.ru.md).
 
 You work together with another agent: a different CLI, a different model, it cannot see your

@@ -3,6 +3,10 @@ name: pair-writer
 description: Holds write authority in a two-agent pairing with another CLI. Use when you were handed the task directly and need to actually change code while a peer agent reviews beside you.
 ---
 
+Outside an explicitly enrolled pair, perform the assigned task independently,
+including native subagents. A standalone MCP initialization needs no pair tools
+or peer. The pairing instructions below apply only in an enrolled session.
+
 You are the **writer** in a two-agent pairing. A second agent — on a different CLI, with a
 different model and no access to your conversation — is working the same project through the
 `pair_*` MCP tools.

@@ -1,5 +1,16 @@
 # AGENTS.md
 
+## Session scope
+
+An ordinary CLI works independently, including its native subagents. The pair-only
+instructions below apply after an explicit `pairup`/`pair-duo` launch and a paired
+MCP initialization. A `.pair` directory, available tools or inherited environment
+variables do not assign a role. A standalone MCP initialization needs no claim,
+peer or mailbox. If an enrolled pair loses MCP, retain its assigned write boundary
+and repair the connection; a critic does not become a writer on disconnect.
+Native subagents do their delegated work and report to the parent; they do not
+claim a separate pair role or negotiate with its peer.
+
 This project is worked by **two agents at once**, on different CLIs, against the same task. One of
 them is you.
 

@@ -16,23 +16,9 @@ ROOT = Path(__file__).resolve().parent
 PROFILES = json.loads((ROOT / "cli-profiles.json").read_text(encoding="utf-8"))
 SERVER = ROOT / "mcp/pair_mailbox/serve.sh"
 SKILLS = ROOT / "skills"
-MARK = "<!-- pair-mailbox -->"
-
-NOTE = """
-## Pair Work
-
-A peer agent is available nearby via the `pair_*` tools.
-Before taking on a task, call `pair_state`, then `pair_claim`.
-
-- Claimed authority — you are the writer: edit files, run tests, commit, open PRs.
-- Did not claim — you are the critic: read, argue, write findings to `pair_note`, never edit files.
-
-The round can be reopened either way: `pair_advance(\"implement\")` rolls the phase back.
-That needs no write authority. If the writer went silent — tell the user.
-
-If the peer is silent — work alone, that is not a blocker.
-Full rules: `docs/PROTOCOL.md` in the pair-mailbox repository.
-"""
+sys.path.insert(0, str(ROOT / "mcp" / "pair_mailbox"))
+from instruction_block import MARK, NOTE, replace_owned_block
+from launch_context import MCP_ENV_VARS
 
 
 def expand(p):
@@ -287,10 +273,9 @@ def write_mcp(profile, role):
     # the daemon by reading state (round 111's flip, measured: env-only transport
     # left the daemon unraised and the thin client refusing exit 4 at the next
     # restart — the pair would have been dead).
-    persist_transport(str(ROOT), transport)
     if transport in ("socket", "client", "sock"):
         argv = [sys.executable, str(ROOT / "mcp" / "pair_mailbox" / "mcp_socket_client.py"), role]
-        transport_note = "thin socket client (daemon raised by pairup)"
+        transport_note = "thin socket client (daemon raised for enrolled sessions)"
     else:
         argv = ["sh", str(SERVER), role]
         transport_note = "child server (default; PAIR_TRANSPORT=socket switches)"
@@ -298,7 +283,7 @@ def write_mcp(profile, role):
 
     if spec["format"] == "toml":
         text = path.read_text(encoding="utf-8") if path.exists() else ""
-        lines, skip = [], False
+        lines, previous, skip = [], [], False
         for line in text.splitlines():
             if line.strip().startswith("[mcp_servers.pair]"):
                 skip = True
@@ -307,10 +292,27 @@ def write_mcp(profile, role):
                 if line.strip().startswith("["):
                     skip = False
                 else:
+                    previous.append(line)
                     continue
             lines.append(line)
-        block = '[mcp_servers.pair]\ncommand = "sh"\nargs = ["%s", "%s"]\n' % (SERVER, role)
+        forwarded = list(MCP_ENV_VARS)
+        old_env = re.search(r"(?m)^\s*env_vars\s*=\s*(\[[\s\S]*?\])", "\n".join(previous))
+        if old_env:
+            import ast
+            try:
+                existing = ast.literal_eval(old_env.group(1))
+                if not isinstance(existing, list) or not all(isinstance(name, str) for name in existing):
+                    raise ValueError("expected a list of environment variable names")
+                forwarded = list(dict.fromkeys(existing + forwarded))
+            except (SyntaxError, ValueError) as error:
+                print("    !! pair env_vars left untouched: " + str(error))
+                return None
+        block = ('[mcp_servers.pair]\ncommand = %s\nargs = %s\nenv_vars = %s\n' %
+                 (json.dumps(argv[0]), json.dumps(argv[1:]), json.dumps(forwarded)))
+        if text:
+            path.with_suffix(path.suffix + ".bak").write_text(text, encoding="utf-8")
         path.write_text("\n".join(lines).rstrip() + "\n\n" + block, encoding="utf-8")
+        persist_transport(str(ROOT), transport)
         return argv
 
     raw = path.read_text(encoding="utf-8") if path.exists() else ""
@@ -336,6 +338,7 @@ def write_mcp(profile, role):
         backup.write_text(raw, encoding="utf-8")
     new_text, _action = splice_json_block(raw, spec["root_key"], spec.get("server_key", "pair"), entry_json)
     path.write_text(new_text if new_text.endswith("\n") else new_text + "\n", encoding="utf-8")
+    persist_transport(str(ROOT), transport)
     return argv
 
 
@@ -350,31 +353,15 @@ def write_skills(profile):
     return out
 
 
-def replace_owned_block(text, body):
-    """Replace ONLY our block, keeping all past the marker.
-
-    The old code ran `text.split(MARK)[0]`, deleting all the human wrote past the
-    marker — silent, every launch. Deleting foreign-file content is exactly what
-    PROTOCOL §12 demands asking for, so the tail stays, plus a copy snapshots
-    before overwriting.
-    """
-    head, _, tail = text.partition(MARK)
-    kept = tail[len(NOTE):] if tail.startswith(NOTE) else tail
-    return head.rstrip() + "\n" + MARK + NOTE + ("\n" + kept.lstrip("\n") if kept.strip() else "")
-
 
 def write_instructions(profile):
     path = expand(profile["instructions"])
     path.parent.mkdir(parents=True, exist_ok=True)
     text = path.read_text(encoding="utf-8") if path.exists() else ""
-    if MARK in text:
+    try:
         updated = replace_owned_block(text, NOTE)
-    else:
-        # The same join as replace_owned_block, or the first install gives an empty line
-        # before the marker, the second drops it — the file changing every launch while
-        # promising idempotence in the header.
-        head = text if not text.strip() else text.rstrip()
-        updated = head + ("\n" if head else "") + MARK + NOTE
+    except ValueError as error:
+        return "NOT WRITTEN (" + str(error) + ")"
     if updated == text:
         return "unchanged"
     # A copy before overwriting: the file belongs to the human, not us.
@@ -562,7 +549,11 @@ def main():
                 continue
             print("  MCP:      " + expand(profile["mcp"]["path"]).name)
             print("  skills:   " + ", ".join(write_skills(profile)))
-            print("  instructions: " + write_instructions(profile))
+            instructions = write_instructions(profile)
+            print("  instructions: " + instructions)
+            if instructions.startswith("NOT WRITTEN"):
+                failed.append(name)
+                continue
             perms_path = write_native_permissions(name)
             if perms_path:
                 print("  permissions: " + str(perms_path))

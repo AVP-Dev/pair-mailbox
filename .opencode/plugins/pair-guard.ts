@@ -33,6 +33,7 @@
 
 import { readFileSync, existsSync, watch } from "node:fs"
 import { dirname, join, resolve } from "node:path"
+import { execFileSync } from "node:child_process"
 
 /** Minimal local shape of what we use. Kept local so the file needs no imports. */
 type AgentLike = { id: string; system?: string }
@@ -81,18 +82,13 @@ interface PairState {
  * sides agree on which directory is "theirs".
  */
 function findStateDir(options: Record<string, unknown> | undefined): string | null {
-  const explicit = options?.stateDir ?? process.env.PAIR_STATE_DIR ?? process.env.PAIR_STATE
-  if (typeof explicit === "string" && explicit.length > 0) {
-    const direct = resolve(explicit)
-    return existsSync(join(direct, "state.json")) ? direct : null
-  }
-  let dir = process.cwd()
-  for (let i = 0; i < 12; i++) {
-    if (existsSync(join(dir, ".pair", "state.json"))) return join(dir, ".pair")
-    const parent = dirname(dir)
-    if (parent === dir) break
-    dir = parent
-  }
+  const engine = process.env.PAIR_LAUNCH_ENGINE
+  if (!engine) return null
+  try {
+    const state = execFileSync("python3", [join(engine, "mcp/pair_mailbox/launch_context.py"),
+      "probe", "opencode"], { encoding: "utf8", timeout: 5000, stdio: ["ignore", "pipe", "ignore"] }).trim()
+    return state || null
+  } catch { /* An unverified launch never supplies a pair authority brief. */ }
   return null
 }
 
