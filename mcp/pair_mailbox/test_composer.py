@@ -8,9 +8,14 @@ Round-32 verdict debt: the permission block never chokes pair tests.
     """
 from __future__ import annotations
 
+import os
+import subprocess
 import sys
+import tempfile
+import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -95,7 +100,10 @@ class TestPiFramedInput(unittest.TestCase):
     TOKENS = "↑22k ↓2.8k R216k CH98.3% $0.003 2.1%/1.0M (auto) muse-spark"
 
     def idle(self) -> list:
-        return ["output top", self.SEP, self.SEP, "~/work/gala (main)", self.TOKENS]
+        # Preserve the empty prompt row from capture-pane instead of collapsing
+        # it to adjacent separators; this composer has no classic prompt marker.
+        return ["output top", self.SEP, " ", self.SEP,
+                "~/work/gala (main)", self.TOKENS]
 
     def busy(self) -> list:
         return ["output top", self.SEP, "worked text", self.SEP,
@@ -103,7 +111,7 @@ class TestPiFramedInput(unittest.TestCase):
 
     def test_idle_frame_reads_empty(self) -> None:
         line = composer.composer_line(self.idle())
-        self.assertIsNotNone(line)
+        self.assertEqual(self.SEP, line)
         self.assertTrue(composer.is_composer_empty(line))
 
     def test_busy_frame_reads_busy(self) -> None:
@@ -280,6 +288,245 @@ class TestNumberedMenuKeys(unittest.TestCase):
     def test_deny_only_menu_has_no_key(self) -> None:
         lines = ["1) Deny   2) No, and tell me why"]
         self.assertIsNone(composer.menu_allow_key(lines))
+
+    def test_codex_numbered_yes_prompt_is_a_menu_with_command_context(self) -> None:
+        lines = ["Would you like to run the following command?",
+                 "git status --short",
+                 "› 1. Yes, just this once",
+                 "  2. No, and tell Codex what to do differently"]
+        prompt = composer.detect_permission_menu(lines)
+        self.assertEqual(lines[0], prompt)
+        self.assertEqual("1", composer.menu_allow_key(lines))
+        context = composer.extract_permission_context(lines, prompt)
+        self.assertIn("git status --short", context)
+        self.assertEqual("allow", composer.permission_verdict(
+            context, [r"\bgit\s+status\b"])["verdict"])
+
+    def test_codex_numbered_yes_prompt_chooses_numbered_allow(self) -> None:
+        lines = ["Would you like to run the following command?",
+                 "git status --short", "1. Yes, just this once",
+                 "2. No, and tell Codex what to do differently"]
+        sent = []
+        with mock.patch.object(composer, "pane_alive", return_value=True), \
+                mock.patch.object(composer, "capture", return_value=lines), \
+                mock.patch.object(composer, "_send_keys",
+                                  side_effect=lambda tmux, pane, key: sent.append(key)):
+            result = composer.resolve_permission_prompt(
+                "tmux", "%7", allow=[r"\bgit\s+status\b"])
+        self.assertTrue(result["approved"])
+        self.assertEqual(["1", "Enter"], sent)
+
+    def test_codex_numbered_yes_prompt_still_refuses_off_allowlist_command(self) -> None:
+        lines = ["Would you like to run the following command?",
+                 "rm -rf /important",
+                 "1. Yes, just this once",
+                 "2. No, and tell Codex what to do differently"]
+        prompt = composer.detect_permission_menu(lines)
+        result = composer.permission_verdict(
+            composer.extract_permission_context(lines, prompt), [r"\bgit\s+status\b"])
+        self.assertEqual("refuse", result["verdict"])
+
+
+class TestTmuxTimeoutIsBusyNotDeath(unittest.TestCase):
+    """A `tmux send-keys` timeout is BUSY — never the death of the caller.
+
+    The measured death (2026-10-25, this project's own supervisor): one
+    `send-keys` into a pane whose CLI had stopped consuming input hung for
+    the full 5-second timeout and raised `subprocess.TimeoutExpired`. The
+    pilot's `flush_outbox` caught `ComposerBusy` and nothing else, so the
+    exception escaped, the whole supervisor died, and EVERY rule it carried
+    went dark with it — including the monologue watchdog. A dead supervisor
+    is the one failure no watchdog can notice.
+    """
+
+    def test_timeout_becomes_composer_busy(self) -> None:
+        import subprocess
+
+        def fake_run(cmd, **kwargs):
+            raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout", 5))
+
+        original = composer.subprocess.run
+        composer.subprocess.run = fake_run
+        try:
+            with self.assertRaises(composer.ComposerBusy):
+                composer._send_keys("/usr/bin/tmux", "%7", "-l", "hello")
+        finally:
+            composer.subprocess.run = original
+
+    def test_type_text_timeout_becomes_composer_busy(self) -> None:
+        """`type_text` is on the delivery path: a timeout must not kill the pilot."""
+        import subprocess
+
+        def fake_run(cmd, **kwargs):
+            raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout", 5))
+
+        original = composer.subprocess.run
+        composer.subprocess.run = fake_run
+        try:
+            with self.assertRaises(composer.ComposerBusy):
+                composer.type_text("/usr/bin/tmux", "%7", "hello")
+        finally:
+            composer.subprocess.run = original
+
+    def test_submit_verified_timeout_becomes_composer_busy(self) -> None:
+        import subprocess
+
+        def fake_run(cmd, **kwargs):
+            raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout", 5))
+
+        original = composer.subprocess.run
+        composer.subprocess.run = fake_run
+        try:
+            with self.assertRaises(composer.ComposerBusy):
+                composer.submit_verified("/usr/bin/tmux", "%7", "body")
+        finally:
+            composer.subprocess.run = original
+
+    def test_erase_timeout_becomes_composer_busy(self) -> None:
+        import subprocess
+
+        def fake_run(cmd, **kwargs):
+            raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout", 5))
+
+        original = composer.subprocess.run
+        composer.subprocess.run = fake_run
+        try:
+            with self.assertRaises(composer.ComposerBusy):
+                composer.erase("/usr/bin/tmux", "%7", 3)
+        finally:
+            composer.subprocess.run = original
+
+    def test_a_working_pane_still_returns_the_result(self) -> None:
+        """The wrapper is not a blanket failure: a healthy tmux still reports rc."""
+        import subprocess
+
+        done = subprocess.CompletedProcess(["tmux"], 0, "", "")
+
+        original = composer.subprocess.run
+        composer.subprocess.run = lambda cmd, **kwargs: done
+        try:
+            self.assertEqual(0, composer._send_keys("/usr/bin/tmux", "%7", "Enter").returncode)
+        finally:
+            composer.subprocess.run = original
+
+
+class TestCaptureJoinsSoftWrappedLines(unittest.TestCase):
+    """`capture` reads the LOGICAL line, not the terminal row.
+
+    The defect this fixes: a pane narrower than the text split every long line
+    into rows, and a regex over the pane read a fragment — a permission prompt
+    split across rows never matched, so the pilot never answered it.
+
+    The tests run on a LIVE tmux pane: stubbing the capture would prove the
+    flag is spelled right, not that tmux joins the rows.
+    """
+
+    WIDTH = 40
+
+    def setUp(self) -> None:
+        from shutil import which
+
+        if not which("tmux"):
+            self.skipTest("tmux not installed")
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.source = Path(self._tmp.name) / "payload.txt"
+        self.session = f"pairtestJ{os.getpid()}"
+        subprocess.run(["tmux", "kill-session", "-t", self.session],
+                       capture_output=True, timeout=10)
+        made = subprocess.run(
+            ["tmux", "new-session", "-d", "-s", self.session,
+             "-x", str(self.WIDTH), "-y", "20",
+             f"sh -c 'cat {self.source}; sleep 30'"],
+            capture_output=True, text=True, timeout=10)
+        if made.returncode != 0:
+            self.skipTest(f"tmux gave no session: {made.stderr}")
+        self.addCleanup(subprocess.run, ["tmux", "kill-session", "-t", self.session],
+                        capture_output=True, timeout=10)
+        self.pane = subprocess.run(
+            ["tmux", "list-panes", "-t", self.session, "-F", "#{pane_id}"],
+            capture_output=True, text=True, timeout=10).stdout.strip()
+        self.addCleanup(self._write, "\n")
+
+    def _write(self, text: str) -> None:
+        """Put text on the pane and wait until the pane shows it."""
+        self.source.write_text(text, encoding="utf-8")
+        # The pane runs `cat` once at start; a rewrite needs a fresh cat. The
+        # simplest honest way: send the text as keys to a shell prompt.
+        subprocess.run(["tmux", "send-keys", "-t", self.pane, "-l", text],
+                       capture_output=True, timeout=10)
+        subprocess.run(["tmux", "send-keys", "-t", self.pane, "Enter"],
+                       capture_output=True, timeout=10)
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            if composer.capture("tmux", self.pane):
+                return
+            time.sleep(0.2)
+
+    def test_a_wrapped_line_comes_back_whole(self) -> None:
+        long_line = "A" * 60
+        self._write(long_line)
+        lines = composer.capture("tmux", self.pane)
+        self.assertIn(long_line, lines,
+                      f"the wrapped line stayed split: {lines!r}")
+
+    def test_the_frame_geometry_survives_the_joining(self) -> None:
+        """A bottom edge wider than the pane must still read as the input field.
+
+        This is the risk `-J` carries: a frame row too wide for the pane wraps,
+        and the plain capture then shows the corner on the first row and the rest
+        of the edge on the second — the corner-led geometry is gone, and the pane
+        reads busy forever. With the joining the edge comes back whole, corner
+        first, and the detector finds it again.
+        """
+        edge = "╹" + "▀" * (self.WIDTH + 20)
+        self._write(edge + "\nstatus line below")
+        lines = composer.capture("tmux", self.pane)
+        self.assertIn(edge, lines,
+                      f"the input-field bottom edge did not survive: {lines!r}")
+        self.assertTrue(composer.is_input_box_border(edge))
+        line = composer.composer_line(lines)
+        self.assertIsNotNone(line,
+                             f"the input field went invisible: {lines!r}")
+
+    def test_a_wrapped_prompt_is_recognized_as_one_line(self) -> None:
+        """The consumer of the fix: a prompt split by the width matches whole.
+
+        `detect_permission_prompt` reads ONE line at a time. A prompt whose
+        marker fell onto the second terminal row was invisible to it — the pilot
+        sat on a permission question it could not see. The marker is pushed past
+        the width on purpose, so the plain capture cannot match it.
+        """
+        prompt = "A" * (self.WIDTH + 5) + " [y/N]"
+        self._write(prompt)
+        lines = composer.capture("tmux", self.pane)
+        self.assertIsNotNone(composer.detect_permission_prompt(lines),
+                             f"the wrapped prompt was invisible: {lines!r}")
+
+    def test_the_old_tmux_falls_back_to_the_plain_capture(self) -> None:
+        """An old tmux without `-J` must not read as an empty pane.
+
+        An empty capture means "no composer visible", which the caller contract
+        reads as BUSY — so a missing flag would silently disable delivery
+        instead of degrading to the old behaviour.
+        """
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(list(cmd))
+            if "-J" in cmd:
+                return subprocess.CompletedProcess(cmd, 1, "", "unknown flag: -J")
+            return subprocess.CompletedProcess(cmd, 0, "plain line\n", "")
+
+        original = composer.subprocess.run
+        composer.subprocess.run = fake_run
+        try:
+            lines = composer.capture("tmux", "%7")
+        finally:
+            composer.subprocess.run = original
+        self.assertEqual(["plain line"], lines)
+        self.assertTrue(any("-J" in cmd for cmd in calls), calls)
+        self.assertTrue(any("-J" not in cmd for cmd in calls), calls)
 
 
 if __name__ == "__main__":

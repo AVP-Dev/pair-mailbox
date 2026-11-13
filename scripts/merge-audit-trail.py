@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Audit the merge trail: every merged PR must have a pr_merged event.
 
-Why: the journal is the only record that a merge went through the sanctioned
-path (`bin/pairctl pr merge`, which writes the event). Nothing compared the
-PRs merged on the remote with the journal's events, so a merge done outside
-the path left no trace at all. This check makes that hole visible.
+Why: the durable worktree journal records merges that went through the
+sanctioned path; older rooms have only the rotating transcript. Nothing
+compared the PRs merged on the remote with those events, so a merge done
+outside the path left no trace at all. This check makes that hole visible.
 
 The debt is never healed by writing events into the past: an event for a merge
 that happened long ago would be a forgery. The baseline file names the
@@ -13,6 +13,12 @@ absences instead, and the check fails only on a NEW absence.
 Fail closed: when the merged PRs cannot be read (no gh, no auth, no answer) or
 the journal is not where it should be, the check fails. It never reports
 success because it could not look.
+
+One exception, and it is opt-in: `--skip-if-unavailable` turns that refusal
+into a loud SKIPPED for a runner that has neither gh nor the pair's state
+directory - a CI runner, where the journal is not in the repo at all. The skip
+names what was not checked, and it covers only the case where nothing could
+be read: a merge that WAS read and has no event still fails.
 
 Runtime: stdlib. The inputs are the remote (through gh), the pair's state
 directory and the baseline file.
@@ -74,22 +80,21 @@ def merged_pr_numbers(repo_dir: Path, limit: int = GH_LIMIT) -> set[int]:
 
 
 def journal_files(journal_dir: Path) -> list[Path]:
-    """The active journal and every rotated archive. The rotation holds the older events."""
+    """The durable merge journal and any surviving transcript history."""
     journal_dir = Path(journal_dir)
     if not journal_dir.is_dir():
         raise AuditError(f"no journal at {journal_dir}: the audit trail lives in the "
                          "pair's state directory, not in the repo")
-    files = [journal_dir / "transcript.jsonl"]
+    files = [journal_dir / "worktree-log.jsonl", journal_dir / "transcript.jsonl"]
     files += sorted((journal_dir / "transcript-archive").glob("*.jsonl"))
     present = [path for path in files if path.is_file()]
     if not present:
-        raise AuditError(f"no transcript under {journal_dir}: the audit trail is empty")
+        raise AuditError(f"no merge journal or transcript under {journal_dir}: the audit trail is empty")
     return present
 
 
 def journal_pr_merged(journal_dir: Path) -> set[int]:
-    """The PR numbers the journal holds a merge record for, in the active file
-    and in the rotated archives."""
+    """PRs recorded durably, plus transcript records from rooms predating that journal."""
     recorded: set[int] = set()
     for path in journal_files(journal_dir):
         with path.open(encoding="utf-8") as handle:
@@ -101,10 +106,19 @@ def journal_pr_merged(journal_dir: Path) -> set[int]:
                     row = json.loads(line)
                 except ValueError:
                     continue
-                if row.get("kind") not in RECORDED_KINDS:
-                    continue
+                if path.name == "worktree-log.jsonl":
+                    if row.get("event") == "merged":
+                        number = row.get("pr")
+                    elif row.get("event") in ("pr_merged", "pr_merge_repaired"):
+                        number = row.get("pr")
+                    else:
+                        continue
+                else:
+                    if row.get("kind") not in RECORDED_KINDS:
+                        continue
+                    number = row.get("pr_id")
                 try:
-                    recorded.add(int(row["pr_id"]))
+                    recorded.add(int(number))
                 except (KeyError, TypeError, ValueError):
                     continue
     return recorded
@@ -169,12 +183,24 @@ def main(argv: list[str] | None = None) -> int:
                         help="the pair's state directory (the journal and its archives)")
     parser.add_argument("--baseline", default=str(DEFAULT_BASELINE),
                         help="the file naming the known debt")
+    parser.add_argument("--skip-if-unavailable", action="store_true",
+                        help="exit 0 with a SKIPPED note when the merged PRs or the "
+                             "journal cannot be read, instead of failing closed. For "
+                             "a CI runner that has neither gh nor the pair's state "
+                             "directory: there is nothing to audit there, and a "
+                             "permanent red would teach the reader to ignore the "
+                             "layer. The skip is loud - it names what was not "
+                             "checked - and it never applies to a merge that WAS "
+                             "read: an escape still fails.")
     args = parser.parse_args(argv)
     try:
         merged = merged_pr_numbers(Path(args.repo))
         recorded = journal_pr_merged(Path(args.journal))
         known = read_baseline(Path(args.baseline))
     except AuditError as exc:
+        if args.skip_if_unavailable:
+            print(f"merge-audit: SKIPPED: {exc}")
+            return 0
         print(f"merge-audit: FAILED: {exc}")
         return 2
     escapes, new_escapes, repaid = audit(merged, recorded, known)

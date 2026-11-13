@@ -75,8 +75,7 @@ def pin_verdict(tmux, pin: str, project_root: Path) -> tuple[str, str]:
     # broke eight tests under verify-project while a direct pytest run passed
     # only because the name resolved from a partially imported server module.
     from server import tmux_command
-    import shlex as _shlex
-    tmux = " ".join(_shlex.split(tmux_command()))
+    tmux = tmux_command()
     if not pane_alive(tmux, pin):
         return PIN_BAD, "no pane left at this address"
     try:
@@ -100,7 +99,10 @@ def cmd_pane(store: Store, args: argparse.Namespace) -> int:
     #
     # The address is measured by the same bar as the automatic one, otherwise the
     # override would open a hole in the cross-project isolation.
-    tmux = shutil.which("tmux")
+    tmux = None
+    if shutil.which("tmux"):
+        from server import tmux_command
+        tmux = tmux_command()
     # Two call shapes, one meaning (pairctl-pane-missing card):
     #   pairctl pane --role <role> [address] [--clear]   # original, stays
     #   pairctl pane <role> [address]                    # positional, from the card
@@ -197,13 +199,14 @@ def cmd_panes(store: Store, args: argparse.Namespace) -> int:
     # Read-only: never touches state, never writes the journal. Answers "which pane
     # is whose", once needing ps + tmux + state.json.
     import subprocess
-    tmux = shutil.which("tmux")
-    if not tmux:
+    if not shutil.which("tmux"):
         print("tmux unreachable, no panes to read")
         return 1
+    from server import tmux_command
+    tmux = tmux_command()
     try:
         out = subprocess.run(
-            [tmux, "list-panes", "-a", "-F",
+            tmux + ["list-panes", "-a", "-F",
              "#{pane_id}\t#{session_name}:#{window_index}.#{pane_index}\t#{pane_current_path}\t#{pane_current_command}\t#{pane_pid}\t#{pane_title}"],
             capture_output=True, text=True, timeout=10)
     except Exception as exc:  # noqa: BLE001 - tmux fell over, say so instead of lying

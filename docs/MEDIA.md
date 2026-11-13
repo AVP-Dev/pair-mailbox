@@ -7,6 +7,11 @@ This guide describes the visual assets, screenshot specifications, and automated
 
 ---
 
+Run the installation steps in README first. Start a real pair with
+`pairup --writer codex "Review retry handling"` from the target project. The pane
+commands below describe profile displays, not a manual pairing recipe. Tool paths
+are relative to the engine clone; use its absolute path from other projects.
+
 ## 🎨 Vector Assets
 
 The repository includes standalone SVG vector assets that render cleanly in GitHub dark and light modes:

@@ -1,118 +1,64 @@
 # Project structure and file hygiene
 
-> Language: this is the English original. The Russian mirror is [project-structure.ru.md](./project-structure.ru.md).
+[Русский](project-structure.ru.md) · [Contributing](../CONTRIBUTING.md)
 
-> **Why this document:** the project has nine files over 300 lines, and two over 3000
-> (`server.py` 4119, `test_protocol.py` 4381 — measured with `wc -l`, ceilings in
-> `scripts/file-size-baseline.tsv`). That crossed the threshold before the gate existed.
-> This document and `scripts/file-size-gate.sh` record the debt honestly: it is named, frozen,
-> and cannot grow. Bulk splitting is done by separate tasks, not on the side
-> of someone else's task.
->
-> **Source of the scale:** `agent-starter-kit`, `docs/project-structure.md` §2. The order is the same,
-> the numbers are the same, but applied to our actual map, not copied.
-## 1. Leading principle
+## Ownership
 
-A small file with a single responsibility, an explicit name, local implementation inside its owner.
-Boundaries must be explainable without reading the whole codebase.
-
-## 2. File sizes
-
-| Size | Interpretation |
+| Path | Responsibility |
 |---|---|
-| up to 300 lines | normal target size |
-| 300–500 | acceptable with a single responsibility |
-| 500–800 | mandatory boundary review |
-| over 800 | only with a recorded reason and a split plan |
+| `mcp/pair_mailbox/` | MCP server, state, authority, transport and coordination helpers |
+| `bin/` | project launchers, operator tools and supervisor |
+| `cli-profiles.json` | supported CLI configuration and launch profiles |
+| `install.sh`, `finish.sh` | integration installation and maintenance |
+| `scripts/` | validation gates, suite map, audits and hygiene tooling |
+| `skills/` | canonical skills copied to CLI-specific locations |
+| `.agents/`, `.opencode/` | repository-specific agent and plugin definitions |
+| `docs/` | current guides, protocol and project policy |
+| `docs/backlog/` | confirmed open debt; remove a card when its fix is merged |
+| `docs/rounds/`, `docs/archive/` | historical records, not current startup instructions |
+| `.pair/` | ignored runtime state, mail, patches, evidence and logs |
+| `.worktrees/`, `.venv/` | ignored local working environments |
 
-A guideline, not a ban. An exception is described in `scripts/file-size-baseline.tsv`
-with a reason, and the reason is mandatory: an exception nobody can explain
-is just a number hiding a problem.
+The engine clone and target project can be different repositories. Launchers
+resolve target state and record the allowed engine; do not use relative engine
+paths after changing into a different project.
 
-### 2.1 Ratchet instead of splitting
+## File-size policy
 
-The gate does not demand rewriting `server.py` today. It demands that the file **stop growing**.
+| Size | Expectation |
+|---|---|
+| up to 300 lines | normal target |
+| 300–500 | one explainable responsibility |
+| 500–800 | review the boundary |
+| over 800 | explained exception in the baseline |
 
-A baseline entry means: the file has been reviewed, it has one responsibility, and it is frozen
-at that ceiling. It cannot grow by a single line without a new entry with a new reason.
-It may shrink, and that is welcome.
+The current ceilings and reasons live only in
+[`file-size-baseline.tsv`](../scripts/file-size-baseline.tsv). Actual counts are
+reported by `./scripts/file-size-gate.sh`; a copied table of counts becomes stale.
+A ceiling is a maximum, not an instruction to pad a file to that length. Grow it
+only for a justified change, not to hide an unreviewed size violation.
 
-The expiry rule is deliberately narrow: an entry expires only when the file **no longer
-needs** the exception, i.e. it has gone under the hard 800-line threshold. Cap is a ceiling,
-not an exact value, so a file may sit far below it for years, and the gate
-does not care. Previously the check compared cap against current size directly,
-and then any edit to `server.py` would have required a baseline edit — the test showed that immediately,
-and the gate would have become a mandatory obstacle instead of a ratchet.
+## Verification
 
-Check: `bash scripts/file-size-gate_test.sh`, 30 scenarios.
+From the engine clone:
 
-## 3. Our files over 300 lines
+```bash
+./scripts/verify-changed.sh
+./scripts/verify-project.sh --list
+./scripts/verify-project.sh --jobs 1
+```
 
-Numbers — from `scripts/file-size-baseline.tsv` (ceilings; actual — `wc -l`).
-The last five rows are under the 300-line target and ungated: their numbers are
-current sizes, not ceilings, and the gate does not watch them.
+The profile defines runnable checks; the map selects suites for changed files.
+New executable tools need behavioral coverage or a concrete exemption in
+`scripts/bin-test-exemptions.json`. Keep tests beside the source, using existing
+shared fixtures rather than a second competing test module.
 
-| File | Ceiling | Responsibility | Status |
-|---|---|---|---|
-| `mcp/pair_mailbox/test_protocol.py` | 4429 | protocol invariants | frozen, follows server.py |
-| `mcp/pair_mailbox/server.py` | 4226 | whole protocol: helpers, `Store`, `PairSession`, MCP layer | frozen, plan below |
-| `bin/pairpilot_test.py` | 2749 | supervisor tests | frozen |
-| `bin/pairpilot` | 2072 | supervisor: panes, role launches, throttling | frozen |
-| `mcp/pair_mailbox/composer.py` | 1465 | composer and permission menu | frozen |
-| `mcp/pair_mailbox/pairctl_authority.py` | 462 | writing to round state | extracted from server.py (round 15) |
-| `mcp/pair_mailbox/pairctl_read.py` | 351 | read-only + project overview | extracted from server.py (round 15) |
-| `install.sh` | 572 | installer | frozen |
-| `bin/pairchat` | 438 | CLI: thin over `pair_send` | frozen |
-| `mcp/pair_mailbox/board_snapshot.py` | 321 | what the pair recorded about itself: phase, roles, tasks, log tail | dashboard, split by scale |
-| `mcp/pair_mailbox/assets/board.js` | 328 | client: draws the snapshot, theme, pause. Requests no data | dashboard, split by scale |
-| `mcp/pair_mailbox/board_render.py` | 187 | assembling one self-contained HTML page | dashboard, split by scale |
-| `mcp/pair_mailbox/board_hosts.py` | 184 | liveness on this machine: panes, pids, pilot process | dashboard, split by scale |
-| `bin/pairboard` | 177 | CLI: single pass or timer-driven rebuild | dashboard, split by scale |
-The boundary between `board_hosts` and `board_snapshot` is not stylistic. The first answers
-questions to the system and must degrade to "don't know"; the second reads what
-the pair recorded, and must survive a corrupt file. Mixed in one file, they drag along
-a test that needs both tmux and `/proc` for a green result.
+## Refactoring and cleanup
 
-## 4. Split plan
+Keep a module's implementation within its owner and make cross-module contracts
+explicit. Split modules when responsibility or safe testing demands it.
+Verify affected behavior after moving code. Bulk decomposition is a separate
+change, not a hidden prerequisite for an unrelated fix.
 
-Round 15 extracted `pairctl` from `server.py` (the CLI depends on the server, not vice versa;
-details in `scripts/file-size-baseline.tsv`). The remainder is `class PairSession`:
-one responsibility per class is divided by tool groups (state, communication,
-patches, tasks). The first next candidate named is the supervisor (`bin/pairpilot` —
-1567 lines with no split plan, see baseline).
-
-Splitting is done by **separate tasks**, each with a green gate. Not on the side.
-
-## 5. Boundaries that must not be crossed silently
-
-- `composer.py` is imported **lazily**, inside functions. That is not an optimization: it pulls in
-  only `os` and `re`, while at top level it would intercept everything for everyone, including
-  the `ctl` subcommand, which does not need the composer.
-- `serve.sh` is the transport server launch: `exec` with `<role>` and `--state`
-  (`mcp/pair_mailbox/serve.sh:10,28`). The name and path `mcp/pair_mailbox/server.py`
-  must not change: `install.sh`, `finish.sh`, and the MCP configuration
-  of all six roles depend on it (`cli-profiles.json`: opencode, agy, codex, claude, pi, omp).
-- Tests run as `python3 mcp/pair_mailbox/test_protocol.py`, so the repository
-  root must remain an importable path. The file must not be moved.
-
-## 6. Verification
-
-`./scripts/verify-project.sh` — the single gate, profile in `scripts/verification-profile.tsv`.
-Gate layers: static → positive → integration → security; fast loop `--only static,positive`,
-the full gate adds the installer and runs before round finalization.
-Parallelism via the `--jobs N` flag (default 1). Rule: live-tmux suites
-always run sequentially (`--jobs 1`), because they share one tmux server
-and end-to-end pane numbering — details in backlog `live-tmux-parallel-flake`.
-
-The profile contains only confirmed commands. A missing check is recorded
-as `blocked`, not written as a line that is always green.
-For a single commit — `scripts/verify-changed.sh` (static + only affected suites
-per `scripts/verify-map.tsv`).
-
-## 7. Refactoring
-
-Considered when a file crosses several responsibilities, one module reaches
-into another's internals, or size/imports make safe work impossible.
-
-Bulk cleanup is not done on the side of a functional task. Each
-split task is separate and passes the gate.
+Ignore generated environments and reports. Preserve runtime history until it is
+no longer needed and distinguish archived decisions from current guides.

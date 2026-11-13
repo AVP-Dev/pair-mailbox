@@ -11,17 +11,15 @@ and repair the connection; a critic does not become a writer on disconnect.
 Native subagents do their delegated work and report to the parent; they do not
 claim a separate pair role or negotiate with its peer.
 
-This project is worked by **two agents at once**, on different CLIs, against the same task. One of
+In an enrolled pair, this project is worked by **two agents at once**, on different CLIs, against the same task. One of
 them is you.
 
-Read [`docs/PROTOCOL.md`](docs/PROTOCOL.md) before you touch anything. It is short and it is the
+Read [`docs/PROTOCOL.md`](docs/PROTOCOL.md) before you touch anything. It is the
 contract between the two sides.
 
-## The one thing to do first
+## First MCP calls in an enrolled pair
 
-```bash
-pair_state
-```
+Call the MCP tool `pair_state`, then `pair_claim`. These are not shell commands.
 
 It returns `you_are_writer`. Everything downstream depends on that single boolean:
 

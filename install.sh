@@ -395,7 +395,7 @@ def verify(argv):
         "jsonrpc": "2.0", "id": 1, "method": "initialize",
         "params": {"protocolVersion": "2024-11-05", "clientInfo": {"name": "pair-install"}},
     }) + "\n"
-    scratch = tempfile.mkdtemp(prefix="pair-verify-")
+    scratch = tempfile.mkdtemp(prefix="pair-verify-", dir="/tmp")
     # --state in argv (the explicit project pin) beats PAIR_STATE, so for the check it
     # rewrites to a temp one: or the handshake writes into the live roster (the pin
     # regression, caught by TestVerifyDoesNotTouchTheRoster).
@@ -405,13 +405,14 @@ def verify(argv):
         if skip_next:
             skip_next = False
             continue
-        if a == "--state":
+        if a in ("--state", "--socket"):
             skip_next = True
             continue
-        if a.startswith("--state="):
+        if a.startswith(("--state=", "--socket=")):
             continue
         clean.append(a)
     argv = clean + ["--state", scratch]
+    daemon = None
     try:
         env = {k: v for k, v in os.environ.items()
                if k not in ("PAIR_STATE", "PAIR_ROLE", "PAIR_DISABLE_RING")}
@@ -421,11 +422,38 @@ def verify(argv):
         # the server would decide it sits inside tmux by env vars alone.
         for name in ("TMUX_PANE", "TMUX"):
             env.pop(name, None)
+        clients = [i for i, arg in enumerate(argv) if Path(arg).name == "mcp_socket_client.py"]
+        if clients:
+            import socket
+            import time
+            role = argv[clients[0] + 1]
+            address = str(Path(scratch) / (".server-" + role + ".sock"))
+            daemon = subprocess.Popen([sys.executable, str(ROOT / "mcp/pair_mailbox/server.py"),
+                "--role", role, "--state", scratch, "--socket", address],
+                env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline:
+                try:
+                    with socket.socket(socket.AF_UNIX) as probe:
+                        probe.connect(address)
+                    break
+                except OSError:
+                    if daemon.poll() is not None:
+                        raise RuntimeError("temporary socket daemon exited")
+                    time.sleep(.05)
+            argv += ["--socket", address]
         proc = subprocess.run(argv, input=req, capture_output=True, text=True,
                               timeout=15, env=env)
     except Exception as exc:
         return False, "launch failed: " + str(exc)
     finally:
+        if daemon is not None:
+            daemon.terminate()
+            try:
+                daemon.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                daemon.kill()
+                daemon.wait()
         shutil.rmtree(scratch, ignore_errors=True)
     for line in proc.stdout.splitlines():
         line = line.strip()
@@ -607,7 +635,7 @@ def main():
     print("✓ pair-mailbox installed and ready to work!")
     print("\nQuick start:")
     print("  1. Start an agent pair in tmux:")
-    print("     ./bin/pairup opencode agy")
+    print('     ./bin/pairup --writer codex --task "Your task"')
     print("  2. In either agent window, set the goal:")
     print('     "Work together on task X"')
     print("  3. Round-monitoring web board:")

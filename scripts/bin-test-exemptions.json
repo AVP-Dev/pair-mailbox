@@ -1,0 +1,9 @@
+{
+  "bin/boardcheck.py": "Covered by mcp/pair_mailbox/test_boardcheck.py and test_boardcheck_isolation.py; no bin-local sibling is needed.",
+  "bin/git-hooks/pre-push": "The hook's policy and failure cases are covered by bin/pre_push_guard_test.py.",
+  "bin/pairchat": "The command is a thin launcher for the pair-chat skill; its protocol behavior is covered by the waiting-contract suite.",
+  "bin/pairctl": "The CLI delegates to pairctl_cli.py and pairctl_panes.py, covered by pairctl-panes and pairctl-read suites.",
+  "bin/pairrelaunch": "Legacy compatibility launcher; end-to-end behavior is covered by pairup and pairrestart suites.",
+  "bin/pairreport": "Read-only report wrapper; output and underlying report logic are covered by boardcheck and board-render suites.",
+  "bin/pairwatch": "Legacy watch wrapper; lifecycle behavior is covered by watchdog and supervisor suites."
+}

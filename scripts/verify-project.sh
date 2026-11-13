@@ -179,7 +179,7 @@ while IFS=$'\t' read -r name layer required command serial extra || [ -n "${name
     running=0
     printf '[verify] %s (%s) serial-only\n' "$name" "$layer"
     log="$PROJECT_ROOT/.pair/verify-$name.log"
-    if bash -c "$command" >"$log" 2>&1; then
+    if bash -c "$command" </dev/null >"$log" 2>&1; then
       echo "0 $required $name" >>"$PROJECT_ROOT/.pair/verify-results.txt"
     else
       echo "$? $required $name" >>"$PROJECT_ROOT/.pair/verify-results.txt"
@@ -194,7 +194,7 @@ while IFS=$'\t' read -r name layer required command serial extra || [ -n "${name
   # killed the subshell BEFORE writing the result — then the total either broke
   # silent on wait -n (jobs=1) or reduced as "0 failures" (jobs>1): a red required
   # check read green.
-  ( set +e; bash -c "$command" >"$log" 2>&1; echo "$? $required $name" >>"$PROJECT_ROOT/.pair/verify-results.txt" ) &
+  ( set +e; bash -c "$command" </dev/null >"$log" 2>&1; echo "$? $required $name" >>"$PROJECT_ROOT/.pair/verify-results.txt" ) &
   running=$((running + 1))
   if [ "$running" -ge "$JOBS" ]; then
     wait -n

@@ -1,14 +1,13 @@
 #!/usr/bin/env bash
 # bin/pairup — raise the pair from the project folder, no tests, no reinstall.
 #
-# Pain it fixes: finish.sh runs full suites (5–10 min) on every launch,
-# while pair-duo never raises the supervisor at all. So either wait long
-# or run the pair with no watchdog. Here only: state → pilot-if-dead → agents → check.
+# Starts one project session and supervisor, using an isolated worktree by default.
+# --in-place selects the current checkout; a repeated launch attaches.
 #
 # Run from the project folder, not from the autonomy repo:
 #   cd ~/work/nyx-os && pairup            # this project's pair
 #   cd ~/work/nyx-os && pairup --swap agy  # swap the critic (limits ran out)
-# First time (once): pairup --install  # shim into ~/.local/bin, then pathless
+# First time, from the engine clone: ./bin/pairup --install
 #
 # State resolve — walk-up to .pair/state.json from cwd, same as in serve.sh
 # and pairctl_read.walk_up_to_state: launching from a subdir never creates
@@ -58,11 +57,12 @@ _resolve_reason="$(printf '%s' "$_resolved" | sed -n '2p')"
 
 usage() {
   sed -n '2,14p' "$0" | sed 's/^# //; s/^#//'
-  echo "usage: pairup [--install] [--writer <role>] [--swap <cli>] [--worktree <branch>] [--task TEXT] [--state DIR]"
+  echo "usage: pairup [TASK] [--install] [--writer <role>] [--swap <cli>] [--worktree <branch>] [--in-place] [--task TEXT] [--state DIR]"
   echo "  --install    place shim in ~/.local/bin (once), exit"
   echo "  --writer <role> assign this project's writer and launch the pair"
   echo "  --swap <cli> recreate the critic pane with a new CLI, leave the writer alone"
-  echo "  --worktree, -w <branch> run the pair in an isolated git worktree"
+  echo "  --worktree, -w <branch> run the pair in an isolated git worktree (the DEFAULT)"
+  echo "  --in-place    run the pair in this checkout (opt out of the worktree)"
   echo "  --task TEXT  record a task before launch"
   echo "  --state DIR  explicit state dir (default: walk-up from cwd)"
 }
@@ -70,7 +70,11 @@ TASK=""
 SWAP=""
 WANT_WRITER=""
 WORKTREE_BRANCH=""
-EXPLICIT_STATE=0
+IN_PLACE=""
+# The directory the agents WORK in. It is the worktree when the launch made
+# one, and the project's own checkout otherwise. The STATE dir is a separate
+# thing — the gates read the state, the agents edit the tree.
+LAUNCH_DIR=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --install)
@@ -87,8 +91,9 @@ while [ $# -gt 0 ]; do
     --task) TASK="${2:-}"; shift 2 || { echo "error: --task needs text" >&2; exit 2; } ;;
     --writer) WANT_WRITER="${2:-}"; shift 2 || { echo "error: --writer needs a role" >&2; exit 2; } ;;
     --worktree|-w) WORKTREE_BRANCH="${2:-}"; shift 2 || { echo "error: --worktree needs a branch" >&2; exit 2; } ;;
+    --in-place) IN_PLACE="1"; shift ;;
     --duo) echo "pairup: --duo removed: use bin/pair-duo <cli> for two copies of the SAME CLI (roles <cli>-writer and <cli>-critic). The critic of a pairup pair is a different CLI: pairup --swap <cli>" >&2; exit 2 ;;
-    --state) STATE_DIR="${2:-}"; EXPLICIT_STATE=1; shift 2 || { echo "error: --state needs a dir" >&2; exit 2; } ;;
+    --state) STATE_DIR="${2:-}"; shift 2 || { echo "error: --state needs a dir" >&2; exit 2; } ;;
     -h|--help) usage; exit 0 ;;
     --*) echo "error: unknown flag $1" >&2; usage >&2; exit 2 ;;
     *) [ -z "$TASK" ] || { echo "error: use one quoted task or --task" >&2; exit 2; }; TASK="$1"; shift ;;
@@ -106,18 +111,38 @@ case "$_resolve_reason" in
     ;;
 esac
 
-if [ -n "$WORKTREE_BRANCH" ]; then
+# The worktree is the DEFAULT (round 153): the launch environment of a pair
+# is an isolated checkout, so a dirty main worktree cannot swallow the round
+# and two launches cannot share one tree. `--in-place` is the explicit
+# opt-out for the operator who wants the pair in THIS checkout.
+if [ -z "$IN_PLACE" ]; then
   _git_root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
   if [ -z "$_git_root" ]; then
-    echo "pairup: --worktree requires running inside a git repository" >&2
+    echo "pairup: a worktree needs a git repository — use --in-place to run without one" >&2
     exit 1
+  fi
+  if [ -z "$WORKTREE_BRANCH" ]; then
+    # The name is DERIVED from the project path, so the same project always
+    # lands in the same worktree and two projects never share one branch.
+    WORKTREE_BRANCH="$(python3 -c '
+import sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[1] + "/mcp/pair_mailbox")
+import worktree
+print(worktree.default_branch(Path(sys.argv[2])))
+' "$PAIRUP_ROOT" "$_git_root")"
   fi
   _wt_res="$(python3 -c '
 import sys, json
 from pathlib import Path
 sys.path.insert(0, sys.argv[1] + "/mcp/pair_mailbox")
 import worktree
-res = worktree.setup_worktree(Path(sys.argv[2]), sys.argv[3])
+# The launch environment of the pair, not a task of a running round: there is
+# no round yet, so no plan and no critic visa could exist. The decision here
+# is the human'"'"'s — the launch defaults to a worktree, and --in-place is
+# the opt-out. A worktree for a TASK of a running round goes through
+# worktree.setup_worktree, which demands the critic'"'"'s signed plan.
+res = worktree.bootstrap_worktree(Path(sys.argv[2]), sys.argv[3])
 print(json.dumps(res))
 ' "$PAIRUP_ROOT" "$_git_root" "$WORKTREE_BRANCH")"
   _wt_ok="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1]).get("ok"))' "$_wt_res")"
@@ -127,26 +152,34 @@ print(json.dumps(res))
     exit 1
   fi
   _target_wt="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1]).get("worktree"))' "$_wt_res")"
-  echo "pairup: switching to worktree $_target_wt"
+  echo "pairup: switching to worktree $_target_wt (--in-place to stay in this checkout)"
   cd "$_target_wt"
-  [ "$EXPLICIT_STATE" -eq 1 ] || STATE_DIR="$_target_wt/.pair"
+  # The pair state stays in the main repo by default, so the supervisor
+  # and the gates see one round and one writer with no state split.
+  if [ -z "$STATE_DIR" ]; then
+    STATE_DIR="$_git_root/.pair"
+  fi
+  # The panes work in the WORKTREE; the state stays in the MAIN checkout.
+  # Two directories, two jobs: the state is what the gates read, and the
+  # working tree is what the agents edit. Conflating them is what made the
+  # worktree opt-in useless — the launch cd'ed into the worktree and the
+  # panes cd'ed straight back out of it.
+  LAUNCH_DIR="$_target_wt"
 fi
 
-if [ ! -f "$STATE_DIR/state.json" ]; then
-  if [ "$EXPLICIT_STATE" -eq 1 ] && [ "$(basename -- "$STATE_DIR")" != ".pair" ]; then
-    echo "pairup: a new --state must end in .pair; existing custom state directories remain supported" >&2
-    exit 2
-  fi
+_bootstrap_root=""
+if [ -n "$STATE_DIR" ] && [ ! -f "$STATE_DIR/state.json" ]; then
+  case "$STATE_DIR" in
+    */.pair) _bootstrap_root="$(dirname -- "$STATE_DIR")"; STATE_DIR="";;
+    *) echo "pairup: a new --state must end in .pair; no state.json in $STATE_DIR" >&2; exit 2;;
+  esac
+fi
+if [ -z "$STATE_DIR" ]; then
   # No state — this is a new pair project: create the minimum quietly,
   # the writer and the task come later via flags and policy.
   # Root is git-top, not $PWD: launching from a subdir must not breed
   # a second .pair under src/. No pair without git (no commits — nothing to review).
-  _root="$(git rev-parse --show-toplevel 2>/dev/null || pwd -P)"
-  if [ "$EXPLICIT_STATE" -eq 1 ]; then
-    _root="$(dirname -- "$STATE_DIR")"
-  else
-    STATE_DIR="$_root/.pair"
-  fi
+  _root="${_bootstrap_root:-$(git rev-parse --show-toplevel 2>/dev/null || pwd -P)}"
   mkdir -p "$_root/.pair/mailbox" "$_root/.pair/notes" "$_root/.pair/obligations" "$_root/.pair/patches"
   # Ground-truth template for the new project (R84): protection from day one.
   if [ ! -f "$_root/anti-mock.json" ] && [ -f "$PAIRUP_ROOT/anti-mock.json" ]; then
@@ -200,6 +233,11 @@ EOF
 fi
 STATE_DIR="$(cd -- "$STATE_DIR" && pwd -P)"
 PROJECT_DIR="$(dirname -- "$STATE_DIR")"
+# The panes work in the LAUNCH dir (the worktree by default, the checkout with
+# --in-place). The state stays with the project that owns it, so the gates
+# read one room whichever tree the agents work in.
+[ -z "$LAUNCH_DIR" ] && LAUNCH_DIR="$PROJECT_DIR"
+LAUNCH_DIR="$(cd -- "$LAUNCH_DIR" && pwd -P)"
 export PAIR_STATE="$STATE_DIR"
 
 PAIRCTL="$PAIRUP_ROOT/bin/pairctl"
@@ -207,26 +245,24 @@ PILOT="$PAIRUP_ROOT/bin/pairpilot"
 
 # --- 0. writer in one command: the flag beats everything, then the project
 # policy, then the global one. The human remembers two words, not the full pairctl path.
-if [ -n "$WANT_WRITER" ]; then
-  "$PAIRCTL" --state "$STATE_DIR" roles --writer "$WANT_WRITER"
-fi
 
 # --- 1. roles BEFORE the pilot: fail loudly before the background starts,
 # otherwise the pilot stays orphaned (agy note on review bfbe9a5). The pilot
 # starts only once it knows whom to raise.
 status_json="$("$PAIRCTL" --state "$STATE_DIR" status 2>/dev/null || true)"
 writer="$(printf '%s' "$status_json" | python3 -c 'import json,sys; s=json.load(sys.stdin); print((s.get("policy") or {}).get("writer") or s.get("writer") or "")' 2>/dev/null || true)"
+[ -n "$WANT_WRITER" ] && writer="$WANT_WRITER"
 critic="$(printf '%s' "$status_json" | python3 -c 'import json,sys; s=json.load(sys.stdin); print((s.get("policy") or {}).get("critic") or "")' 2>/dev/null || true)"
 if [ -z "$critic" ]; then
   # Only the live one: a dead roster entry would otherwise become the critic,
   # and pairup would open a dead CLI. Take pid from state.json directly:
   # status renders roles as last_seen strings, with no pid in them.
-  critic="$(python3 -c 'import json,os,sys; s=json.load(open(sys.argv[1])); rs=s.get("roles",{}); w=s.get("writer"); out="";
+  critic="$(python3 -c 'import json,os,sys; s=json.load(open(sys.argv[1])); rs=s.get("roles",{}); w=sys.argv[2]; out="";
 for r,info in rs.items():
   if r==w or not isinstance(info,dict): continue
   try: os.kill(info.get("pid") or 0, 0); out=r; break
   except OSError: continue
-print(out)' "$STATE_DIR/state.json" 2>/dev/null || true)"
+print(out)' "$STATE_DIR/state.json" "$writer" 2>/dev/null || true)"
 fi
 if [ -n "$SWAP" ] || [ -z "$writer" ] || [ -z "$critic" ]; then
   _global="$HOME/.config/pair-mailbox/roles.json"
@@ -244,7 +280,6 @@ if [ -n "$SWAP" ] || [ -z "$writer" ] || [ -z "$critic" ]; then
     fi
   fi
 fi
-if [ -z "$SWAP" ]; then
   if [ -z "$writer" ]; then
     for _c in codex agy claude opencode pi omp; do
       if command -v "$_c" >/dev/null 2>&1; then writer="$_c"; break; fi
@@ -253,6 +288,7 @@ if [ -z "$SWAP" ]; then
     "$PAIRCTL" --state "$STATE_DIR" roles --writer "$writer"
     echo "pairup: selected writer $writer (override: --writer <cli>)"
   fi
+if [ -z "$SWAP" ]; then
   if [ -z "$critic" ]; then
     # Ordinary user: downloaded, install, pairup — and the pair works.
     # Asking for --swap would sink the first launch. Raise the first
@@ -267,6 +303,107 @@ if [ -z "$SWAP" ]; then
     echo "pairup: no critic assigned — bringing up $critic (override: pairup --swap <cli>)" >&2
   fi
 fi
+[ -n "$SWAP" ] && critic="$SWAP"
+case "$critic" in
+  agy|claude|codex|opencode|pi|omp) ;;
+  *) echo "pairup: unsupported critic CLI '$critic'" >&2; exit 2;;
+esac
+if [ "$critic" = "$writer" ]; then
+  echo "pairup: writer and critic must use different CLIs; use bin/pair-duo for two instances" >&2
+  exit 2
+fi
+if ! command -v "$critic" >/dev/null 2>&1; then
+  echo "pairup: critic CLI '$critic' is not installed" >&2
+  exit 2
+fi
+# Launch commands from cli-profiles.json — same source as finish.sh and the pilot.
+launch_for() {
+  python3 "$PAIRUP_ROOT/mcp/pair_mailbox/launch_context.py" command "$1" "$STATE_DIR"
+}
+writer_cmd="$(launch_for "$writer")"
+critic_cmd="$(launch_for "$critic")"
+proj_name="$(basename -- "$PROJECT_DIR")"
+title_for() { printf '%s:%s (%s)' "$proj_name" "$1" "$2"; }
+
+# Per-project tmux server: `pair-<basename>-<hash8>`, the hash AUTHORITATIVE
+# (round 106 slice D conditions, critic seq 1610). Derived STATELESSLY from the
+# RESOLVED root — never read from state.json, because binding the tree to the
+# socket needs the state file the socket was meant to protect.
+#
+# Why a socket, not just a name: one tmux server (`/tmp/tmux-1000/default`)
+# serves every project on the box, so sessions of DIFFERENT projects are visible
+# and addressable to each other. That is how a message landed in galatour's pane
+# and how two `session name = basename` projects collide. A socket makes them
+# different servers: gala's panes stop existing in this project's namespace.
+#
+# Two clones of one repo share both basename and origin — the hash is what keeps
+# them apart. Readability is for the operator, never the key.
+_RESOLVED="$(cd -- "$PROJECT_DIR" 2>/dev/null && pwd -P)"
+if [ -z "$_RESOLVED" ]; then _RESOLVED="$PROJECT_DIR"; fi
+_HASH="$(printf '%s' "$_RESOLVED" | sha256sum 2>/dev/null | cut -c1-8)"
+[ -z "$_HASH" ] && _HASH="$(printf '%s' "$_RESOLVED" | cksum | cut -d' ' -f1)"
+if [ -n "${PAIR_TMUX_SOCKET:-}" ]; then
+  PAIR_SOCKET="$PAIR_TMUX_SOCKET"          # explicit override, for tests and for the operator
+else
+  PAIR_SOCKET="pair-${proj_name}-${_HASH}"
+fi
+session="$PAIR_SOCKET"                      # deterministic: same tree, same session name
+t() { tmux -L "$PAIR_SOCKET" "$@"; }        # every call below goes through the project's server
+
+# THREE probes, in this order, and each one answers a different question:
+#   1. OUR OWN socket — has this project already migrated and has a live session
+#      there? Then REUSE it. Without this probe a second `pairup` on a migrated
+#      project raises a second session on the same socket: the idempotence hole
+#      (D1), and the very collision rename was meant to fix.
+#   2. The DEFAULT socket — has the LEGACY session (bare $proj_name) there? Then
+#      keep using it, because the roster's pane pointers already name a session
+#      the shared server can see. Transition condition (b): never blind the
+#      running pair mid-round.
+#   3. Neither — this project has no pair yet: raise on its own socket.
+# PAIR_FORCE_SOCKET=1 skips 1 and 2 for tests and for forcing the migration.
+_EXISTING=""
+if command -v tmux >/dev/null 2>&1; then
+  if [ -z "${PAIR_FORCE_SOCKET:-}" ]; then
+    if t has-session -t "$session" 2>/dev/null; then
+      _EXISTING="own-socket:$session"
+    elif tmux has-session -t "$proj_name" 2>/dev/null; then
+      _EXISTING="default:$proj_name"
+    fi
+  fi
+fi
+if [ -n "$_EXISTING" ]; then
+  _WHERE="${_EXISTING%%:*}"
+  _NAME="${_EXISTING#*:}"
+  if [ "$_WHERE" = "default" ]; then
+    PAIR_SOCKET="default"
+    session="$_NAME"
+    t() { tmux "$@"; }
+    echo "pairup: live pair found on the DEFAULT socket as session '$_NAME' — using it" >&2
+    echo "pairup: (transition: a project mid-migration keeps its running pair until it exits)" >&2
+  else
+    echo "pairup: pair already live on this project's socket as session '$_NAME' — attaching" >&2
+  fi
+fi
+
+# The socket name travels into the panes' environment and the state, so every
+# later tool (pairpilot, composer, pairrestart inventory) addresses the SAME
+# server instead of the shared default. PAIR_PANE_SOCKET is read by
+# composer._tmux() — one resolver for all call sites, condition (c).
+export PAIR_PANE_SOCKET="$PAIR_SOCKET"
+# Do not silently change authority under a live writer process. A different
+# writer requires an explicit session migration, not a critic replacement.
+if [ -n "$_EXISTING" ] && [ -n "$WANT_WRITER" ]; then
+  _writer_title="$(t list-panes -t "$session:0" -F '#{pane_title}' |
+    awk '/\(writer\)$/ {print; exit}')"
+  if [ "$_writer_title" != "$proj_name:$writer (writer)" ]; then
+    echo "pairup: existing session uses writer '$_writer_title'; requested '$writer'. Session and authority left unchanged." >&2
+    exit 1
+  fi
+fi
+if [ -n "$WANT_WRITER" ]; then
+  "$PAIRCTL" --state "$STATE_DIR" roles --writer "$WANT_WRITER"
+fi
+
 # --- 1b. Orphan lock (diagnosed 2026-10-10, agy simplification seq 730): opencode
 # without --standalone drives MCP through a background `opencode serve --service`,
 # and the role server outlives its pane: the orphan holds the flock, and any new
@@ -321,6 +458,49 @@ if [ "$pilot_alive" -eq 0 ] && [ -f "$STATE_DIR/pilot.pid" ]; then
     rm -f "$STATE_DIR/pilot.pid"
   fi
 fi
+# A pilot started before per-project socket selection retains the old address.
+# Replace only a process proven to supervise this exact room.
+if [ "$pilot_alive" -eq 1 ] && [ -f "$STATE_DIR/pilot.pid" ]; then
+  if python3 - "$STATE_DIR" "$PAIR_PANE_SOCKET" <<'PY_PILOT'
+import os, signal, sys, time
+from pathlib import Path
+room = Path(sys.argv[1]).resolve()
+try:
+    pid = int((room / "pilot.pid").read_text())
+    args = Path(f"/proc/{pid}/cmdline").read_bytes().decode().split("\0")
+    if not any(Path(a).name == "pairpilot" for a in args):
+        sys.exit(1)
+    index = args.index("--state")
+    if Path(args[index + 1]).resolve() != room:
+        sys.exit(1)
+    values = Path(f"/proc/{pid}/environ").read_bytes().split(b"\0")
+    expected = ("PAIR_PANE_SOCKET=" + sys.argv[2]).encode()
+    if expected in values:
+        sys.exit(1)
+    os.kill(pid, signal.SIGTERM)
+    deadline = time.monotonic() + 3
+    while time.monotonic() < deadline:
+        try:
+            status = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[0]
+        except FileNotFoundError:
+            break
+        if status == "Z":
+            break
+        time.sleep(.1)
+    else:
+        print("pairup: supervisor did not stop; refusing to start a second instance", file=sys.stderr)
+        sys.exit(2)
+except (OSError, ValueError, IndexError):
+    sys.exit(1)
+PY_PILOT
+  then
+    echo "pairup: replacing this project's supervisor with the correct tmux socket"
+    pilot_alive=0
+  else
+    _pilot_result=$?
+    [ "$_pilot_result" -ne 2 ] || exit 1
+  fi
+fi
 if [ "$pilot_alive" -eq 1 ]; then
   echo "pairup: supervisor already running on $STATE_DIR, leaving it alone"
 else
@@ -344,134 +524,50 @@ if [ -n "$TASK" ]; then
   PAIR_STATE="$STATE_DIR" "$PAIRCTL" --state "$STATE_DIR" task "$TASK"
 fi
 
-# --- 3. swap: change the critic when limits run out. Never touch the writer
-# (PROTOCOL §2 — only a human moves the right via assign, and swap is not
-# a writer change but a change of the critic-role performer).
-if [ -n "$SWAP" ]; then
-  writer="$("$PAIRCTL" --state "$STATE_DIR" status 2>/dev/null \
-    | python3 -c 'import json,sys; print(json.load(sys.stdin).get("writer") or "")' 2>/dev/null || true)"
-  if [ -z "$writer" ]; then
-    echo "pairup: nobody to swap — no writer assigned (pairctl assign <role>)" >&2
-    exit 1
-  fi
-  echo "pairup: writer $writer stays, critic -> $SWAP"
-  "$PAIRUP_ROOT/bin/pair-duo" --swap-critic "$SWAP" --state "$STATE_DIR" --project "$PROJECT_DIR" || exit $?
-  # The writer launches RIGHT HERE: otherwise the human stays in an empty shell
-  # not knowing how to use a single pane. The critic is already next door.
-  writer_cmd="$(python3 "$PAIRUP_ROOT/mcp/pair_mailbox/launch_context.py" command "$writer" "$STATE_DIR")"
-  echo "pairup: critic $SWAP in the next pane, starting writer $writer here"
-  # Round 103 S5: PAIR_ROLE no longer exported. It is the source of 30
-  # "PAIR_ROLE=x != argv role" refusals (2026-10-07..today, peer measurement):
-  # a session inheriting another role's export failed the serve.sh guard that
-  # must stay intact ("role comes from config, never from env"). The role of a
-  # pane is its MCP config entry, and PAIR_STATE still pins the shared dir.
-  export PAIR_STATE="$STATE_DIR"
-  cd "$PROJECT_DIR"
-  echo "=== PAIR WRITER: $writer ==="
-  [ -f "$STATE_DIR/task-banner.txt" ] && cat "$STATE_DIR/task-banner.txt"
-  exec $writer_cmd
-fi
+# Explicit --swap selects the critic for a fresh session too. Session detection
+# below decides whether to create the pair or reuse its existing terminal.
+[ -n "$SWAP" ] && critic="$SWAP"
 
 # Roles already resolved at step 1 (before the pilot): only raising here.
 
-# Launch commands from cli-profiles.json — same source as finish.sh and the pilot.
-launch_for() {
-  python3 "$PAIRUP_ROOT/mcp/pair_mailbox/launch_context.py" command "$1" "$STATE_DIR"
-}
-writer_cmd="$(launch_for "$writer")"
-critic_cmd="$(launch_for "$critic")"
-proj_name="$(basename -- "$PROJECT_DIR")"
-title_for() { printf '%s:%s (%s)' "$proj_name" "$1" "$2"; }
-
-# Per-project tmux server: `pair-<basename>-<hash8>`, the hash AUTHORITATIVE
-# (round 106 slice D conditions, critic seq 1610). Derived STATELESSLY from the
-# RESOLVED root — never read from state.json, because binding the tree to the
-# socket needs the state file the socket was meant to protect.
-#
-# Why a socket, not just a name: one tmux server (`/tmp/tmux-1000/default`)
-# serves every project on the box, so sessions of DIFFERENT projects are visible
-# and addressable to each other. That is how a message landed in galatour's pane
-# and how two `session name = basename` projects collide. A socket makes them
-# different servers: gala's panes stop existing in this project's namespace.
-#
-# Two clones of one repo share both basename and origin — the hash is what keeps
-# them apart. Readability is for the operator, never the key.
-_RESOLVED="$(cd -- "$PROJECT_DIR" 2>/dev/null && pwd -P)"
-if [ -z "$_RESOLVED" ]; then _RESOLVED="$PROJECT_DIR"; fi
-_HASH="$(printf '%s' "$_RESOLVED" | sha256sum 2>/dev/null | cut -c1-8)"
-[ -z "$_HASH" ] && _HASH="$(printf '%s' "$_RESOLVED" | cksum | cut -d' ' -f1)"
-if [ -n "${PAIR_TMUX_SOCKET:-}" ]; then
-  PAIR_SOCKET="$PAIR_TMUX_SOCKET"          # explicit override, for tests and for the operator
-else
-  PAIR_SOCKET="pair-${proj_name}-${_HASH}"
-fi
-session="$PAIR_SOCKET"                      # deterministic: same tree, same session name
-t() { tmux -L "$PAIR_SOCKET" "$@"; }        # every call below goes through the project's server
-
-# THREE probes, in this order, and each one answers a different question:
-#   1. OUR OWN socket — has this project already migrated and has a live session
-#      there? Then REUSE it. Without this probe a second `pairup` on a migrated
-#      project raises a second session on the same socket: the idempotence hole
-#      (D1), and the very collision rename was meant to fix.
-#   2. The DEFAULT socket — has the LEGACY session (bare $proj_name) there? Then
-#      keep using it, because the roster's pane pointers already name a session
-#      the shared server can see. Transition condition (b): never blind the
-#      running pair mid-round.
-#   3. Neither — this project has no pair yet: raise on its own socket.
-# PAIR_FORCE_SOCKET=1 skips 1 and 2 for tests and for forcing the migration.
-_EXISTING=""
-_legacy_ours="$(python3 - "$STATE_DIR/state.json" "$proj_name" <<'PY'
-import json, sys
-state = json.load(open(sys.argv[1], encoding="utf-8"))
-print("yes" if any(str(info.get("pane", "")).startswith(sys.argv[2] + ":")
-                   for info in state.get("roles", {}).values() if isinstance(info, dict)) else "no")
-PY
-)"
-if command -v tmux >/dev/null 2>&1; then
-  if [ -z "${PAIR_FORCE_SOCKET:-}" ]; then
-    if t has-session -t "$session" 2>/dev/null; then
-      _EXISTING="own-socket:$session"
-    elif [ "$_legacy_ours" = "yes" ] && tmux has-session -t "$proj_name" 2>/dev/null; then
-      _EXISTING="default:$proj_name"
-    fi
-  fi
-fi
-if [ -n "$_EXISTING" ]; then
-  _WHERE="${_EXISTING%%:*}"
-  _NAME="${_EXISTING#*:}"
-  if [ "$_WHERE" = "default" ]; then
-    PAIR_SOCKET="default"
-    session="$_NAME"
-    t() { tmux "$@"; }
-    echo "pairup: live pair found on the DEFAULT socket as session '$_NAME' — using it" >&2
-    echo "pairup: (transition: a project mid-migration keeps its running pair until it exits)" >&2
-  else
-    echo "pairup: pair already live on this project's socket as session '$_NAME' — attaching" >&2
-  fi
-  if [ -n "${TMUX:-}" ] && t switch-client -t "$session" 2>/dev/null; then
-    exit 0
-  fi
-  TMUX= t attach-session -t "$session"
-  exit $?
-fi
-
-# The socket name travels into the panes' environment and the state, so every
-# later tool (pairpilot, composer, pairrestart inventory) addresses the SAME
-# server instead of the shared default. PAIR_PANE_SOCKET is read by
-# composer._tmux() — one resolver for all call sites, condition (c).
-export PAIR_PANE_SOCKET="$PAIR_SOCKET"
-# Enrolled socket clients start detached daemons for either role on demand.
-
-# launch_context binds each CLI and replaces inherited pair environment.
+# Enrolled socket clients start their detached role daemon when needed.
+# The wrapper binds each CLI process and replaces inherited pair environment.
 writer_init="$writer_cmd"
 critic_init="$critic_cmd"
 title_writer="$(title_for "$writer" writer)"
 title_critic="$(title_for "$critic" critic)"
 
-  t new-session -d -s "$session" -n "pair" -c "$PROJECT_DIR" "$writer_init"
-  t split-window -t "$session" -h -c "$PROJECT_DIR" "$critic_init"
+attach_pair() {
+  _target_socket="$(t display-message -p -t "$session" '#{socket_path}')"
+  if [ -n "${TMUX:-}" ] && [ "${TMUX%%,*}" = "$_target_socket" ]; then
+    t switch-client -t "$session"
+  else
+    # A client on another server cannot switch to this server's session.
+    TMUX= t attach-session -t "$session"
+  fi
+}
+
+if [ -n "$_EXISTING" ]; then
+  if [ -n "$SWAP" ]; then
+    _critic_pane="$(t list-panes -t "$session:0" -F '#{pane_id}|#{pane_title}' |
+      awk -F'|' -v prefix="$proj_name:" 'index($2,prefix)==1 && $2 ~ /\(critic\)$/ {print $1; exit}')"
+    if [ -z "$_critic_pane" ]; then
+      echo "pairup: cannot identify this session's critic pane; leaving it untouched" >&2
+      exit 1
+    fi
+    _current_title="$(t display-message -p -t "$_critic_pane" '#{pane_title}')"
+    if [ "$_current_title" != "$title_critic" ]; then
+      t respawn-pane -k -t "$_critic_pane" -c "$LAUNCH_DIR" "$critic_init"
+      t select-pane -T "$title_critic" -t "$_critic_pane"
+    fi
+  fi
+  attach_pair
+else
+  t new-session -d -s "$session" -n "pair" -c "$LAUNCH_DIR" "$writer_init"
+  t split-window -t "$session" -h -c "$LAUNCH_DIR" "$critic_init"
   t select-layout -t "$session" even-horizontal 2>/dev/null || true
   t select-pane -T "$title_writer" -t "$session:0.0" 2>/dev/null || true
   t select-pane -T "$title_critic" -t "$session:0.1" 2>/dev/null || true
   echo "pairup: session $session (writer $writer | critic $critic)"
-  TMUX= t attach-session -t "$session"
+  attach_pair
+fi

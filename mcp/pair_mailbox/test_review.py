@@ -462,10 +462,10 @@ class TestDeliveryGaps(PairTestCase):
 
     def test_state_carries_advisory_not_ceiling_b7(self) -> None:
         """B7: pair_state carries the advisory line, never the ceiling verdict."""
-        state = self.writer.tool_pair_state()
-        self.assertIn("delivery", state)
-        self.assertIn("floor", state["delivery"])
-        self.assertIn("ceiling", state["delivery"])
+        import review
+        with mock.patch.object(review, "git_head", wraps=review.git_head) as head:
+            state = self.writer.tool_pair_state()
+        self.assertEqual(("floor", "ceiling", 1), (*state["delivery"], head.call_count))
 
     def test_push_then_state_never_stale_a7(self) -> None:
         """A7 sequence: a real push between two pair_state calls moves the

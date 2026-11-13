@@ -26,6 +26,7 @@ backlog-lint	static	1	python3 scripts/backlog_check_test.py && python3 scripts/b
 # --- positive: behaviour that must work ---
 launch-context	positive	1	python3 -m unittest discover -s mcp/pair_mailbox -p test_launch_context.py
 instruction-block	positive	1	python3 -m unittest discover -s mcp/pair_mailbox -p test_instruction_block.py
+finish	positive	1	python3 finish_test.py
 # Five suites past moving obligations out of `server.py`: one test file per source.
 # Each launches alone, because `python3 test_protocol.py` no longer runs neighbour
 # module tests, and a silently excluded suite would read as green.
@@ -41,27 +42,36 @@ autoperms	positive	1	python3 mcp/pair_mailbox/test_autoperms.py
 intent-gate	positive	1	python3 mcp/pair_mailbox/test_intent_gate.py
 plan-gate	positive	1	python3 mcp/pair_mailbox/test_plan_gate.py
 server-freshness	positive	1	python3 mcp/pair_mailbox/test_server_freshness.py
+store-core	positive	1	python3 mcp/pair_mailbox/test_store_core.py
 heal	positive	1	python3 mcp/pair_mailbox/test_heal.py
 budget	positive	1	python3 mcp/pair_mailbox/test_budget.py
 worktree	positive	1	python3 mcp/pair_mailbox/test_worktree.py
+preflight	positive	1	python3 mcp/pair_mailbox/test_preflight.py
+merge-strategy	positive	1	python3 mcp/pair_mailbox/test_merge_strategy.py
+project-settings	positive	1	python3 mcp/pair_mailbox/test_project_settings.py
+isolation	positive	1	python3 mcp/pair_mailbox/test_isolation.py
 review-gate	positive	1	python3 mcp/pair_mailbox/test_review_gate.py
 obligations	positive	1	python3 mcp/pair_mailbox/test_obligations.py
 rolekeys	positive	1	python3 mcp/pair_mailbox/test_rolekeys.py
 pairctl-authority	positive	1	python3 mcp/pair_mailbox/test_pairctl_authority.py
 pairctl-panes	positive	1	python3 mcp/pair_mailbox/test_pairctl_panes.py
 pairctl-read	positive	1	python3 mcp/pair_mailbox/test_pairctl_read.py
-supervisor	positive	1	python3 bin/pairpilot_test.py
+supervisor	positive	1	python3 bin/pairpilot_test.py && python3 mcp/pair_mailbox/test_guard.py && python3 mcp/pair_mailbox/test_pilot_guard.py
+watchdog	positive	1	python3 mcp/pair_mailbox/test_watchdog.py
 # The same suite with the host's tmux server out of reach (round 136). The two
 # rows together are the property the suite never had: its result does not
 # depend on the machine it runs on. Before the fix the first row was red on any
 # box where another project held pane %1, and the second was the only green one
 # - the gate was telling the truth about the machine, not about the change.
-supervisor-offline	positive	1	env -u TMUX -u TMUX_PANE TMUX_TMPDIR=$(mktemp -d) python3 bin/pairpilot_test.py
+supervisor-offline	positive	1	env -u TMUX -u TMUX_PANE TMUX_TMPDIR=$(mktemp -d) python3 bin/pairpilot_test.py && env -u TMUX -u TMUX_PANE TMUX_TMPDIR=$(mktemp -d) python3 mcp/pair_mailbox/test_guard.py && env -u TMUX -u TMUX_PANE TMUX_TMPDIR=$(mktemp -d) python3 mcp/pair_mailbox/test_pilot_guard.py
 board-hosts	positive	1	python3 mcp/pair_mailbox/test_board_hosts.py
 board-snapshot	positive	1	python3 mcp/pair_mailbox/test_board_snapshot.py
 board-render	positive	1	python3 mcp/pair_mailbox/test_board_render.py
 board-cli	positive	1	python3 bin/pairboard_test.py
 doctor	positive	1	python3 bin/pairdoctor_test.py
+pairmcpdoctor	positive	1	python3 bin/pairmcpdoctor_test.py
+picker	positive	1	PYTHONPATH=mcp/pair_mailbox python3 -m unittest test_picker -q
+bin-test-coverage	positive	1	python3 scripts/bin_test_coverage_test.py && python3 scripts/bin_test_coverage.py
 pairup	positive	1	python3 bin/pairup_test.py
 pairrestart	positive	1	python3 bin/pairrestart_test.py && python3 mcp/pair_mailbox/test_restart_trace.py
 manifest	positive	1	python3 mcp/pair_mailbox/test_manifest.py
@@ -73,10 +83,16 @@ digest	positive	1	python3 mcp/pair_mailbox/test_digest.py
 panes	positive	1	python3 mcp/pair_mailbox/test_panes.py	serial
 composer	positive	1	python3 mcp/pair_mailbox/test_composer.py	serial
 composer-bypass	positive	1	python3 mcp/pair_mailbox/test_allowlist_bypass.py	serial
+wait-until	positive	1	python3 mcp/pair_mailbox/test_wait_until.py
+mcpprestart	positive	1	python3 bin/pairmcprestart_test.py
 pointer	positive	1	python3 mcp/pair_mailbox/test_pointer.py
 waiting-contract	positive	1	python3 mcp/pair_mailbox/test_waiting_contract.py
 read-delivery	positive	1	python3 mcp/pair_mailbox/test_read_delivery.py
 pair-duo	positive	1	python3 bin/pair-duo_test.py
+# Round 144: the tmux-free runner. The suite proves the injected config names
+# the role and the room, the child is a pane-free subprocess, and a letter
+# crosses a real room with no tmux in the environment.
+pair-runner	positive	1	python3 bin/pair-runner_test.py
 notes-consistency	positive	1	python3 mcp/pair_mailbox/test_pair_notes_consistency.py
 boardcheck	positive	1	python3 mcp/pair_mailbox/test_boardcheck.py
 boardcheck-isolation	positive	1	python3 mcp/pair_mailbox/test_boardcheck_isolation.py
@@ -102,7 +118,24 @@ file-size-gate-tests	positive	1	bash scripts/file-size-gate_test.sh
 eye-deadlock	positive	1	bash scripts/eye-of-sauron_test.sh
 session-finalizer	positive	1	bash skills/session-finalizer/tests/run.sh
 i18n-selftest	positive	1	python3 scripts/i18n_self_test.py
+# The Russian mirror is a deliberate mirror of the original, and it drifted for
+# years: it lacked §9b, §17 and the §6 plan-gate subsection, and nothing
+# compared the two files. This layer compares their STRUCTURE - every section
+# and subsection, by number, in order. The prose is a translation and cannot
+# be compared mechanically; the skeleton can, and the skeleton is what a
+# reader navigates by.
+protocol-parity	positive	1	python3 scripts/protocol_parity_check.py
+protocol-parity-test	positive	1	python3 scripts/protocol_parity_check_test.py
 merge-audit-trail	positive	1	python3 scripts/merge-audit-trail_test.py
+# The AUDIT itself, not only its test (round 150). The layer above proves the
+# logic with fixtures; this one runs the check against the real remote and the
+# real journal, which is the only way its guarantee ("every merged PR has a
+# pr_merged event") is ever exercised on what it was written to catch.
+# `--skip-if-unavailable` covers the one honest case: a CI runner has neither
+# gh's credentials nor the pair's state directory (the journal is gitignored),
+# and there is nothing to audit there. The skip is loud and covers only what
+# could not be READ - a merge that was read and has no event still fails.
+merge-audit	positive	1	python3 scripts/merge-audit-trail.py --skip-if-unavailable
 # The gate that decides which suites an edit runs (round 140). Its own test
 # runs the real gate in a temp git repository: a staged change, a staged new
 # file, an unstaged change, an untracked file and the honest empty case.
@@ -124,3 +157,4 @@ opencode-server	positive	1	python3 mcp/pair_mailbox/test_opencode_server.py
 branch-class	positive	1	python3 scripts/branch_class_check_test.py
 pre-push-guard	positive	1	python3 bin/pre_push_guard_test.py
 branch-audit	positive	1	python3 mcp/pair_mailbox/test_branch_audit.py
+trunk	positive	1	python3 mcp/pair_mailbox/test_trunk.py

@@ -6,6 +6,10 @@ The short version, without detail. For "why is it like this" see
 > Language: this is the English original. The Russian mirror is
 > [`HOW-IT-WORKS.ru.md`](./HOW-IT-WORKS.ru.md).
 
+Ordinary CLI sessions work independently. This guide describes explicitly enrolled
+pairs started by `pairup` or `pair-duo`. Native subagents report to their parent;
+they do not claim a separate pair role.
+
 ## What this is
 
 Two agents on one project, running different programs, with a single server between
@@ -46,7 +50,7 @@ so one writes and one breaks. Which is which is decided by the standing arrangem
 ```sh
 bin/pairctl           # the human's authority surface: task, mode, autonomy, ok, status
 pairup                 # fast start from the project folder: supervisor-if-dead + pair
-bin/pair-duo --swap-critic <cli>  # replace the critic pane, writer untouched
+pairup --swap agy  # replace the critic pane, writer untouched
 bin/pairpilot         # the supervisor: restarts a dead agent, confirms allowlisted
                       # prompts, nudges a role with unread mail, writes the report
 bin/pairchat          # the conversation of this pair, live
@@ -247,15 +251,19 @@ has not answered for a long time. `bin/pairwatch` catches this before you notice
 one step, by anyone, without write authority: an agent will return the round itself
 if it found something after closing.
 
-**One agent has been working for a second hour.** Nobody stops it from finishing.
-`pairwatch` shows the silence; the decision is yours.
+**An agent keeps reasoning without tools.** The supervisor can interrupt a
+streaming monologue after its configured threshold when process inspection proves
+no tool is active. Unknown process inspection disables this interruption; a live
+tool is work even when it takes a long time.
 
 ## Git Worktrees (S5)
 
 To run parallel pairs or avoid context clashes across branches:
-- `pairup --worktree <branch>` (or `-w <branch>`) creates `.worktrees/<branch>` and isolates the session.
+- `pairup` runs in a worktree BY DEFAULT (round 153): `.worktrees/chore/pair-<project>-<hash8>`, with the branch name derived from the project path. `pairup --in-place` opts out and runs in the current checkout.
+- `pairup --worktree <branch>` (or `-w <branch>`) names the branch explicitly.
 - `pairctl worktree list` shows all active trees.
 - `pairctl worktree prune` cleans up deleted trees.
+- `.pair/worktree-log.jsonl` is the durable lifecycle journal (`created`, `committed`, `merged`, `removed`). It is never rotated, so the trail of a merged worktree outlives both the worktree directory and the branch it held.
 
 ## Machine PR Merge Gate & Feature Freeze (Round 60)
 
@@ -269,4 +277,4 @@ PR merges are enforced by machine rules before git master receives code:
 - Bypass: `--force` requires `--reason <explanation>` and is logged to the audit transcript (`pr_merge_forced`).
 - Feature Freeze: Commits or dirty edits during `verify` make the verdict stale, refusing both PR merge and closing the round.
 - **Never merge with a direct `gh pr merge`.** It runs outside the server, so no rule in this repo can refuse it and the journal learns nothing about the merge (PROTOCOL §10g). Round 115 merged that way and had to be repaired by hand.
-- **Cut the next round's branch from a fresh `origin/master`**, never from the previous round's branch. A squash merge drops the round's branch from master's history: the next commit on it lands in an add/add conflict, and its CI never runs — a PR with no checks reads as a green PR.
+- **Cut the next round's branch from a fresh trunk** (`origin/master` by default; the project's trunk otherwise — `PAIR_TRUNK`, `.pair/trunk`, `.pair-trunk`, see PROTOCOL §19), never from the previous round's branch. A squash merge drops the round's branch from the trunk's history: the next commit on it lands in an add/add conflict, and its CI never runs — a PR with no checks reads as a green PR.

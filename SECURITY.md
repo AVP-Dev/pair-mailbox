@@ -1,49 +1,39 @@
-# Security Policy
+# Security policy
 
-## Supported Versions
+Security fixes target `master`. Historical snapshots do not receive a separate
+maintenance promise. See the [threat model](docs/THREAT_MODEL.md).
 
-We provide security updates for the following versions:
+## What the protocol checks
 
-| Version | Supported |
-|---|---|
-| `master` (latest release) | :white_check_mark: |
-| Older releases | :x: |
+- Pair operations use fixed configured CLI roles and one writer. The server
+  rejects unauthorized protocol actions; host filesystem access still depends
+  on the CLI's permissions and the agent's instructions. This is not an OS sandbox.
+- SHA-256 seals detect a changed patch between proposal and application. They
+  are integrity checks, not authorship signatures or proof that the patch is safe.
+- tmux delivery validates project and pane identity. The mailbox is the durable
+  communication channel; a wake-up is best-effort.
+- Automatic prompt confirmation uses the allow/deny rules in `composer.py`.
+  Routine project edits, tests and feature-branch operations can be permitted.
+  Rules can refuse actions but cannot contain arbitrary malicious build scripts.
+- Default worktrees do not share mutable output or dependency directories.
+  Sharing through `worktree-share` is an explicit project choice. Post-merge
+  cleanup preserves dirty/ignored work and verifies the merged PR head.
 
----
+Ordinary CLI sessions do not acquire pair authority from installed MCP entries,
+old state or inherited variables. Explicit launch enrollment is process-scoped;
+losing MCP does not grant a critic permission to write.
 
-## Security Model & Design Invariants
+The default transport is standard-library Python. Optional Ed25519 signatures
+use PyNaCl; the full test suite also requires it. Dependencies and host tools
+remain part of the operator's environment, not a supply-chain isolation boundary.
 
-pair-mailbox operates within multi-process environments driving local CLI shells. Security is built into the protocol through the following mechanisms:
+Tests and builds run with the host user's permissions. Pair evidence is reported
+by agents and does not independently rerun their commands. These limits apply
+even when all protocol gates pass.
 
-1. **Strict Single Writer Invariant**:
-   Only the verified writer agent may modify repository files or execute mutating commands. The read-only peer proposes changes exclusively through sealed patches.
+## Report a vulnerability
 
-2. **SHA-256-Sealed Patches (hash seal, not a signature)**:
-   Proposed patches are stored with restrictive permissions (`0600`) and sealed with SHA-256 checksums (integrity seal against accidental or third-party modification between proposal and application — not a cryptographic signature of authorship). The writer recomputes and verifies the checksum immediately before application. Any mismatch halts execution immediately.
-
-3. **Multi-Project tmux Isolation**:
-   Tmux target panes are validated by `pane_current_path` and `pane_pid`. Commands and signals cannot cross workspace boundaries into unrelated sessions or projects.
-
-4. **Guarded Permission Unblocking (`pair_unblock`)**:
-   Autonomous confirmation of interactive prompts is strictly confined to an immutable allowlist (e.g. read-only inspections). Destructive commands, migrations, and secrets access are never automatically confirmed.
-
-5. **Zero Pip Runtime Dependencies**:
-   The engine relies solely on the Python 3 standard library (zero pip packages), eliminating PyPI supply chain attack vectors. `tmux` and `git` are required system tools outside that seal.
-
----
-
-## Reporting a Vulnerability
-
-If you discover a security vulnerability within pair-mailbox, please **do not open a public issue**.
-
-Instead, report it via GitHub Private Vulnerability Reporting:
-1. Navigate to the repository's **Security** tab.
-2. Click **Report a vulnerability**.
-3. Include:
-   - Description of the issue and attack vector.
-   - Proof of concept or reproduction steps.
-   - Affected CLI profiles or environments.
-
-You can also contact the maintainer directly at `aliaksei.patskevich@gmail.com`.
-
-We aim to acknowledge reports within 48 hours and provide a fix or mitigation plan within 5 business days.
+Use GitHub private vulnerability reporting in the repository's Security tab, or
+contact `aliaksei.patskevich@gmail.com`. Include the affected revision, CLI/version,
+reproduction steps and the observed impact. Avoid public disclosure of secrets
+or an unmitigated exploit in a normal issue.

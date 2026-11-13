@@ -17,12 +17,15 @@ The module implements strict machine protection against PR merges before review 
 from __future__ import annotations
 
 import argparse
+import json
 import subprocess
 import sys
 from pathlib import Path
 from typing import Any
 
 import review
+import merge_strategy
+from trunk import resolve_trunk
 
 
 def check_pr_merge(store: Any, repo_dir: Path, pr_head: str | None = None) -> tuple[bool, str]:
@@ -223,11 +226,27 @@ def check_pr_merge(store: Any, repo_dir: Path, pr_head: str | None = None) -> tu
 
 
 def run_gh_merge(repo_dir: Path, pr_id: str | None) -> tuple[int, str]:
-    """Run the merge through the gh cli."""
+    """Run the merge through the gh cli.
+
+    The strategy comes from the project's setting, not from a hard-wired
+    flag: `squash` by default (the behaviour that existed before the
+    setting existed), `merge` or `rebase` when the project asks for them.
+    `--delete-branch` is always there — §19 requires the round's branch to
+    die with the round.
+
+    An invalid strategy is a REFUSAL with the admissible values named, not a
+    silent fall back to squash: a project that asked for `rebase` and got
+    `squash` would learn it from the trunk's history, where nobody was
+    looking.
+    """
+    try:
+        flags = merge_strategy.merge_flags(repo_dir)
+    except ValueError as exc:
+        return 1, str(exc)
     cmd = ["gh", "pr", "merge"]
     if pr_id:
         cmd.append(pr_id)
-    cmd.extend(["--squash", "--delete-branch"])
+    cmd.extend(flags)
     try:
         proc = subprocess.run(
             cmd,
@@ -316,8 +335,8 @@ def _cmd_pr_merge_record(store: Any, args: argparse.Namespace) -> int:
     if not pr_id:
         print("error: pr merge-record needs a PR id", file=sys.stderr)
         return 2
-    base = getattr(args, "base", None) or "master"
     repo_dir = store.project_root
+    base = getattr(args, "base", None) or resolve_trunk(repo_dir)
     code, out = run_gh_view(repo_dir, str(pr_id))
     if code != 0:
         print(f"cannot verify PR {pr_id} on the remote:\n{out}", file=sys.stderr)
@@ -338,6 +357,41 @@ def _cmd_pr_merge_record(store: Any, args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 1
+    from worktree import journal_state_dir, worktree_journal_append, worktree_journal_read
+    pr_text = str(pr_id)
+    record_kinds = {"merged", "pr_merged", "pr_merge_repaired"}
+    already_recorded = any(
+        row.get("event") in record_kinds and str(row.get("pr") or "") == pr_text
+        for row in worktree_journal_read(journal_state_dir(repo_dir))
+    )
+    transcript_rows = store.read_transcript()
+    archive_dir = store.root / "transcript-archive"
+    if archive_dir.is_dir():
+        for archive in archive_dir.glob("*.jsonl"):
+            try:
+                transcript_rows.extend(
+                    json.loads(line) for line in archive.read_text(encoding="utf-8").splitlines()
+                    if line.strip()
+                )
+            except (OSError, json.JSONDecodeError):
+                continue
+    already_recorded = already_recorded or any(
+        row.get("kind") in record_kinds
+        and str(row.get("pr_id") or row.get("pr") or "") == pr_text
+        for row in transcript_rows
+    )
+    if already_recorded:
+        print(f"PR {pr_id} is already recorded in the merge journal")
+        return 0
+    try:
+        worktree_journal_append(
+            journal_state_dir(repo_dir), "pr_merge_repaired", pr=str(pr_id),
+            merge_commit=merge_sha, head_oid=head_oid, base=base,
+            role=getattr(args, "role", "") or "writer")
+    except Exception as exc:  # noqa: BLE001 - don't claim a durable repair without its record
+        print(f"cannot write durable merge repair record for PR {pr_id}: {exc}",
+              file=sys.stderr)
+        return 1
     store.append_transcript(
         "pr_merge_repaired",
         getattr(args, "role", "") or "writer",
@@ -348,7 +402,7 @@ def _cmd_pr_merge_record(store: Any, args: argparse.Namespace) -> int:
     )
     print(
         f"audit repaired: PR {pr_id} merged as {merge_sha[:12]} into {base}; "
-        "transcript now knows what a hand-run merge hid"
+        "durable journal and transcript now know what a hand-run merge hid"
     )
     return 0
 
@@ -378,12 +432,6 @@ def cmd_pr(store: Any, args: argparse.Namespace) -> int:
         if not human_ok_for_round(state):
             print("PR merge gate REFUSED: --force requires human authority (pairctl ok for current round)", file=sys.stderr)
             return 1
-        store.append_transcript(
-            "pr_merge_forced",
-            getattr(args, "role", "") or "human",
-            reason=reason,
-            pr_id=getattr(args, "pr_id", None),
-        )
     else:
         pr_head, head_err = resolve_pr_head(repo_dir, pr_id)
         if head_err:
@@ -397,16 +445,296 @@ def cmd_pr(store: Any, args: argparse.Namespace) -> int:
             print(f"PR merge gate REFUSED: {why_not}", file=sys.stderr)
             return 1
 
+    # The pre-flight conflict check runs on BOTH paths, forced or not.
+    #
+    # `--force` bypasses the REVIEW gates: the critic's verdict, the test
+    # evidence, the freshness rule. A conflict is not a review gate — it is
+    # a fact about the two commits, and it does not become true because a
+    # human wrote a reason next to it. GitHub would refuse the merge
+    # anyway; refusing here says WHY, before the PR was torn down and
+    # rebuilt.
+    pf_ok, pf_why = _preflight_merge(repo_dir, pr_id)
+    if not pf_ok:
+        print(f"PR merge gate REFUSED: pre-flight conflict check: {pf_why}",
+              file=sys.stderr)
+        return 1
+
+    # The branch's own commits are captured BEFORE the merge: the merge
+    # deletes the branch (`--delete-branch`), and after that the shas are
+    # reachable only through the squash commit, which is a different sha.
+    # Captured late, the journal would say "something was merged" and name
+    # no commit — the same shape as a merge that escaped the gate.
+    pre_commits = _pre_merge_commits(repo_dir, pr_id)
+
     code, out = run_gh_merge(repo_dir, pr_id)
     if code != 0:
         print(f"gh pr merge failed (exit {code}):\n{out}", file=sys.stderr)
         return code
 
     print(f"PR merge successful: {out}")
-    store.append_transcript(
-        "pr_merged",
-        getattr(args, "role", "") or "writer",
-        pr_id=pr_id,
-        forced=force,
-    )
+    if force:
+        store.append_transcript(
+            "pr_merge_forced",
+            getattr(args, "role", "") or "human",
+            reason=reason,
+            pr_id=pr_id,
+        )
+    durable_merge_recorded = False
+    try:
+        from worktree import journal_state_dir, worktree_journal_append
+        worktree_journal_append(
+            journal_state_dir(repo_dir), "pr_merged", pr=str(pr_id or ""),
+            role=getattr(args, "role", "") or "writer", forced=force)
+        durable_merge_recorded = True
+    except Exception as exc:  # noqa: BLE001 - merge already happened; leave visible audit debt
+        store.append_transcript("pr_merge_journal_failed",
+                                getattr(args, "role", "") or "writer",
+                                pr_id=pr_id, error=str(exc))
+    if durable_merge_recorded:
+        store.append_transcript(
+            "pr_merged",
+            getattr(args, "role", "") or "writer",
+            pr_id=pr_id,
+            forced=force,
+        )
+    _journal_merge(store, repo_dir, pr_id,
+                   getattr(args, "role", "") or "writer",
+                   pre_commits=pre_commits)
+    # The cleanup runs AFTER the merge, and it must never break the command:
+    # the merge already happened and cannot be undone, so a housekeeping error
+    # that escaped here would hide a real merge behind a failed exit code.
+    try:
+        _cleanup_worktree_after_merge(store, repo_dir, pr_id,
+                                      role=getattr(args, "role", "") or "writer")
+    except Exception as exc:  # noqa: BLE001 - the merge is already done
+        store.append_transcript(
+            "worktree_cleanup_failed",
+            getattr(args, "role", "") or "writer",
+            pr_id=pr_id,
+            error=str(exc),
+        )
     return 0
+
+
+def _pre_merge_commits(repo_dir: Path, pr_id: str | None) -> list[str]:
+    """The commits the PR's head branch holds above the trunk, oldest first.
+
+    Read BEFORE the merge, while the branch still exists. A failure to read
+    them is an empty list, not an exception: the merge proceeds and the
+    journal records the merge without the commit list, which is a weaker
+    record but an honest one.
+    """
+    branch = _merged_branch(repo_dir, pr_id)
+    if not branch:
+        return []
+    try:
+        from worktree import branch_commits
+    except ImportError:  # pragma: no cover - worktree sits next in the package
+        return []
+    try:
+        return branch_commits(repo_dir, branch, resolve_trunk(repo_dir))
+    except Exception:  # noqa: BLE001 - a weaker record, never a failed merge
+        return []
+
+
+def _journal_merge(store: Any, repo_dir: Path, pr_id: str | None,
+                   role: str, pre_commits: list[str] | None = None) -> None:
+    """Write the merge into the DURABLE worktree journal.
+
+    The transcript rotates: four archives, the oldest deleted. A merge
+    record that rides on the transcript leaves the window, and a merge that
+    left the window is indistinguishable from a merge that escaped the gate.
+    The journal in `.pair/worktree-log.jsonl` is never rotated, so the trail
+    of every merged worktree survives the room that made it.
+
+    The commits are captured HERE, before the cleanup removes the worktree
+    and the merge deletes the branch: after that the shas are reachable only
+    through the squash commit, which is a different sha.
+
+    A failure to write the journal is recorded in the transcript and does
+    NOT fail the merge: the merge already happened and cannot be undone.
+    But it is recorded, because a silent missing record is exactly the
+    escape the journal exists to make visible.
+    """
+    try:
+        from worktree import journal_merge, journal_state_dir
+    except ImportError:  # pragma: no cover - worktree sits next in the package
+        return
+    branch = _merged_branch(repo_dir, pr_id)
+    if not branch:
+        return
+    try:
+        base = resolve_trunk(repo_dir)
+        res = journal_merge(repo_dir, branch, base, pr_id=str(pr_id or ""),
+                            commits=pre_commits)
+    except Exception as exc:  # noqa: BLE001 - the merge is already done
+        store.append_transcript(
+            "worktree_journal_failed",
+            role or "writer",
+            pr_id=pr_id,
+            branch=branch,
+            error=str(exc),
+        )
+        return
+    store.append_transcript(
+        "worktree_merged",
+        role or "writer",
+        pr_id=pr_id,
+        branch=branch,
+        commits=res.get("commits") or [],
+        journal=str(Path(res["state_dir"]) / "worktree-log.jsonl"),
+    )
+
+
+def _preflight_merge(repo_dir: Path, pr_id: str | None) -> tuple[bool, str]:
+    """Would the PR's head merge into the trunk without a conflict?
+
+    The trunk is brought up to date first: a check against a stale trunk is a
+    check against a fiction, and the conflict appears exactly when the stale
+    trunk is wrong.
+
+    The comparison is between the PR's **head** and `origin/<trunk>`. The
+    PR's head is what the merge would ship; the local HEAD is what the
+    gate checked, and when they differ the merge would ship something
+    nobody looked at.
+
+    Returns (True, "") when the merge would be clean. Every other answer —
+    a conflict, a git failure, a trunk that cannot be read — is a refusal
+    with a reason. `unknown` is never read as `clean`: a check that says
+    "no conflicts" when git failed says the thing the reader wants to hear
+    without having checked anything.
+    """
+    import preflight
+
+    pr_head, head_err = resolve_pr_head(repo_dir, pr_id)
+    if head_err or not pr_head:
+        return False, (head_err or "the PR's head could not be read")
+
+    trunk_name = resolve_trunk(repo_dir)
+    base = f"origin/{trunk_name}"
+
+    fetched = preflight.fetch_base(repo_dir, "origin", trunk_name)
+    if not fetched["ok"]:
+        return False, (f"the trunk {base} could not be fetched: {fetched['why']}")
+
+    # The PR's head may not be in this repository at all — the PR was
+    # pushed from elsewhere. Without the commit, `merge-tree` can only
+    # answer "unknown", and an unknown is a refusal. Fetching it by SHA is
+    # what makes the check possible.
+    have = preflight.ensure_commit(repo_dir, "origin", pr_head)
+    if not have["ok"]:
+        return False, (f"the PR's head {pr_head[:12]} could not be fetched: "
+                       f"{have['why']}")
+
+    res = preflight.check_merge(repo_dir, pr_head, base)
+    if res["status"] == "clean":
+        return True, ""
+    if res["status"] == "conflict":
+        return False, res["why"]
+    return False, f"the merge could not be checked: {res['why']}"
+
+
+def _cleanup_worktree_after_merge(store: Any, repo_dir: Path, pr_id: str | None,
+                                  role: str = "writer") -> None:
+    """Remove the worktree the merged branch lived in, and say what happened.
+
+    The commits are in the trunk and the branch is gone (`--delete-branch`);
+    the DIRECTORY that held it is left over. §19 makes the merged round branch
+    die by construction, and this makes the directory die with it.
+
+    Two rules, both learned the hard way:
+
+    - **A failed cleanup never turns a successful merge into a failure.** The
+      merge already happened and cannot be undone; refusing to report success
+      would hide a real merge behind a housekeeping error.
+    - **The cleanup is recorded either way.** Silence would leave the reader
+      unable to tell "there was nothing to clean" from "the cleanup failed and
+      nobody said so" — two states with different actions.
+    """
+    try:
+        from worktree import cleanup_worktree_for_branch
+    except ImportError:  # pragma: no cover - worktree sits next in the package
+        return
+    identity, why = _merged_pr_identity(repo_dir, pr_id)
+    if not identity:
+        store.append_transcript(
+            "worktree_cleanup_skipped",
+            role or "writer",
+            pr_id=pr_id,
+            why=why,
+        )
+        return
+    branch, head = identity
+    res = cleanup_worktree_for_branch(repo_dir, branch, expected_head=head)
+    store.append_transcript(
+        "worktree_cleaned" if res.get("removed") else "worktree_cleanup_skipped",
+        role or "writer",
+        pr_id=pr_id,
+        branch=branch,
+        path=res.get("path"),
+        removed=bool(res.get("removed")),
+        why=res.get("why", ""),
+    )
+
+
+def _merged_pr_identity(repo_dir: Path, pr_id: str | None) -> tuple[tuple[str, str] | None, str]:
+    """Require a merged PR from this repository and its exact head commit."""
+    cmd = ["gh", "pr", "view"]
+    if pr_id:
+        cmd.append(str(pr_id))
+    cmd.extend(["--json", "state,isCrossRepository,headRefName,headRefOid"])
+    try:
+        proc = subprocess.run(cmd, cwd=str(repo_dir), capture_output=True, text=True, timeout=30)
+        data = json.loads(proc.stdout) if proc.returncode == 0 else {}
+        if (not isinstance(data, dict) or data.get("state") != "MERGED"
+                or data.get("isCrossRepository") is not False):
+            return None, "PR is not verified merged from this repository"
+        branch, head = data.get("headRefName"), data.get("headRefOid")
+        if not isinstance(branch, str) or not branch or not isinstance(head, str) or not head:
+            return None, "merged PR branch or head is unavailable"
+        return (branch, head), ""
+    except (OSError, subprocess.SubprocessError, ValueError, TypeError):
+        return None, "merged PR identity could not be verified"
+
+
+def _merged_branch(repo_dir: Path, pr_id: str | None) -> str:
+    """The branch name of the PR that was just merged.
+
+    Read from GitHub, from the PR itself — `headRefName` is the branch the PR
+    was opened from, which is exactly the branch whose worktree we want to
+    remove. The local HEAD is NOT a substitute: it is the branch the MERGE ran
+    from, usually the trunk, and asking for the trunk's worktree would either
+    do nothing (the right outcome by accident) or try to remove the repository
+    itself (the wrong outcome). A cleanup that targets the wrong branch is
+    worse than no cleanup, because it looks like it worked.
+
+    The remote head branch is deleted by the merge itself, but `headRefName`
+    survives the deletion: GitHub keeps the PR record.
+
+    An empty answer means "unknown", never "no worktree".
+    """
+    name = _pr_head_branch(repo_dir, pr_id)
+    if name:
+        return name
+    return ""
+
+
+def _pr_head_branch(repo_dir: Path, pr_id: str | None) -> str:
+    """`gh pr view --json headRefName` — the branch the PR was opened from."""
+    cmd = ["gh", "pr", "view"]
+    if pr_id:
+        cmd.append(str(pr_id))
+    cmd.extend(["--json", "headRefName", "--jq", ".headRefName"])
+    try:
+        proc = subprocess.run(
+            cmd,
+            cwd=str(repo_dir),
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    if proc.returncode != 0:
+        return ""
+    return (proc.stdout or "").strip()

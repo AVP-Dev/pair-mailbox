@@ -155,7 +155,12 @@ class PairTestCase(unittest.TestCase):
         body = [f"round: {round_number}", "",
                 "## Goal", "test", "",
                 "## Invariants", "test", "",
-                "## Acceptance", "test", ""]
+                "## Acceptance", "test", "",
+                # The isolation strategy is required in `fix` mode since round
+                # 147: the plan states what was decided about isolation, and
+                # the critic's visa covers that statement.
+                "## Isolation Strategy", "mode: in-place", "worktrees: 0",
+                "slices: 1", ""]
         (self.store.root / plan_gate.PLAN_FILE).write_text("\n".join(body), encoding="utf-8")
         # The gate reads not_before from the plan file's mtime, which carries
         # MICROSECONDS, while a note entry stamps whole seconds — a visa written

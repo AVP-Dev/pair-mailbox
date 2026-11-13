@@ -58,11 +58,24 @@ class CodexMcpConfigCase(unittest.TestCase):
                 self.assertEqual(_INSTALL.argv_from_toml(text), argv)
                 forwarded = json.loads(re.search(r"(?m)^env_vars = (\[.*\])$", text).group(1))
                 for name in ("PAIR_LAUNCH_PID", "PAIR_LAUNCH_START", "PAIR_LAUNCH_PROFILE",
-                             "PAIR_STATE", "PAIR_ROLE", "MY_EXISTING_VAR"):
+                             "PAIR_STATE", "PAIR_ROLE", "MY_EXISTING_VAR", "PAIR_TRUNK",
+                             "PAIR_MERGE_STRATEGY", "PAIR_WORKTREE_SHARE"):
                     self.assertIn(name, forwarded)
                 self.assertIn('model = "keep-me"', text)
                 self.assertIn('command = "keep-other"', text)
                 self.assertTrue(path.with_suffix(".toml.bak").exists())
+
+    def test_socket_verification_is_isolated_and_serves_a_real_daemon(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state = Path(tmp)
+            original = '{"writer":"agy","roles":{}}'
+            (state / "state.json").write_text(original)
+            argv = [sys.executable, str(ROOT / "mcp/pair_mailbox/mcp_socket_client.py"),
+                    "codex", "--state", str(state), "--socket", str(state / "foreign.sock")]
+            ok, detail = _INSTALL.verify(argv)
+            self.assertTrue(ok, detail)
+            self.assertEqual((state / "state.json").read_text(), original)
+            self.assertEqual([p.name for p in state.iterdir()], ["state.json"])
 
 def run_install(home: Path, *args: str) -> subprocess.CompletedProcess:
     # The nested test_protocol.py run (~3 min) stays out: the verify layer runs the

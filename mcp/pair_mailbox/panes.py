@@ -18,6 +18,8 @@ ours — or worse, reject the just-born agent.
 from __future__ import annotations
 
 import time
+from contextlib import contextmanager
+from contextvars import ContextVar
 from pathlib import Path
 
 # How long to wait for tmux to set the cwd of a newborn pane. Measured:
@@ -26,8 +28,48 @@ from pathlib import Path
 # at new-pane registration, not on every ring.
 PANE_CWD_SETTLE_SECONDS = 0.6
 
+_PANE_IDENTITY_CACHE: ContextVar[dict[tuple[tuple[str, ...], str], dict] | None] = ContextVar(
+    "pane_identity_cache", default=None)
 
-def _settle_pane_identity(tmux: str, pane: str, ident: dict, project_root) -> dict:
+
+@contextmanager
+def pane_identity_cache():
+    """Share pane snapshots only within one caller's request."""
+    token = _PANE_IDENTITY_CACHE.set({})
+    try:
+        yield
+    finally:
+        _PANE_IDENTITY_CACHE.reset(token)
+
+
+def _identity_key(tmux: str | list[str], pane: str) -> tuple[tuple[str, ...], str]:
+    command = tuple(tmux) if isinstance(tmux, (list, tuple)) else (str(tmux),)
+    return command, str(pane)
+
+
+def cached_pane_identity(tmux: str | list[str], pane: str, resolver) -> dict:
+    cache = _PANE_IDENTITY_CACHE.get()
+    if cache is None:
+        return resolver()
+    key = _identity_key(tmux, pane)
+    if key not in cache:
+        cache[key] = resolver()
+    return dict(cache[key])
+
+
+def refresh_pane_identity(tmux: str | list[str], pane: str) -> dict:
+    """Force the deliberate second snapshot used for a newborn pane."""
+    cache = _PANE_IDENTITY_CACHE.get()
+    key = _identity_key(tmux, pane)
+    if cache is not None:
+        cache.pop(key, None)
+    fresh = composer.pane_identity(tmux, pane)
+    if cache is not None:
+        cache[key] = fresh
+    return dict(fresh)
+
+
+def _settle_pane_identity(tmux: str | list[str], pane: str, ident: dict, project_root) -> dict:
     """Re-asks the pane cwd when the first poll never proved it ours.
 
     Birth race, measured: right after `split-window -c <dir>` tmux returns
@@ -41,7 +83,7 @@ def _settle_pane_identity(tmux: str, pane: str, ident: dict, project_root) -> di
     if _identity_proves_ours(ident, project_root):
         return ident
     time.sleep(PANE_CWD_SETTLE_SECONDS)
-    return composer.pane_identity(tmux, pane)
+    return refresh_pane_identity(tmux, pane)
 
 
 def _identity_proves_ours(ident: dict, project_root) -> bool:
@@ -56,7 +98,7 @@ def _identity_proves_ours(ident: dict, project_root) -> bool:
     return theirs == ours or ours in theirs.parents
 
 
-def pane_belongs_to_project(tmux: str, pane: str, project_root) -> tuple:
+def pane_belongs_to_project(tmux: str | list[str], pane: str, project_root) -> tuple:
     """Whether the pane is provably FROM THIS project. `(True, "")` or `(False, reason)`.
 
     Unlike `pane_is_foreign` there is NO "is the pane alive" question here, and the
@@ -103,7 +145,7 @@ def pane_belongs_to_project(tmux: str, pane: str, project_root) -> tuple:
 import composer
 
 
-def pane_is_foreign(tmux: str, pane: str, project_root) -> tuple:
+def pane_is_foreign(tmux: str | list[str], pane: str, project_root) -> tuple:
     """Is the pane provably not ours? Fail-closed: unproven ours means no printing.
 
     Returns (True, reason) when the pane must not be printed to, (False, "") when

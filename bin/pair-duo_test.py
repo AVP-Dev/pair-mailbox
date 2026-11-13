@@ -226,6 +226,17 @@ class DuoStateResolutionCase(unittest.TestCase):
         self.assertIn(f"state={self.state}", proc.stdout,
                       f"an explicit --state must win: {proc.stdout} {proc.stderr}")
 
+    def test_an_explicit_state_flag_wins_when_cwd_is_foreign_project(self) -> None:
+        """The flag is explicit: it must name the room given by --state even when
+        launched from a directory whose own room underfoot would otherwise win
+        (such as a worktree or an unrelated project)."""
+        proc = subprocess.run([str(DUO), "--state", str(self.state),
+                               "--print-state", CLI],
+                              cwd=str(self.foreign.parent), capture_output=True,
+                              text=True, timeout=30)
+        self.assertIn(f"state={self.state}", proc.stdout,
+                      f"an explicit --state must win over cwd: {proc.stdout} {proc.stderr}")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

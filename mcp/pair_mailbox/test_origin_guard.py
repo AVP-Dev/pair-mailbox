@@ -158,6 +158,47 @@ class ServeFixture:
 
 class OriginGuardCase(ServeFixture, unittest.TestCase):
 
+    def test_main_engine_serves_linked_worktree_with_full_handshake(self) -> None:
+        project = self.state.parent
+        pkg = project / "mcp" / "pair_mailbox"
+        shutil.copytree(ROOT / "mcp" / "pair_mailbox", pkg,
+                        ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+        subprocess.run(["git", "add", "mcp"], cwd=project, check=True)
+        subprocess.run(["git", "commit", "-qm", "engine"], cwd=project, check=True)
+        linked = Path(self._tmp.name) / "linked"
+        subprocess.run(["git", "worktree", "add", "-qb", "linked", str(linked)],
+                       cwd=project, check=True, capture_output=True)
+        env = dict(os.environ)
+        env.pop("PAIR_ROLE", None)
+        env.pop("PAIR_TRUST_ENV", None)
+        env["PAIR_STATE"] = str(self.state)
+        messages = [
+            {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
+                "protocolVersion": "2025-06-18", "capabilities": {},
+                "clientInfo": {"name": "worktree-test", "version": "1"}}},
+            {"jsonrpc": "2.0", "method": "notifications/initialized"},
+            {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}}]
+        proc = subprocess.run(["sh", str(pkg / "serve.sh"), self.role],
+                              cwd=linked, env=env, text=True, capture_output=True,
+                              input="".join(json.dumps(m) + "\n" for m in messages),
+                              timeout=30)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        replies = {m["id"]: m for m in map(json.loads, proc.stdout.splitlines())}
+        self.assertIn("result", replies[1])
+        self.assertIn("pair_state", [t["name"] for t in replies[2]["result"]["tools"]])
+        self.assertFalse((linked / ".pair").exists())
+        # Even a deliberately separate room in the linked checkout must not
+        # make its main engine appear to be a foreign clone.
+        local = linked / ".pair"
+        local.mkdir()
+        (local / "state.json").write_text((self.state / "state.json").read_text())
+        env.pop("PAIR_STATE")
+        proc = subprocess.run(["sh", str(pkg / "serve.sh"), self.role],
+                              cwd=linked, env=env, text=True, capture_output=True,
+                              input=json.dumps(messages[0]) + "\n", timeout=30)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("result", json.loads(proc.stdout.splitlines()[0]))
+
     def test_foreign_tree_refuses_and_names_both_roots(self) -> None:
         """A server raised from a FOREIGN REPO must refuse, not serve. The
         refusal names both repos, because a bare 'refused' leaves the operator
@@ -520,7 +561,7 @@ class RoleDerivationCase(ServeFixture, unittest.TestCase):
 
     def _role_of(self, pair_role: str) -> tuple[int, str]:
         """Raise the server with this PAIR_ROLE and return (rc, output)."""
-        proc = self._raise(Path(self._tmp.name) / "twin", pair_role=pair_role)
+        proc = self._raise(self.state.parent, pair_role=pair_role)
         try:
             out, err = proc.communicate(timeout=60)
         except subprocess.TimeoutExpired:

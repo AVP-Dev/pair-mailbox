@@ -59,13 +59,13 @@ Skip this section entirely in `audit` mode — the server will refuse the reserv
 
 Preferred path is one call (full contract: skill `pair-chat`):
 
-```bash
+```text
 pair_propose(files=["path/to/file.py"])   # reserves, seals, notifies the writer itself
 ```
 
 Manual path for exotic cases:
 
-```bash
+```text
 pair_patch_reserve                  # exact path, mode 0600
 # write a unified diff into that exact path
 pair_patch_seal(path)               # returns the SHA-256

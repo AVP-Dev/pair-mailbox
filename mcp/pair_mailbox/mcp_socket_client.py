@@ -16,12 +16,10 @@ journal survive untouched.
 Usage (from an MCP config's command array):
     python3 mcp_socket_client.py <role> [--state DIR] [--socket PATH]
 
-Unenrolled global clients complete MCP startup without joining any pair.
-Enrolled clients reuse or start a detached daemon, whose lifetime is independent
-of the CLI. Explicit diagnostic --state/--socket calls remain connect-only.
-
 Exit paths, deliberate:
-- diagnostic daemon missing -> EXIT 4 with a named remedy.
+- daemon missing -> EXIT 4 with one line telling pairup to raise it, because the
+  client's job is to connect, not to spawn: a client that silently spawned would
+  rebuild the child-process lifetime this slice exists to remove.
 - stdin closed (the CLI is gone or restarting) -> exit 0. The CLI's death is not
   an error of the transport; the daemon keeps serving the next connector.
 """
@@ -29,8 +27,10 @@ from __future__ import annotations
 
 import json
 import os
+import queue
 import socket
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -91,8 +91,8 @@ def _redial(path: str, deadline: float):
     ONCE, a dying daemon left it reporting `pair Failed` for the rest of the
     session, and reconnect granularity was the SESSION rather than the event.
 
-    Redial never starts a daemon or claims a role, and cannot outlive its CLI.
-    It dials, and if nothing answers inside
+    Why bounded and not a supervisor: the client must never spawn a daemon, never
+    manage a role, never outlive its CLI. It dials, and if nothing answers inside
     the window it reports the same failure it reports today — with the same
     remedy. The window is seconds, not forever: an operator needs to know.
     """
@@ -120,13 +120,73 @@ def _redial_seconds() -> float:
 
 
 def pump(sock: socket.socket, stdin, stdout, path: str) -> int:
-    """Frames in both directions until the CLI closes stdin.
-
-    Notifications have no reply. Forward asynchronous server events while waiting
-    for the response matching the current request, so initialize cannot wedge.
-    """
-    reader = sock.makefile("r", encoding="utf-8", newline="\n")
+    """Forward frames both ways; JSON-RPC notifications do not have replies."""
     writer = sock.makefile("w", encoding="utf-8", newline="\n")
+    output_lock = threading.Lock()
+    eof = object()
+    no_event = object()
+
+    def start_reader(connection: socket.socket):
+        responses: queue.Queue = queue.Queue()
+        disconnected = threading.Event()
+
+        def read_frames() -> None:
+            reader = connection.makefile("r", encoding="utf-8", newline="\n")
+            try:
+                for raw in reader:
+                    try:
+                        message = json.loads(raw)
+                    except json.JSONDecodeError:
+                        message = None
+                    if isinstance(message, dict) and "id" in message:
+                        responses.put(message["id"])
+                    with output_lock:
+                        stdout.write(raw if raw.endswith("\n") else raw + "\n")
+                        stdout.flush()
+            except (OSError, ValueError):
+                pass
+            finally:
+                reader.close()
+                disconnected.set()
+                responses.put(eof)
+
+        thread = threading.Thread(target=read_frames, daemon=True)
+        thread.start()
+        return responses, disconnected, thread
+
+    responses, disconnected, reader_thread = start_reader(sock)
+
+    def reconnect(replay: str | None) -> bool:
+        nonlocal sock, writer, responses, disconnected, reader_thread
+        window = _redial_seconds()
+        if window <= 0:
+            print("pair client: daemon closed the connection", file=sys.stderr)
+            return False
+        print(f"pair client: daemon closed the connection; re-dialing for {window:g}s",
+              file=sys.stderr)
+        fresh = _redial(path, window)
+        if fresh is None:
+            print("pair client: no daemon answered inside the window", file=sys.stderr)
+            return False
+        try:
+            writer.close()
+        except OSError:
+            pass
+        try:
+            sock.close()
+        except OSError:
+            pass
+        sock = fresh
+        writer = sock.makefile("w", encoding="utf-8", newline="\n")
+        responses, disconnected, reader_thread = start_reader(sock)
+        if replay is not None:
+            try:
+                writer.write(replay + "\n")
+                writer.flush()
+            except (BrokenPipeError, ConnectionResetError, OSError):
+                disconnected.set()
+        return True
+
     try:
         while True:
             raw = stdin.readline()
@@ -136,89 +196,50 @@ def pump(sock: socket.socket, stdin, stdout, path: str) -> int:
             if not line:
                 continue
             try:
-                frame = json.loads(line)
-            except ValueError:
-                frame = {}
-            notification = isinstance(frame, dict) and "method" in frame and "id" not in frame
-            request_id = frame.get("id") if isinstance(frame, dict) else None
-            def read_response():
-                while True:
-                    try:
-                        reply = reader.readline()
-                    except OSError:
-                        return ""
-                    if not reply:
-                        return ""
-                    try:
-                        response = json.loads(reply)
-                    except ValueError:
-                        return reply
-                    if isinstance(response, dict) and response.get("id") == request_id:
-                        return reply
-                    stdout.write(reply)
-                    stdout.flush()
+                message = json.loads(line)
+                expects_reply = not isinstance(message, dict) or "id" in message
+                request_id = message.get("id") if isinstance(message, dict) else None
+            except json.JSONDecodeError:
+                expects_reply = True
+                request_id = None
+            if disconnected.is_set() and not reconnect(None):
+                return 3
             try:
                 writer.write(line + "\n")
                 writer.flush()
             except (BrokenPipeError, ConnectionResetError, OSError):
-                # The daemon died under us and the socket says so at the WRITE,
-                # which is the same fact as an empty reply — treat them alike.
-                reply = ""
-            else:
-                if notification:
-                    continue
-                reply = read_response()
-            if not reply:
-                # the daemon died under us: not a protocol error, a dead transport
-                window = _redial_seconds()
-                if window > 0:
-                    print(f"pair client: daemon closed the connection; "
-                          f"re-dialing for {window:g}s", file=sys.stderr)
-                    fresh = _redial(path, window)
-                    if fresh is not None:
-                        try:
-                            reader.close()
-                            writer.close()
-                            sock.close()
-                        except OSError:
-                            pass
-                        sock = fresh
-                        reader = sock.makefile("r", encoding="utf-8", newline="\n")
-                        writer = sock.makefile("w", encoding="utf-8", newline="\n")
-                        # The frame is NOT lost: it was in the lost writer, and the
-                        # new daemon is waiting for it while we wait on stdin —
-                        # a deadlock neither side can see. Re-send it, so exactly
-                        # one frame is in flight after a re-dial, never zero.
-                        try:
-                            writer.write(line + "\n")
-                            writer.flush()
-                            if notification:
-                                continue
-                            reply = read_response()
-                        except (BrokenPipeError, ConnectionResetError, OSError):
-                            reply = ""
-                        if reply:
-                            stdout.write(reply if reply.endswith("\n") else reply + "\n")
-                            stdout.flush()
-                            continue
-                        continue
-                    print("pair client: no daemon answered inside the window",
-                          file=sys.stderr)
+                disconnected.set()
+                if not reconnect(line):
                     return 3
-                print("pair client: daemon closed the connection", file=sys.stderr)
-                return 3
-            stdout.write(reply if reply.endswith("\n") else reply + "\n")
-            stdout.flush()
+            if not expects_reply:
+                continue
+            while True:
+                try:
+                    response_id = responses.get(timeout=0.1)
+                except queue.Empty:
+                    response_id = no_event
+                if response_id == request_id:
+                    break
+                if response_id is eof:
+                    if not reconnect(line):
+                        return 3
+                    continue
+                if disconnected.is_set() and not reconnect(line):
+                    return 3
     finally:
         try:
-            reader.close()
             writer.close()
+        except OSError:
+            pass
+        try:
+            sock.shutdown(socket.SHUT_RDWR)
         except OSError:
             pass
         try:
             sock.close()
         except OSError:
             pass
+        reader_thread.join(timeout=1)
     return 0
 
 

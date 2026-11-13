@@ -90,7 +90,7 @@ Change the writer mid-task:
 
 ```sh
 bin/pairctl release
-bin/pairctl assign <role>      # the peer's role: agy, codex, claude — whatever your project uses
+bin/pairctl assign codex      # the peer's role: agy, codex, claude — whatever your project uses
 ```
 
 Say it in both panes, who writes now. The previous writer stays read-only even after
@@ -945,13 +945,14 @@ PR merging is gated by machine rules rather than prompt agreements:
    A repair that cannot name what the remote merged is not a repair. Round 115
    needed it: a hand-run `gh pr merge` closed PR #61 and the transcript, at 456
    rows, carried zero merge events — the merge existed, the repo's audit did not.
-7. **The next round's branch is cut from a fresh `origin/master`.**
-   A squash merge drops the round's branch from master's history, so the next
+7. **The next round's branch is cut from a fresh trunk (`origin/master` by
+   default; the project's trunk otherwise).**
+   A squash merge drops the round's branch from the trunk's history, so the next
    commit on that branch lands in an add/add conflict — and a conflicting PR
    cannot be built into a merge ref, so GitHub reports no checks at all. A PR
    with no checks reads as a green PR. Round 130 lost a branch to exactly this:
    PR #76 was unmergeable, had zero checks, and was closed. The next branch
-   comes from the merged master, never from the previous round's branch.
+   comes from the merged trunk, never from the previous round's branch.
 8. **The merge trail is audited mechanically.**
    `scripts/merge-audit-trail.py` compares the PRs merged on the remote with the
    journal's merge records — `pr_merged`, `pr_merge_repaired`, `pr_merge_forced`,
@@ -1231,15 +1232,39 @@ step, while the boundary rests on `deny`, which the human sees and can change.
 When multiple pairs run in parallel, or when switching between tasks without dirtying
 the main working tree, git worktrees provide filesystem isolation.
 
-- `pairup --worktree <branch>` (alias `-w <branch>`):
-  Automatically provisions `.worktrees/<branch>` via `git worktree add`, switches into it,
-  and scopes `.pair` state locally.
+- **`pairup` runs in a worktree by default (round 153).** A launch provisions
+  `.worktrees/chore/pair-<project>-<hash8>` via `git worktree add` and switches into it, so a
+  dirty main working tree cannot swallow the round and two launches cannot share one
+  tree. The branch name is DERIVED from the resolved project path: the same project
+  always lands in the same worktree, and two projects never share a branch.
+- `pairup --in-place` opts out: the pair runs in the checkout it was launched from.
+  Outside a git repository the launch refuses and names this flag.
+- `pairup --worktree <branch>` (alias `-w <branch>`) names the branch explicitly.
 - `pairctl worktree list [--json]`:
   Lists registered worktrees across the repository.
 - `pairctl worktree prune [--json]`:
   Cleans stale worktree administrative records (`git worktree prune`).
 - `pairctl worktree remove [--target <path/branch>] [--force]`:
   Removes an allocated worktree.
+
+### 17a. The durable worktree lifecycle journal
+
+`.pair/worktree-log.jsonl` records the lifecycle of every worktree: `created`,
+`committed`, `merged`, `removed`. It is append-only JSONL and it is NEVER rotated.
+
+It exists because the trail cannot live on the transcript. The transcript rotates
+(four archives, the oldest deleted), and a merge record that rides on it leaves the
+window: round 152 measured ten merges (PRs 72–75 and 77–82) lost that way, and a
+merge that fell out of the window is indistinguishable from a merge that escaped the
+gate. The journal is written to the MAIN repository's `.pair`, never the worktree's
+own — a linked worktree's directory is removed with `git worktree remove --force`,
+and a journal that died with it would record nothing about the worktree that died.
+
+The commits a branch carried are captured BEFORE the merge: the merge deletes the
+branch (`--delete-branch`), and after that the shas are reachable only through the
+squash commit, which is a different sha. A trail that recorded only the squash would
+lose the very thing the trail exists for — which commits the branch held.
+
 ## 18. Diagnose against the tree, not against your own harness
 
 A diagnosis that cannot be wrong is not a measurement. Round 115 put a price on
@@ -1302,6 +1327,48 @@ fresh clone kept receiving a repo nobody had curate.
    that the log does not. Two merged branches left on `origin` are two lies about
    where the work is.
 
+### The trunk is a project setting, not a constant in the engine
+
+Round 144 measured what a hardcoded `master` costs when the human orders
+otherwise: the round was merged into `dev` exactly as ordered, and then
+`pair_advance("done")` was refused with "1 commits ahead of origin/master". The
+engine had no notion of a trunk other than `master` — the close-side gates
+(`review.origin_truth`, `review.hotfix_trailer_check`, `server._pin_round_base`,
+`manifest._round_merged`) compared against `origin/master` by name. A project
+whose trunk is another branch could merge, deliver and review a round, and
+never close it.
+
+The trunk is now resolved, in this order, first hit wins:
+
+1. **`PAIR_TRUNK`** — the environment, for one process (a pilot run, a CI job).
+2. **`<project>/.pair/trunk`** — the LOCAL setting of one workspace. It lives in
+   the ignored state dir, so a local choice never dirties the tree and never
+   travels.
+3. **`<project>/.pair-trunk`** — the COMMITTED policy of the project, for
+   everybody who clones it.
+4. **`master`** — the default. A project that says nothing keeps the behaviour it
+   had, byte for byte.
+
+Every close-side gate asks the resolver (`mcp/pair_mailbox/trunk.py`) instead of
+naming a branch: the origin-truth comparison, the hotfix-trailer check, the
+pinned round base, the manifest's merge detection, the §20 class table (the
+project's trunk is the trunk class, whatever its name), and the branch janitor.
+
+The local pre-push guard (`bin/git-hooks/pre-push`) refuses a direct push to a
+PROTECTED branch, and there are two of them: the project's trunk, and `master`
+always. Naming another trunk does not hand `master` over to direct pushes — a
+project that moved its trunk still keeps `master` closed, and a guard that
+guarded `dev` while `master` went open was the defect round 144's second slice
+carried into its own merge.
+
+Two rules keep this safe:
+
+- **The default changes nothing.** No existing project moves until it says which
+  branch it wants.
+- **The resolver reads a NAME, never a remote and never the network.** It is
+  asked on hot paths (every `pair_state`, every close), and a gate that can
+  hang on a network call is a gate that hangs.
+
 ### The round card: memory survives the clone
 
 1. **Each closed round leaves one tracked file: `docs/rounds/<N>.md`.** Not twenty:
@@ -1357,7 +1424,7 @@ alone.
 
 | class | name | lifetime | robot may delete? | protection |
 |---|---|---|---|---|
-| trunk | `master` | forever | **never** | protected; no direct push (local hook, `bin/git-hooks/pre-push`) |
+| trunk | the project's trunk (`master` by default — see "The trunk is a project setting" above) | forever | **never** | protected; no direct push (local hook, `bin/git-hooks/pre-push`) |
 | strategic | `release/*`, `support/*` | longer than one PR | **never** | `do not allow deletions`; delete only by hand, with a reason, recorded |
 | ephemeral | `round-*`, `feature/*`, `fix/*`, `hotfix/*`, `chore/*` | one PR, dies with the merge | **only when its PR is MERGED** | none needed |
 | personal | `users/<name>/*` | the author's, no trunk merge | **never** — TTL sweep reports, humans decide | none |
@@ -1367,7 +1434,7 @@ Two corrections to first instinct, both from the critic:
 
 - **`hotfix/*` is ephemeral, not strategic.** A hotfix fixes one incident and
   closes through a PR; `review.py`'s `hotfix_trailer_check` already demands
-  `follows: PR #N` on every commit after the round base on `origin/master`,
+  `follows: PR #N` on every commit after the round base on the trunk,
   which is the lifecycle of a mortal branch written down in code. Strategic
   means a *support line*: a release that keeps receiving cherry-picks for
   months.
@@ -1413,3 +1480,187 @@ Two corrections to first instinct, both from the critic:
 §19 said a merged round branch dies by construction. §20 says the same for every
 mortal class, and says what may never die: the trunk, the support lines, and a
 branch nobody has proven merged.
+
+## 21. Worktree-first: the isolation strategy is declared and agreed
+
+Decided by both agents 2026-10-26 (round 147, P1 in the backlog), after the human
+asked for the worktree-first discipline for parallel agent work.
+
+The problem this solves is not "worktrees are nice". It is that a writer's
+isolation decision, taken alone, goes wrong in both directions: too much
+machinery for a typo fix (a worktree per sentence), or one thousand-line system
+change in a single PR nobody can review. Both are the same defect — a decision
+that was never examined.
+
+### 21.1 The plan states the strategy
+
+In `mode=fix` the round plan carries a fourth section, `# Isolation Strategy`
+(`# Стратегия изоляции`), and the plan gate refuses the move without it. In
+`audit` it is not required: there are no commits, so there is nothing to
+isolate.
+
+The section declares one mode:
+
+| mode | meaning | worktrees |
+|---|---|---|
+| `in-place` | the whole change is one slice on the round branch | 0 |
+| `worktree` | one slice, in one isolated worktree | 1 |
+| `decomposed` | the change is split into `slices` sequential slices | 0 or one per slice |
+
+The declaration is the `mode:` field and only that. Prose is not a decision:
+"No worktree is needed here" would otherwise declare a worktree, and "the branch
+is round-147" would declare `in-place` — both from a sentence that said the
+opposite. A fenced block is documentation, not a declaration.
+
+### 21.2 The critic signs it
+
+The strategy is part of the plan, so the critic's ordinary `plan-ack round N`
+covers it. No second kind of visa is invented: the visa already answers "is this
+plan agreed", and the strategy is in the plan. A worktree for a task of a
+running round cannot be created without that visa — `worktree.setup_worktree`
+refuses without one, and refuses when the agreed mode is `in-place`.
+
+A **slice** is not a **worktree**. `decomposed` with `worktrees: 0` means
+sequential slices on the round branch, which is what §19 asks for; `worktrees: N`
+means one worktree per slice, which is what a parallel run needs. Claiming
+worktrees that were never created would be a decoration, so the count the plan
+declares is the count that was actually used.
+
+### 21.3 The thresholds are checked against the fact
+
+| size of the change | strategy |
+|---|---|
+| up to 50 changed lines | `in-place` |
+| 51 to 300 changed lines | `worktree` |
+| more than 300 changed lines | `decomposed` into 2-3 slices |
+
+The thresholds are checked against the **measured diff**, never against what the
+plan claimed. A declared "small fix" that turns into 400 lines is refused: the
+rule against the promise is decoration, and a rule against the fact is a rule.
+
+### 21.4 Two different worktrees
+
+The launch environment of a pair and the isolation of a task inside a round are
+different operations, and the gate differs because the question differs:
+
+- **The launch environment** (`pairup --worktree`, `pair-duo --worktree`) exists
+  before any round does. There is no round, no plan, no critic to sign
+  anything, and no task whose isolation is being decided. The decision is the
+  human's — they asked for it on the command line.
+- **A task's worktree** exists during a round, to isolate one of its slices.
+  That decision belongs to the writer, and the critic signs it.
+
+### 21.5 The worktree dies with the branch
+
+§19 makes a merged round branch die by construction. The directory that held it
+dies with it: after a successful `bin/pairctl pr merge`, the worktree of the
+merged branch is removed and the records are pruned. The main worktree is never
+touched — the repository itself is not garbage.
+
+A failed cleanup never turns a successful merge into a failure. The merge
+already happened and cannot be undone, so an error there is recorded in the
+transcript (`worktree_cleanup_failed`) and the command still reports success.
+Silence would leave the reader unable to tell "there was nothing to clean" from
+"the cleanup failed and nobody said so" — two states with different actions.
+
+Automatic cleanup verifies the merged PR belongs to the same repository and its
+head matches the local branch and worktree. Tracked edits, untracked files and
+ignored files all preserve the directory. Cleanup never uses forced removal.
+
+## 22. The three round disciplines: environment, conflict, strategy
+
+Decided by both agents 2026-10-26 (round 148), continuing round 147's
+worktree-first line. Three practices, each with one reason.
+
+### 22.1 A worktree shares caches only by explicit choice
+
+Worktrees do not share mutable directories by default. Build output, caches,
+`node_modules` and virtual environments can all be written by tools; symlinking
+one into another checkout makes those writes cross branch boundaries.
+
+Projects may explicitly opt in through `PAIR_WORKTREE_SHARE` (environment),
+`.pair/worktree-share` (local, ignored), or `.pair-worktree-share` (committed
+policy), in that order. The default is an empty list. Only named existing paths
+are linked, never globs or an overwrite of an existing worktree path. Sharing
+accepts the cross-checkout mutation risk; it is not full worktree isolation.
+
+### 22.2 One way to read a setting
+
+`project_settings.py` is the ONE place that knows the order a project's
+voice is heard in: the environment, the local ignored file, the committed
+project file, the default. Each setting owns only the WHAT (which values
+exist, what each one means) and asks the module for the WHERE.
+
+Without it, each setting invents its own resolution order, and the project
+ends up with three ways to read a setting — three places to look when a
+round refuses for the "wrong" reason, and three chances for two of them to
+disagree. The committed policy file is named `.pair-<name>`, the trunk's
+name (`.pair-trunk`), so the local file and the committed one read as a
+pair: `.pair/merge-strategy` and `.pair-merge-strategy`.
+
+### 22.3 The conflict is found before the merge, not during
+
+Round 147 gave the round branch a clean death: it was merged and deleted.
+The conflict was discovered AT THE MOMENT OF THE MERGE — after the PR was on
+review, after the critic had written a verdict, after the human had read the
+diff. The cost of finding a conflict late is not the conflict; it is
+everything that had to be un-done to find it.
+
+So the question is asked earlier, and asked without touching the repository:
+`git merge-tree --write-tree` computes the merge result in memory. The
+index, the working tree and the history are exactly as they were.
+
+The three answers are kept apart:
+
+| answer | meaning |
+|---|---|
+| `clean` | the merge would succeed |
+| `conflict` | it would not, and git names the files |
+| `unknown` | git could not answer |
+
+`unknown` is NOT `clean`. A gate that answers "no conflicts" when git failed
+is worse than no gate at all: it says the thing the reader wants to hear,
+without having checked anything.
+
+The exit code alone does NOT tell these apart. `git merge-tree` exits 1 both
+for a conflict AND for a revision it cannot resolve, and it exits 128 for
+unrelated histories. The distinction is made on the OUTPUT: git prints the
+sha of the merge result only when it actually computed a merge.
+
+The file names are read from the NUL-separated form (`--name-only -z`), not
+from git's prose: the prose is localized, and a host writing «Конфликт
+слияния в f.txt» would leave an English-word parser with nothing.
+
+The check compares the PR's HEAD — what the merge would ship — against
+`origin/<trunk>`, with the trunk fetched FIRST (a check against a stale
+trunk is a check against a fiction) and the head fetched by SHA if it is not
+in this repository yet (the PR was pushed from elsewhere).
+
+`--force` does NOT bypass it. `--force` bypasses the REVIEW gates; a
+conflict is not a review gate, it is a fact about the two commits, and it
+does not become true because a human wrote a reason next to it.
+
+### 22.4 The merge strategy is a setting
+
+The strategy was hard-wired: `gh pr merge --squash --delete-branch`. A
+project that wanted its rounds rebased or merged as merge commits had no way
+to ask for it except by editing the engine — which is not a setting.
+
+`merge_strategy.py` follows §19's pattern for `trunk`:
+`PAIR_MERGE_STRATEGY` (the environment) → `.pair/merge-strategy` (local,
+ignored) → `.pair-merge-strategy` (the committed policy) → `squash`. The
+default is what makes this safe to land: a project that says nothing keeps
+the behaviour it had, byte for byte.
+
+| strategy | `gh pr merge` flags |
+|---|---|
+| `squash` | `--squash --delete-branch` (the default) |
+| `merge` | `--merge --delete-branch` |
+| `rebase` | `--rebase --delete-branch` |
+
+An invalid value is REFUSED with the admissible values named. It is never
+silently replaced by the default: a project that asked for `rebase` and got
+`squash` would learn it from the trunk's history, where nobody was looking.
+
+`--delete-branch` is kept at every strategy: §19 requires the round's branch
+to die with the round, whatever strategy brought it to the trunk.

@@ -63,6 +63,7 @@ import restart_trace  # noqa: E402 - needs sys.path above
 import server_freshness  # noqa: E402 - needs sys.path above
 import statecache  # noqa: E402 - needs sys.path above
 import read_delivery  # noqa: E402 - pending mailbox batch transitions
+import trunk  # noqa: E402 - needs sys.path above
 from read_wait import (  # noqa: E402 - reads the role's configured MCP budget
     DEFAULT_READ_WAIT_SECONDS, MAX_READ_WAIT_SECONDS, client_timeout_ms, effective_read_wait,
 )
@@ -715,8 +716,8 @@ from store_core import (  # noqa: E402,F401 - re-export, the seam's public face
 )
 
 
-def tmux_command() -> str:
-    """tmux, prefixed with this project's socket when one is named.
+def tmux_command() -> list[str]:
+    """tmux argv, with this project's socket as separate arguments when named.
 
     Condition (c) of the per-project-socket slice (round 106 slice C): ONE
     resolver for every tmux call site in the tree. A single tmux server serves
@@ -732,8 +733,8 @@ def tmux_command() -> str:
     exe = shutil.which("tmux") or "tmux"
     socket = (os.environ.get("PAIR_PANE_SOCKET") or "").strip()
     if socket and socket != "default":
-        return f"{exe} -L {socket}"
-    return exe
+        return [exe, "-L", socket]
+    return [exe]
 
 
 def same_pane(left, right) -> bool:
@@ -800,7 +801,7 @@ class PairSession:
 
     # ---------------------------------------------------------------- helpers
 
-    def _git_fingerprint(self) -> Any:
+    def _git_fingerprint(self, head: str | None = None) -> Any:
         """The HEAD+dirty snapshot plus the delivery floor, for the fingerprint.
 
         Quenched into `None`: no git means no telling two states apart on this
@@ -815,8 +816,11 @@ class PairSession:
             from review import delivery_floor
             from review import snapshot as git_snapshot
 
-            snap = git_snapshot(self.store.project_root)
-            status, _ = delivery_floor(self.store.project_root)
+            if head is None:
+                from review import git_head
+                head = git_head(self.store.project_root)
+            snap = git_snapshot(self.store.project_root, head=head)
+            status, _ = delivery_floor(self.store.project_root, head=head)
             snap["delivery"] = status
             return snap
         except Exception:  # noqa: BLE001 - the snapshot must never drop the cache
@@ -1310,10 +1314,31 @@ class PairSession:
 
     def tool_pair_state(self) -> dict[str, Any]:
         """Read the shared state, the roster, and this role's standing."""
+        from panes import pane_identity_cache
+        with pane_identity_cache():
+            return self._tool_pair_state_cached()
+
+    def _tool_pair_state_cached(self) -> dict[str, Any]:
+        """Build the answer while this request's pane snapshot cache is active."""
         with self.store.lock():
             state = self.store._load()
+            before = self.store.heartbeat_signature(state)
             self._register(state)
-            self.store._save(state)
+            self.store.save_if_heartbeat_only(before, state)
+
+        # One HEAD snapshot feeds this whole answer: fingerprint, close advisory,
+        # and delivery floor. It is not retained across calls, so a push between
+        # pair_state calls still moves the cache key and displayed blocker.
+        request_head: str | None = None
+        needs_head = (state.get("mode", "fix") != "audit"
+                      or bool(state.get("verdicts"))
+                      or bool(state.get("round_base")))
+        if needs_head:
+            try:
+                from review import git_head
+                request_head = git_head(self.store.project_root)
+            except Exception:  # noqa: BLE001 - gitless environments stay unknown
+                request_head = ""
 
         # Cache: unchanged state answers short instead of full (~939 tokens, called 3-4
         # times per round by agents). The fingerprint counts in statecache — knowing
@@ -1331,7 +1356,7 @@ class PairSession:
                                   self.store.obligations_root.glob("*.json")],
                 inbox_names=[p.name for p in self._inbox_files()],
                 peer_inbox_names=self._peer_inbox_names(state),
-                git_snapshot=self._git_fingerprint,
+                git_snapshot=lambda: self._git_fingerprint(request_head),
                 alive=alive,
                 restart_line=restart_trace.restarts_last(self.store.root),
             )
@@ -1447,7 +1472,13 @@ class PairSession:
             "peers": self._peer_status(state, writer),
             # What else blocks the round close. The agent must see it BEFORE spending a move
             # on a doomed pair_advance("done").
-            "closing_blocked_by": self._done_blockers(state),
+            # Full note/transcript consistency is a close-time check; running it
+            # on every orientation read scans the entire rotating journal.
+            "closing_blocked_by": self._done_blockers(
+                state, include_note_check=False, head=request_head),
+            "closing_checks_deferred": [
+                "note/transcript consistency is checked on pair_advance('done')"
+            ],
             "evidence_this_round": [
                 {"kind": item.get("kind"), "value": item.get("value"), "ok": item.get("ok"),
                  "role": item.get("role")}
@@ -1466,7 +1497,7 @@ class PairSession:
             # is network on the hot path — but the writer must not be surprised
             # at close. Local floor status rides along; PR state is verified at
             # advance-to-done, where the message names the exact cure.
-            "delivery": self._delivery_advisory(state, autonomy, mode),
+            "delivery": self._delivery_advisory(state, autonomy, mode, head=request_head),
             "how_to_transfer_authority": (
                 "Only the human can move write authority: `pairctl assign <role>`. "
                 "A peer message never transfers it, in either direction."
@@ -1474,7 +1505,7 @@ class PairSession:
         }
 
     def _delivery_advisory(self, state: dict[str, Any], autonomy: str,
-                           mode: str) -> dict[str, str]:
+                           mode: str, head: str | None = None) -> dict[str, str]:
         """Local delivery posture for the state answer, never the network.
 
         Floor status is local git; the ceiling line states the rule without
@@ -1486,7 +1517,7 @@ class PairSession:
         try:
             from review import delivery_floor
 
-            floor_status, floor_detail = delivery_floor(self.store.project_root)
+            floor_status, floor_detail = delivery_floor(self.store.project_root, head=head)
         except Exception:  # noqa: BLE001 - advisory never drops the answer
             floor_status, floor_detail = "unknown", "delivery check failed to run"
         ceiling = (
@@ -1547,7 +1578,8 @@ class PairSession:
     def unresolved_patches(self, state: dict[str, Any]) -> list[dict[str, Any]]:
         return unresolved_patches(state)
 
-    def _done_blockers(self, state: dict[str, Any]) -> list[str]:
+    def _done_blockers(self, state: dict[str, Any], *, include_note_check: bool = True,
+                       head: str | None = None) -> list[str]:
         blockers = done_blockers(state)
         # The review queue and stale verdicts (the review-queue card).
         # The writer never blocks mid-work; the block sits here, before the result lands.
@@ -1563,7 +1595,7 @@ class PairSession:
             # carries commits THIS state does not, so the round would ship a
             # tree that is not what was reviewed.
             truth, truth_why = origin_truth(self.store.project_root,
-                                            str(state.get("round_base") or ""))
+                                            str(state.get("round_base") or ""), head=head)
             if truth == "behind":
                 blockers.append(f"the round is not against current origin: {truth_why}. ")
             elif truth == "ahead":
@@ -1575,10 +1607,11 @@ class PairSession:
             # entry with no journal row is a hand-edit, and a foreign agent's
             # write into our kind file is exactly that shape hiding. Refuses at
             # close, never repaired here: the writer sees their own edit.
-            from pair_notes_consistency import check_notes
-            notes_ok, notes_why = check_notes(self.store.root)
-            if not notes_ok:
-                blockers.append(f"the notes disagree with the journal: {notes_why}. ")
+            if include_note_check:
+                from pair_notes_consistency import check_notes
+                notes_ok, notes_why = check_notes(self.store.root)
+                if not notes_ok:
+                    blockers.append(f"the notes disagree with the journal: {notes_why}. ")
             # Round 106 slice E: the board's own machine leg. Round 105 drifted
             # three times post-commit and once pre-commit — a row claiming
             # `delivered <sha>` for another commit's sha, a prerequisite's sha,
@@ -1624,7 +1657,7 @@ class PairSession:
             if verdicts:
                 last = verdicts[-1]
                 old = last.get("rev") or {}
-                current = git_head(self.store.project_root)
+                current = git_head(self.store.project_root) if head is None else head
                 if current:
                     stale, why = is_stale(old, current,
                                           changed_between(self.store.project_root,
@@ -1672,7 +1705,7 @@ class PairSession:
             try:
                 from review import delivery_floor
 
-                floor_status, floor_detail = delivery_floor(self.store.project_root)
+                floor_status, floor_detail = delivery_floor(self.store.project_root, head=head)
             except Exception:  # noqa: BLE001 - the floor never drops the close
                 floor_status, floor_detail = "unknown", "delivery check failed to run"
             if floor_status == "undelivered":
@@ -1870,7 +1903,7 @@ class PairSession:
                                      to=target, bell_kind=kind, pane=pane, reason=reason)
         return {"rung": False, "why": reason}
 
-    def _clear_own_pointer(self, tmux: str, pane: str) -> int:
+    def _clear_own_pointer(self, tmux: list[str], pane: str) -> int:
         """Erase our own leftover pointer from a neighbour's composer.
 
         A ring or a pointer the neighbour never accepted stays in its composer:
@@ -1921,7 +1954,7 @@ class PairSession:
             return self._ring_refused(target, kind, pane, "tmux not found in PATH")
         try:
             probe = subprocess.run(
-                [tmux, "display-message", "-p", "-t", pane, "#{pane_dead}"],
+                tmux + ["display-message", "-p", "-t", pane, "#{pane_dead}"],
                 capture_output=True, text=True, timeout=5,
             )
         except OSError as exc:
@@ -1941,7 +1974,7 @@ class PairSession:
             # another composer. Fallback is display-message (a popup with no printing) plus
             # mailbox. No silence, no injection.
             try:
-                subprocess.run([tmux, "display-message", "-t", pane,
+                subprocess.run(tmux + ["display-message", "-t", pane,
                                 "-d", "4000",
                                 f"[pair] {kind} from {self.role} — take it from the mailbox"],
                                capture_output=True, text=True, timeout=5)
@@ -1977,10 +2010,21 @@ class PairSession:
                 return self._ring_refused(target, kind, pane, reason)
         from pointers import ring_prompt
         prompt = ring_prompt(self.role, kind, detail)
-        first = subprocess.run([tmux, "send-keys", "-t", pane, "-l", prompt],
-                               capture_output=True, text=True, timeout=5)
-        second = subprocess.run(tmux_command().split() + ["send-keys", "-t", pane, "Enter"],
-                                capture_output=True, text=True, timeout=5)
+        # A tmux timeout is BUSY, not death: the same measured hang that killed
+        # the supervisor on 2026-10-25 would kill this MCP server too, and a
+        # dead server cannot answer pair_read. The ring is best-effort by
+        # design — the mailbox letter is the guarantee — so a timeout is a
+        # recorded miss and nothing more.
+        try:
+            first = subprocess.run(tmux + ["send-keys", "-t", pane, "-l", prompt],
+                                   capture_output=True, text=True, timeout=5)
+            second = subprocess.run(tmux_command() + ["send-keys", "-t", pane, "Enter"],
+                                    capture_output=True, text=True, timeout=5)
+        except subprocess.TimeoutExpired as expired:
+            reason = f"send-keys timed out: {expired}"
+            self.store.append_transcript("doorbell_enter_unverified", self.role,
+                                         to=target, bell_kind=kind, pane=pane, reason=reason)
+            return {"rung": False, "why": reason, "pane": pane}
         if first.returncode != 0 or second.returncode != 0:
             reason = (f"send-keys text rc={first.returncode} enter rc={second.returncode}"
                       + (f" {second.stderr.strip()[:120]}" if second.stderr else ""))
@@ -1997,8 +2041,14 @@ class PairSession:
                 return True
             return line is not None and prompt in line
         if _retained():
-            retry = subprocess.run([tmux, "send-keys", "-t", pane, "Enter"],
-                                   capture_output=True, text=True, timeout=5)
+            try:
+                retry = subprocess.run(tmux + ["send-keys", "-t", pane, "Enter"],
+                                       capture_output=True, text=True, timeout=5)
+            except subprocess.TimeoutExpired as expired:
+                reason = f"send-keys Enter timed out: {expired}"
+                self.store.append_transcript("doorbell_enter_unverified", self.role,
+                                             to=target, bell_kind=kind, pane=pane, reason=reason)
+                return {"rung": False, "why": reason, "pane": pane}
             if _retained():
                 reason = ("composer retained prompt after Enter "
                           f"(rc=0 both sends, retry rc={retry.returncode})")
@@ -2145,7 +2195,7 @@ class PairSession:
             # Fallback is display-message + mailbox only.
             import subprocess as _sp
             try:
-                _sp.run([_tmux(), "display-message", "-t", pane,
+                _sp.run(_tmux() + ["display-message", "-t", pane,
                          "-d", "4000",
                         # Round 103 S2: the pointer carries its mail seq so a
                         # reader can tell this pointer's vintage — one stale
@@ -2424,7 +2474,7 @@ class PairSession:
         return read_delivery.drain(self, limit)
 
     def _pin_round_base(self, state: dict[str, Any]) -> None:
-        """Stamp the round's own base: the head origin/master carries right now.
+        """Stamp the round's own base: the head the trunk carries right now.
 
         Round 104's delivery floor answered `delivered` from refs/remotes/* while
         origin sat 7 ahead — there was no recorded base to diff against, so "ahead
@@ -2432,16 +2482,22 @@ class PairSession:
         the round), it gives the origin-truth comparison (round 105 slice 2b) a
         number instead of a guess.
 
-        Best-effort by design: a state dir with no git, or no origin/master yet,
+        The trunk is the project's own branch (`trunk.resolve_trunk`), not a
+        hardcoded `master`: round 144 merged into `dev` and the base was pinned
+        against `origin/master`, so the round could never line up with its own
+        trunk.
+
+        Best-effort by design: a state dir with no git, or no trunk ref yet,
         leaves the field unset rather than blocking the round — the comparison then
         reports its own inability, it does not invent a base.
         """
         if state.get("round_base"):
             return
         try:
-            from review import unanchored_master_commits, _run_git
+            from review import _run_git
             root = self.store.project_root
-            head = _run_git(root, "rev-parse", "--verify", "origin/master")
+            head = _run_git(root, "rev-parse", "--verify",
+                            f"origin/{trunk.resolve_trunk(root)}")
         except Exception:  # noqa: BLE001 - a missing base never blocks an open
             head = None
         if head:

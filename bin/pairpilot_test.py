@@ -50,26 +50,11 @@ class PilotCase(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.state_dir = Path(self.tmp.name) / ".pair"
         self.state_dir.mkdir(parents=True)
-        # TMUX_PANE drops for the test and returns after. In test_protocol.py this came
-        # from F-08 (the suite must never spam the operator window with real output),
-        # but here the reason is other and nastier: the obligation tests use pane %20,
-        # and running the suite FROM %20 the pilot takes agy for sitting in its own pane,
-        # adds it to skip and stays silent. The suite fell two tests depending on which
-        # pane launched it — the check depended on place, not code.
+        # Never inherit our own pane: TMUX_PANE could make the pilot skip a role
+        # depending on which window launched the suite.
         self._orig_tmux_pane = os.environ.pop("TMUX_PANE", None)
-        # Round 136: the machine's tmux is out of reach.
-        #
-        # The suite used to read the LIVE server. On this box pane %1 was another
-        # project's window, and the pilot — rightfully — refused to type into a
-        # foreign pane, so four assertions of a REQUIRED gate fell for a reason
-        # that had nothing to do with the change under test.
-        #
-        # Two resolvers reach a tmux here: the pilot's own attribute, and the
-        # composer's `_tmux()`, which looks the binary up in PATH by itself. So
-        # stubbing one of them leaves the other a road to the host. The fake
-        # therefore goes into PATH: every `which("tmux")` finds it, and the
-        # pilot is handed its path directly. Nothing in this file may name a
-        # tmux binary of this machine again.
+        # Both pilot and composer resolve tmux, so install the fake in PATH to
+        # keep tests away from a live, possibly foreign server.
         self.fake_tmux = self._install_fake_tmux()
         self._orig_path = os.environ.get("PATH", "")
         os.environ["PATH"] = f"{self.fake_tmux.parent}{os.pathsep}{self._orig_path}"
@@ -232,7 +217,7 @@ class TestWakeAdapterCall(PilotCase):
         at once, so the pid is what makes the answer ours.
         """
         pilot = self.pilot()
-        pilot.tmux = str(self.fake_tmux)  # ring gates on a live pane; pane_alive is mocked
+        pilot.tmux = [str(self.fake_tmux)]  # ring gates on a live pane; pane_alive is mocked
         state = self.write_state(roles={"opencode": {
             "pane": "%7", "opencode_session_id": "ses_recorded",
             "pid": 4242, "pid_start": 99}})
@@ -265,7 +250,7 @@ class TestWakeAdapterCall(PilotCase):
     def test_ring_without_a_recorded_session_still_calls_fail_closed(self) -> None:
         """Absent id passes None; the adapter refuses, never guesses."""
         pilot = self.pilot()
-        pilot.tmux = str(self.fake_tmux)
+        pilot.tmux = [str(self.fake_tmux)]
         state = self.write_state(roles={"opencode": {"pane": "%7"}})
         captured = {}
 
@@ -435,7 +420,7 @@ class TestWakeAckContract(PilotCase):
         and landed as fresh mail about a finished round.
         """
         pilot = self.pilot()
-        pilot.tmux = str(self.fake_tmux)
+        pilot.tmux = [str(self.fake_tmux)]
         self.write_state(writer=None, roles={"agy": {"last_seen": now_iso(),
                                                      "pid": 1, "pane": "%1"}})
         pilot.enqueue("agy", "old pointer text")
@@ -659,7 +644,7 @@ class TestLiveness(PilotCase):
         pairpilot.pane_belongs_to_project = lambda tmux, pane, root: (_ for _ in ()).throw(RuntimeError("no pane"))
         pairpilot.pane_alive = lambda tmux, pane: False
         try:
-            p.tmux = str(self.fake_tmux)
+            p.tmux = [str(self.fake_tmux)]
             p.flush_outbox(state)
         finally:
             pairpilot.deliver = orig_deliver
@@ -1049,7 +1034,7 @@ class TestOutboxStaleness(PilotCase):
         pairpilot.pane_belongs_to_project = lambda tmux, pane, root: (True, "")
         pairpilot.deliver = lambda pane, text, wait_for_empty=0.0: {"delivered": True}
         try:
-            p.tmux = str(self.fake_tmux)
+            p.tmux = [str(self.fake_tmux)]
             p.flush_outbox(state)
         finally:
             pairpilot.pane_alive, pairpilot.deliver = orig_alive, orig_deliver
@@ -1069,7 +1054,7 @@ class TestOutboxStaleness(PilotCase):
         pairpilot.pane_belongs_to_project = lambda tmux, pane, root: (True, "")
         pairpilot.deliver = lambda pane, text, wait_for_empty=0.0: calls.append(text) or {"delivered": True}
         try:
-            p.tmux = str(self.fake_tmux)
+            p.tmux = [str(self.fake_tmux)]
             p.flush_outbox(state)
         finally:
             pairpilot.pane_alive, pairpilot.deliver = orig_alive, orig_deliver
@@ -1092,7 +1077,7 @@ class TestOutboxStaleness(PilotCase):
         pairpilot.deliver = lambda pane, text, wait_for_empty=0.0: {
             "delivered": True, "submit_state": "retained"}
         try:
-            p.tmux = str(self.fake_tmux)
+            p.tmux = [str(self.fake_tmux)]
             p.flush_outbox(state)
         finally:
             pairpilot.pane_alive, pairpilot.deliver = orig_alive, orig_deliver
@@ -1115,7 +1100,7 @@ class TestOutboxStaleness(PilotCase):
         orig_alive = pairpilot.pane_alive
         pairpilot.pane_alive = lambda tmux, pane: True
         try:
-            p.tmux = str(self.fake_tmux)
+            p.tmux = [str(self.fake_tmux)]
             p.flush_outbox(state)
         finally:
             pairpilot.pane_alive = orig_alive
@@ -1243,7 +1228,7 @@ class TestOutboxStaleness(PilotCase):
         orig_alive = pairpilot.pane_alive
         pairpilot.pane_alive = lambda tmux, pane: True
         try:
-            p.tmux = str(self.fake_tmux)
+            p.tmux = [str(self.fake_tmux)]
             p.flush_outbox(state)
         finally:
             pairpilot.deliver = orig_deliver
@@ -1271,7 +1256,7 @@ class TestOutboxStaleness(PilotCase):
         pairpilot.pane_belongs_to_project = lambda tmux, pane, root: (False, "no such pane")
         pairpilot.pane_alive = lambda tmux, pane: False
         try:
-            p.tmux = str(self.fake_tmux)
+            p.tmux = [str(self.fake_tmux)]
             p.flush_outbox(state)
         finally:
             pairpilot.deliver = orig_deliver
@@ -1305,7 +1290,7 @@ class TestOutboxStaleness(PilotCase):
         pairpilot.pane_belongs_to_project = boom
         pairpilot.pane_alive = lambda tmux, pane: True
         try:
-            p.tmux = str(self.fake_tmux)
+            p.tmux = [str(self.fake_tmux)]
             p.flush_outbox(state)
             p.flush_outbox(state)
         finally:
@@ -1333,7 +1318,7 @@ class TestOutboxStaleness(PilotCase):
         orig_alive2 = pairpilot.pane_alive
         pairpilot.pane_alive = lambda tmux, pane: True
         try:
-            p.tmux = str(self.fake_tmux)
+            p.tmux = [str(self.fake_tmux)]
             p.flush_outbox(state)
         finally:
             pairpilot.deliver = orig_deliver
@@ -1358,7 +1343,7 @@ class TestOutboxStaleness(PilotCase):
         pairpilot.pane_belongs_to_project = lambda tmux, pane, root: (True, "")
         pairpilot.deliver = busy
         try:
-            p.tmux = str(self.fake_tmux)
+            p.tmux = [str(self.fake_tmux)]
             p.flush_outbox(state)
         finally:
             pairpilot.pane_alive, pairpilot.deliver = orig_alive, orig_deliver
@@ -1440,7 +1425,7 @@ class TestTmuxPaths(PilotCase):
 
     def fake_tmux_pilot(self, alive=True, prompt=None, verdict="allow"):
         pilot = self.pilot()
-        pilot.tmux = str(self.fake_tmux)
+        pilot.tmux = [str(self.fake_tmux)]
         pairpilot.pane_alive = lambda tmux, pane: alive
         pairpilot.resolve_permission_prompt = (
             lambda tmux, pane, allow=None: {"approved": verdict == "allow",
@@ -1467,6 +1452,11 @@ class TestTmuxPaths(PilotCase):
         pilot = self.fake_tmux_pilot()
         pilot.tick()
         self.assertIn("pilot_pane_missing", self.transcript_kinds())
+
+    def test_unblock_uses_configured_allowlist_when_no_flag_was_given(self) -> None:
+        pilot = self.fake_tmux_pilot(); pilot.allow = None; configured, received = [r"\bgit\s+status\b"], []
+        pilot.allowlist = lambda: configured; pairpilot.resolve_permission_prompt = lambda tmux, pane, allow=None: received.append(allow) or {"verdict": "none", "approved": False, "prompt": "", "why": "", "matched": None}
+        pilot.unblock({"roles": {"codex": {"pane": "%7"}}}); self.assertEqual([configured], received)
 
     def test_live_pid_without_pane_heals_the_roster(self) -> None:
         """No pane in the roster, but the role process lives sitting in a pane: heal the
@@ -1655,18 +1645,7 @@ class TestTmuxPaths(PilotCase):
 
 
 class TestRingReachesTheScreen(PilotCase):
-    """The wake must reach a full-screen TUI, not a tmux popup.
-
-    A tmux popup is drawn in tmux's message area, OUTSIDE the pane's rendered
-    region. A full-screen TUI owns that region and repaints it, so the popup
-    never reaches the agent: the wake is a no-op and the room looks silent
-    while the peer is merely unaware
-    (docs/backlog/pilot-ring-popup-is-invisible-in-a-full-screen-tui.md).
-
-    The pilot therefore types the doorbell into the neighbour's composer, with
-    the same guards the server's doorbell uses, and the popup stays the
-    fallback for a pane that refuses.
-    """
+    """A full-screen TUI repaints popups, so the pilot types into its composer."""
 
     def tui_tmux(self, cwd: str | None = None, typed: str = "") -> Path:
         """A tmux that behaves like a full-screen TUI agent.
@@ -1683,9 +1662,10 @@ class TestRingReachesTheScreen(PilotCase):
         script = f'''#!/usr/bin/env python3
 import sys
 
-args = sys.argv[1:]
+raw = sys.argv[1:]
+args = raw[2:] if raw[:1] == ["-L"] else raw
 with open({str(self.tmux_log)!r}, "a", encoding="utf-8") as log:
-    log.write(" ".join(args) + "\\n")
+    log.write(" ".join(raw) + "\\n")
 
 try:
     with open({str(current)!r}, encoding="utf-8") as fh:
@@ -1731,7 +1711,7 @@ elif args[:1] == ["send-keys"]:
     def a_live_tui(self, cwd: str | None = None, typed: str = "") -> tuple:
         """A pilot whose tmux is a full-screen TUI, and the role that sits in it."""
         pilot = self.pilot()
-        pilot.tmux = str(self.tui_tmux(cwd=cwd or str(self.tmp.name), typed=typed))
+        pilot.tmux = [str(self.tui_tmux(cwd=cwd or str(self.tmp.name), typed=typed))]
         state = self.write_state(roles={"agy": {
             "pane": "mail:0.1", "pid": os.getpid(), "last_seen": ago(10)}})
         return pilot, state
@@ -1828,7 +1808,7 @@ elif args[:1] == ["send-keys"]:
         """The ring and the queued push are two doors to the same peer: only one
         of them may fire, or the peer reads the same news twice."""
         pilot = self.pilot()
-        pilot.tmux = str(self.tui_tmux(cwd=str(self.tmp.name)))
+        pilot.tmux = [str(self.tui_tmux(cwd=str(self.tmp.name)))]
         self.write_state(roles={"agy": {"pane": "mail:0.1", "pid": os.getpid(),
                                         "last_seen": ago(10)}})
         self.inbox("agy", 1)
@@ -1838,6 +1818,26 @@ elif args[:1] == ["send-keys"]:
                          "one letter must not become two messages in the pane")
         self.assertFalse(pilot.pending("agy"),
                          "a delivered ring must not leave the same news in the queue")
+
+    def test_socket_mode_supervisor_finds_and_confirms_allowed_prompt(self) -> None:
+        """The resolved socket must reach each subprocess, through confirmation."""
+        pilot, state = self.a_live_tui(typed="Run cat README.md? [y/N]\n❯ ")
+        old_socket = os.environ.get("PAIR_PANE_SOCKET")
+        os.environ["PAIR_PANE_SOCKET"] = "pair-test-socket"
+        try:
+            pilot.tmux = pairpilot._tmux()
+            pilot.unblock(state)
+        finally:
+            if old_socket is None:
+                os.environ.pop("PAIR_PANE_SOCKET", None)
+            else:
+                os.environ["PAIR_PANE_SOCKET"] = old_socket
+        calls = self.tmux_calls()
+        self.assertTrue(calls and all(c.startswith("-L pair-test-socket ") for c in calls), calls)
+        self.assertIn("pilot_unblock", self.transcript_kinds(),
+                      "the supervisor must record confirming the allowed command")
+        self.assertTrue(any("send-keys" in c and c.endswith(" y") for c in calls), calls)
+        self.assertTrue(any("send-keys" in c and c.endswith(" Enter") for c in calls), calls)
 
 
 class TestRestart(PilotCase):
@@ -1879,7 +1879,7 @@ class TestRestart(PilotCase):
 
     def pilot_with_launch(self, command: str = "agy --resume"):
         pilot = self.pilot()
-        pilot.tmux = str(self.fake_tmux)
+        pilot.tmux = [str(self.fake_tmux)]
         pairpilot.pane_alive = lambda tmux, pane: True
         pilot._explicit_launch = {"agy": command} if command else {}
         return pilot
@@ -1927,7 +1927,7 @@ class TestRestart(PilotCase):
             "claude": {"last_seen": ago(9000), "pid": 999999, "pane": "%7"},
         })
         pilot = self.pilot()
-        pilot.tmux = str(self.fake_tmux)
+        pilot.tmux = [str(self.fake_tmux)]
         pilot.tick()
         self.assertNotIn("agy", pilot.skip, "a live neighbour must never fall under skip")
         self.assertNotIn("pilot_pane_shared", self.transcript_kinds())
@@ -2017,7 +2017,7 @@ class TestRestart(PilotCase):
         """
         self.dead_writer_state()
         pilot = self.pilot_with_launch(command="")
-        pilot.tmux = str(self.fake_tmux)
+        pilot.tmux = [str(self.fake_tmux)]
         pairpilot.pane_alive = lambda tmux, pane: True
         pilot.tick()
         self.assertNoRestart("no profile means no restart")
@@ -2729,7 +2729,7 @@ class TestVisibleWork(PilotCase):
     def test_busy_pane_is_not_nudged_even_when_the_clock_ran_out(self) -> None:
         self.silent_writer_state()
         pilot = self.pilot()
-        pilot.tmux = str(self.fake_tmux)
+        pilot.tmux = [str(self.fake_tmux)]
         self.patch_composer("> finishing the test", empty=False)
         pilot.tick()
         self.assertEqual("", pilot.pending("agy"),
@@ -2745,7 +2745,7 @@ class TestVisibleWork(PilotCase):
         self.silent_writer_state()
         pilot = self.pilot()
         self.allow_push()
-        pilot.tmux = str(self.fake_tmux)
+        pilot.tmux = [str(self.fake_tmux)]
         self.patch_composer(">", empty=True)
         pilot.tick()
         self.assertTrue(self.wake(pilot, "agy"), "an empty composer — exactly the defect")
@@ -2763,7 +2763,7 @@ class TestVisibleWork(PilotCase):
         unknown what."""
         self.silent_writer_state()
         pilot = self.pilot()
-        pilot.tmux = str(self.fake_tmux)
+        pilot.tmux = [str(self.fake_tmux)]
         self.patch_composer(None, empty=True)
         pilot.tick()
         self.assertEqual("", pilot.pending("agy"))
@@ -2805,7 +2805,7 @@ class TestSmartAutoCompact(PilotCase):
     def test_stalled_busy_triggers_escape_and_compact(self) -> None:
         self.write_state(writer="omp", roles={"omp": {"pane": "%3", "last_seen": ago(100)}})
         pilot = self.pilot()
-        pilot.tmux = str(self.fake_tmux)
+        pilot.tmux = [str(self.fake_tmux)]
         pilot.stall_timeout = 10.0
 
         # Mocking a hung spinner: composer_line returns None (busy), the screen never
@@ -2829,7 +2829,7 @@ class TestSmartAutoCompact(PilotCase):
     def test_active_busy_with_screen_delta_is_not_compacted(self) -> None:
         self.write_state(writer="omp", roles={"omp": {"pane": "%3", "last_seen": ago(100)}})
         pilot = self.pilot()
-        pilot.tmux = str(self.fake_tmux)
+        pilot.tmux = [str(self.fake_tmux)]
         pilot.stall_timeout = 10.0
 
         pairpilot.composer_line = lambda lines: None
@@ -2852,7 +2852,7 @@ class TestSmartAutoCompact(PilotCase):
         self.write_state(phase="done", closed_at=now_iso(),
                          writer="agy", roles={"omp": {"pane": "%3", "last_seen": ago(10)}})
         pilot = self.pilot()
-        pilot.tmux = str(self.fake_tmux)
+        pilot.tmux = [str(self.fake_tmux)]
 
         # The composer is free
         pairpilot.composer_line = lambda lines: ">"
@@ -2866,7 +2866,7 @@ class TestSmartAutoCompact(PilotCase):
         """A CLI with no /compact: a hung agent takes Escape, but no /compact."""
         self.write_state(writer="omp", roles={"omp": {"pane": "%3", "last_seen": ago(100)}})
         pilot = self.pilot()
-        pilot.tmux = str(self.fake_tmux)
+        pilot.tmux = [str(self.fake_tmux)]
         pilot.stall_timeout = 10.0
         pilot.supports_compact = lambda role: False
 
@@ -2887,7 +2887,7 @@ class TestSmartAutoCompact(PilotCase):
         self.write_state(phase="done", closed_at=now_iso(),
                          writer="agy", roles={"omp": {"pane": "%3", "last_seen": ago(10)}})
         pilot = self.pilot()
-        pilot.tmux = str(self.fake_tmux)
+        pilot.tmux = [str(self.fake_tmux)]
         pilot.supports_compact = lambda role: False
 
         pairpilot.composer_line = lambda lines: ">"
@@ -3212,7 +3212,7 @@ class TestPushGates(PilotCase):
         stubbed here too, and the tmux the pilot holds is the fake.
         """
         pilot = self.pilot()
-        pilot.tmux = str(self.fake_tmux)
+        pilot.tmux = [str(self.fake_tmux)]
         for name, stub in (
             ("pane_role_pid", lambda tmux, pane, role: role_server_in_pane),
             ("pane_alive", lambda tmux, pane: True),
@@ -3239,9 +3239,9 @@ class TestPushGates(PilotCase):
                                         "pane": "%999999"}})
         self.inbox("agy", 2)
         pilot.tick()
-        self.assertEqual(str(self.fake_tmux), pilot.tmux,
+        self.assertEqual([str(self.fake_tmux)], pilot.tmux,
                          "the pilot must hold the fake, never a tmux of this machine")
-        self.assertTrue(pairpilot._tmux().startswith(str(self.fake_tmux)),
+        self.assertEqual(str(self.fake_tmux), pairpilot._tmux()[0],
                         "the composer resolves its own tmux from PATH: it must "
                         f"find the fake too, not {pairpilot._tmux()!r}")
         self.assertNotIn("send-keys", "\n".join(self.tmux_calls()),
@@ -3407,7 +3407,7 @@ class TestPushGates(PilotCase):
         self.write_state(writer="agy",
                          roles={"agy": {"last_seen": ago(3600), "pid": 999999, "pane": "%999999"}})
         pilot = self.pilot()
-        pilot.tmux = str(self.fake_tmux)
+        pilot.tmux = [str(self.fake_tmux)]
         orig = pairpilot.pane_alive
         pairpilot.pane_alive = lambda tmux, pane: True
         self.addCleanup(setattr, pairpilot, "pane_alive", orig)
@@ -3421,7 +3421,7 @@ class TestPushGates(PilotCase):
         self.write_state(writer="agy",
                          roles={"agy": {"last_seen": ago(3600), "pid": os.getpid(), "pane": "%999999"}})
         pilot = self.pilot()
-        pilot.tmux = str(self.fake_tmux)
+        pilot.tmux = [str(self.fake_tmux)]
         pilot.mark_wake(pilot.state(), "agy", "silent 60 min", "you are silent", "report")
         self.assertTrue(self.wake(pilot, "agy"),
                         "a live process whose probe could not run must still be woken")
@@ -3498,6 +3498,209 @@ class TestPushGates(PilotCase):
             pairpilot.pane_belongs_to_project = orig_belongs
         self.assertFalse(pilot.ask_file.exists(),
                          "a delivered report spends the human's trigger")
+
+
+class _FakeClock:
+    """A clock the test moves by hand.
+
+    The detector's whole rule is a duration, so the tests must control time
+    rather than sleep. Patching the pilot's own `time` module leaves every
+    other module in the process on the real clock.
+    """
+
+    def __init__(self, start: float = 1_000_000.0) -> None:
+        self.now = start
+
+    def time(self) -> float:
+        return self.now
+
+    def sleep(self, seconds: float) -> None:
+        self.now += seconds
+
+
+class TestMonologueDetector(PilotCase):
+    """The monologue detector: streaming reasoning with no tool gets cut.
+
+    The defect it answers was measured in round 144: an agent spent four
+    hours streaming reasoning, and the supervisor had no word for that state.
+    `ComposerBusy` was the wrong word — it describes the INPUT FIELD, and
+    during a monologue the field reads EMPTY (measured on the live pane).
+
+    So the signal is the pane's CONTENT changing while no tool subprocess is
+    alive. These tests pin the three properties that make it safe:
+
+    - a live tool (a long test run) is never cut;
+    - a waiting agent (a rotating spinner, no content) is never cut;
+    - a real monologue is cut, and the cut is recorded.
+
+    The properties of the streak arithmetic itself live in
+    `mcp/pair_mailbox/test_watchdog.py`, beside the module that owns them.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        self._orig_capture = pairpilot.capture
+        self._orig_pane_alive = pairpilot.pane_alive
+        self._orig_deliver = pairpilot.deliver
+        self._orig_run = pairpilot.subprocess.run
+        self._orig_belongs = pairpilot.pane_belongs_to_project
+        self._orig_pane_pid = pairpilot.pane_pid
+        self._orig_time = pairpilot.time
+        self._orig_composer_line = pairpilot.composer_line
+        self._orig_is_empty = pairpilot.is_composer_empty
+        self.delivered_commands = []
+        self.sent_keys = []
+        self.clock = _FakeClock()
+        pairpilot.time = self.clock
+        pairpilot.pane_alive = lambda tmux, pane: True
+        pairpilot.pane_belongs_to_project = lambda tmux, pane, root: (True, "")
+        pairpilot.deliver = lambda pane, text, wait_for_empty=0.0, submit=True: (
+            self.delivered_commands.append((pane, text)) or {"delivered": True})
+        # The composer reads EMPTY during a monologue (measured on the live
+        # pane, round 146). That is exactly the state the old signal missed,
+        # so the tests keep it that way — the detector must work anyway.
+        pairpilot.composer_line = lambda lines: "╰─"
+        pairpilot.is_composer_empty = lambda line: True
+
+        def mock_run(cmd, *args, **kwargs):
+            self.sent_keys.append(cmd)
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+        pairpilot.subprocess.run = mock_run
+
+    def tearDown(self) -> None:
+        pairpilot.capture = self._orig_capture
+        pairpilot.pane_alive = self._orig_pane_alive
+        pairpilot.deliver = self._orig_deliver
+        pairpilot.subprocess.run = self._orig_run
+        pairpilot.pane_belongs_to_project = self._orig_belongs
+        pairpilot.pane_pid = self._orig_pane_pid
+        pairpilot.time = self._orig_time
+        pairpilot.composer_line = self._orig_composer_line
+        pairpilot.is_composer_empty = self._orig_is_empty
+        super().tearDown()
+
+    def _pilot_with_streaming(self, lines, has_tool: bool, threshold: float = 10.0):
+        """A pilot whose role streams `lines`, with or without a live tool."""
+        self.write_state(writer="omp", roles={"omp": {"pane": "%3", "last_seen": ago(10)}})
+        pilot = self.pilot()
+        pilot.tmux = [str(self.fake_tmux)]
+        pilot.max_busy_seconds = threshold
+        pilot.monologue_tracker = pairpilot.MonologueTracker(threshold)
+        pairpilot.capture = lambda tmux, pane: lines
+        pairpilot.pane_pid = lambda tmux, pane: 4242
+        # The tool's own process is the evidence: one live child under the pane
+        # means work in progress.
+        pairpilot.descendants = lambda root: ([4243] if has_tool else [])
+        pairpilot.tool_pids = lambda pids, role: ([4243] if has_tool else [])
+        return pilot
+
+    def test_unknown_process_tree_never_interrupts(self):
+        screen = ["reasoning line 1"]
+        pilot = self._pilot_with_streaming(screen, has_tool=False)
+        pairpilot.descendants = lambda root: None
+        for second in (0, 500, 1000):
+            self.clock.now = second
+            screen.append(str(second))
+            pilot.tick()
+        self.assertNotIn("pilot_monologue_cut", self.transcript_kinds())
+        self.assertFalse(any("C-c" in command for command in self.sent_keys))
+
+    def test_a_monologue_is_cut_and_recorded(self) -> None:
+        """The defect itself: the screen moves, no tool, five minutes pass."""
+        screen = ["reasoning line 1"]
+        pilot = self._pilot_with_streaming(screen, has_tool=False)
+        pilot.tick()
+        self.assertNotIn("pilot_monologue_cut", self.transcript_kinds())
+
+        # The agent keeps talking; the streak grows past the threshold.
+        screen[-1] = "reasoning line 2"
+        self.clock.now += 60.0
+        pilot.tick()
+
+        self.assertIn("pilot_monologue_cut", self.transcript_kinds())
+        self.assertTrue(any("C-c" in cmd for cmd in self.sent_keys),
+                        "the monologue is interrupted")
+        self.assertTrue(any("Watchdog" in text for _, text in self.delivered_commands),
+                        "and the agent is told to act")
+
+    def test_a_long_test_run_is_never_cut(self) -> None:
+        """A live tool process is work, however long the screen changes."""
+        screen = ["test output 1"]
+        pilot = self._pilot_with_streaming(screen, has_tool=True)
+        pilot.tick()
+        screen[-1] = "test output 2"
+        self.clock.now += 3600.0
+        pilot.tick()
+        self.assertNotIn("pilot_monologue_cut", self.transcript_kinds())
+        self.assertFalse(any("C-c" in cmd for cmd in self.sent_keys))
+
+    def test_a_waiting_agent_is_never_cut(self) -> None:
+        """A rotating spinner is not output: the agent is waiting, not talking."""
+        screen = ["⠋ waiting for the model"]
+        pilot = self._pilot_with_streaming(screen, has_tool=False)
+        pilot.tick()
+        screen[-1] = "⠙ waiting for the model"
+        self.clock.now += 3600.0
+        pilot.tick()
+        self.assertNotIn("pilot_monologue_cut", self.transcript_kinds())
+
+    def test_a_frozen_screen_is_never_cut(self) -> None:
+        """Silence is another defect's business — the stalled-screen check owns it."""
+        screen = ["same content"]
+        pilot = self._pilot_with_streaming(screen, has_tool=False)
+        pilot.tick()
+        self.clock.now += 3600.0
+        pilot.tick()
+        self.assertNotIn("pilot_monologue_cut", self.transcript_kinds())
+
+    def test_a_sealed_patch_stops_the_cut(self) -> None:
+        """A reviewer under a sealed patch is not interrupted."""
+        screen = ["reviewing the patch"]
+        pilot = self._pilot_with_streaming(screen, has_tool=False)
+        state = self.read_state()
+        state["patches"] = {"p1": {"sealed": True, "applied": False}}
+        (self.state_dir / "state.json").write_text(
+            json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+        pilot.tick()
+        screen[-1] = "reviewing the patch, still"
+        self.clock.now += 3600.0
+        pilot.tick()
+        self.assertNotIn("pilot_monologue_cut", self.transcript_kinds())
+
+    def test_a_foreign_pane_is_never_cut(self) -> None:
+        """Not proven ours: never read it, never type into it."""
+        screen = ["someone else's screen"]
+        pilot = self._pilot_with_streaming(screen, has_tool=False)
+        pairpilot.pane_belongs_to_project = lambda tmux, pane, root: (False, "foreign project")
+        pilot.tick()
+        screen[-1] = "someone else's screen, still"
+        self.clock.now += 3600.0
+        pilot.tick()
+        self.assertNotIn("pilot_monologue_cut", self.transcript_kinds())
+        self.assertFalse(any("C-c" in cmd for cmd in self.sent_keys))
+
+    def test_the_cut_resets_the_streak(self) -> None:
+        """After a cut the clock starts again — a second monologue is cut too."""
+        screen = ["reasoning 1"]
+        pilot = self._pilot_with_streaming(screen, has_tool=False)
+        pilot.tick()
+        screen[-1] = "reasoning 2"
+        self.clock.now += 60.0
+        pilot.tick()
+        self.assertIn("pilot_monologue_cut", self.transcript_kinds())
+
+        # The streak is gone: the next observation starts from zero.
+        self.assertEqual(pilot.monologue_tracker.streak_seconds("omp", 1e12), 0.0)
+
+    def test_the_supervisor_does_not_speak_without_a_tool(self) -> None:
+        """The whole point: no tool, no matter how long the screen moves."""
+        screen = ["line 1"]
+        pilot = self._pilot_with_streaming(screen, has_tool=False)
+        pilot.tick()
+        screen[-1] = "line 2"
+        self.clock.now += 3600.0
+        pilot.tick()
+        self.assertIn("pilot_monologue_cut", self.transcript_kinds())
 
 
 class PilotStateResolutionCase(unittest.TestCase):
