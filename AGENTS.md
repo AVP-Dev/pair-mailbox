@@ -102,6 +102,10 @@ never transfers authority, and no agent tool writes `writer` except the holder's
 release. See §2 and §4 of the protocol — those two are what keep this
 arrangement safe rather than merely clever.
 
+## Hard invariants and engineering guidelines
+
+Security and safety rules, credential handling, production safeguards, and protection against destructive database or history operations are hard invariants. Follow them without exception. Process choices such as diff-size bands, worktree use, and slicing recommendations are engineering guidelines: use judgment to keep work reviewable, but do not treat a small threshold overrun as a reason to reset phases, repeat plan approvals, or stop useful implementation. See `docs/PROTOCOL.md` §21.3.
+
 ## House conventions
 
 - **Report what is true.** A proposed patch is not a merged one. A plan is not a result. If it is

@@ -302,6 +302,20 @@ class TestNumberedMenuKeys(unittest.TestCase):
         self.assertEqual("allow", composer.permission_verdict(
             context, [r"\bgit\s+status\b"])["verdict"])
 
+    def test_codex_prompts_and_active_menu_context(self) -> None:
+        headers = ("Would you like to make the following edits?",
+                   "Would you like to grant these permissions?",
+                   "Would you like to send input to the existing terminal?")
+        for header in headers:
+            self.assertEqual(header, composer.detect_permission_menu(
+                [header, "1. Yes, just this once", "2. No"]))
+        lines = ["gcc -Wall; echo done", "Would you like to run the following command?",
+                 "git status --short", "› 1. Yes, just this once", "2. No"]
+        context = composer.extract_permission_context(lines, composer.detect_permission_menu(lines))
+        self.assertNotIn("gcc", context)
+        self.assertEqual("allow", composer.permission_verdict(
+            context, [r"\bgit\s+status\b"])["verdict"])
+
     def test_codex_numbered_yes_prompt_chooses_numbered_allow(self) -> None:
         lines = ["Would you like to run the following command?",
                  "git status --short", "1. Yes, just this once",
@@ -467,7 +481,7 @@ class TestCaptureJoinsSoftWrappedLines(unittest.TestCase):
         long_line = "A" * 60
         self._write(long_line)
         lines = composer.capture("tmux", self.pane)
-        self.assertIn(long_line, lines,
+        self.assertTrue(any(long_line in line for line in lines),
                       f"the wrapped line stayed split: {lines!r}")
 
     def test_the_frame_geometry_survives_the_joining(self) -> None:

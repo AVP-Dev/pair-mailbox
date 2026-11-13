@@ -462,29 +462,37 @@ fi
 # Replace only a process proven to supervise this exact room.
 if [ "$pilot_alive" -eq 1 ] && [ -f "$STATE_DIR/pilot.pid" ]; then
   if python3 - "$STATE_DIR" "$PAIR_PANE_SOCKET" <<'PY_PILOT'
-import os, signal, sys, time
+import os, shlex, signal, subprocess, sys, time
 from pathlib import Path
 room = Path(sys.argv[1]).resolve()
 try:
     pid = int((room / "pilot.pid").read_text())
-    args = Path(f"/proc/{pid}/cmdline").read_bytes().decode().split("\0")
+    args = shlex.split(subprocess.run(["ps", "-p", str(pid), "-o", "command="],
+                                      capture_output=True, text=True, check=True).stdout)
+    if not args:
+        sys.exit(1)
     if not any(Path(a).name == "pairpilot" for a in args):
         sys.exit(1)
     index = args.index("--state")
     if Path(args[index + 1]).resolve() != room:
         sys.exit(1)
-    values = Path(f"/proc/{pid}/environ").read_bytes().split(b"\0")
-    expected = ("PAIR_PANE_SOCKET=" + sys.argv[2]).encode()
+    values = subprocess.run(["ps", "eww", "-p", str(pid)], capture_output=True,
+                            text=True, check=True).stdout.split()
+    expected = "PAIR_PANE_SOCKET=" + sys.argv[2]
     if expected in values:
         sys.exit(1)
     os.kill(pid, signal.SIGTERM)
     deadline = time.monotonic() + 3
     while time.monotonic() < deadline:
         try:
-            status = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[0]
-        except FileNotFoundError:
+            result = subprocess.run(["ps", "-p", str(pid), "-o", "stat="],
+                                    capture_output=True, text=True)
+            status = result.stdout.strip()
+            if result.returncode != 0 or not status:
+                break
+        except (OSError, subprocess.SubprocessError):
             break
-        if status == "Z":
+        if status.startswith("Z"):
             break
         time.sleep(.1)
     else:

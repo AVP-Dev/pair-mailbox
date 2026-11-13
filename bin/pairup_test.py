@@ -21,6 +21,16 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 PAIRUP = ROOT / "bin" / "pairup"
 
+
+def process_environment(pid: int) -> list[str]:
+    return subprocess.run(["ps", "eww", "-p", str(pid)], capture_output=True,
+                          text=True, check=True).stdout.split()
+
+def script_command(command: str) -> list[str]:
+    if sys.platform == "darwin":
+        return ["script", "-q", "/dev/null", "sh", "-c", command]
+    return ["script", "-e", "-q", "-c", command, "/dev/null"]
+
 BOOTSTRAP = """\
 _root=%s
 PAIRUP_ROOT=%s
@@ -355,7 +365,7 @@ class PairupWorktreeDefaultCase(unittest.TestCase):
         in_place = self._run(in_place=True)
         self.assertEqual(in_place.returncode, 0, in_place.stderr)
         self.assertNotIn("switching to worktree", in_place.stdout)
-        self.assertEqual(in_place.stdout.split("CWD=")[-1].strip(), str(self.proj))
+        self.assertEqual(Path(in_place.stdout.split("CWD=")[-1].strip()).resolve(), self.proj.resolve())
 
     def test_outside_a_git_repository_the_launch_refuses_with_the_way_out(self) -> None:
         plain = self.tmp / "plain"
@@ -460,7 +470,7 @@ class PairupTmuxLaunchCase(unittest.TestCase):
             self.assertEqual(probe.returncode, 0, probe.stderr)
             env["TMUX"] = probe.stdout.strip() + ",1,0"
         command = shlex.join([str(PAIRUP), "--in-place", "--writer", "codex", "--swap", critic])
-        proc = subprocess.Popen(["script", "-e", "-q", "-c", command, "/dev/null"], cwd=self.project,
+        proc = subprocess.Popen(script_command(command), cwd=self.project,
                                 env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         self.procs.append(proc)
         return proc
@@ -488,8 +498,8 @@ class PairupTmuxLaunchCase(unittest.TestCase):
         panes = self.tmux("list-panes", "-a", "-F", "#{pane_id}|#{pane_pid}|#{pane_title}").stdout
         self.assertEqual(len(panes.splitlines()), 2, panes)
         pilot_pid = int((self.project / ".pair" / "pilot.pid").read_text())
-        pilot_env = Path(f"/proc/{pilot_pid}/environ").read_bytes().split(b"\0")
-        self.assertIn(("PAIR_PANE_SOCKET=" + self.socket).encode(), pilot_env)
+        pilot_env = process_environment(pilot_pid)
+        self.assertIn("PAIR_PANE_SOCKET=" + self.socket, pilot_env)
 
         writer = [line for line in panes.splitlines() if "(writer)" in line][0]
         self.detach(first)
@@ -512,7 +522,7 @@ class PairupTmuxLaunchCase(unittest.TestCase):
         before = self.tmux("list-panes", "-a", "-F", "#{pane_id}|#{pane_pid}").stdout
         state = json.loads((self.project / ".pair" / "state.json").read_text())
         command = shlex.join([str(PAIRUP), "--in-place", "--writer", "agy", "--swap", "codex"])
-        result = subprocess.run(["script", "-e", "-q", "-c", command, "/dev/null"],
+        result = subprocess.run(script_command(command),
                                 cwd=self.project, env=self.env, capture_output=True,
                                 text=True, timeout=20)
         self.assertNotEqual(result.returncode, 0)
@@ -539,8 +549,8 @@ class PairupTmuxLaunchCase(unittest.TestCase):
         self.await_launch(second, "agy")
         new_pid = int(pidfile.read_text())
         self.assertNotEqual(new_pid, stale.pid)
-        self.assertIn(("PAIR_PANE_SOCKET=" + self.socket).encode(),
-                      Path(f"/proc/{new_pid}/environ").read_bytes().split(b"\0"))
+        self.assertIn("PAIR_PANE_SOCKET=" + self.socket,
+                      process_environment(new_pid))
         self.detach(second)
 
     def test_unstoppable_supervisor_does_not_spawn_a_second_instance(self) -> None:
@@ -563,7 +573,7 @@ class PairupTmuxLaunchCase(unittest.TestCase):
         self.assertTrue(ready.exists())
         pidfile.write_text(str(stale.pid))
         command = shlex.join([str(PAIRUP), "--in-place", "--writer", "codex", "--swap", "agy"])
-        result = subprocess.run(["script", "-e", "-q", "-c", command, "/dev/null"],
+        result = subprocess.run(script_command(command),
                                 cwd=self.project, env=self.env, capture_output=True,
                                 text=True, timeout=15)
         self.assertNotEqual(result.returncode, 0)

@@ -1538,6 +1538,14 @@ The thresholds are checked against the **measured diff**, never against what the
 plan claimed. A declared "small fix" that turns into 400 lines is refused: the
 rule against the promise is decoration, and a rule against the fact is a rule.
 
+These bands guide planning and isolation; they are not hard safety invariants or
+tripwires. A measured diff just over a band may prompt a fresh judgment about
+reviewability, but it does not by itself require resetting the phase, repeating
+a plan visa, or abandoning implementation. Apply hard invariants to security,
+safety, credentials, production changes, and destructive database or history
+operations. Use practical judgment for process heuristics, including worktree
+choice and slicing recommendations.
+
 ### 21.4 Two different worktrees
 
 The launch environment of a pair and the isolation of a task inside a round are

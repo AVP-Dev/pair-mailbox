@@ -883,7 +883,7 @@ PERMISSION_MENU_MARKERS = (
     r"(?:allow\s+once|always\s+allow|enter\s+confirm|(?:⇆|⇄|\btab\b)\s*select|\d+\s*[).:\]]\s*yes\b)",
 )
 PERMISSION_HEADER = re.compile(
-    r"permission\s+(?:required|needed)|would\s+you\s+like\s+to\s+run\s+the\s+following\s+command\?",
+    r"permission\s+(?:required|needed)|would\s+you\s+like\s+to\s+(?:run\s+the\s+following\s+command|make\s+the\s+following\s+edits|grant\s+these\s+permissions|send\s+input\s+to\s+the\s+existing\s+terminal)\?",
     re.IGNORECASE)
 
 # The menu item allowing the op, with its digit. Two live menu kinds in real
@@ -929,15 +929,12 @@ def detect_permission_menu(lines: list) -> str | None:
     and one header alone is an ordinary log.
     """
     text = [line.strip() for line in lines if line.strip()]
-    joined = "\n".join(text)
-    if not PERMISSION_HEADER.search(joined):
-        return None
-    if not any(re.search(marker, joined, re.IGNORECASE) for marker in PERMISSION_MENU_MARKERS):
-        return None
-    for line in reversed(text):
-        if PERMISSION_HEADER.search(line):
-            return line
-    return joined
+    for i in range(len(text) - 1, -1, -1):
+        if PERMISSION_HEADER.search(text[i]):
+            dialog = "\n".join(text[i:])
+            return text[i] if any(re.search(m, dialog, re.IGNORECASE)
+                                  for m in PERMISSION_MENU_MARKERS) else None
+    return None
 
 
 def extract_permission_context(lines: list, prompt: str) -> str:
@@ -958,9 +955,10 @@ def extract_permission_context(lines: list, prompt: str) -> str:
     separator, and I took three with margin for the frame between command and question.
     """
     text = [line.strip() for line in lines if line.strip()]
-    joined = "\n".join(text)
-    if any(re.search(marker, joined, re.IGNORECASE) for marker in PERMISSION_MENU_MARKERS):
-        return " ".join(joined.split())
+    header_index = max((i for i, line in enumerate(text) if PERMISSION_HEADER.search(line)), default=-1)
+    dialog = "\n".join(text[header_index:]) if header_index >= 0 else ""
+    if dialog and any(re.search(m, dialog, re.IGNORECASE) for m in PERMISSION_MENU_MARKERS):
+        return " ".join(dialog.split())
     tail = [line for line in text if line.strip()][-OVERSCAN_LINES:]
     context = " ".join(" ".join(tail).split())
     return context or prompt
