@@ -17,6 +17,7 @@
 
   "agy": {
     "launch": "agy",
+    "initial_prompt": "--prompt-interactive",
     "label": "Antigravity CLI",
     "mcp": {
       "path": "~/.gemini/config/mcp_config.json",
@@ -29,7 +30,8 @@
   },
 
   "codex": {
-    "launch": "codex",
+    "launch": "codex --no-daemon",
+    "initial_prompt": "positional",
     "label": "Codex CLI",
     "mcp": {
       "path": "~/.codex/config.toml",

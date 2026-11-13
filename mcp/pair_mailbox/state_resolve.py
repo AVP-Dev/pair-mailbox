@@ -63,6 +63,21 @@ def walk_up_state(cwd: Path | None = None, *, bounded_by_git: bool = True,
         if parent == here:
             break
         here = parent
+    # Linked worktrees belong to one repository and share its main room.
+    # A clone has a different common directory, even with the same remote.
+    if top is not None and ceiling is None:
+        import subprocess
+        try:
+            proc = subprocess.run(
+                ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
+                cwd=str(top), capture_output=True, text=True, timeout=15)
+            if proc.returncode == 0 and proc.stdout.strip():
+                common = Path(proc.stdout.strip()).resolve()
+                candidate = common.parent / ".pair"
+                if common.name == ".git" and (candidate / "state.json").is_file():
+                    return candidate
+        except (OSError, subprocess.SubprocessError):
+            pass
     return None
 
 

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import os
+import select
 import socket
 import subprocess
 import sys
@@ -85,12 +86,52 @@ class ThinClientCase(unittest.TestCase):
         line = proc.stdout.readline()
         return json.loads(line) if line else {}
 
+    def _send(self, proc: subprocess.Popen, message: dict) -> None:
+        proc.stdin.write(json.dumps(message) + "\n")
+        proc.stdin.flush()
+
+    def _read(self, proc: subprocess.Popen, timeout: float = 5) -> dict:
+        ready, _, _ = select.select([proc.stdout], [], [], timeout)
+        self.assertTrue(ready, "socket client did not forward the next server frame")
+        return json.loads(proc.stdout.readline())
+
     def test_client_connects_and_round_trips(self) -> None:
         self._daemon()
         client = self._client()
         reply = self._roundtrip(client, 1)
         self.assertIn("result", reply)
         self.assertEqual(reply.get("id"), 1)
+
+    def test_initialize_notification_does_not_block_tools_list(self) -> None:
+        """MCP notifications have no reply; the following request still completes."""
+        self._daemon()
+        client = self._client()
+        self._send(client, {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                            "params": {"protocolVersion": "2024-11-05",
+                                       "clientInfo": {"name": "socket-test"}}})
+        self.assertEqual(1, self._read(client).get("id"))
+        self._send(client, {"jsonrpc": "2.0", "method": "notifications/initialized"})
+        self._send(client, {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}})
+        reply = self._read(client)
+        self.assertEqual(2, reply.get("id"), reply)
+        self.assertTrue(reply.get("result", {}).get("tools"), reply)
+
+    def test_server_notification_reaches_idle_socket_client(self) -> None:
+        """Asynchronous server frames flow even while the CLI sends nothing."""
+        self._daemon()
+        client = self._client()
+        self._send(client, {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}})
+        self.assertEqual(1, self._read(client).get("id"))
+        self._send(client, {"jsonrpc": "2.0", "method": "notifications/initialized"})
+        self._send(client, {"jsonrpc": "2.0", "id": 2, "method": "resources/subscribe",
+                            "params": {"uri": "mailbox://testcli"}})
+        subscribed = self._read(client)
+        self.assertEqual(2, subscribed.get("id"), subscribed)
+        sys.path.insert(0, str(ROOT / "mcp" / "pair_mailbox"))
+        from store_core import Store
+        Store(self.proj / ".pair").publish_resource_update("testcli", "mailbox://testcli")
+        notification = self._read(client, timeout=3)
+        self.assertEqual("notifications/resources/updated", notification.get("method"))
 
     def test_cli_restart_reconnects_without_restarting_the_daemon(self) -> None:
         """THE human-visible fact: a CLI restart reconnects instead of
@@ -125,6 +166,21 @@ class ThinClientCase(unittest.TestCase):
         combined = (result.stderr or "") + (result.stdout or "")
         self.assertIn("no daemon", combined)
         self.assertIn("pairup", combined)
+
+    def test_initialize_notification_does_not_block_tools_list(self) -> None:
+        self._daemon()
+        client = self._client()
+        request = "\n".join(json.dumps(frame) for frame in (
+            {"jsonrpc": "2.0", "id": 10, "method": "initialize", "params": {
+                "protocolVersion": "2024-11-05", "clientInfo": {"name": "test"}}},
+            {"jsonrpc": "2.0", "method": "notifications/initialized"},
+            {"jsonrpc": "2.0", "id": 11, "method": "tools/list"},
+        )) + "\n"
+        output, errors = client.communicate(request, timeout=10)
+        self.assertEqual(client.returncode, 0, errors)
+        replies = [json.loads(line) for line in output.splitlines()]
+        self.assertEqual([reply["id"] for reply in replies], [10, 11])
+        self.assertTrue(replies[1]["result"]["tools"])
 
     def test_daemon_death_is_recovered_by_a_new_daemon_not_the_client(self) -> None:
         """The other half of the ruling: a daemon death is recovered by the

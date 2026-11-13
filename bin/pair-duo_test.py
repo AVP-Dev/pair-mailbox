@@ -41,7 +41,7 @@ def _git_repo(path: Path) -> Path:
 class DuoRoleCase(unittest.TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
-        base = Path(self._tmp.name)
+        base = Path(self._tmp.name).resolve()
         self.project = _git_repo(base / "proj")
         self.state = self.project / ".pair"
         self.state.mkdir(parents=True)
@@ -125,7 +125,7 @@ class DuoStateResolutionCase(unittest.TestCase):
 
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
-        base = Path(self._tmp.name)
+        base = Path(self._tmp.name).resolve()
         self.project = _git_repo(base / "proj")
         self.state = self.project / ".pair"
         self.state.mkdir(parents=True)
@@ -225,6 +225,17 @@ class DuoStateResolutionCase(unittest.TestCase):
                               text=True, timeout=30, env=env)
         self.assertIn(f"state={self.state}", proc.stdout,
                       f"an explicit --state must win: {proc.stdout} {proc.stderr}")
+
+    def test_an_explicit_state_flag_wins_when_cwd_is_foreign_project(self) -> None:
+        """The flag is explicit: it must name the room given by --state even when
+        launched from a directory whose own room underfoot would otherwise win
+        (such as a worktree or an unrelated project)."""
+        proc = subprocess.run([str(DUO), "--state", str(self.state),
+                               "--print-state", CLI],
+                              cwd=str(self.foreign.parent), capture_output=True,
+                              text=True, timeout=30)
+        self.assertIn(f"state={self.state}", proc.stdout,
+                      f"an explicit --state must win over cwd: {proc.stdout} {proc.stderr}")
 
 
 if __name__ == "__main__":

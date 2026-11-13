@@ -62,3 +62,11 @@ auto-approval, shell metacharacters, env prefixes, and honest phrasing.
 5. **The network as such**: `curl`/`wget` are forbidden not because the network is evil,
    but because it carries outwards what §12 protects, and carries inwards
    what nobody has checked.
+
+## Launch and worktree boundaries
+
+Standalone MCP initialization grants no pair role. Explicit enrollment binds a
+CLI process identity; it does not authenticate against a hostile same-user process.
+Worktree sharing is opt-in because shared mutable directories cross isolation
+boundaries. Automatic merge cleanup preserves dirty and ignored files and checks
+PR repository/head identity. These checks do not replace host filesystem permissions.

@@ -1,471 +1,182 @@
-<div align="center">
+# pair-mailbox
 
-<h1 align="center">pair-mailbox</h1>
+Coordinate two coding agents in separate CLIs: one writes, the other reviews.
+They share a local MCP mailbox, task list and evidence log. `pairup` starts their
+tmux session and supervisor. Ordinary CLI sessions work independently.
 
-<p align="center">
-  <strong>Deterministic, Autonomous Two-Agent Pair Programming Across Independent CLIs</strong>
-</p>
+[Русский](README.ru.md) · [Setup](docs/SETUP.md) · [Runbook](docs/RUNBOOK.md) ·
+[Protocol](docs/PROTOCOL.md) · [Contributing](CONTRIBUTING.md) · [Security](SECURITY.md)
 
-<p align="center">
-  <a href="https://github.com/AVP-Dev/pair-mailbox"><img src="https://img.shields.io/badge/Python-3.8+-3776AB?style=for-the-badge&logo=python&logoColor=white" alt="Python 3.8+" /></a>
-  <a href="https://modelcontextprotocol.io/"><img src="https://img.shields.io/badge/MCP-Model_Context_Protocol-8A2BE2?style=for-the-badge" alt="MCP Protocol" /></a>
-  <img src="https://img.shields.io/badge/Dependencies-Zero_Pip-10B981?style=for-the-badge" alt="Zero Pip Dependencies (tmux and git required)" />
-  <img src="https://img.shields.io/badge/Architecture-Single_Writer_Invariant-FF8C00?style=for-the-badge" alt="Single Writer Invariant" />
-  <a href="https://github.com/AVP-Dev/pair-mailbox/blob/master/LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue?style=for-the-badge" alt="License MIT" /></a>
-</p>
+![Pair architecture](assets/pair-mailbox-banner.svg)
 
-<p align="center">
-  <strong>English</strong> &bull; <a href="./README.ru.md">🇷🇺 Russian</a> &bull; <a href="./docs/PROTOCOL.md">📜 Protocol</a> [<a href="./docs/PROTOCOL.ru.md">ru</a>] &bull; <a href="./docs/HOW-IT-WORKS.md">💡 How It Works</a> [<a href="./docs/HOW-IT-WORKS.ru.md">ru</a>] &bull; <a href="./docs/RUNBOOK.md">🛠 Runbook</a> [<a href="./docs/RUNBOOK.ru.md">ru</a>] &bull; <a href="./CONTRIBUTING.md">🤝 Contributing</a> &bull; <a href="./SECURITY.md">🛡️ Security</a> &bull; <a href="./skills/README.md">📦 Skills</a> &bull; <a href="./docs/MEDIA.md">📸 Media</a>
-</p>
+## Requirements
 
-<p align="center">
-  <em>Turn any two autonomous AI coding agents (OpenCode, Claude Code, Antigravity, OpenAI Codex) into a disciplined, self-orchestrating pair: one writes code while the other adversarial-reviews, tests, and proposes SHA-256-sealed patches (hash seal, not a cryptographic signature) — with zero manual message relaying between them. Give the task and accept the PR: by default the pair works the round to a finished PR under <code>auto</code>, with no word asked of you in between. <code>semi</code> is there when you want one word at the verify checkpoint. Secrets, deploys, migrations and irreversible deletions stop the pair in every mode.</em>
-</p>
+- Python 3.8+, Git and tmux on `PATH`.
+- Two installed, authenticated CLI profiles for a pair; one for independent work.
+- Bash 4.3+ for verification scripts; Bash 5 is recommended. macOS's bundled Bash
+  3.2 cannot run the complete gate. See [setup](docs/SETUP.md).
+- GitHub CLI (`gh`) and repository access to create or merge GitHub PRs.
 
-<p align="center">
-  <img src="./assets/pair-mailbox-banner.svg" alt="pair-mailbox Architecture Banner" width="100%" />
-</p>
+The default mailbox transport uses the Python standard library. Optional Ed25519
+signatures and the complete test suite require **PyNaCl**. The installer does not
+install agent CLIs, authenticate them, or select their models.
 
-</div>
+## Install once
 
----
-
-## ⏱️ In 10 Seconds: What Changes? (Before & After)
-
-| Without pair-mailbox (Single Agent / Manual Chat) | With pair-mailbox (Autonomous Pair) |
-|---|---|
-| ❌ **Hallucinates and agrees with itself**: agent writes bugs, writes flawed tests, and tells you "all green". | 🛡️ **Adversarial Critic**: second agent independently breaks hypotheses, runs tests, and catches flaws before shipping. |
-| ❌ **You act as a manual copy-paste messenger** between two browser/terminal tabs ("human relay"). | ⚡ **Autonomous peer channel**: agents communicate, wake each other in tmux, and coordinate without you. |
-| ❌ **Both agents overwrite each other's files**, creating merge conflicts and broken states. | 🔒 **Strict Single Writer**: exactly one agent edits files; critic proposes verified SHA-256 sealed patches. |
-| ❌ **Stalls indefinitely on interactive CLI prompts** (`[y/N]` or `Allow execution?`). | 🤖 **Safe Autonomous Unblocking**: watchdog and peer safely confirm allowlisted commands. |
-| ❌ **You spend hours supervising**. | 🎯 **Give task & accept PR**: pair drives Scoping &rarr; Plan &rarr; Code &rarr; Review &rarr; Test &rarr; PR under `auto`. |
-
-### 🚀 Quick 3-Step Demo
+This example uses `$HOME/pair-mailbox`. Use your existing clone if you have one.
+Keep the engine clone available: installed MCP entries point to it.
 
 ```bash
-# 1. Install once across detected CLIs
-./install.sh
-
-# 2. Start pairing from your project repo
-pairup --task "fix retry jitter handling in client"
-
-# 3. Done. The pair collaborates in tmux and opens a verified PR.
+git clone https://github.com/AVP-Dev/pair-mailbox.git "$HOME/pair-mailbox"
+cd "$HOME/pair-mailbox"
+./install.sh --list
+./install.sh codex agy
+./bin/pairup --install
+export PATH="$HOME/.local/bin:$PATH"
 ```
 
----
+Replace `codex agy` with installed profiles, or use `./install.sh` for all detected
+profiles. Persist the PATH line in `~/.zshrc` (zsh) or `~/.bashrc` (interactive bash).
+The installer updates MCP, instructions, skills and native permission settings
+for the selected CLIs. Replaced MCP/instruction files receive backups. Configuration
+paths and verification are in [setup](docs/SETUP.md).
 
-## ⚡ Why pair-mailbox?
+## Work independently
 
-An AI agent working alone is susceptible to its own assumptions: it gladly accepts its own reasoning, skips adversarial verification, and writes tests that validate its own misunderstandings. 
-
-**pair-mailbox** solves this by pairing **two independent CLI agents** (running different models, different prompts, and completely isolated context windows) on the same codebase under strict, server-enforced engineering invariants:
-
-1. **Strict Single Writer Protocol Invariant**: Exactly one agent holds write authority (`pair_claim`). The MCP server strictly enforces the protocol boundaries: it refuses patch reservations from the writer (who edits directly), forbids the critic from verifying patches or advancing phases, and logs all refused attempts to the audit transcript. Agents' instructions and dynamic runtime guards (`pair-guard`) ensure the reviewer remains read-only and submits changes exclusively via sealed patches.
-2. **SHA-256-Sealed Patches (hash seal, not a signature)**: The reviewer proposes changes through isolated patch files (`0600`), sealed with SHA-256 hashes that the writer verifies immediately before applying.
-3. **The Mailbox Is the Guarantee, Delivery Is the Accelerator**: **A turn ends with a bounded `pair_read`** — `pair_read(wait_seconds=N)`, one read per turn. Nothing in any MCP implementation can inject a turn into another agent's client: MCP is client-driven, the server answers requests and cannot push the host. So the only universal wake-up is the agent reading its own mailbox, and an agent that ends its turn this way is never idle with unread mail — it is either reading or it already has the message. An empty answer means nothing new arrived: go back to work or sleep, the peer and the supervisor wake you. The body always lands in the mailbox; `pair_deliver` types only a short pointer into the peer's pane and presses Enter, which is faster where the composer is visible, but a full-screen TUI hides it, so delivery is best-effort and the mailbox always works. The human user never acts as an RFC 1149 messenger copying text between windows.
-4. **Autonomous CLI Permission Unblocking (`pair_unblock`)**: Interactive prompts like `[y/N]` or `Allow command execution?` inside tmux are automatically detected and approved by the peer or background watchdog (`pairwatch --unblock`), eliminating unattended stalls.
-5. **Atomic, Crash-Resilient State & File Locking**: Monotonic numbering (`000001-<UTC-stamp>-<role>-<token>.json`, numeric prefix sorts chronologically), atomic file writes (`replace`), and advisory `fcntl.flock` locks preventing race conditions between concurrent CLI processes. Full append-only audit trail logging every message, claim, phase change, and rejection.
-6. **Zero Pip Dependencies**: Pure Python 3 standard library. Runs on Linux and POSIX systems with `tmux` and `python3` (8+) with zero pip packages to install; `tmux` and `git` are required system tools.
-
----
-
-## 🏛️ System Architecture
-
-```mermaid
-graph TD
-    subgraph Agents ["Two Independent Agent CLIs"]
-        subgraph CLI_Writer ["Writer CLI (e.g. OpenCode / Antigravity)"]
-            AgentA["Writer Agent (LLM 1)"]
-            ToolsA["pair_* MCP Client"]
-        end
-
-        subgraph CLI_Critic ["Critic CLI (e.g. Codex / Claude Code)"]
-            AgentB["Critic Agent (LLM 2)"]
-            ToolsB["pair_* MCP Client"]
-        end
-    end
-
-    subgraph CoreEngine ["pair-mailbox Engine (Python 3 stdlib)"]
-        Server["MCP Server (JSON-RPC 2.0 / stdio)"]
-        Authority["Invariant & State Enforcer"]
-        Composer["tmux Composer Injector<br/>(pair_deliver / pair_unblock)"]
-    end
-
-    subgraph Storage [".pair/ Storage SSOT (Atomic & Monotonic)"]
-        State["state.json<br/>(writer, phase, mode, round, roster)"]
-        Mailbox["mailbox/<role>/<br/>(seq-monotonic + UUID)"]
-        Patches["patches/<br/>(0600 mode, SHA-256 seal)"]
-        Notes["notes/<br/>(plan, verdict, finding, handoff)"]
-        Oblig["obligations/<br/>(expects_reply, review queue)"]
-        Notif["notifications/<br/>(per-role event hints)"]
-        Transcript["transcript.jsonl<br/>(Append-only Audit Log)"]
-    end
-
-    AgentA <--> ToolsA
-    AgentB <--> ToolsB
-    ToolsA <--> Server
-    ToolsB <--> Server
-
-    Server --> Authority
-    Authority <--> State
-    Authority <--> Mailbox
-    Authority <--> Patches
-    Authority <--> Notes
-    Authority --> Transcript
-
-    Composer -. "Active Input & Enter" .-> CLI_Writer
-    Composer -. "Active Input & Enter" .-> CLI_Critic
-
-    style CLI_Writer fill:#121218,stroke:#10b981,stroke-width:2px,color:#fff
-    style CLI_Critic fill:#121218,stroke:#f59e0b,stroke-width:2px,color:#fff
-    style CoreEngine fill:#181824,stroke:#8b5cf6,stroke-width:2px,color:#fff
-    style Storage fill:#121218,stroke:#3b82f6,stroke-width:2px,color:#fff
-```
-
-<p align="center">
-  <img src="./assets/pair-flow-diagram.svg" alt="Autonomous Two-Agent Lifecycle Flow" width="100%" />
-</p>
-
----
-
-## 🚀 Quickstart
-
-### 📋 Prerequisites
-
-- **Python 3.8+** (standard library only — 0 external runtime pip dependencies).
-- **tmux** (`sudo apt install tmux` on Debian/Ubuntu or `brew install tmux` on macOS) — required for split sessions, active `pair_deliver` delivery, and `pair_unblock` permission handling.
-- **bash 4+** (macOS ships 3.2: `brew install bash` — the file-size gate uses associative arrays) — required for split sessions, active `pair_deliver` delivery, and `pair_unblock` permission handling.
-- **Any two AI CLI agents** from supported profiles (or your own custom CLI registered in `cli-profiles.json`).
-
-### 1. Installation
-
-Clone and install into your local environment:
+From your target project, start the CLI normally and give it the task:
+Replace the example project path with your actual project directory.
 
 ```bash
-git clone https://github.com/AVP-Dev/pair-mailbox.git
-cd pair-mailbox
-./install.sh
-```
-
-`install.sh` automatically detects all supported CLIs present on your machine, configures their MCP settings, installs skills and prompts, and validates the connection with a live handshake test.
-
-```bash
-./install.sh --list     # Inspect detected CLIs
-./install.sh --check    # Run non-destructive verification
-./install.sh codex      # Install to a specific CLI only
-```
-
-### 2. Supported CLI Profiles
-
-| Profile | Application | MCP Config Location | Agent Definition |
-|---|---|---|---|
-| `opencode` | OpenCode | `~/.config/opencode/opencode.jsonc` | `~/.config/opencode/AGENTS.md` |
-| `agy` | Antigravity CLI | `~/.gemini/config/mcp_config.json` | `~/.gemini/AGENTS.md` |
-| `codex` | OpenAI Codex CLI | `~/.codex/config.toml` | `~/.codex/AGENTS.md` |
-| `claude` | Claude Code | `~/.claude.json` | `~/.claude/CLAUDE.md` |
-| `pi` | Pi Coding Agent | `~/.pi/agent/mcp.json` | `~/.pi/agent/AGENTS.md` |
-| `omp` | OMP Coding Agent | `~/.omp/agent/mcp.json` | `~/.omp/agent/AGENTS.md` |
-
-*`pairup --swap` supports all six profiles (`opencode`, `agy`, `codex`, `claude`, `pi`, `omp`). To add any custom CLI: append an entry to `cli-profiles.json` and run `./install.sh <name>`.*
-
-### 3. Launching a Pair Session
-
-From your project directory — one command, seconds:
-
-```bash
-pairup --install   # once: puts a shim into ~/.local/bin
-cd ~/work/<project> && pairup --task "fix 502 retry handling and backoff jitter"
-```
-
-**If `pairup: command not found`:** the shim is either not installed or
-`~/.local/bin` is not on PATH. Fix once:
-
-```bash
-./bin/pairup --install                      # from inside the pair-mailbox clone
-echo $PATH | tr ':' '\n' | grep .local/bin  # empty on macOS by default
-```
-
-If it's empty, add to `~/.zshrc` (macOS/zsh) or `~/.bashrc` (Linux/bash):
-`export PATH="$HOME/.local/bin:$PATH"`, then `source ~/.zshrc`. From now on
-`pairup` runs from any directory. First time you may also just use the full
-path: `cd <pair-mailbox-clone> && ./bin/pairup`.
-
-`pairup` finds `.pair` by walking up from cwd, starts the supervisor if it is
-dead, and raises the writer + critic from the standing arrangement. Only the
-writer is pinned (`bin/pairctl roles --writer opencode --global`); the critic
-is any second live role, so a CLI whose limits ran out is swapped with
-`pairup --swap <cli>` and no paperwork — writer and authority untouched.
-
-Manual form (the same thing `pairup` does for you), in two tmux panes:
-
-**Pane 1 (e.g. OpenCode / Writer):**
-```bash
-opencode --standalone --auto
-```
-
-**Pane 2 (e.g. Codex / Critic):**
-```bash
+cd "$HOME/work/my-project"
 codex
+# Or: agy
 ```
 
-In either window, simply state the goal:
+No pair claim or peer is needed. Outside an explicit pair, the installed MCP entry
+initializes with an empty tool catalog. Old `.pair` directories and inherited
+`PAIR_*` values assign no role. Restart an already open CLI after configuration
+or instruction updates.
 
-```
-work with the peer on: fix 502 retry handling and backoff jitter
-```
+## Start a pair
 
-The agents will read the codebase, claim roles (`pair_claim`), enter the autonomous pairing loop (Plan &rarr; Implement &rarr; Sealed Review &rarr; Test &rarr; PR), and finish the task without interrupting you.
+From your target project:
 
-### 4. One-command setup (`finish.sh`)
-
-The heavy first-time path: full pipeline in 7 steps — (1) tests before install, (2) install, (3) standing roles, (4) autonomy, (5) supervisor before agents, (6) agents in fresh tmux windows, (7) status report. Takes 5–10 minutes (full test suites); for the daily start use `pairup` above.
+For a project whose trunk is `main`, configure it once as shown in
+[setup](docs/SETUP.md#target-projects-trunk). The engine defaults to `master`.
 
 ```bash
-./finish.sh --task "fix 502 retry handling and backoff jitter"
-./finish.sh --no-pair        # install and verify, do not launch agents
+pairup --writer codex "Inspect the project and fix the retry bug"
 ```
 
-No positional task argument: the task goes only through `--task`. See the header of `finish.sh` for the step order and rationale.
-
----
-
-## 🛠️ CLI Operations & Monitoring
-
-Keep full visibility into your multi-agent workflow:
+`--writer` is optional: the launcher uses the existing writer arrangement, then
+an available profile. The critic is an available different CLI. The task is stored
+in `.pair`; Codex and agy also receive an initial interactive prompt.
+By default the agents work in an isolated Git worktree while `.pair` stays in the
+main checkout. `pairup --in-place` uses the current checkout instead. Repeating
+`pairup` attaches to the existing session.
 
 ```bash
-pairup                       # Fast start from the project folder: supervisor-if-dead + pair (daily)
-pairup --swap agy            # Critic's limits ran out: new critic pane, writer untouched
-pairup --worktree <branch>   # Run pair in an isolated git worktree (-w alias)
-bin/pairctl worktree list    # List active git worktrees across the repo
-bin/pairctl budget           # Inspect round budget ceilings (advances, messages, restarts)
-bin/pairchat               # Live streaming conversation with colored rejections (Ctrl+C to exit)
-bin/pairchat --once        # Print current project chat snapshot and exit
-bin/pairchat --all --once  # Cross-project telemetry: stream chats from all active workspaces
-bin/pairctl all            # Table of all paired projects, current writers, and silence timers
-bin/pairctl status         # Inspect current workspace state JSON
-bin/pairctl why            # View active writers and their declared technical rationale
-bin/pairpilot             # Supervisor: keeps the pair alive unattended (see below)
-bin/pairpilot --once      # One supervisor pass, to see what it would do right now
-bin/pairpilot --launch agy=agy   # How to restart a role whose process died
-bin/pairwatch --unblock    # Background daemon to detect stalls and auto-approve [y/n] prompts
-bin/pairdoctor             # Health check and environment diagnostic utility
-bin/pair-duo --swap-critic agy --state <dir> --project <dir>  # Swap critic directly
-bin/pair-duo agy                  # Two instances of ONE CLI: agy-writer and agy-critic
+pairup                              # Start or attach
+pairup --task "Review retry handling" # Alternative to a quoted task
+pairup --swap agy                    # Replace critic, retain writer
+pairup --worktree feature/retry      # Run in a separate Git worktree
 ```
 
-`bin/pair-duo <cli>` runs two copies of the SAME CLI in one project — the writer
-gets the role `<cli>-writer`, the critic `<cli>-critic`, each derived from the
-role the CLI's own MCP config gives. A foreign role is refused: the environment
-may only name an INSTANCE of the configured role, never replace it.
-
-### 🧭 How far the pair runs without you
-
-`bin/pairctl autonomy <level>` (default `auto`). This axis is separate from the round
-mode above, because one asks *what the round is for* and the other *how far it goes alone*:
-
-| Autonomy | Restarts a dead agent | Confirms permission prompts | Closing a round |
-|---|---|---|---|
-| **`auto`** *(Default)* | yes | only from the permission allowlist | needs recorded evidence; no word needed — the round closes itself |
-| **`semi`** | yes | only from the permission allowlist | needs recorded evidence **and** one word: `bin/pairctl ok` |
-| **`observe`** | no | no | human is driving; proof is still required |
-
-Evidence is required in **every** level. An earlier version let `observe` close a round
-with nothing recorded, which made the most cautious setting the only one where a round
-could end on nothing at all — a side effect dressed up as a decision. `observe` means
-"do less", not "do not count".
-
-#### Picked once, at launch
-
-The level is chosen when the pair starts and not renegotiated mid-round, so you are
-asked **at most once** — and in `auto`, not at all.
+Use one quoted task argument. `pairup codex agy` does not select two CLIs and is
+not supported. Run `pairup --help` for all options.
+For two copies of the same CLI, run the engine script from your target project:
 
 ```bash
-pairup --task "autonomy: semi fix the thing"   # or pairctl autonomy semi
+PAIR_HOME="$HOME/pair-mailbox"
+"$PAIR_HOME/bin/pair-duo" codex "Fix retry handling"
 ```
 
-With no flag, the launcher resolves in this order, strongest first:
+The derived roles are `codex-writer` and `codex-critic`. `PAIR_HOME` is just a
+shell variable for the engine clone, not a pair-mailbox setting.
 
-| Source | What it looks like |
-|---|---|
-| `task` | `autonomy: semi` on the **first line** of the task |
-| `file` | `.pair/autonomy`, one word |
-| `default` | `auto` |
+## Profiles
 
-A malformed flag is a usage error (`exit 2`), not a fall-through — a level the
-human did not choose must never start silently. A malformed task line or file
-falls through to the next source: refusing to start is worse than starting at a
-level the human can see in `pairctl status`.
+[cli-profiles.json](cli-profiles.json) is the source of truth.
 
-Secrets, ports, deploys, migrations, data deletion and git history stop the pair at
-any level, `auto` included ([PROTOCOL.md §12](./docs/PROTOCOL.md)).
-
-`bin/pairpilot` is the process that watches the pair while both agents are idle. It delivers
-deferred messages, nudges a silent agent, confirms blocked permission prompts **from an
-allowlist only** (`DEFAULT_ALLOW_PATTERNS` in `mcp/pair_mailbox/composer.py`: reads, in-project edits, tests/linters, local git, `git push` to a feature branch, `gh pr` — with `NEVER_ALLOW_PATTERNS` refused at any setting), restarts an agent whose process died while its
-window lives, reports sealed patches nobody applied, writes a checkpoint digest for the
-human in `semi`, writes a report when the round closes, automatically parks itself on `done` to prevent token quota waste (`pilot_parked`), issues smart preventive `/compact`, and audits runtime in-memory server freshness (`server_freshness`).
-
-It cannot move phases, grant or revoke write authority, commit, apply a peer's patch, or
-touch project files. Those are the boundaries that make the arrangement safe
-([PROTOCOL.md §13](./docs/PROTOCOL.md)).
-
-### 🔒 What the supervisor may press "y" on
-
-Only prompts matching the allowlist. The default list is `DEFAULT_ALLOW_PATTERNS` (`mcp/pair_mailbox/composer.py:909-975`): reads, in-project edits, tests and linters, local
-git, `git push` to a **feature branch**, and `gh pr` (create / issue / run / workflow). That is deliberate: a read-only
-default would stall the pair on every step, which is the exact failure this was built to
-remove.
-
-Refused at any allowlist setting:
-
-- everything in PROTOCOL.md §12 — secrets, ports/deploy, DB migrations, deleting data, production;
-- destroying the machine: `rm -rf /`, `rm -rf ~`, `rm -rf .`, `mkfs`, `dd if=`, `killall`;
-- git history and the default branch: push to `main`/`master`, `--force`, `reset --hard`, `clean -f`;
-- network and package installs: `curl`, `wget`, `pip install`, `npm install` — not because
-  networking is unsafe by itself, but because it is how a protected file leaves the machine;
-- piping into a shell: `| sh`, `| bash`, `$(`, `find … -exec`, which turn any read into execution.
-
-Refusals are reported, not silent: `pilot_unblock_refused` goes to the transcript with the
-reason, and the pane stays blocked for the human.
-
-Widen or narrow it yourself:
-
-```bash
-echo '{"allow": ["Read", "grep", "git status"]}' > .pair/permissions.json
-```
-
-The decision is made on the prompt text, not by parsing the command, so a harmless word can
-sit next to a dangerous one. Every approval is written to the transcript together with the
-exact line that was allowed — so the journal says what got a "yes".
-
----
-
-## 🔄 Dual Execution Modes
-
-Switch modes at runtime with a single command (`bin/pairctl mode <mode>`):
-
-| Mode | What Happens | Code Changes | Patch Flow | Purpose |
-|---|---|---|---|---|
-| **`fix`** *(Default)* | Writer edits, critic proposes sealed diffs, tests run, git PR opened | Yes | Active (`reserve` &rarr; `seal` &rarr; `verify`) | Ship bugfixes, features, and refactoring end-to-end. |
-| **`audit`** | Both agents systematically hunt defects and try to refute each other's claims | **Zero** | Refused by server | Rigorous vulnerability / race condition audits. Verified findings land in `docs/backlog/`. |
-
----
-
-## 🧰 MCP Tool Reference
-
-`pair-mailbox` exposes 22 specialized MCP tools:
-
-| Category | Tool | Authorized Roles | Description |
-|---|---|---|---|
-| **Identity & State** | `pair_state` | Both | Returns current role, write authority status, task, phase, mode, and peer status. |
-| | `pair_claim` | Both | Claims write authority with a required technical rationale. Rebuffs second claims. |
-| | `pair_release` | Writer | Voluntarily releases write authority with a recorded reason. |
-| | `pair_advance` | Writer / Both | Advances phases forward (`writer`); rolls phases back (`both` — critic's veto power). |
-| | `pair_ping` | Both | Cheap liveness heartbeat: moves `last_seen` and answers with three fields instead of the full state. |
-| | `pair_digest` | Both | Token-budgeted orientation digest (task, phase, open tasks, obligations, last commit/verdict) instead of reading full history. |
-| **Communication** | `pair_deliver` | Both | **Active delivery**: body goes to the peer's mailbox, only a short pointer is typed into its tmux composer (best-effort; mailbox always works). |
-| | `pair_send` | Both | **Passive delivery**: Sends a message to the peer's atomic mailbox. |
-| | `pair_read` | Both | Reads unread messages with optional blocking wait (`wait_seconds=45`), one read per turn. A batch stays unread until its `ack_token` is passed; the answer names `must_ack` and `letters_behind`. |
-| | `pair_note` | Both | Leaves persistent notes (`plan`, `decision`, `finding`, `verdict`, `handoff`). |
-| | `pair_note_index` | Both | Lists every note with its size and entry count, largest first, so an agent can decide what to read without spending tokens on content. |
-| | `pair_note_read` | Both | Reads the TAIL of a note, cut at an entry boundary and capped at 400 lines. Full-note reads are how a 19k-token verdict used to be paid for on every round. |
-| | `pair_task` | Both | Adds to the shared task list, marks done, or drops with a required reason. The list is append-only: only the writer closes a task, and an open task blocks the round. |
-| **Safety & Patches** | `pair_patch_reserve` | Critic Only | Prepares a dedicated, mode `0600` patch file. Refused for writers and audit mode. |
-| | `pair_patch_seal` | Critic Only | Computes and securely records SHA-256 digest of the unified diff. |
-| | `pair_patch_verify` | Writer Only | Re-computes and verifies SHA-256 before applying. Halts immediately on mismatch. |
-| | `pair_propose` | Critic Only | One call instead of six steps: the server builds the unified diff itself (`git diff HEAD` over the worktree files). Refused for writers and audit mode. |
-| | `pair_patch_applied` | Writer Only | Records whether the apply succeeded. An unapplied sealed patch blocks closing the round. |
-| | `pair_patch_release` | Both | Deletes a patch file by exact absolute path (globs strictly prohibited). |
-| | `pair_evidence` | Both | Records an agent-reported fact for this round (tests, lint, typecheck, commit, PR) — self-declared by the agent, the close gate trusts it. `semi`/`auto` refuse to close a round without it. |
-| **Autonomy & Audit** | `pair_unblock` | Both | Inspects peer tmux pane for CLI prompts (`[y/N]`, `Allow execution?`). Confirms only allowlisted prompts and reports refusals. |
-| | `pair_transcript` | Both | Inspects full append-only audit trail including every rejected operation. |
-
----
-
-## 🧠 Autonomous Skills Suite
-
-Specialized agent skills included out of the box:
-
-- **[`pair-work`](./skills/pair-work/SKILL.md)**: Full autonomous collaboration. Drives the 4-turn loop without asking the human for permission or relaying text.
-- **[`pair-chat`](./skills/pair-chat/SKILL.md)**: Technical communication protocols, active delivery (`pair_deliver`), and strictly forbidding the "human relay" anti-pattern.
-- **[`pair-audit`](./skills/pair-audit/SKILL.md)**: Proves test evidence is authentic: tests fail before changes, pass after, and nothing was mocked or weakened to force a green status.
-- **[`root-cause`](./skills/root-cause/SKILL.md)**: 5-Whys systematic failure analysis before modifying code.
-- **[`pair-backlog`](./skills/pair-backlog/SKILL.md)**: Formal lifecycle for capturing verified out-of-scope defects in `docs/backlog/`.
-- **[`session-finalizer`](./skills/session-finalizer/SKILL.md)**: Finalizes a coding session via `/finish` — check → plan → confirm → cleanup → final-verify → close with verified cleanup and a final report. Not `./finish.sh` (the shell launcher for the pair session, a different tool).
-
----
-
-## 🛡️ Security, Trust Boundaries & Limitations
-
-To maintain absolute technical honesty, the pair-mailbox architecture explicitly defines what is enforced by code versus what is governed by agent protocol:
-
-| Domain | What the Engine Enforces | What Depends on Agent Discipline / Protocol |
+| Profile | CLI | MCP configuration |
 |---|---|---|
-| **Write Authority** | Server strictly refuses `pair_patch_reserve` from the writer, refuses `pair_patch_verify` and `pair_advance` from the critic, and refuses duplicate claims. | The MCP server cannot intercept the host CLI's internal file-writing tools. Non-writers remain read-only via system prompt instructions and dynamic prompt injection (`pair-guard`). |
-| **Patch Integrity** | Patches are stored with mode `0600`. SHA-256 digests are computed at sealing and re-verified at application; any mismatch causes immediate abort. | The writer agent must call `pair_patch_verify` immediately before applying and must not modify the diff manually. |
-| **Terminal Delivery** | `pair_deliver` checks if the target composer is idle, types in chunks, verifies echo tail, and backspaces cleanly on error. | Requires both agents to run inside `tmux` panes with `TMUX_PANE` inherited in the MCP server environment (recorded in the `roles` roster in `.pair/state.json`). If `TMUX_PANE` is absent, delivery degrades to the passive mailbox (`pair_send` / `pair_read`). |
-| **Audit Log** | Append-only transcript (`.pair/transcript.jsonl`) logs every message, claim, phase transition, and refused call. | Analysis of the transcript is done post-factum or via `bin/pairctl log`. |
+| `opencode` | OpenCode | `~/.config/opencode/opencode.jsonc` |
+| `agy` | Antigravity CLI | `~/.gemini/config/mcp_config.json` |
+| `codex` | Codex CLI | `~/.codex/config.toml` |
+| `claude` | Claude Code | `~/.claude.json` |
+| `pi` | Pi Coding Agent | `~/.pi/agent/mcp.json` |
+| `omp` | OMP Coding Agent | `~/.omp/agent/mcp.json` |
 
----
+The Codex pair profile uses `codex --no-daemon` to keep MCP under that CLI
+instance. Use a CLI version supporting its configured launch flags.
 
-## 🧪 Testing & Verification
+## Inspect a project
 
-The verification gate is defined by `scripts/verification-profile.tsv` (run via `./scripts/verify-project.sh`). Layers:
-
-| Layer | What runs | When |
-|---|---|---|
-| `static` | `shell-syntax`, `file-size`, `comment-lint` | fast loop (~30s), before every edit |
-| `positive` | 32 suites: `protocol`, `task-banner`, `autoperms`, `intent-gate`, `plan-gate`, `server-freshness`, `heal`, `budget`, `worktree`, `review-gate`, `obligations`, `rolekeys`, `pairctl-authority`, `pairctl-panes`, `pairctl-read`, `supervisor`, `board-hosts`, `board-snapshot`, `board-render`, `board-cli`, `doctor`, `wake`, `review`, `statecache`, `liveness`, `digest`, `panes`, `composer`, `roster-heal`, `file-size-gate-tests`, `eye-deadlock`, `wake-api` | behaviour that must work |
-| `integration` | `installer` (`python3 install_test.py`, ~6 min) | before finalization |
-| `security` | `secret-baseline` (`./scripts/security-scan.sh`) | baseline with zero external dependencies |
+Only `pairup` gets a global shim. Run other tools by their engine path while your
+working directory is the target project, or pass a supported `--state` option.
 
 ```bash
-./scripts/verify-project.sh --list     # show the gate
-./scripts/verify-project.sh --dry-run  # show without running
+PAIR_HOME="$HOME/pair-mailbox"
+"$PAIR_HOME/bin/pairctl" status
+"$PAIR_HOME/bin/pairctl" tasks
+"$PAIR_HOME/bin/pairctl" budget
+"$PAIR_HOME/bin/pairchat" --once
+"$PAIR_HOME/bin/pairboard" --print-json
+"$PAIR_HOME/bin/pairdoctor"
 ```
 
-Highlights covered by the test suite:
-- Strict single writer enforcement and refusal of illegitimate claim attempts.
-- Cryptographic patch tampering detection (`HASH MISMATCH` triggers immediate abort).
-- Path traversal and glob expansion rejection.
-- Advisory file locking (`fcntl.flock`) preventing race conditions between concurrent CLI processes.
-- Strict monotonic message numbering (`000001-<UTC-stamp>-<role>-<token>.json`).
-- CLI prompt detection, allowlist enforcement, and refusal instead of a blind `y`.
-- The closing gate: no evidence, failing evidence, an unapplied sealed patch, or a missing
-  human `ok` in `semi` each block `done` with a message naming the fix.
-- Supervisor restart safety: a live process is never respawned, an unknown launch command
-  is never guessed, `observe` never restarts, and write authority is never touched.
-- Autonomy resolution: a fresh state and a reset both land on `auto`, a flag beats a task
-  line, a task line beats a file, a file beats the default, and the source is recorded.
-- The unread nudge is sent once per unread batch and appears in the transcript — reading
-  resets it, so the next letter wakes again; a hanging request repeats every 2h until answered.
-- Permission context is not permission consent: a frame containing "allow" is not a grant.
+The [runbook](docs/RUNBOOK.md) covers authority, autonomy, tmux attachment and
+recovery. `finish.sh` is a slower maintenance entry point; use `pairup` daily.
 
----
+## Working principle and boundaries
 
-## 🤝 Support & Contribution
+- In an enrolled pair, `pair_state` and `pair_claim` are **MCP tool calls**, not
+  shell commands. The writer edits; the critic reviews and proposes SHA-256-sealed
+  patches. A disconnected critic retains its read-only boundary.
+- Server checks apply to pair operations. This is not an OS sandbox; CLI permissions
+  and agent instructions also matter. See the [threat model](docs/THREAT_MODEL.md).
+- The mailbox stores messages. `pair_deliver` attempts a tmux wake-up; delivery
+  does not prove that the peer read or acted on the task.
+- Mailbox reading is bounded: **one read per turn**. Use the returned `ack_token`
+  to acknowledge the batch on a later read. See [pair-chat](skills/pair-chat/SKILL.md).
+- The supervisor nudges roles, handles permitted prompts and restarts dead agents
+  according to autonomy settings. Finishing or merging still requires the
+  recorded evidence and applicable review gates.
+- Native subagents report to their parent. The engine coordinates two top-level
+  roles. Automatic team-lead hierarchies, cross-CLI worker pools and model/budget
+  routing are not implemented.
 
-If you find a bug, have architectural suggestions, or want to contribute new CLI integrations:
+## Verification
 
-- [Open a GitHub Issue](https://github.com/AVP-Dev/pair-mailbox/issues)
-- [Submit a Pull Request](https://github.com/AVP-Dev/pair-mailbox/pulls)
-- Follow the rules in [`docs/PROTOCOL.md`](docs/PROTOCOL.md) and [`AGENTS.md`](AGENTS.md).
+From the engine clone, with a supported Bash on `PATH`:
 
----
+```bash
+cd "$HOME/pair-mailbox"
+python3 -m venv .venv
+. .venv/bin/activate
+python -m pip install pynacl
+./scripts/verify-changed.sh
+./scripts/verify-project.sh --list
+./scripts/verify-project.sh --jobs 1
+```
 
-<div align="center">
+[verification-profile.tsv](scripts/verification-profile.tsv) defines the current
+checks; [verify-map.tsv](scripts/verify-map.tsv) selects affected suites. Do not
+run two gates in one worktree at once. Full CI runs on Ubuntu 24.04 with Python
+3.8–3.12. Some process/tmux tests require Linux; the complete gate is not currently
+portable to macOS even though CLI launch works there.
 
-<p align="center">
-  <a href="https://avpdev.com/"><strong>Aliaksei Patskevich (AVPDev)</strong></a><br />
-  <small>AI SOLUTIONS ARCHITECT &bull; <a href="https://linkedin.com/in/avp-dev">LINKEDIN</a> &bull; <a href="https://t.me/AVP_Dev">TELEGRAM</a> &bull; <a href="https://github.com/AVP-Dev">GITHUB</a></small>
-</p>
+## Documentation
 
-<p align="center">
-  <img src="https://img.shields.io/badge/Python-3776AB?style=flat-square&logo=python&logoColor=white" alt="Python" />
-  <img src="https://img.shields.io/badge/Model_Context_Protocol-8A2BE2?style=flat-square" alt="MCP" />
-  <img src="https://img.shields.io/badge/Linux_&_macOS-000000?style=flat-square&logo=linux&logoColor=white" alt="Linux & macOS" />
-  <img src="https://img.shields.io/badge/tmux-1BB91F?style=flat-square&logo=tmux&logoColor=white" alt="tmux" />
-</p>
+- [Setup](docs/SETUP.md): dependencies, installation and configuration.
+- [Runbook](docs/RUNBOOK.md): daily commands and troubleshooting.
+- [How it works](docs/HOW-IT-WORKS.md) and [protocol](docs/PROTOCOL.md).
+- [Project structure](docs/project-structure.md) and [skills](skills/README.md).
+- [Open backlog](docs/backlog/README.md): confirmed outstanding work.
+- [Round records](docs/rounds/) and [archive](docs/archive/): historical records.
+- [Media](docs/MEDIA.md): assets and recording instructions.
 
-</div>
+Contributions target `master`. A PR requests merging a working branch into it;
+merged temporary branches can then be removed. See [CONTRIBUTING.md](CONTRIBUTING.md).
+
+[Aliaksei Patskevich (AVPDev)](https://avpdev.com/) · [MIT license](LICENSE)

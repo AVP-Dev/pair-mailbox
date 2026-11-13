@@ -1,87 +1,87 @@
-# Switching a project to the socket transport
+# MCP child and socket transports
 
-The socket transport (rounds 106–107) makes a pair-MCP drop cost a **reconnect**
-instead of a **relaunch**: the server is a daemon that outlives the CLI, the CLI
-connects to it, and killing or restarting the CLI no longer kills the server.
+[Setup](SETUP.md) · [Runbook](RUNBOOK.md)
 
-This document is the operator procedure, written BEFORE the config flip by the
-peer's ruling (seq 1632): the config change is real and safe, the RESTART is the
-human's, and nobody should have to guess what happens.
+The global pair MCP entry has two transport forms. Both are inactive outside
+explicitly enrolled pairs: standalone initialization succeeds with zero tools
+and does not lock a role or create project state.
 
-## What the flip changes
+| Transport | MCP entry | Lifetime in an enrolled pair |
+|---|---|---|
+| Child (default) | `sh /path/to/engine/mcp/pair_mailbox/serve.sh codex` | server follows the CLI connection |
+| Socket | `python3 /path/to/engine/mcp/pair_mailbox/mcp_socket_client.py codex` | thin client connects to a detached role daemon |
 
-The MCP entry in the CLI's config switches from a **child server**
+`/path/to/engine` represents the engine clone, not the target project. Prefer the
+installer over hand-written global entries. A global entry must not pin an old
+project with `--state`.
 
-```
-sh <project>/mcp/pair_mailbox/serve.sh <role> --state <project>/.pair
-```
+## Select socket transport
 
-to a **thin client**
-
-```
-python3 <project>/mcp/pair_mailbox/mcp_socket_client.py <role>
-      [--state <project>/.pair] [--socket <project>/.pair/.server-<role>.sock]
-```
-
-The client connects to a daemon that **pairup raised before the CLI started**
-(`bin/pairup`, `PAIR_TRANSPORT=socket`). The client REFUSES with exit 4 rather
-than spawning a server — a client that spawns would rebuild the child-lifetime
-defect this whole chain removes.
-
-Until the flip, the default stays the child server: `PAIR_TRANSPORT=socket` is
-opt-in, so a project that has not switched is unaffected.
-
-## The procedure
+From the engine clone:
 
 ```bash
-# 1. Raise the daemon for the role (idempotent: a live socket is reused)
-cd <project>
-PAIR_TRANSPORT=socket bin/pairup            # or: pairrelaunch --role <role>
-
-# 2. Verify the daemon is alive and serving
-ls -l .pair/.server-<role>.sock             # the socket exists
-bin/pairctl status                          # prints the attach line
-
-# 3. Swap the entry (additive; the old child-server line is kept in the file as
-#    a comment for one round, then removed)
-PAIR_TRANSPORT=socket ./install.sh          # rewrites the entry + stamps pairTransport
-
-# 4. Restart the CLI — THE ONLY STEP WITH RISK, and it is the human's:
-#    the session's in-memory context is lost, exactly as any CLI restart costs.
-#    Exit the CLI and launch it again (the launch line is in cli-profiles.json).
-
-# 5. Verify
-pgrep -f "server.py --role <role>"          # the daemon survived the restart
-bin/pairctl status                          # tmux_socket + attach line
+PAIR_TRANSPORT=socket ./install.sh codex agy
 ```
 
-## How to tell which lane a project is on
+The installer writes the selected profiles and verifies each in temporary state
+with a temporary daemon. It does not enroll the current ordinary CLI or attach
+the verification to a live project's socket.
 
-`pairctl status` prints the row's `tmux_socket`, and the MCP entry carries
-`pairTransport`:
+Restart existing CLIs to reload their MCP entry. Then, from the target project:
 
-- `pairTransport: child server (default)` — the pre-flip lane; the server's
-  lifetime equals the CLI's.
-- `pairTransport: thin socket client (daemon raised by pairup)` — post-flip.
+```bash
+pairup --writer codex "Inspect retry handling"
+```
 
-## What a drop costs, per lane
+The enrolled client reuses or starts a detached daemon for its configured role,
+at `.pair/.server-ROLE.sock`. Either role can start its daemon. The actual socket
+transport is recorded in project state for restart tooling. The daemon keeps its
+role lock until it stops; ending its thin client does not end the daemon.
 
-| | child server (pre-flip) | socket client (post-flip) |
-|---|---|---|
-| server dies | CLI holds a broken pipe; recovery = CLI relaunch (session context lost) or the `/mcp` picker (measured: four failure shapes) | daemon restarted by pairup/pairrelaunch; the CLI **reconnects** |
-| CLI dies | server dies with it | **daemon survives**; the next CLI connects |
-| CLI restart | server restarts too | **server untouched** — the refresh shape the human asked for |
+Codex requires the launch environment forwarding installed in `env_vars` and
+uses its profile's `--no-daemon` flag. Other raw CLI launches remain independent,
+even if they inherit old pair environment variables.
 
-## Rollback
+## Failure and reconnect limits
 
-Remove the `pairTransport` stamp from the entry, restore the child-server line
-(`sh serve.sh <role> --state ...`), restart the CLI. One round's grace: the
-child-server line stays as a comment until the flip has survived a full round.
+MCP notifications do not have replies. The socket pump forwards asynchronous
+server messages while waiting for responses; it does not block initialization
+waiting for an answer to `notifications/initialized`.
 
-## What is NOT automatic, on purpose
+The client does not retry forever. `PAIR_SOCKET_REDIAL` sets a bounded redial
+window in seconds; the default is zero. Redial is transport recovery, not proof
+that an interrupted mutating request executed exactly once. After an ambiguous
+connection loss, inspect state before repeating an operation.
 
-- **The daemon is not respawned by the client.** A silent spawn would rebuild
-  child-lifetime. The client refuses; pairup raises.
-- **The restart is not the agent's.** An agent restarting its own CLI mid-round
-  is a self-inflicted outage. The config flip is safest exactly because the
-  risky step lands in human hands.
+An explicit low-level invocation with `--state` or `--socket` is a diagnostic
+operator path: it connects to an existing daemon and does not auto-start one.
+The automatic startup applies to validated enrolled clients.
+
+## Inspect and recover
+
+From the target project, with the engine path set:
+
+```bash
+PAIR_HOME="$HOME/pair-mailbox"
+"$PAIR_HOME/bin/pairctl" status
+"$PAIR_HOME/bin/pairmcpdoctor" --role codex
+"$PAIR_HOME/bin/pairrestart" --role codex --dry-run
+"$PAIR_HOME/bin/pairrelaunch" --role codex --check
+```
+
+`pairrestart` targets stale server code. `pairrelaunch` without `--check` restarts
+the CLI and loses its in-memory context. These are different recovery actions.
+A disconnected critic retains its write boundary during repair.
+
+## Return to child transport
+
+Finish the active pair and stop its role daemons using the PIDs recorded for
+that project. A still-running socket daemon holds the role lock and prevents a
+new child server for the same role from starting. Then, from the engine clone:
+
+```bash
+PAIR_TRANSPORT=child ./install.sh codex agy
+```
+
+Restart the CLIs to load the new entries and use `pairup` for the next pair.
+Do not kill a role process identified only by its name across all projects.

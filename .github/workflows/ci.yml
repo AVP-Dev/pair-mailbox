@@ -13,7 +13,8 @@ concurrency:
 jobs:
   verify:
     name: Verify (Python ${{ matrix.python-version }})
-    runs-on: ubuntu-latest
+    # The 3.8/3.9 matrix has builds for 24.04, but not the moving latest image.
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:

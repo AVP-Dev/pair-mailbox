@@ -34,6 +34,10 @@ def event(pr_id: int) -> str:
     return json.dumps({"kind": "pr_merged", "pr_id": pr_id, "role": "writer"})
 
 
+def durable_event(pr_id: int) -> str:
+    return json.dumps({"event": "merged", "pr": str(pr_id), "role": "writer"})
+
+
 class MergeAuditTrailTest(unittest.TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
@@ -97,6 +101,31 @@ class MergeAuditTrailTest(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
         self.assertIn("2 merged PRs, 2 with a merge record", proc.stdout)
 
+    def test_durable_record_survives_transcript_rotation(self) -> None:
+        """A merge remains auditable after every transcript copy has rotated past it."""
+        (self.journal / "transcript.jsonl").write_text("new activity\n", encoding="utf-8")
+        (self.journal / "transcript-archive" / "1.jsonl").write_text(
+            "older activity\n", encoding="utf-8")
+        (self.journal / "worktree-log.jsonl").write_text(
+            durable_event(7) + "\n" + json.dumps(
+                {"event": "pr_merge_repaired", "pr": "8"}) + "\n" + json.dumps(
+                {"event": "pr_merged", "pr": "9"}) + "\n", encoding="utf-8")
+        self.baseline.write_text("", encoding="utf-8")
+        write_gh(self.bin, "#!/bin/sh\necho '[{\"number\": 7}, {\"number\": 8}, {\"number\": 9}]'\n")
+        proc = self.run_audit(path=f"{self.bin}:{os.environ['PATH']}")
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertIn("3 merged PRs, 3 with a merge record", proc.stdout)
+
+    def test_legacy_transcript_is_fallback_when_durable_log_has_no_merge(self) -> None:
+        """Existing rooms keep working until all their old events rotate away."""
+        (self.journal / "transcript.jsonl").write_text(event(7) + "\n", encoding="utf-8")
+        (self.journal / "worktree-log.jsonl").write_text("{}\n", encoding="utf-8")
+        self.baseline.write_text("", encoding="utf-8")
+        write_gh(self.bin, "#!/bin/sh\necho '[{\"number\": 7}]'\n")
+        proc = self.run_audit(path=f"{self.bin}:{os.environ['PATH']}")
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertIn("1 merged PRs, 1 with a merge record", proc.stdout)
+
     def test_a_repaired_or_forced_merge_counts_as_recorded(self) -> None:
         """The journal records a merge in three ways; all of them are records."""
         (self.journal / "transcript.jsonl").write_text(
@@ -155,7 +184,7 @@ class MergeAuditTrailTest(unittest.TestCase):
         write_gh(self.bin, "#!/bin/sh\necho '[{\"number\": 7}]'\n")
         proc = self.run_audit(path=f"{self.bin}:{os.environ['PATH']}")
         self.assertEqual(proc.returncode, 2, proc.stdout + proc.stderr)
-        self.assertIn("no transcript", proc.stdout)
+        self.assertIn("no merge journal", proc.stdout)
 
     def test_a_missing_baseline_fails_closed(self) -> None:
         """The debt must be named: a check that cannot say what is known cannot pass."""
@@ -164,6 +193,71 @@ class MergeAuditTrailTest(unittest.TestCase):
         proc = self.run_audit(path=f"{self.bin}:{os.environ['PATH']}")
         self.assertEqual(proc.returncode, 2, proc.stdout + proc.stderr)
         self.assertIn("no baseline", proc.stdout)
+
+    def test_the_opt_in_skip_names_what_was_not_checked(self) -> None:
+        """A CI runner has neither gh nor the journal; the skip says so out loud."""
+        self.baseline.write_text("", encoding="utf-8")
+        empty = self.root / "empty-bin"
+        empty.mkdir()
+        proc = self.run_audit("--skip-if-unavailable", path=str(empty))
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertIn("SKIPPED", proc.stdout)
+        self.assertNotIn("PASS", proc.stdout)
+
+    def test_the_opt_in_skip_does_not_cover_a_merge_that_was_read(self) -> None:
+        """The skip covers what could not be READ. An escape that WAS read still fails."""
+        (self.journal / "transcript.jsonl").write_text(event(7) + "\n", encoding="utf-8")
+        self.baseline.write_text("", encoding="utf-8")
+        write_gh(self.bin, "#!/bin/sh\necho '[{\"number\": 7}, {\"number\": 9}]'\n")
+        proc = self.run_audit("--skip-if-unavailable",
+                               path=f"{self.bin}:{os.environ['PATH']}")
+        self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+        self.assertIn("escaped the sanctioned path", proc.stdout)
+        self.assertNotIn("SKIPPED", proc.stdout)
+
+    def test_the_opt_in_skip_does_not_cover_a_missing_journal_either(self) -> None:
+        """A gh that answers and a journal that is gone is still a failure."""
+        self.baseline.write_text("", encoding="utf-8")
+        write_gh(self.bin, "#!/bin/sh\necho '[{\"number\": 7}]'\n")
+        self.journal = self.root / "no-state-dir"
+        proc = self.run_audit("--skip-if-unavailable",
+                               path=f"{self.bin}:{os.environ['PATH']}")
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertIn("SKIPPED", proc.stdout)
+        self.assertNotIn("PASS", proc.stdout)
+
+    def test_the_gate_runs_the_audit_and_not_only_its_test(self) -> None:
+        """The layer that runs the test of the audit is not the audit.
+
+        Without this row the gate proved the LOGIC with fixtures and never ran
+        the CHECK against the real remote - so a merge outside the sanctioned
+        path could not turn the gate red, which is the whole point of it.
+        """
+        profile = ROOT / "scripts" / "verification-profile.tsv"
+        commands = [line.split("\t")[3] for line in
+                    profile.read_text(encoding="utf-8").splitlines()
+                    if line.strip() and not line.startswith("#")
+                    and len(line.split("\t")) > 3]
+        self.assertTrue(
+            any("merge-audit-trail.py" in command for command in commands),
+            "the gate runs the audit's test but never the audit itself")
+
+    def test_the_live_baseline_names_every_escape_the_audit_finds(self) -> None:
+        """The real baseline names the real debt: no escape is left unnamed.
+
+        The journal and the remote are read live, so the test asserts the
+        property the audit exists for on the actual repository, not on a
+        fixture: every merged PR without a merge record is named in the
+        baseline.
+        """
+        proc = subprocess.run(
+            [sys.executable, str(SCRIPT), "--skip-if-unavailable"],
+            capture_output=True, text=True, timeout=120, cwd=str(ROOT))
+        if "merge-audit: SKIPPED:" in proc.stdout:
+            self.skipTest(proc.stdout.strip())
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertIn("PASS", proc.stdout)
+        self.assertNotIn("escaped the sanctioned path", proc.stdout)
 
 
 if __name__ == "__main__":

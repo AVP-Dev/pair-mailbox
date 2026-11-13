@@ -1,90 +1,90 @@
-# Contributing to pair-mailbox
+# Contributing
 
-Thank you for your interest in contributing to **pair-mailbox**!
+Contributions target `master`. Independent CLI work is supported; the
+[pair protocol](docs/PROTOCOL.md) applies when two CLIs are explicitly enrolled.
+See [project structure](docs/project-structure.md) for module ownership.
 
-pair-mailbox coordinates two independent autonomous AI coding agents on different CLIs under strict engineering invariants. Because our codebase is developed and verified by autonomous agent pairs, we maintain rigorous verification standards and architectural contracts.
+## Development environment
 
----
+Use Python 3.8+, Git, tmux and Bash 4.3+ (Bash 5 recommended). The full CI suite
+runs on Ubuntu 24.04 with Python 3.8–3.12. Some process and tmux tests are Linux-only.
+The default runtime is standard-library Python; optional Ed25519 signing and the
+complete test suite need PyNaCl.
 
-## 🏛️ Core Principles & Invariants
+From your clone:
 
-Before proposing changes, please review [`docs/PROTOCOL.md`](docs/PROTOCOL.md) and [`docs/project-structure.md`](docs/project-structure.md). Every contribution must respect these invariants:
-
-1. **Zero External Runtime Dependencies**:
-   The core engine (`pair-mailbox`) runs entirely on Python 3 standard library (`3.8+`) and POSIX `tmux`. Do not introduce third-party package dependencies (`pip`) for runtime execution.
-
-2. **Single Writer Protocol Invariant**:
-   At any time, exactly one agent role holds write authority. Reviewers must propose changes via cryptographically sealed patches (`pair_propose` / `pair_patch_seal`).
-
-3. **File Size Ratchet**:
-   - Files are budgeted by size: `<= 300` lines is standard, `300–500` acceptable with single responsibility, `500–800` requires boundary review, `> 800` allowed only with explicit rationale in `scripts/file-size-baseline.tsv`.
-   - Never expand existing exceptions without justification.
-   - Run `./scripts/file-size-gate.sh` to check compliance.
-
-4. **Comment Hygiene**:
-   - Comments must describe **current state and architectural rationale ("why")**, with citations to measurements or backlog cards.
-   - Comments must never recite past git history or progress (e.g., "was added", "fixed in round X", "теперь использует").
-   - Verified automatically by `bash scripts/comment-lint.sh`.
-
-5. **One Test File Per Source File**:
-   - Keep tests side-by-side with source modules (`module.py` &rarr; `test_module.py` or beside it).
-   - Never create third helper files outside established directories.
-
----
-
-## 🛠️ Development Setup & Workflow
-
-### 1. Prerequisites
-- Python 3.8+
-- tmux 3.0+
-- git
-
-### 2. Fork and Clone
 ```bash
-git clone https://github.com/<your-username>/pair-mailbox.git
-cd pair-mailbox
+python3 -m venv .venv
+. .venv/bin/activate
+python -m pip install pynacl
 ```
 
-### 3. Verification Commands
-Always verify your changes locally before submitting a pull request:
+Agent CLIs and GitHub CLI are separate installations. Do not run `install.sh`
+unless you intend to update local CLI integrations, instructions and permissions.
+
+## Change and verify
+
+Start from current trunk and create a focused branch:
 
 ```bash
-# Fast check for staged / modified files:
+git fetch origin
+git switch -c fix/readme origin/master
+```
+
+Branch classes are defined in [branch_classes.py](mcp/pair_mailbox/branch_classes.py):
+`fix/`, `feature/`, `chore/`, `round-` and other declared ephemeral prefixes.
+`feat-abc` is not a declared class. Avoid accumulator branches such as `dev`.
+
+```bash
 ./scripts/verify-changed.sh
-
-# Run file size ratchet:
-./scripts/file-size-gate.sh
-
-# Run comment hygiene lint:
-bash scripts/comment-lint.sh
-
-# Run security and secret leak scanner:
-./scripts/security-scan.sh
-
-# Run the complete project verification gate (sequential for live-tmux suites):
+./scripts/verify-project.sh --list
 ./scripts/verify-project.sh --jobs 1
 ```
 
----
+Run one gate per worktree. The changed-file gate runs static checks and affected
+suites selected by `scripts/verify-map.tsv`. The full gate uses
+`scripts/verification-profile.tsv`; do not keep a second fixed suite list in docs.
+Record the actual scope and result, including platform/dependency failures.
 
-## 🔌 Adding Support for a New CLI Agent
+Keep source and its tests together: `module.py` and `test_module.py`, or the
+established `bin/name` and `bin/name_test.py` convention. Add new checks to the
+verification profile and map. Gate scripts also check comments, file sizes,
+secrets, documentation parity and executable test coverage.
 
-To add support for a new AI coding CLI:
-1. Open `cli-profiles.json`.
-2. Add an entry specifying:
-   - `label`: Human-readable name.
-   - `launch`: Shell command to launch the agent (e.g. `--auto` or standalone mode).
-   - `mcp`: Path to the CLI's MCP configuration file, format (`json` or `toml`), and server entry.
-   - `skills_dir`: Directory where agent skills are stored.
-   - `instructions`: Path to global instructions file (e.g., `AGENTS.md` or `CLAUDE.md`).
-3. Run `./install.sh <profile_name> --check` to test configuration parsing.
-4. Run `python3 install_test.py` to ensure profile invariants hold.
+The file-size target is 300 lines; over 800 needs an explained exception in
+`scripts/file-size-baseline.tsv`. Update a ceiling only when the actual change
+requires it, with a concrete reason. Avoid unrelated decomposition during a fix.
 
----
+## Adding a CLI profile
 
-## 📬 Submitting a Pull Request
+1. Add MCP configuration, launch command, instruction path and skill directory
+   to `cli-profiles.json`.
+2. Update the launchers' supported-profile lists and native permission handling
+   where applicable; a JSON entry alone does not extend every shell dispatcher.
+3. Check process enrollment, including interpreter wrappers and nested independent
+   CLI starts. A failed paired connection must not promote a critic to writer.
+4. Add focused installation/launch coverage, then run the affected suites.
+5. Install the profile and check it from the engine clone:
 
-1. **Branching**: Create a focused topic branch (`git checkout -b fix-xyz` or `feat-abc`). Never work directly on `master`.
-2. **Commit Message**: Use descriptive commit titles describing **what changed and why** (e.g. `feat(pilot): park supervisor on done without open tasks`).
-3. **Evidence**: Ensure all automated checks pass cleanly.
-4. **Pull Request**: Open a PR against `master`. Our GitHub Actions CI will run `./scripts/verify-project.sh` across supported Python versions.
+```bash
+./install.sh mycli
+./install.sh mycli --check
+```
+
+`--check` verifies an existing configuration; it does not install the new one.
+Do not publish unverified host-specific UI commands as universal setup instructions.
+
+## Shipping and cleanup
+
+Describe the problem, resulting behavior and measured validation in the commit
+and PR. Keep English documentation and its Russian mirror consistent. PR means
+pull request: reviewable changes proposed for merging into `master`.
+
+An explicitly paired round uses its protocol's evidence and review gates,
+including `pairctl pr merge`. Never forge a peer verdict or evidence to bypass a gate.
+For any workflow, merge only the checked head under the repository's actual rules.
+
+Remove temporary branches after their work is merged. Automatic worktree cleanup
+must verify PR/repository/head identity and preserve dirty or ignored files.
+Do not treat unmerged branches, `.pair` runtime state, backlog cards or historical
+round records as disposable generated files.

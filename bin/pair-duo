@@ -37,7 +37,11 @@ _INHERITED_STATE="${PAIR_STATE:-}"
 # Ask the shared resolver which room is ours. It prints the room and the
 # reason on two lines; the reason is what the refusal is made of.
 _resolve_state_dir() {
-  "$ROOT/mcp/pair_mailbox/state_resolve.sh" "$1"
+  if [ -n "${1:-}" ]; then
+    "$ROOT/mcp/pair_mailbox/state_resolve.sh" --from-argv "$1"
+  else
+    "$ROOT/mcp/pair_mailbox/state_resolve.sh"
+  fi
 }
 
 USE_WORKTREE=0
@@ -194,13 +198,14 @@ if [[ -n "$SWAP_CRITIC" ]]; then
   if [[ "$SWAP_CRITIC" == "opencode" ]]; then
     critic_cmd="opencode --standalone --auto"
   fi
+  critic_cmd="$(python3 "$ROOT/mcp/pair_mailbox/launch_context.py" command "$SWAP_CRITIC" "$STATE_PATH")"
   echo "pair-duo: writer $writer stays, critic -> $SWAP_CRITIC"
   # The new pane is split FROM the writer's pane, so it inherits the writer's
   # PAIR_ROLE ("agy-writer"). The swapped CLI's own config gives it a different
   # role, and a role that does not extend it is refused — so the export is
   # dropped here: the swapped CLI takes the role from its own config, as before.
   tmux split-window $SPLIT_OPT -c "$PROJECT_ROOT_DIR" \
-    "$SHELL -c \"export PAIR_STATE='$STATE_PATH'; unset PAIR_ROLE; cd '$PROJECT_ROOT_DIR'; echo '=== PAIR CRITIC: $SWAP_CRITIC (swap) ==='; $critic_cmd\""
+    "$critic_cmd"
   echo "pair-duo: new critic $SWAP_CRITIC in the next pane; close the old critic pane yourself (Ctrl-D)"
   echo "pair-duo: write authority with $writer, untouched (PROTOCOL §2)"
   exit 0
@@ -247,6 +252,8 @@ fi
 
 WRITER_ROLE="${CLI}-writer"
 CRITIC_ROLE="${CLI}-critic"
+WRITER_CMD="$(python3 "$ROOT/mcp/pair_mailbox/launch_context.py" command "$WRITER_ROLE" "$STATE_PATH")"
+CRITIC_CMD="$(python3 "$ROOT/mcp/pair_mailbox/launch_context.py" command "$CRITIC_ROLE" "$STATE_PATH")"
 
 # Autonomy mode picks once, here, before agents took their instructions. The value
 # checks BEFORE launch: a typo silently ignored past start would mean the pair runs
@@ -308,7 +315,25 @@ if [[ "$USE_WORKTREE" -eq 1 ]]; then
   else
     BRANCH_NAME="duo/${CRITIC_ROLE}-$(date +%s)"
     echo "pair-duo: creating git worktree at $WT_DIR on branch $BRANCH_NAME"
-    git -C "$PROJECT_ROOT_DIR" worktree add "$WT_DIR" -b "$BRANCH_NAME"
+    # Through the module, not `git worktree add` in the shell: one place owns
+    # the creation, so the paths of every worktree in this repo are the same
+    # code path. This is the LAUNCH environment of the pair (no round exists
+    # yet, so no plan and no critic visa could) — the human asked for it with
+    # --worktree. A worktree for a TASK of a running round goes through
+    # worktree.setup_worktree, which demands the critic's signed plan.
+    _wt_err="$(python3 -c '
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(sys.argv[1]).resolve().parent.parent / "mcp" / "pair_mailbox"))
+import worktree
+res = worktree.bootstrap_worktree(Path(sys.argv[2]), sys.argv[3], Path(sys.argv[4]))
+if not res.get("ok"):
+    print(res.get("error") or "worktree creation failed", file=sys.stderr)
+    sys.exit(1)
+' "$HERE" "$PROJECT_ROOT_DIR" "$BRANCH_NAME" "$WT_DIR" 2>&1)" || {
+      echo "pair-duo: worktree creation failed: $_wt_err" >&2
+      exit 1
+    }
   fi
   CRITIC_DIR="$WT_DIR"
 fi
@@ -326,14 +351,14 @@ PROJ_NAME="$(basename -- "$PROJECT_ROOT_DIR")"
 # second would be refused by the "one live role, one live process" rule
 # (server.py). serve.sh accepts an instance of the configured role and refuses
 # anything else, so a stale export cannot hand a pane a foreign identity.
-WRITER_INIT="export PAIR_STATE='${STATE_PATH}'; export PAIR_ROLE='${WRITER_ROLE}'; cd '${PROJECT_ROOT_DIR}'; echo '=== PAIR WRITER: ${WRITER_ROLE} ==='; ${WRITER_CMD}"
-CRITIC_INIT="export PAIR_STATE='${STATE_PATH}'; export PAIR_ROLE='${CRITIC_ROLE}'; cd '${CRITIC_DIR}'; echo '=== PAIR CRITIC: ${CRITIC_ROLE} ==='; ${CRITIC_CMD}"
+WRITER_INIT="$WRITER_CMD"
+CRITIC_INIT="$CRITIC_CMD"
 TITLE_WRITER="$PROJ_NAME:${WRITER_ROLE} (writer)"
 TITLE_CRITIC="$PROJ_NAME:${CRITIC_ROLE} (critic)"
 
 if [[ "$IN_TMUX" -eq 1 ]]; then
   # Inside tmux: split current window
-  tmux split-window $SPLIT_OPT -c "$CRITIC_DIR" "$SHELL -c \"$CRITIC_INIT\""
+  tmux split-window $SPLIT_OPT -c "$CRITIC_DIR" "$CRITIC_INIT"
   tmux select-pane -T "$TITLE_CRITIC" -t '{last}' 2>/dev/null || true
   tmux select-pane -T "$TITLE_WRITER" 2>/dev/null || true
   tmux select-pane -L 2>/dev/null || tmux select-pane -U 2>/dev/null || true
@@ -342,8 +367,8 @@ else
   # Outside tmux: create a new session
   SESSION_NAME="duo-${CLI}-$(date +%s)"
   echo "pair-duo: starting tmux session '$SESSION_NAME'..."
-  tmux new-session -d -s "$SESSION_NAME" -n "pair" -c "$PROJECT_ROOT_DIR" "$SHELL -c \"$WRITER_INIT\""
-  tmux split-window -t "$SESSION_NAME" $SPLIT_OPT -c "$CRITIC_DIR" "$SHELL -c \"$CRITIC_INIT\""
+  tmux new-session -d -s "$SESSION_NAME" -n "pair" -c "$PROJECT_ROOT_DIR" "$WRITER_INIT"
+  tmux split-window -t "$SESSION_NAME" $SPLIT_OPT -c "$CRITIC_DIR" "$CRITIC_INIT"
   tmux select-layout -t "$SESSION_NAME" even-horizontal 2>/dev/null || true
   tmux select-pane -T "$TITLE_WRITER" -t "$SESSION_NAME:0.0" 2>/dev/null || true
   tmux select-pane -T "$TITLE_CRITIC" -t "$SESSION_NAME:0.1" 2>/dev/null || true

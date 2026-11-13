@@ -7,12 +7,11 @@ through the CLI's own /mcp picker (the measured sequence bin/pairmcprestart
 implements). Two guards make it safe to run on a timer, from a cron, from the
 pilot, or by hand at the same moment:
 
-1. PER-ROLE LOCK. `fcntl.flock(LOCK_EX|LOCK_NB)` on `.pair/.server-<role>.lock`,
-   the same file the server itself takes on start (server.py:914-923). A doctor
-   holding it for role X means no second doctor, no pilot, no human script
-   touches X concurrently. The kernel releases it if the holder dies, so a
-   crashed doctor never wedges the role. The lock is held only around the
-   reconnect, never across the checks.
+1. PER-ROLE DOCTOR LOCK. `fcntl.flock(LOCK_EX|LOCK_NB)` on
+   `.pair/.doctor-<role>.lock` serializes doctors without occupying
+   `.server-<role>.lock`, which the replacement server must acquire during
+   reconnect. The kernel releases the doctor lock if its process dies. The
+   lock is held only around the reconnect, never across the checks.
 2. READ-BEFORE-WRITE. The pane is captured before any key is sent: a role whose
    pair row already reads Connected is left strictly alone. That is the mistake
    that cost a working context7 its state — space toggles, and toggling a live
@@ -34,16 +33,24 @@ import argparse
 import errno
 import fcntl
 import json
+import os
 import subprocess
 import sys
-import time
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "mcp" / "pair_mailbox"))
+from picker import pair_row_state as classify_pair_row  # noqa: E402
+from picker import pair_row_visible, picker_open  # noqa: E402
+from wait_until import wait_for_condition  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 STATE = ROOT / ".pair"
 KNOWN_ROLES = ("omp", "opencode", "agy", "claude", "pi", "codex")
 MENU = "/mcp"
 PAIR_ROW_INDEX = 2  # context7 is the first row, pair the second — measured
+PICKER_TIMEOUT = 15.0
+FILTER_TIMEOUT = 10.0
+HANDSHAKE_TIMEOUT = 30.0
 
 
 def _tmux_cmd():
@@ -76,30 +83,64 @@ def state_roles() -> list[str]:
 
 
 def pane_of(role: str) -> str:
-    """The pane whose CLI process IS this role (its process name is the CLI)."""
+    """The role CLI pane inside this project's root, on the resolved socket."""
     code, out = tmux("list-panes", "-a", "-F",
-                     "#{pane_id}|#{session_name}|#{pane_index}|#{pane_current_command}")
+                     "#{pane_id}|#{session_name}|#{pane_index}|#{pane_current_command}|#{pane_current_path}")
+    root = ROOT.resolve()
     for line in out.splitlines():
-        pane_id, _session, _index, command = (line.split("|") + [""] * 4)[:4]
-        if command.strip().lower().startswith(role):
+        fields = (line.split("|", 4) + [""] * 5)[:5]
+        pane_id, _session, _index, command, cwd = fields
+        if not cwd:
+            continue
+        try:
+            Path(cwd).resolve().relative_to(root)
+        except (OSError, RuntimeError, ValueError):
+            continue
+        if command.strip().lower() == role.lower():
             return pane_id.strip()
     return ""
 
 
 def server_pid(role: str) -> str:
-    proc = subprocess.run(["pgrep", "-f", f"server.py --role {role}"],
-                          capture_output=True, text=True, timeout=10)
-    return proc.stdout.strip().splitlines()[0] if proc.stdout.strip() else ""
+    """Find only this project's server process for the exact role."""
+    wanted = STATE.resolve()
+    for entry in Path("/proc").iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            argv = [part.decode(errors="replace") for part in
+                    (entry / "cmdline").read_bytes().split(b"\0") if part]
+            if not argv or not any(Path(arg).name == "server.py" for arg in argv):
+                continue
+            if "--role" not in argv or argv[argv.index("--role") + 1] != role:
+                continue
+            if "--state" in argv:
+                raw_state = argv[argv.index("--state") + 1]
+            else:
+                raw_state = next((arg.split("=", 1)[1] for arg in argv
+                                  if arg.startswith("--state=")), "")
+            if not raw_state:
+                continue
+            state = Path(raw_state)
+            if not state.is_absolute():
+                state = Path(os.readlink(entry / "cwd")) / state
+            if state.resolve() == wanted:
+                return entry.name
+        except (OSError, RuntimeError, ValueError, IndexError):
+            continue
+    return ""
 
 
 def role_lock(role: str):
-    """The per-role singleton lock, the same file the server takes.
+    """The doctor's per-role single-flight lock, distinct from the server lock.
 
     Held LOCK_EX|LOCK_NB: a second taker refuses instead of waiting, because a
     doctor that blocks on a stuck peer is a doctor that stops checking the others.
-    The kernel releases on process death, so no crash wedges a role.
+    The replacement server must be able to take `.server-<role>.lock` while this
+    lock is held, so the doctor uses its own `.doctor-<role>.lock` file. The
+    kernel releases it if the holder dies, so no crash wedges recovery.
     """
-    path = STATE / f".server-{role}.lock"
+    path = STATE / f".doctor-{role}.lock"
     handle = path.open("a+")
     try:
         fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -127,18 +168,13 @@ def pair_row_state(pane: str) -> str:
     `disabled` — switched off, space re-enables;
     `absent` — the picker is not open.
     """
-    code, screen = tmux("capture-pane", "-t", pane, "-p")
-    rows = [ln for ln in screen.splitlines() if "pair" in ln.lower()]
-    joined = " ".join(rows).lower()
-    if "connected" in joined and "not connected" not in joined and "not " not in joined:
-        return "connected"
-    if "failed" in joined or "error" in joined:
-        return "failed"
-    if "disabled" in joined:
-        return "disabled"
-    if rows:
-        return "present"
-    return "absent"
+    code, screen = tmux("capture-pane", "-t", pane, "-p", "-J")
+    return classify_pair_row(screen) if code == 0 else "absent"
+
+
+def _screen(pane: str) -> str:
+    code, screen = tmux("capture-pane", "-t", pane, "-p", "-J")
+    return screen if code == 0 else ""
 
 
 def reconnect(role: str, pane: str) -> str:
@@ -150,7 +186,9 @@ def reconnect(role: str, pane: str) -> str:
     is transient; an earlier attempt looked connected and vanished).
     """
     send(pane, MENU, enter=True)
-    time.sleep(6)
+    if not wait_for_condition(lambda: picker_open(_screen(pane)),
+                              timeout=PICKER_TIMEOUT, interval=0.25):
+        return "failed (the /mcp picker never appeared; the CLI may be busy)"
     # The picker opens on the SEARCH box with the caret in it — arrows there move
     # the caret, not the row (measured). So do not fight the focus: USE it. Typing
     # `pair` filters the list down to the pair row alone and the caret sits on it,
@@ -158,17 +196,17 @@ def reconnect(role: str, pane: str) -> str:
     # first and both left the highlight on context7 — the row Space would DISABLE,
     # the opposite of healing.
     send(pane, "pair")
-    time.sleep(2)
+    wait_for_condition(lambda: pair_row_visible(_screen(pane)),
+                       timeout=FILTER_TIMEOUT, interval=0.2)
     if pair_row_state(pane) == "connected":
         return "already-connected"
     send(pane, "space")
     # NO Escape after space: quitting the picker aborts a pending handshake — the
     # successful run never left the picker, and a version that pressed Escape
     # failed every time. The process appearing is the only honest signal.
-    for _ in range(10):
-        time.sleep(3)
-        if server_pid(role):
-            return "reconnected"
+    if wait_for_condition(lambda: bool(server_pid(role)),
+                          timeout=HANDSHAKE_TIMEOUT, interval=0.5):
+        return "reconnected"
     return f"failed (row reads {pair_row_state(pane)!r}, no process appeared)"
 
 
@@ -190,6 +228,9 @@ def main() -> int:
         if args.check:
             print(f"[check] {role} @ {pane or '-'}: server "
                   f"{'alive pid ' + pid if pid else 'DOWN'}")
+            continue
+        if not pane:
+            print(f"[skip ] {role}: no pane in this project — nothing to recover")
             continue
         if pid:
             quiet += 1

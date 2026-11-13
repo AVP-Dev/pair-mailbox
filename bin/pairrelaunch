@@ -39,6 +39,7 @@ import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "mcp/pair_mailbox"))
 STATE = ROOT / ".pair"
 KNOWN_ROLES = ("omp", "opencode", "agy", "claude", "pi", "codex")
 
@@ -91,7 +92,9 @@ def launch_cmd(role: str) -> str:
     """The launch command from cli-profiles.json — the profile's own line."""
     try:
         profiles = json.loads((ROOT / "cli-profiles.json").read_text(encoding="utf-8"))
-        return str((profiles.get(role) or {}).get("launch") or "").strip()
+        from launch_context import launch_shell, profile_for
+        command = str((profiles.get(profile_for(role)) or {}).get("launch") or "").strip()
+        return launch_shell(role, STATE, command) if command else ""
     except (OSError, ValueError):
         return ""
 

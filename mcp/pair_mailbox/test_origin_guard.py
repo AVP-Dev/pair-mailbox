@@ -48,6 +48,10 @@ def _git_repo(path: Path) -> Path:
 
 
 def _lock_holder(state_dir: Path, role: str) -> str:
+    if not Path("/proc").is_dir():
+        result = subprocess.run(["lsof", "-t", str(state_dir / f".server-{role}.lock")],
+                                capture_output=True, text=True, timeout=10)
+        return result.stdout.strip().splitlines()[0] if result.stdout.strip() else ""
     for pid in os.listdir("/proc"):
         if not pid.isdigit():
             continue
@@ -153,6 +157,50 @@ class ServeFixture:
 
 
 class OriginGuardCase(ServeFixture, unittest.TestCase):
+
+    def test_main_engine_serves_linked_worktree_with_full_handshake(self) -> None:
+        project = self.state.parent
+        pkg = project / "mcp" / "pair_mailbox"
+        shutil.copytree(ROOT / "mcp" / "pair_mailbox", pkg,
+                        ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+        subprocess.run(["git", "add", "mcp"], cwd=project, check=True)
+        subprocess.run(["git", "commit", "-qm", "engine"], cwd=project, check=True)
+        linked = Path(self._tmp.name) / "linked"
+        subprocess.run(["git", "worktree", "add", "-qb", "linked", str(linked)],
+                       cwd=project, check=True, capture_output=True)
+        env = dict(os.environ)
+        env.pop("PAIR_ROLE", None)
+        env.pop("PAIR_TRUST_ENV", None)
+        env["PAIR_STATE"] = str(self.state)
+        messages = [
+            {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
+                "protocolVersion": "2025-06-18", "capabilities": {},
+                "clientInfo": {"name": "worktree-test", "version": "1"}}},
+            {"jsonrpc": "2.0", "method": "notifications/initialized"},
+            {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}}]
+        proc = subprocess.run(["sh", str(pkg / "serve.sh"), self.role,
+                               "--state", str(self.state)],
+                              cwd=linked, env=env, text=True, capture_output=True,
+                              input="".join(json.dumps(m) + "\n" for m in messages),
+                              timeout=30)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        replies = {m["id"]: m for m in map(json.loads, proc.stdout.splitlines())}
+        self.assertIn("result", replies[1])
+        self.assertIn("pair_state", [t["name"] for t in replies[2]["result"]["tools"]])
+        self.assertFalse((linked / ".pair").exists())
+        # Even a deliberately separate room in the linked checkout must not
+        # make its main engine appear to be a foreign clone.
+        local = linked / ".pair"
+        local.mkdir()
+        (local / "state.json").write_text((self.state / "state.json").read_text())
+        env.pop("PAIR_STATE")
+        proc = subprocess.run(["sh", str(pkg / "serve.sh"), self.role,
+                               "--state", str(local)],
+                              cwd=linked, env=env, text=True, capture_output=True,
+                              input="".join(json.dumps(m) + "\n" for m in messages), timeout=30)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        replies = {m["id"]: m for m in map(json.loads, proc.stdout.splitlines())}
+        self.assertIn("pair_state", [t["name"] for t in replies[2]["result"]["tools"]])
 
     def test_foreign_tree_refuses_and_names_both_roots(self) -> None:
         """A server raised from a FOREIGN REPO must refuse, not serve. The
@@ -461,14 +509,9 @@ class OriginGuardCase(ServeFixture, unittest.TestCase):
             out, err = proc.communicate()
             self.fail("the server must serve this project's own room, not hang")
         combined = (err or "") + (out or "")
-        self.assertIn("ignoring PAIR_STATE", combined,
-                      "a foreign env room must be named and dropped, not silently used")
-        drop_line = [ln for ln in combined.splitlines() if "launched from" in ln]
-        self.assertTrue(drop_line,
-                        "the drop must say which project the server is serving instead")
-        self.assertIn(str(Path(self._tmp.name) / "proj"), drop_line[0])
-        self.assertIn("own", combined.lower(),
-                      "the answer must promise this project's own room")
+        self.assertEqual(proc.returncode, 0, combined)
+        self.assertNotIn("ready role=", combined,
+                         "an inherited room alone must not start a pairing role")
 
     def test_argv_state_is_still_explicit_and_trusted(self) -> None:
         """The escape hatch and the MCP config path stay: argv `--state` names
@@ -501,54 +544,6 @@ class OriginGuardCase(ServeFixture, unittest.TestCase):
         self.assertNotIn("ignoring PAIR_STATE", combined,
                          "argv --state is the operator's word; it is never overridden")
 
-    def test_paired_pane_init_never_inherits_a_foreign_room(self) -> None:
-        """pairup's pane init strings, EXECUTED rather than grepped.
-
-        The first cut of this test only grepped for "env -u PAIR_STATE" in the
-        source, and it stayed green on a broken fix: the critic measured in
-        review that `env -u A -u B VAR=; cd ...` is a program invocation, not a
-        shell directive — the `;` ends the command, no executable follows the
-        assignment, so `env` dumps the whole environment (79 lines) and the
-        shell keeps its old values (probe printed state=old role=foo). A source
-        grep cannot tell those apart; running the init string can.
-
-        So: take the real init string out of pairup, run it under a hostile
-        environment, and demand the pane's environment ends up right.
-        """
-        source = (ROOT / "bin" / "pairup").read_text(encoding="utf-8")
-        for marker in ("writer_init=", "critic_init="):
-            line = [ln for ln in source.splitlines() if ln.startswith(marker)]
-            self.assertTrue(line, f"{marker} is gone — the pane would start with no room")
-            init = line[0].split('="', 1)[1].rsplit('"', 1)[0]
-            # pairup writes these INIT strings as source lines: $STATE_DIR and
-            # $PROJECT_DIR are pairup's own variables, expanded at LAUNCH time.
-            # The probe must substitute them itself — a literal `$STATE_DIR` in
-            # the string would just expand to empty and the assert would pass
-            # for the wrong reason (measured in this round's first cut).
-            head = init.split("; echo '=== ", 1)[0]
-            for name, value in (("STATE_DIR", str(self.state)),
-                                ("PROJECT_DIR", str(Path(self._tmp.name)))):
-                head = head.replace(f"${name}", value)
-            probe = head + "; printf '%s|%s|%s|%s' \"${PAIR_STATE:-}\" \"${PAIR_ROLE:-}\" \"${PAIR_TRUST_ENV:-}\" \"$(pwd -P)\""
-            env = dict(__import__("os").environ)
-            env["PAIR_STATE"] = "/foreign/project/.pair"
-            env["PAIR_ROLE"] = "stale-role"
-            env["PAIR_TRUST_ENV"] = "1"
-            proc = subprocess.run(["sh", "-c", probe], capture_output=True,
-                                  text=True, env=env, timeout=60,
-                                  cwd=str(Path(self._tmp.name)))
-            self.assertEqual(proc.returncode, 0, proc.stderr)
-            got_state, got_role, got_trust, got_cwd = proc.stdout.split("|", 3)
-            self.assertEqual(got_state, str(self.state),
-                             f"{marker}: the pane must serve THIS project's room")
-            self.assertEqual(got_role, "",
-                             f"{marker}: a stale role must be unset, not inherited")
-            self.assertEqual(got_trust, "",
-                             f"{marker}: PAIR_TRUST_ENV must not leak into the pane")
-            self.assertEqual(got_cwd, str(Path(self._tmp.name)),
-                             f"{marker}: the shell must change into its cwd")
-            self.assertLess(len(proc.stdout), 200,
-                            f"{marker}: the init must not dump the environment")
 
 
 class RoleDerivationCase(ServeFixture, unittest.TestCase):
@@ -569,7 +564,7 @@ class RoleDerivationCase(ServeFixture, unittest.TestCase):
 
     def _role_of(self, pair_role: str) -> tuple[int, str]:
         """Raise the server with this PAIR_ROLE and return (rc, output)."""
-        proc = self._raise(Path(self._tmp.name) / "twin", pair_role=pair_role)
+        proc = self._raise(self.state.parent, pair_role=pair_role)
         try:
             out, err = proc.communicate(timeout=60)
         except subprocess.TimeoutExpired:

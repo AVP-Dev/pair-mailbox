@@ -37,6 +37,8 @@ When you run `./install.sh`:
 
 ## 🛠️ Usage Guidelines
 
-- **Autonomous Pair Work**: Triggered by user prompts like `"work with peer on X"`, `"pair up on X"`, or via `bin/pairup --task "..."`.
+- **Autonomous Pair Work**: applies after explicit enrollment through `pairup` or
+  `pair-duo`. A prompt mentioning a peer does not enroll an ordinary CLI. Native
+  subagents report to their parent and do not claim independent pair roles.
 - **Peer Communications**: Agents use `pair_deliver` for high-priority immediate handoffs (typing into the peer's tmux pane) and `pair_send` for background notes, reviews, and reports.
 - **Never Human Relay**: Agents are strictly instructed never to ask human users to relay messages between windows. All communication flows autonomously through the `pair_*` MCP tools.

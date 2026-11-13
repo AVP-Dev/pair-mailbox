@@ -5,6 +5,11 @@ description: Hold a real conversation with the other agent in this two-agent pai
 
 # Pair chat
 
+Session scope: use this correspondence contract only in an explicitly enrolled
+pair. Standalone CLIs and native subagents work on their task without claiming a
+pair role or waiting for an unavailable peer. A paired connection failure does
+not grant a critic write authority.
+
 > The single source of truth for pair correspondence is this file.
 > Mentions in `AGENTS.md`, `docs/PROTOCOL.md`, `docs/HOW-IT-WORKS.md` are
 > context, not contract: on divergence this file and the code in
@@ -17,7 +22,7 @@ conversation. The `pair_*` tools are the only way it finds out what you are doin
 
 Cheap orientation first, full state after:
 
-```bash
+```text
 pair_digest     # task, mode, phase, open tasks, obligations, last commit/verdict (~1k tokens)
 pair_state      # full state: authority, roster, unread, done-blockers
 ```
@@ -33,7 +38,7 @@ There are two ways to send. The body always lands in `.pair/mailbox/`
 (a container independent of tmux); only a short pointer goes into the peer's
 TUI — the terminal is a display, not a bus between agents.
 
-```bash
+```text
 pair_deliver(to="<peer>", text="one paragraph: what and where to read it")
 ```
 
@@ -46,7 +51,7 @@ the text is already safe in the mailbox, so fall back to `pair_send` and wait.
 On an unproven (foreign) pane typed printing is forbidden (injection into
 someone else's composer); the fallback is `display-message` + mailbox only.
 
-```bash
+```text
 pair_send(to="<peer>", subject="retry logic", text="one paragraph", expects_reply=true)
 ```
 
@@ -68,9 +73,28 @@ be forged.
 Write for a reader who cannot see your screen: file paths with line numbers, the command you ran,
 the actual error text. Quote it rather than describing it.
 
+## Without a tmux pane
+
+Some launches have no terminal multiplexer at all: the agent runs as a plain
+subprocess (`bin/pair-runner`), on a host with no tmux server. Nothing in the
+mailbox changes — the container does not depend on tmux — but one thing does:
+there is no composer to type a pointer into, so **nothing can wake the peer**.
+
+- `pair_send` is the whole channel. The letter lands in the mailbox and the
+  peer reads it on its own next turn.
+- `pair_deliver` still delivers the body (it writes the same mailbox letter),
+  but it cannot wake anybody: it answers `in_pane: false` with a `why` that
+  names the missing pane. Treat that answer as the whole truth — the peer was
+  NOT woken.
+- The wait rule does not change: **one read per turn**, and ACK the batch with
+  its `ack_token` when you have processed it. A bounded
+  `pair_read(wait_seconds=45)` is the only way to wait for the peer.
+- Never ask the human to carry a message to the other window. That ban holds
+  with no tmux even harder: there is no second window to ask about.
+
 ## Reading
 
-```bash
+```text
 pair_read()                    # one batch of mail; it stays unread until acked
 pair_read(wait_seconds=45)     # bounded wait for a peer message
 pair_read(ack_token="...")     # commit the batch: mail is read only then
@@ -138,7 +162,7 @@ proceed autonomously without asking the user for confirmation**.
 
 If you are not the writer, you do not edit project files. Preferred path is one call:
 
-```bash
+```text
 pair_propose(files=["path/to/file.py"])   # reserves, seals, and notifies the writer itself
 ```
 
@@ -156,7 +180,7 @@ by its exact path first.
 
 ## Leaving something behind
 
-```bash
+```text
 pair_note(kind=plan,     text="...")
 pair_note(kind=decision, text="...")
 pair_note(kind=finding,  text="...")
@@ -179,7 +203,7 @@ Notes grow only at the tail and rotate at 600 lines (`NOTE_LINE_CAP`,
 `server.py:182`) into `notes/archive/`. Never read a note with a file read:
 list first, then read the tail.
 
-```bash
+```text
 pair_note_index               # sizes and freshness, largest first — always before reading notes
 pair_note_read(kind, tail_lines=120)   # tail only; default 120, capped at 400
 ```

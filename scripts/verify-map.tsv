@@ -2,21 +2,40 @@
 # Used by scripts/verify-changed.sh: past an edit runs static plus only the touched
 # suites instead of the whole layer (5.5 min down to seconds).
 # Suite names use scripts/verification-profile.tsv.
+mcp/pair_mailbox/launch_context.py	launch-context
+mcp/pair_mailbox/test_launch_context.py	launch-context
+mcp/pair_mailbox/instruction_block.py	instruction-block
+mcp/pair_mailbox/test_instruction_block.py	instruction-block
 # The -check suffix (scripts-check, docs-check, pairchat-check): no separate suite,
 # covered by static (verify-changed.sh: static always runs).
 mcp/pair_mailbox/composer.py	composer
+mcp/pair_mailbox/store_core.py	store-core
 mcp/pair_mailbox/test_composer.py	composer
 mcp/pair_mailbox/test_allowlist_bypass.py	composer-bypass
+mcp/pair_mailbox/wait_until.py	wait-until
+mcp/pair_mailbox/test_wait_until.py	wait-until
+mcp/pair_mailbox/picker.py	picker
+mcp/pair_mailbox/test_picker.py	picker
+scripts/bin_test_coverage.py	bin-test-coverage
+scripts/bin_test_coverage_test.py	bin-test-coverage
+bin/	bin-test-coverage
+scripts/bin-test-exemptions.json	docs-check
+bin/pairmcprestart	mcpprestart
+bin/pairmcprestart_test.py	mcpprestart
 mcp/pair_mailbox/pointers.py	pointer
 mcp/pair_mailbox/test_pointer.py	pointer
 mcp/pair_mailbox/test_waiting_contract.py	waiting-contract
 mcp/pair_mailbox/read_delivery.py	read-delivery
 mcp/pair_mailbox/test_read_delivery.py	read-delivery
+bin/pair-duo	pair-duo
 bin/pair-duo_test.py	pair-duo
+bin/pair-runner	pair-runner
+bin/pair-runner_test.py	pair-runner
 mcp/pair_mailbox/test_pair_notes_consistency.py	notes-consistency
 mcp/pair_mailbox/test_boardcheck.py	boardcheck
 mcp/pair_mailbox/test_boardcheck_isolation.py	boardcheck-isolation
 bin/boardcheck.py	boardcheck
+mcp/pair_mailbox/mcp_socket_client.py	socket-client
 mcp/pair_mailbox/test_client_redial.py	client-redial
 mcp/pair_mailbox/test_lock_liveness.py	lock-liveness
 mcp/pair_mailbox/test_lock_reaper.py	lock-reaper
@@ -42,6 +61,7 @@ mcp/pair_mailbox/test_liveness.py	liveness
 mcp/pair_mailbox/statecache.py	statecache
 mcp/pair_mailbox/test_statecache.py	statecache
 mcp/pair_mailbox/server.py	protocol
+follow:mcp/pair_mailbox/server.py	statecache
 mcp/pair_mailbox/test_protocol.py	protocol
 mcp/pair_mailbox/test_protocol_budgets.py	protocol
 mcp/pair_mailbox/token_budget.py	protocol
@@ -69,6 +89,7 @@ mcp/pair_mailbox/panes.py	pairctl-panes
 mcp/pair_mailbox/pairctl_panes.py	pairctl-panes
 mcp/pair_mailbox/test_pairctl_read.py	pairctl-read
 mcp/pair_mailbox/pairctl_read.py	pairctl-read
+mcp/pair_mailbox/pairctl_cli.py	pairctl-panes
 mcp/pair_mailbox/test_panes.py	panes
 mcp/pair_mailbox/test_roster_heal.py	roster-heal
 mcp/pair_mailbox/roster_heal.py	roster-heal
@@ -78,6 +99,26 @@ mcp/pair_mailbox/test_review.py	review
 mcp/pair_mailbox/review.py	review
 mcp/pair_mailbox/test_review_gate.py	review-gate
 mcp/pair_mailbox/review_gate.py	review-gate
+mcp/pair_mailbox/isolation.py	isolation
+mcp/pair_mailbox/test_isolation.py	isolation
+mcp/pair_mailbox/plan_gate.py	plan-gate
+mcp/pair_mailbox/test_plan_gate.py	plan-gate
+mcp/pair_mailbox/worktree.py	worktree
+mcp/pair_mailbox/test_worktree.py	worktree
+mcp/pair_mailbox/preflight.py	preflight
+mcp/pair_mailbox/test_preflight.py	preflight
+mcp/pair_mailbox/merge_strategy.py	merge-strategy
+mcp/pair_mailbox/test_merge_strategy.py	merge-strategy
+mcp/pair_mailbox/project_settings.py	project-settings
+mcp/pair_mailbox/test_project_settings.py	project-settings
+# The settings module is read by BOTH settings that use it, so a change
+# there must run both of their suites, not only the one the map names.
+follow:mcp/pair_mailbox/project_settings.py	worktree;merge-strategy
+follow:mcp/pair_mailbox/panes.py	panes
+follow:mcp/pair_mailbox/mcp_socket_client.py	client-redial
+# The shared fixture base: every suite's plan artifact goes through it, so a
+# change there can break any of them. It names the suites that use it.
+mcp/pair_mailbox/pair_test_base.py	plan-gate
 mcp/pair_mailbox/test_digest.py	digest
 mcp/pair_mailbox/digest.py	digest
 mcp/pair_mailbox/test_board_hosts.py	board-hosts
@@ -85,6 +126,11 @@ mcp/pair_mailbox/test_board_snapshot.py	board-snapshot
 mcp/pair_mailbox/test_board_render.py	board-render
 bin/pairpilot	supervisor
 bin/pairpilot_test.py	supervisor
+mcp/pair_mailbox/watchdog.py	watchdog
+mcp/pair_mailbox/test_watchdog.py	watchdog
+mcp/pair_mailbox/guard.py	supervisor
+mcp/pair_mailbox/test_guard.py	supervisor
+mcp/pair_mailbox/test_pilot_guard.py	supervisor
 bin/pairboard	board-cli
 bin/pairboard_test.py	board-cli
 bin/pairchat	pairchat-check
@@ -92,6 +138,8 @@ bin/pairup	pairup
 bin/pairup_test.py	pairup
 bin/pairdoctor	doctor
 bin/pairdoctor_test.py	doctor
+bin/pairmcpdoctor	pairmcpdoctor
+bin/pairmcpdoctor_test.py	pairmcpdoctor
 bin/pairrestart	pairrestart
 bin/pairrestart_test.py	pairrestart
 mcp/pair_mailbox/restart_trace.py	pairrestart
@@ -107,9 +155,9 @@ cli-profiles.json	installer-subset
 scripts/i18n_apply.py	i18n-selftest
 scripts/i18n_extract.py	i18n-selftest
 scripts/i18n_self_test.py	i18n-selftest
-scripts/merge-audit-trail.py	merge-audit-trail
+scripts/merge-audit-trail.py	merge-audit-trail;merge-audit
 scripts/merge-audit-trail_test.py	merge-audit-trail
-scripts/merge-audit-baseline.tsv	merge-audit-trail
+scripts/merge-audit-baseline.tsv	merge-audit-trail;merge-audit
 scripts/verify-changed.sh	changed-file-gate
 scripts/verify-changed_test.sh	changed-file-gate
 scripts/	scripts-check
@@ -170,7 +218,42 @@ scripts/branch-class-check.py	branch-class
 scripts/branch_class_check_test.py	branch-class
 bin/pre_push_guard_test.py	pre-push-guard
 bin/git-hooks/pre-push	pre-push-guard
-docs/PROTOCOL.md	branch-class
-docs/PROTOCOL.ru.md	branch-class
+docs/PROTOCOL.md	branch-class;protocol-parity
+docs/PROTOCOL.ru.md	branch-class;protocol-parity
+scripts/protocol_parity_check.py	protocol-parity;protocol-parity-test
+scripts/protocol_parity_check_test.py	protocol-parity-test
 mcp/pair_mailbox/branch_audit.py	branch-audit
+mcp/pair_mailbox/board_hosts.py	board-hosts
+mcp/pair_mailbox/board_render.py	board-render
+mcp/pair_mailbox/board_snapshot.py	board-snapshot
+mcp/pair_mailbox/lock_reaper.py	lock-reaper
+mcp/pair_mailbox/pair_notes_consistency.py	notes-consistency
+mcp/pair_mailbox/read_wait.py	read-wait
+mcp/pair_mailbox/state_resolve.sh	state-resolve
+mcp/pair_mailbox/task_banner.py	task-banner
+mcp/pair_mailbox/task_subject.py	digest
+follow:mcp/pair_mailbox/task_subject.py	board-snapshot;pairctl-read;pairctl-authority;protocol
+mcp/pair_mailbox/test_branch_audit.py	branch-audit
+mcp/pair_mailbox/test_store_core.py	store-core
+mcp/pair_mailbox/test_task_banner.py	task-banner
+mcp/pair_mailbox/assets/board.js	board-render
+mcp/pair_mailbox/assets/board.css	board-render
+mcp/pair_mailbox/assets/labels.js	board-render
+finish.sh	finish
+finish_test.py	finish
+.claude/	docs-check
+.github/	docs-check
+.opencode/agents/verifier.md	waiting-contract
+.opencode/commands/	waiting-contract
+AGENTS.md	docs-check
+CODE_OF_CONDUCT.md	docs-check
+CONTRIBUTING.md	docs-check
+LICENSE	docs-check
+SECURITY.md	docs-check
+.gitignore	docs-check
+assets/	docs-check
+mcp/pair_mailbox/SLICE_C_SOCKETS.md	docs-check
 mcp/pair_mailbox/branch_classes.py	branch-audit
+mcp/pair_mailbox/trunk.py	trunk
+mcp/pair_mailbox/test_trunk.py	trunk
+mcp/pair_mailbox/serve.sh	serve-guard

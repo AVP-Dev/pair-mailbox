@@ -5,6 +5,11 @@ description: Full autonomous collaboration with the peer agent. The two of you p
 
 # Autonomous pair work
 
+Session scope: this workflow requires an explicitly enrolled pair. In a standalone
+CLI, perform the task independently with native subagents; an installed MCP entry
+or old `.pair` directory does not assign a critic role. Use `pairup` when the user
+explicitly requests a pair. A disconnected enrolled critic retains its write boundary.
+
 > Language: this is the English original. The Russian mirror is [SKILL.ru.md](./SKILL.ru.md).
 
 You work together with another agent: a different CLI, a different model, it cannot see your
@@ -111,6 +116,25 @@ If the composer is busy — the typed input returns a refusal instead of overwri
 The text is already in the mailbox: go back to waiting. On an unproven (foreign) pane typed
 input is forbidden — only `display-message` + mailbox, otherwise it is injection into someone
 else's composer.
+
+## 2a-1. When there is no tmux at all
+
+A launch through `bin/pair-runner` runs the agent as a plain subprocess on a
+host with no terminal multiplexer. The mailbox is unchanged; the composer is
+absent. So:
+
+- **`pair_send` is the channel.** It delivers the body into the mailbox; the
+  peer reads it on its own next turn.
+- **`pair_deliver` cannot wake anybody there.** It still writes the same
+  mailbox letter and answers `in_pane: false` with a `why` naming the missing
+  pane. Read that answer literally: the peer was not woken, only the letter
+  was placed.
+- **The wait rule is unchanged**: one read per turn, ACK the batch with its
+  `ack_token`, and wait with a bounded `pair_read(wait_seconds=45)`. Nothing
+  about losing tmux turns the read loop into work.
+- The plan, the review, the verdict and the PR do not change. Only the wake-up
+  path does — and the supervisor's wake file still exists, so a peer's own
+  `pair_read` sees the letter.
 
 ## 2b. Round mode: digest, then `pair_state`
 
@@ -330,7 +354,7 @@ Only a human changes the arrangement: `pairctl roles --swap`.
 The final word is always the human's:
 
 ```sh
-bin/pairctl assign <role>   # assign as writer (role = peer CLI name)
+bin/pairctl assign codex   # assign as writer (role = peer CLI name)
 bin/pairctl release         # clear, nobody writes
 bin/pairctl why             # who writes and why it said so
 ```

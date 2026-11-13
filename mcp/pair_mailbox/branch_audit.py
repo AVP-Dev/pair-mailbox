@@ -34,6 +34,7 @@ from pathlib import Path
 from typing import Any, Mapping, Protocol, runtime_checkable
 
 from branch_classes import ACCUMULATORS, classify
+from trunk import resolve_trunk
 
 
 @runtime_checkable
@@ -145,8 +146,9 @@ def audit(repo_dir: Path) -> tuple[list[dict[str, str]], list[str]]:
     """
     rows: list[dict[str, str]] = []
     refusals: list[str] = []
+    trunk_name = resolve_trunk(repo_dir)
     for name, sha in sorted(_remote_branches(repo_dir)):
-        cls = classify(name)
+        cls = classify(name, trunk_name)
         row = {"branch": name, "class": cls, "sha": sha, "verdict": "KEEP",
                "pr": "", "reason": ""}
         if cls in ("trunk", "strategic", "personal"):

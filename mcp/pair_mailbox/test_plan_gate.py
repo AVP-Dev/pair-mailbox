@@ -14,11 +14,16 @@ from pair_test_base import PairTestCase
 import plan_gate
 
 
-def write_plan(state_dir: Path, round_number: int, sections: tuple = ("Goal", "Invariants", "Acceptance")) -> None:
+def write_plan(state_dir: Path, round_number: int,
+               sections: tuple = ("Goal", "Invariants", "Acceptance", "Isolation Strategy")) -> None:
     import os
     import time
     body = [f"round: {round_number}", ""]
     for section in sections:
+        if section == "Isolation Strategy":
+            body += ["## Isolation Strategy", "mode: in-place", "worktrees: 0",
+                     "slices: 1", ""]
+            continue
         body += [f"## {section}", "text", ""]
     plan = state_dir / plan_gate.PLAN_FILE
     plan.write_text("\n".join(body), encoding="utf-8")
@@ -294,6 +299,59 @@ class TestNewestCauseNamed(PairTestCase):
         res = plan_gate.critic_ack(self.store.root, 105, "omp", not_before=self._not_before())
         self.assertTrue(res["ack"])
         self.assertEqual(res["at"], "2026-10-17T10:00:00+00:00")
+
+
+class TestIsolationSectionRequired(PairTestCase):
+    """Round 147 slice B: the plan must state the isolation strategy.
+
+    The plan is what the critic signs. If the plan says nothing about what was
+    decided about isolation, the visa covers a plan that never made the
+    decision — and the worktree question is settled by default rather than by
+    agreement. In `audit` there are no commits, so nothing needs isolating and
+    the section is not asked for.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.writer.tool_pair_claim(reason="writer")
+        self.writer.tool_pair_advance("plan")
+
+    def test_a_plan_without_the_isolation_section_refuses(self) -> None:
+        write_plan(self.store.root, 1,
+                   sections=("Goal", "Invariants", "Acceptance"))
+        error = self.assertRefused(self.writer.tool_pair_advance, "implement")
+        self.assertIn("isolation", str(error))
+
+    def test_a_plan_with_the_isolation_section_passes(self) -> None:
+        write_plan(self.store.root, 1)
+        write_ack(self.store.root / "notes", "reviewer-agent", 1, at=time.time() + 1)
+        result = self.writer.tool_pair_advance("implement")
+        self.assertEqual("implement", result["phase"])
+
+    def test_the_russian_section_heading_is_accepted(self) -> None:
+        """The protocol is bilingual; a Russian plan must satisfy the gate."""
+        import os
+        import plan_gate
+        plan = self.store.root / plan_gate.PLAN_FILE
+        plan.write_text(
+            "round: 1\n\n## Goal\n\ntext\n\n## Инварианты\n\ntext\n\n"
+            "## Приёмка\n\ntext\n\n## Стратегия изоляции\n\n"
+            "mode: in-place\nworktrees: 0\nslices: 1\n", encoding="utf-8")
+        stamp = time.time() - 2
+        os.utime(plan, (stamp, stamp))
+        write_ack(self.store.root / "notes", "reviewer-agent", 1, at=time.time() + 1)
+        result = self.writer.tool_pair_advance("implement")
+        self.assertEqual("implement", result["phase"])
+
+    def test_audit_mode_does_not_ask_for_the_isolation_section(self) -> None:
+        """No commits in audit mode: nothing to isolate, so nothing to demand."""
+        import plan_gate
+        self.store.mutate(lambda st: st.__setitem__("mode", "audit"))
+        write_plan(self.store.root, 1,
+                   sections=("Goal", "Invariants", "Acceptance"))
+        verdict = plan_gate.gate(self.store.root, self.store.read())
+        self.assertTrue(verdict["ok"], verdict["why"])
+        self.assertEqual("audit", verdict["ack_via"])
 
 
 if __name__ == "__main__":

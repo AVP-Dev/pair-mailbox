@@ -242,5 +242,28 @@ class TestFindOwnPane(PaneOwnershipBase):
         self.assertEqual(composer.find_own_pane("tmux-no-such-binary-xyz"), "")
 
 
+class TestPaneIdentityRequestCache(unittest.TestCase):
+    def test_identity_is_shared_within_request_and_refresh_bypasses_cache(self) -> None:
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(list(cmd))
+            return subprocess.CompletedProcess(
+                cmd, 0, "0\t/project\tmail:0.1\t$1\t%1\n", "")
+
+        with mock.patch.object(composer.subprocess, "run", side_effect=fake_run):
+            with panes.pane_identity_cache():
+                first = composer.pane_identity(["tmux"], "%1")
+                second = composer.pane_identity(["tmux"], "%1")
+                refreshed = panes.refresh_pane_identity(["tmux"], "%1")
+            outside = composer.pane_identity(["tmux"], "%1")
+
+        self.assertEqual(first, second)
+        self.assertEqual(first, refreshed)
+        self.assertEqual(first, outside)
+        self.assertEqual(3, len(calls),
+                         "one capture in-request, one forced refresh, one next request")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
