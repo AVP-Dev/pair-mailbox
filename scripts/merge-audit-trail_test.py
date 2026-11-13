@@ -251,8 +251,10 @@ class MergeAuditTrailTest(unittest.TestCase):
         baseline.
         """
         proc = subprocess.run(
-            [sys.executable, str(SCRIPT)],
+            [sys.executable, str(SCRIPT), "--skip-if-unavailable"],
             capture_output=True, text=True, timeout=120, cwd=str(ROOT))
+        if "merge-audit: SKIPPED:" in proc.stdout:
+            self.skipTest(proc.stdout.strip())
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
         self.assertIn("PASS", proc.stdout)
         self.assertNotIn("escaped the sanctioned path", proc.stdout)

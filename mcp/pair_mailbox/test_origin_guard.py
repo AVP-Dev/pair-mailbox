@@ -178,7 +178,8 @@ class OriginGuardCase(ServeFixture, unittest.TestCase):
                 "clientInfo": {"name": "worktree-test", "version": "1"}}},
             {"jsonrpc": "2.0", "method": "notifications/initialized"},
             {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}}]
-        proc = subprocess.run(["sh", str(pkg / "serve.sh"), self.role],
+        proc = subprocess.run(["sh", str(pkg / "serve.sh"), self.role,
+                               "--state", str(self.state)],
                               cwd=linked, env=env, text=True, capture_output=True,
                               input="".join(json.dumps(m) + "\n" for m in messages),
                               timeout=30)
@@ -193,11 +194,13 @@ class OriginGuardCase(ServeFixture, unittest.TestCase):
         local.mkdir()
         (local / "state.json").write_text((self.state / "state.json").read_text())
         env.pop("PAIR_STATE")
-        proc = subprocess.run(["sh", str(pkg / "serve.sh"), self.role],
+        proc = subprocess.run(["sh", str(pkg / "serve.sh"), self.role,
+                               "--state", str(local)],
                               cwd=linked, env=env, text=True, capture_output=True,
-                              input=json.dumps(messages[0]) + "\n", timeout=30)
+                              input="".join(json.dumps(m) + "\n" for m in messages), timeout=30)
         self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertIn("result", json.loads(proc.stdout.splitlines()[0]))
+        replies = {m["id"]: m for m in map(json.loads, proc.stdout.splitlines())}
+        self.assertIn("pair_state", [t["name"] for t in replies[2]["result"]["tools"]])
 
     def test_foreign_tree_refuses_and_names_both_roots(self) -> None:
         """A server raised from a FOREIGN REPO must refuse, not serve. The
