@@ -57,9 +57,14 @@ class TestRenderers(unittest.TestCase):
         payload = autoperms.render("agy", self.root, self.home)
         perms = payload["permissions"]
         self.assertIn("command(git status)", perms["allow"])
+        self.assertIn("command(regex:git -C \\S+ merge .*)", perms["allow"])
         self.assertIn("command(sudo)", perms["deny"])
         self.assertIn("write_file(.git/)", perms["deny"])
         self.assertIn("command(regex:curl .*)", perms["deny"])
+        joined_deny = " ".join(perms["deny"])
+        self.assertIn("main", joined_deny)
+        self.assertIn("master", joined_deny)
+        self.assertIn("--force", joined_deny)
 
     def test_claude_shape(self) -> None:
         payload = autoperms.render("claude", self.root, self.home)

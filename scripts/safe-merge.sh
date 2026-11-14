@@ -8,13 +8,18 @@ usage() {
     exit 2
 }
 
-if [ $# -lt 2 ]; then
+if [ $# -lt 2 ] || [ $# -gt 3 ]; then
     usage
 fi
 
 TARGET="$1"
 FEATURE="$2"
 FF_FLAG="${3:-}"
+
+if [ -n "$FF_FLAG" ] && [ "$FF_FLAG" != "--ff-only" ]; then
+    echo "ERROR: Invalid option '$FF_FLAG'. Supported flags: --ff-only" >&2
+    usage
+fi
 
 REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || true)"
 if [ -z "$REPO_ROOT" ]; then
@@ -28,7 +33,7 @@ if [ -n "$(git status --porcelain -uno)" ]; then
     exit 1
 fi
 
-# 2. Check branches exist
+# 2. Check branches exist and save original heads
 if ! git rev-parse --verify "$TARGET" >/dev/null 2>&1; then
     echo "ERROR: Target branch '$TARGET' does not exist." >&2
     exit 1
@@ -38,6 +43,9 @@ if ! git rev-parse --verify "$FEATURE" >/dev/null 2>&1; then
     exit 1
 fi
 
+TARGET_ORIG_SHA="$(git rev-parse "$TARGET")"
+FEATURE_ORIG_SHA="$(git rev-parse "$FEATURE")"
+
 BASE_COMMIT="$(git merge-base "$TARGET" "$FEATURE" 2>/dev/null || true)"
 if [ -z "$BASE_COMMIT" ]; then
     echo "ERROR: No common ancestor between '$TARGET' and '$FEATURE'." >&2
@@ -45,21 +53,23 @@ if [ -z "$BASE_COMMIT" ]; then
 fi
 
 echo "=== 1. Dry-run conflict check ($TARGET <-> $FEATURE) ==="
-# git merge-tree performs an in-memory 3-way merge without touching the index or working tree
-if git merge-tree "$BASE_COMMIT" "$TARGET" "$FEATURE" | grep -q '<<<<<<<'; then
+# git merge-tree performs an in-memory 3-way merge without touching the index or working tree.
+# Handle exit status and output safely without set -e / pipefail aborting prematurely.
+MERGE_TREE_OUT="$(git merge-tree "$BASE_COMMIT" "$TARGET" "$FEATURE" 2>&1 || true)"
+if printf '%s\n' "$MERGE_TREE_OUT" | grep -q '<<<<<<<'; then
     echo "CONFLICT: Branch '$FEATURE' cannot be merged cleanly into '$TARGET'." >&2
     echo "Conflicting files detected by git merge-tree. Both branches left intact." >&2
     exit 1
 fi
 echo "Conflict check PASSED (clean 3-way merge guaranteed)."
 
-# 3. Save current branch and state for clean rollback
+# 3. Save current branch for clean restoration
 CURRENT_BRANCH="$(git rev-parse --abbrev-ref HEAD)"
-PREV_HEAD="$(git rev-parse HEAD)"
 
 rollback() {
-    echo "WARNING: Merge verification failed. Rolling back '$TARGET' to $PREV_HEAD..." >&2
-    git reset --hard "$PREV_HEAD" >/dev/null 2>&1 || true
+    echo "WARNING: Merge verification failed. Rolling back '$TARGET' to $TARGET_ORIG_SHA..." >&2
+    git checkout "$TARGET" >/dev/null 2>&1 || true
+    git reset --hard "$TARGET_ORIG_SHA" >/dev/null 2>&1 || true
     if [ "$CURRENT_BRANCH" != "$TARGET" ]; then
         git checkout "$CURRENT_BRANCH" >/dev/null 2>&1 || true
     fi
@@ -85,15 +95,15 @@ fi
 echo "=== 3. Running post-merge verification suite ==="
 VERIFY_SCRIPT="$REPO_ROOT/scripts/verify-changed.sh"
 if [ -f "$VERIFY_SCRIPT" ]; then
-    echo "Running verify-changed.sh..."
-    if ! bash "$VERIFY_SCRIPT" --base "$TARGET"; then
+    echo "Running verify-changed.sh against pre-merge target SHA $TARGET_ORIG_SHA..."
+    if ! bash "$VERIFY_SCRIPT" --base "$TARGET_ORIG_SHA"; then
         echo "ERROR: Post-merge verification checks failed." >&2
         rollback
         exit 1
     fi
 else
     echo "No verify-changed.sh found; checking git diff --check..."
-    if ! git diff --check "$BASE_COMMIT"..HEAD; then
+    if ! git diff --check "$TARGET_ORIG_SHA"..HEAD; then
         echo "ERROR: Post-merge git diff check failed." >&2
         rollback
         exit 1

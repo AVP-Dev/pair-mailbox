@@ -256,4 +256,6 @@ mcp/pair_mailbox/SLICE_C_SOCKETS.md	docs-check
 mcp/pair_mailbox/branch_classes.py	branch-audit
 mcp/pair_mailbox/trunk.py	trunk
 mcp/pair_mailbox/test_trunk.py	trunk
+scripts/safe-merge.sh	safe-merge
+mcp/pair_mailbox/test_safe_merge.py	safe-merge
 mcp/pair_mailbox/serve.sh	serve-guard

@@ -115,6 +115,7 @@ def render_agy(home: Path) -> dict[str, Any]:
                        "write_file(.git/)", "write_file(/home/user/.ssh)"]
     for item in ALLOW["git"]:
         allow.append(f"command(git {item})")
+    allow.append("command(regex:git -C \\S+ merge .*)")
     for item in ALLOW["ship"]:
         allow.append(f"command({item})")
     for item in ALLOW["checks"]:
@@ -127,6 +128,11 @@ def render_agy(home: Path) -> dict[str, Any]:
         deny.append(f"command(regex:{item} .*)")
     for item in DENY["testruns"]:
         deny.append(f"command(regex:{item} .*)")
+    for item in DENY["history"]:
+        deny.append(f"command(regex:.*{item}.*)")
+    for branch in ("main", "master", "dev"):
+        deny.append(f"command(regex:git (?:-C \\S+ )?push .*\\b{branch}\\b)")
+        deny.append(f"command(regex:git (?:-C \\S+ )?merge .*\\b{branch}\\b)")
     return {"permissions": {"allow": allow, "deny": deny,
                             "ask": ["command(*)", "read_url(*)"]}}
 
