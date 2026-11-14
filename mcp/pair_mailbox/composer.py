@@ -1029,8 +1029,8 @@ NEVER_ALLOW_PATTERNS = (
     # §10: never push into main. Pushing a feature branch and opening a PR is protocol
     # work, so banned is not push at large but push into main/master plus history
     # rewrites.
-    r"\bgit\s+push\b[^\n]*\b(?:main|master)\b",
-    r"\bgit\s+push\b[^\n]*--force\b",
+    r"\bgit\s+(?:-C\s+\S+\s+)?push\b[^\n]*\b(?:main|master)\b",
+    r"\bgit\s+(?:-C\s+\S+\s+)?push\b[^\n]*--force\b",
     r"\bgit\s+reset\s+--hard\b",
     r"\bgit\s+clean\b[^\n]*-[a-z]*f",
     r"\bgit\s+filter-branch\b",
@@ -1169,13 +1169,13 @@ DEFAULT_ALLOW_PATTERNS = (
     r"\brm\s+(?:(?![/~$*./-])(?!\.{1,2}(?:\s|$))[^\s]+|/tmp/[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*)",
     r"\brm\s+-[a-zA-Z]+\s+(?:(?![/~$*])(?!\.{1,2}(?:\s|$))[^\s]+|/tmp/[A-Za-z0-9_.-]+)",
     # local git: §10 demands a branch and a commit, so this is allowed;
-    r"\bgit\s+(?:(?:--[a-zA-Z0-9_-]+|-[a-zA-Z0-9])(?:\s+[^\s]+)?\s+)*(?:status|diff|log|show|branch|remote|describe|rev-parse|add|commit|"
+    r"\bgit\s+(?:-C\s+\S+\s+)?(?:status|diff|log|show|branch|remote|describe|rev-parse|add|commit|"
     r"checkout|switch|stash|tag|blame|shortlog|reflog|check-ignore|merge)\b",
     # pair MCP tools
     r'\b(?:Allow\s+(?:the\s+)?pair\s+MCP\s+server\s+to\s+run\s+tool\s+"pair_[a-z_]+"|pair_[a-z_]+)\b',
     # shipping the work: push into a feature branch and PR. The ban on push into
     # main/master plus --force sits in NEVER_ALLOW_PATTERNS, checked first.
-    r"\bgit\s+(?:(?:--[a-zA-Z0-9_-]+|-[a-zA-Z0-9])(?:\s+[^\s]+)?\s+)*push\b",
+    r"\bgit\s+(?:-C\s+\S+\s+)?push\b",
     r"\bgh\s+(?:pr|issue|run|workflow)\b",
 )
 

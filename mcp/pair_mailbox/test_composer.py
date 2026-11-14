@@ -335,6 +335,14 @@ class TestNumberedMenuKeys(unittest.TestCase):
         self.assertNotIn("`", context)
         verdict = composer.permission_verdict(context, composer.DEFAULT_ALLOW_PATTERNS)
         self.assertEqual("allow", verdict["verdict"])
+        # Verify push with -C to main or with --force is still refused by NEVER_ALLOW_PATTERNS
+        self.assertEqual("refuse", composer.permission_verdict(
+            "git -C /repo push origin main", composer.DEFAULT_ALLOW_PATTERNS)["verdict"])
+        self.assertEqual("refuse", composer.permission_verdict(
+            "git -C /repo push --force origin feature", composer.DEFAULT_ALLOW_PATTERNS)["verdict"])
+        # While normal branch push is allowed
+        self.assertEqual("allow", composer.permission_verdict(
+            "git -C /repo push origin feature", composer.DEFAULT_ALLOW_PATTERNS)["verdict"])
 
     def test_codex_mcp_permission_prompt_detection_and_approval(self) -> None:
         header = 'Allow the pair MCP server to run tool "pair_claim"?'
