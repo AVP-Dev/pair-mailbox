@@ -25,7 +25,7 @@ ALLOW: dict[str, tuple[str, ...]] = {
     # local git: §10 demands a branch and a commit
     "git": ("status", "diff", "log", "show", "branch", "remote", "describe",
             "rev-parse", "add", "commit", "checkout", "switch", "stash", "tag",
-            "blame", "shortlog", "reflog", "check-ignore", "merge"),
+            "blame", "shortlog", "reflog", "check-ignore"),
     # checks and builds. P0 (round 75): test runners (pytest, unittest, bun test, npm
     # test, cargo test, jest...) on host stay human-only — only over
     # scripts/run-isolated-test.sh (see composer NEVER). Linters and builds stay in the
@@ -41,8 +41,9 @@ ALLOW: dict[str, tuple[str, ...]] = {
     # reading and observing with no writes
     "read": ("Read", "read_file", "view", "glob", "grep", "search", "list",
              "list_dir", "cat", "head", "tail", "ls", "find"),
-    # shipping work: a feature branch and a PR (§10)
-    "ship": ("git push", "gh pr", "gh issue", "gh run", "gh workflow"),
+    # shipping work: a feature branch and a PR (§10); push gets a narrower
+    # renderer rule so implicit upstream pushes are never auto-authorized.
+    "ship": ("gh pr", "gh issue", "gh run", "gh workflow"),
 }
 
 # §12 plus classes banned under ANY allow-list. The deny canon: renderers translate
@@ -53,8 +54,8 @@ DENY: dict[str, tuple[str, ...]] = {
                 "/etc/passwd", ".pem", ".npmrc", ".aws", ".git-credentials"),
     "system": ("sudo", "rm -rf /", "rm -rf ~", "rm -rf .", "mkfs", "dd if=",
                "killall", "docker", "kubectl", "helm", "terraform"),
-    "history": ("git push origin main", "git push origin master",
-                "--force", "reset --hard", "clean -f", "filter-branch",
+    "history": ("git merge", "git push origin main", "git push origin master",
+                "--force", "-f", "reset --hard", "clean -f", "filter-branch",
                 "reflog expire"),
     "network": ("curl", "wget", "nc -", "ssh", "pip install", "npm install",
                 "bun add", "npm publish"),
@@ -93,14 +94,31 @@ def autoperms_key(profile: str) -> str:
 
 
 def render_opencode(root: Path) -> dict[str, Any]:
-    """opencode.jsonc: bash `*: allow` plus deny globs, edit/webfetch as ask.
+    """opencode.jsonc: allow normal work, ask on pushes, and deny unsafe commands.
 
-    The format is glob lines; order in the TUI never matters, deny always beats
-    §13c.
+    OpenCode uses last-matching-rule semantics. Keep the catch-all first, then the
+    narrowly scoped push rules, then protected branch and history denials.
     """
     bash: dict[str, str] = {"*": "allow"}
+    bash["*git push*"] = "ask"
+    bash["*git -C * push*"] = "ask"
+    bash["*git push [!-]* [!-]*"] = "allow"
+    bash["*git push -u [!-]* [!-]*"] = "allow"
+    bash["*git push --set-upstream [!-]* [!-]*"] = "allow"
+    bash["*git -C * push [!-]* [!-]*"] = "allow"
+    bash["*git -C * push -u [!-]* [!-]*"] = "allow"
+    bash["*git -C * push --set-upstream [!-]* [!-]*"] = "allow"
     for item in _deny_items():
         bash[f"*{item}*"] = "deny"
+    bash["*git merge*"] = "deny"
+    bash["*git -C * merge*"] = "deny"
+    for branch in ("main", "master", "dev"):
+        bash[f"*git push *{branch}*"] = "deny"
+        bash[f"*git -C * push *{branch}*"] = "deny"
+    bash["*git push *--force*"] = "deny"
+    bash["*git push -f*"] = "deny"
+    bash["*git -C * push *--force*"] = "deny"
+    bash["*git -C * push -f*"] = "deny"
     return {"$schema": "https://opencode.ai/config.json",
             "permission": {"bash": bash, "edit": "ask", "webfetch": "ask"}}
 
@@ -115,9 +133,11 @@ def render_agy(home: Path) -> dict[str, Any]:
                        "write_file(.git/)", "write_file(/home/user/.ssh)"]
     for item in ALLOW["git"]:
         allow.append(f"command(git {item})")
-    allow.append("command(regex:git -C \\S+ merge .*)")
     for item in ALLOW["ship"]:
         allow.append(f"command({item})")
+    allow.append(
+        r"command(regex:git (?:-C \S+ )?push (?:-u |--set-upstream )?[^-\s]\S* [^-\s]\S*.*)"
+    )
     for item in ALLOW["checks"]:
         allow.append(f"command({item})")
     for item in ALLOW["read"]:
@@ -132,7 +152,8 @@ def render_agy(home: Path) -> dict[str, Any]:
         deny.append(f"command(regex:.*{item}.*)")
     for branch in ("main", "master", "dev"):
         deny.append(f"command(regex:git (?:-C \\S+ )?push .*\\b{branch}\\b)")
-        deny.append(f"command(regex:git (?:-C \\S+ )?merge .*\\b{branch}\\b)")
+    deny.append(r"command(regex:git (?:-C \S+ )?push(?:\s+\S+)?$)")
+    deny.append(r"command(regex:git (?:-C \S+ )?merge(?:\s|$).*)")
     return {"permissions": {"allow": allow, "deny": deny,
                             "ask": ["command(*)", "read_url(*)"]}}
 
@@ -150,7 +171,7 @@ def render_claude(root: Path) -> dict[str, Any]:
     deny = [f"Read(./{item})" for item in DENY["secrets"]]
     deny += ["Bash(curl:*)", "Bash(wget:*)", "Bash(sudo:*)", "Bash(ssh:*)",
              "Bash(pip install:*)", "Bash(npm install:*)", "Bash(bun add:*)",
-             "Bash(git push --force:*)", "Bash(git reset --hard:*)"]
+             "Bash(git merge:*)", "Bash(git push --force:*)", "Bash(git reset --hard:*)"]
     deny += [f"Bash({item}:*)" for item in DENY["testruns"]]
     return {"permission": {"allow": allow, "deny": deny}}
 

@@ -304,8 +304,12 @@ class TestSessionAddressing(PairTestCase):
             self.skipTest(f"tmux refuses to create a session: {made.stderr.strip()[:80]}")
         subprocess.run([tmux, "split-window", "-t", session],
                        capture_output=True, timeout=10)
-        stale = f"{session}:0.1"
-        survivor = f"{session}:0.0"
+        p_out = subprocess.check_output(
+            [tmux, "list-panes", "-t", session, "-F", "#{session_name}:#{window_index}.#{pane_index}"],
+            text=True,
+        ).strip().splitlines()
+        stale = p_out[-1]
+        survivor = p_out[0]
 
         # Before death the address is real: both checks must confirm it.
         self.assertTrue(composer.pane_identity(tmux, stale)["exists"])

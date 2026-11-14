@@ -1130,7 +1130,9 @@ bin/pairctl log --limit 50
   прямой запуск на хосте ждёт человека (P0);
 - локальный git: `status`, `diff`, `log`, `add`, `commit`, `checkout`, `switch`,
   `branch`, `stash`;
-- отправка работы: `git push` в **фиче-ветку** и `gh pr` — §10 требует PR;
+- отправка работы: `git push <remote> <refspec>` в явно заданную **фиче-ветку** и
+  `gh pr` — §10 требует PR. Голый `git push` и push только с remote запрещены:
+  их цель зависит от upstream текущей ветки;
 - уборка артефактов: `rm -rf build/` с относительной целью.
 
 Запрещено при любом белом списке, проверяется первым:
@@ -1141,8 +1143,10 @@ bin/pairctl log --limit 50
   (`migrate`, `drop table`, `truncate`), прод;
 - **разрушение системы:** `rm -rf /`, `rm -rf ~`, `rm -rf .`, `mkfs`, `dd if=`,
   `> /dev/sda`, `killall`;
-- **история git:** push в `main`/`master`, `--force`, `reset --hard`, `clean -f`,
-  `filter-branch`, `reflog expire` — §10 и §12;
+- **история git:** прямой `git merge` (цель — неявно текущая ветка), push в
+  `main`/`master`/`dev`, любой force push, `reset --hard`, `clean -f`,
+  `filter-branch`, `reflog expire` — §10 и §12. Для интеграции используй
+  проверенную обёртку safe-merge;
 - **сеть и установка пакетов:** `curl`, `wget`, `nc -`, `pip install`,
   `npm install`, `npm publish`. Не потому что сеть опасна сама по себе, а потому
   что сеть может вынести то, что защищает §12, а установка пакета тянет в проект
@@ -1211,18 +1215,33 @@ Claude Code печатает команду на предпоследней ст
 
 У каждого CLI есть собственный механизм запретов, и он срабатывает **раньше** любого
 нашего. Для OpenCode это `permission` в `opencode.jsonc` и флаг `--auto`: в авто-режиме
-запросы, явно не запрещённые, подтверждаются сами, а правила `"deny"` действуют всегда.
+запросы, явно не запрещённые, подтверждаются сами. Правила проверяются по порядку,
+побеждает последнее совпавшее: сначала общий шаблон, затем запрос подтверждения для
+push и разрешение только для явного refspec фиче-ветки, после них — запреты для
+защищённых веток, force push и прямого merge.
 
 ```jsonc
 {
   "permission": {
     "bash": {
       "*": "allow",
+      "git push*": "ask", "git -C * push*": "ask",
+      "git push [!-]* [!-]*": "allow",
+      "git push -u [!-]* [!-]*": "allow",
+      "git push --set-upstream [!-]* [!-]*": "allow",
+      "git -C * push [!-]* [!-]*": "allow",
+      "git -C * push -u [!-]* [!-]*": "allow",
+      "git -C * push --set-upstream [!-]* [!-]*": "allow",
       "sudo *": "deny", "curl *": "deny", "wget *": "deny",
       "pip install *": "deny", "npm install *": "deny", "npm publish *": "deny",
       "ssh *": "deny", "docker *": "deny", "kubectl *": "deny",
       "terraform *": "deny", "helm *": "deny", "mkfs*": "deny", "killall *": "deny",
-      "git push *main*": "deny", "git push *master*": "deny", "git push --force*": "deny",
+      "git merge *": "deny", "git -C * merge *": "deny",
+      "git push *main*": "deny", "git push *master*": "deny", "git push *dev*": "deny",
+      "git -C * push *main*": "deny", "git -C * push *master*": "deny",
+      "git -C * push *dev*": "deny", "git push *--force*": "deny",
+      "git -C * push *--force*": "deny", "git push *-f*": "deny",
+      "git -C * push *-f*": "deny",
       "git reset --hard *": "deny", "git clean -f*": "deny", "git filter-branch*": "deny"
     },
     "read": {
@@ -1235,8 +1254,8 @@ Claude Code печатает команду на предпоследней ст
 }
 ```
 
-Звёздочки здесь — собственный синтаксис opencode, а не наш: правила применяются по порядку,
-и последнее совпавшее побеждает, поэтому `"*": "allow"` идёт первым.
+Звёздочки здесь — собственный синтаксис opencode, а не наш: последнее совпавшее
+правило побеждает, поэтому общий шаблон `"*": "allow"` стоит первым.
 
 Почему это лучше белого списка супервизора, а не рядом с ним:
 

@@ -6,6 +6,7 @@ over install_test.py: the installer must write files that parse.
 from __future__ import annotations
 
 import json
+import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -53,18 +54,75 @@ class TestRenderers(unittest.TestCase):
         for must in ("sudo", "curl", ".env", "--force"):
             self.assertIn(must, joined, f"a §12 category {must!r} must stand in deny")
 
+    def test_opencode_push_and_merge_rules_are_ordered(self) -> None:
+        bash = autoperms.render("opencode", self.root, self.home)["permission"]["bash"]
+        rules = list(bash.items())
+        positions = {key: index for index, (key, _) in enumerate(rules)}
+        self.assertEqual("ask", bash["*git push*"])
+        self.assertEqual("allow", bash["*git push [!-]* [!-]*"])
+        self.assertLess(positions["*"], positions["*git push*"])
+        self.assertLess(positions["*git push*"], positions["*git push [!-]* [!-]*"])
+        self.assertEqual("deny", bash["*git merge*"])
+        self.assertEqual("deny", bash["*git -C * merge*"])
+        self.assertEqual("ask", bash["*git -C * push*"])
+        self.assertEqual("allow", bash["*git -C * push [!-]* [!-]*"])
+        for branch in ("main", "master", "dev"):
+            self.assertEqual("deny", bash[f"*git push *{branch}*"])
+            self.assertEqual("deny", bash[f"*git -C * push *{branch}*"])
+        self.assertEqual("deny", bash["*git push *--force*"])
+
     def test_agy_shape(self) -> None:
         payload = autoperms.render("agy", self.root, self.home)
         perms = payload["permissions"]
         self.assertIn("command(git status)", perms["allow"])
-        self.assertIn("command(regex:git -C \\S+ merge .*)", perms["allow"])
         self.assertIn("command(sudo)", perms["deny"])
         self.assertIn("write_file(.git/)", perms["deny"])
         self.assertIn("command(regex:curl .*)", perms["deny"])
+        self.assertNotIn("command(git push)", perms["allow"])
+        self.assertTrue(any("regex:git" in rule and "push" in rule for rule in perms["allow"]))
         joined_deny = " ".join(perms["deny"])
         self.assertIn("main", joined_deny)
         self.assertIn("master", joined_deny)
         self.assertIn("--force", joined_deny)
+        self.assertIn("git merge", joined_deny)
+        self.assertTrue(any("push(?:\\s+\\S+)?$" in rule for rule in perms["deny"]))
+
+    def test_agy_push_and_merge_rules_match_composer_decisions(self) -> None:
+        perms = autoperms.render("agy", self.root, self.home)["permissions"]
+
+        def regex_matches(rule: str, command: str) -> bool:
+            if not rule.startswith("command(regex:"):
+                return False
+            pattern = rule[len("command(regex:"):-1]
+            return re.search(pattern, command) is not None
+
+        def decision(command: str) -> str:
+            if any(regex_matches(rule, command) for rule in perms["deny"]):
+                return "deny"
+            if any(regex_matches(rule, command) for rule in perms["allow"]):
+                return "allow"
+            return "ask"
+
+        cases = {
+            "git push": "deny",
+            "git push origin": "deny",
+            "git -C /repo push origin": "deny",
+            "git push origin feature": "allow",
+            "git push -u origin feature": "allow",
+            "git push --set-upstream origin feature": "allow",
+            "git -C /repo push origin feature": "allow",
+            "git push origin main": "deny",
+            "git push upstream dev": "deny",
+            "git push origin feature --force": "deny",
+            "git push -f origin feature": "deny",
+            "git merge feature": "deny",
+            "git -C /repo merge feature": "deny",
+            "git -C /repo merge --ff-only feature": "deny",
+            "git push --porcelain origin feature": "ask",
+        }
+        for command, expected in cases.items():
+            with self.subTest(command=command):
+                self.assertEqual(expected, decision(command))
 
     def test_claude_shape(self) -> None:
         payload = autoperms.render("claude", self.root, self.home)
@@ -73,6 +131,7 @@ class TestRenderers(unittest.TestCase):
         # P0 (round 75): test runners mean deny, not allow.
         self.assertIn("Bash(bun test:*)", perms["deny"])
         self.assertIn("Bash(sudo:*)", perms["deny"])
+        self.assertIn("Bash(git merge:*)", perms["deny"])
         self.assertIn("Read(./.env)", perms["deny"])
 
     def test_allow_covers_routine(self) -> None:

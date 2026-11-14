@@ -54,11 +54,24 @@ fi
 
 echo "=== 1. Dry-run conflict check ($TARGET <-> $FEATURE) ==="
 # git merge-tree performs an in-memory 3-way merge without touching the index or working tree.
-# Handle exit status and output safely without set -e / pipefail aborting prematurely.
-MERGE_TREE_OUT="$(git merge-tree "$BASE_COMMIT" "$TARGET" "$FEATURE" 2>&1 || true)"
-if printf '%s\n' "$MERGE_TREE_OUT" | grep -q '<<<<<<<'; then
-    echo "CONFLICT: Branch '$FEATURE' cannot be merged cleanly into '$TARGET'." >&2
-    echo "Conflicting files detected by git merge-tree. Both branches left intact." >&2
+# The legacy three-tree form returns 1 for a merge conflict. Distinguish that
+# expected result from an unknown/error response using its output; every other
+# nonzero result remains a fail-closed preflight error.
+MERGE_TREE_EXIT=0
+MERGE_TREE_OUT="$(git merge-tree "$BASE_COMMIT" "$TARGET" "$FEATURE" 2>&1)" || MERGE_TREE_EXIT=$?
+case "$MERGE_TREE_OUT" in
+    *'<<<<<<<'*)
+    if [ "$MERGE_TREE_EXIT" -eq 0 ] || [ "$MERGE_TREE_EXIT" -eq 1 ]; then
+        echo "CONFLICT: Branch '$FEATURE' cannot be merged cleanly into '$TARGET'." >&2
+        echo "Conflicting files detected by git merge-tree. Both branches left intact." >&2
+        exit 1
+    fi
+    ;;
+esac
+if [ "$MERGE_TREE_EXIT" -ne 0 ]; then
+    echo "ERROR: git merge-tree preflight failed (exit code $MERGE_TREE_EXIT)." >&2
+    echo "$MERGE_TREE_OUT" >&2
+    echo "Aborting preflight safely without touching branches or index." >&2
     exit 1
 fi
 echo "Conflict check PASSED (clean 3-way merge guaranteed)."

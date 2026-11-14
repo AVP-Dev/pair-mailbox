@@ -12,6 +12,7 @@ Tests:
 from __future__ import annotations
 
 import os
+import shlex
 import shutil
 import subprocess
 import tempfile
@@ -114,6 +115,87 @@ class TestSafeMerge(unittest.TestCase):
         # Working tree must remain clean
         status = subprocess.check_output(["git", "status", "--porcelain"], cwd=self.repo, text=True).strip()
         self.assertEqual(status, "")
+
+    def test_merge_tree_error_fails_closed(self) -> None:
+        real_git = shutil.which("git")
+        self.assertIsNotNone(real_git)
+        subprocess.run(["git", "checkout", "-b", "feature"], cwd=self.repo, check=True, capture_output=True)
+        (self.repo / "f.txt").write_text("f\n", encoding="utf-8")
+        subprocess.run(["git", "add", "."], cwd=self.repo, check=True)
+        subprocess.run(["git", "commit", "-m", "f"], cwd=self.repo, check=True, capture_output=True)
+        subprocess.run(["git", "checkout", "main"], cwd=self.repo, check=True, capture_output=True)
+
+        refs_before = {
+            branch: subprocess.check_output(["git", "rev-parse", branch], cwd=self.repo, text=True).strip()
+            for branch in ("main", "feature")
+        }
+        head_before = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=self.repo, text=True).strip()
+        index_rel = subprocess.check_output(
+            ["git", "rev-parse", "--git-path", "index"], cwd=self.repo, text=True).strip()
+        index_path = Path(index_rel)
+        if not index_path.is_absolute():
+            index_path = self.repo / index_path
+        tracked = subprocess.check_output(
+            ["git", "ls-files", "-z"], cwd=self.repo).split(b"\0")
+        worktree_before = {
+            path.decode(): (self.repo / path.decode()).read_bytes()
+            for path in tracked if path
+        }
+        no_locks = dict(os.environ)
+        no_locks["GIT_OPTIONAL_LOCKS"] = "0"
+        status_before = subprocess.check_output(
+            ["git", "status", "--porcelain"], cwd=self.repo, text=True, env=no_locks)
+        index_before = index_path.read_bytes()
+
+        with tempfile.TemporaryDirectory() as mock_bin:
+            mock_git = Path(mock_bin) / "git"
+            mock_git.write_text(
+                "#!/bin/sh\n"
+                'if [ "$1" = "merge-tree" ]; then\n'
+                '  echo "fatal: simulated internal merge-tree error" >&2\n'
+                '  exit "${FAKE_MERGE_TREE_EXIT:-128}"\n'
+                "fi\n"
+                f"exec {shlex.quote(real_git or 'git')} \"$@\"\n",
+                encoding="utf-8",
+            )
+            mock_git.chmod(0o755)
+            env = dict(os.environ)
+            env["PATH"] = f"{mock_bin}{os.pathsep}{env.get('PATH', '')}"
+            env["GIT_OPTIONAL_LOCKS"] = "0"
+            for exit_code in (1, 128):
+                with self.subTest(exit_code=exit_code):
+                    env["FAKE_MERGE_TREE_EXIT"] = str(exit_code)
+                    res = subprocess.run(
+                        ["bash", str(SAFE_MERGE_SCRIPT), "main", "feature"],
+                        cwd=self.repo,
+                        capture_output=True,
+                        text=True,
+                        env=env,
+                    )
+                    self.assertEqual(res.returncode, 1)
+                    self.assertIn("git merge-tree preflight failed", res.stderr)
+                    self.assertIn("Aborting preflight safely", res.stderr)
+                    self.assertNotIn("CONFLICT", res.stderr)
+                    refs_after = {
+                        branch: subprocess.check_output(
+                            ["git", "rev-parse", branch], cwd=self.repo, text=True).strip()
+                        for branch in ("main", "feature")
+                    }
+                    head_after = subprocess.check_output(
+                        ["git", "rev-parse", "HEAD"], cwd=self.repo, text=True).strip()
+                    worktree_after = {
+                        path.decode(): (self.repo / path.decode()).read_bytes()
+                        for path in tracked if path
+                    }
+                    status_after = subprocess.check_output(
+                        ["git", "status", "--porcelain"], cwd=self.repo,
+                        text=True, env=no_locks)
+                    self.assertEqual(refs_before, refs_after)
+                    self.assertEqual(head_before, head_after)
+                    self.assertEqual(index_before, index_path.read_bytes())
+                    self.assertEqual(worktree_before, worktree_after)
+                    self.assertEqual(status_before, status_after)
 
     def test_verify_failure_rolls_back_target(self) -> None:
         # Create commit on main
