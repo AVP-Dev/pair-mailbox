@@ -25,7 +25,7 @@ ALLOW: dict[str, tuple[str, ...]] = {
     # local git: §10 demands a branch and a commit
     "git": ("status", "diff", "log", "show", "branch", "remote", "describe",
             "rev-parse", "add", "commit", "checkout", "switch", "stash", "tag",
-            "blame", "shortlog", "reflog", "check-ignore"),
+            "blame", "shortlog", "reflog", "check-ignore", "merge"),
     # checks and builds. P0 (round 75): test runners (pytest, unittest, bun test, npm
     # test, cargo test, jest...) on host stay human-only — only over
     # scripts/run-isolated-test.sh (see composer NEVER). Linters and builds stay in the
