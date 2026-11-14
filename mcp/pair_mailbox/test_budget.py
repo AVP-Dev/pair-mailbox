@@ -103,6 +103,24 @@ class TestBudgetMetrics(unittest.TestCase):
         self.assertEqual(m["messages"], 1)  # Only what stands past 10:15
         self.assertAlmostEqual(m["hours"], 0.17, places=2)
 
+    def test_repairs_count_and_breach(self) -> None:
+        t_file = self.state_dir / "transcript.jsonl"
+        t0 = datetime(2026, 10, 11, 10, 0, 0, tzinfo=timezone.utc)
+        entries = [
+            {"ts": t0.isoformat(), "kind": "advance", "role": "agy", "phase": "implement", "previous": "done", "reopened": True},
+            # 3 Critic rejections: verify -> implement
+            {"ts": (t0 + timedelta(minutes=5)).isoformat(), "kind": "advance", "role": "codex", "phase": "implement", "previous": "verify"},
+            {"ts": (t0 + timedelta(minutes=10)).isoformat(), "kind": "advance", "role": "codex", "phase": "implement", "previous": "verify"},
+            {"ts": (t0 + timedelta(minutes=15)).isoformat(), "kind": "advance", "role": "codex", "phase": "implement", "previous": "verify"},
+        ]
+        t_file.write_text("\n".join(json.dumps(e) for e in entries) + "\n", encoding="utf-8")
+        st = {"round": 1}
+        m = budget.collect_metrics(self.state_dir, st)
+        self.assertEqual(m["repairs"], 3)
+        ok, why, _ = budget.check_budget(self.state_dir, st, to_phase="verify")
+        self.assertFalse(ok)
+        self.assertIn("repairs: 3/3", why)
+
 
 class TestBudgetServerIntegration(PairTestCase):
     "Integration with tool_pair_advance and the pairctl budget CLI."
