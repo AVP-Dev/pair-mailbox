@@ -939,30 +939,22 @@ def detect_permission_menu(lines: list) -> str | None:
 
 
 def extract_permission_context(lines: list, prompt: str) -> str:
-    """The text the verdict reads.
-
-    A menu needs the whole screen: the command showing as `$ git status` lives in
-    the modal body, not the header. On the header alone ("Permission required") the
-    allowlist allows nothing and always refuses.
-
-    For "y/N" the question line alone used to suffice, and on Claude Code that was
-    a bug: the question runs last there while the command runs second to last, so
-    the verdict read a line with zero words about the command and refused 100% of
-    safe commands. Auto mode on Claude Code simply never worked.
-
-    So both the question line and the lines above read — but never the whole screen:
-    extra text could allow on a word unrelated to the command. The top edge is
-    OVERSCAN_LINES lines, an open decision: agy asked two, three or till the
-    separator, and I took three with margin for the frame between command and question.
-    """
+    """The text the verdict reads: modal body for menus, tail lines for y/N prompts."""
     text = [line.strip() for line in lines if line.strip()]
     header_index = max((i for i, line in enumerate(text) if PERMISSION_HEADER.search(line)), default=-1)
-    dialog = "\n".join(
+    dialog_lines = [
         line for line in (text[header_index:] if header_index >= 0 else [])
         if not any(re.search(phrase, line, re.IGNORECASE) for phrase in TUI_HINT_PHRASES)
-    )
+    ]
+    dialog = "\n".join(dialog_lines)
     if dialog and any(re.search(m, dialog, re.IGNORECASE) for m in PERMISSION_MENU_MARKERS):
-        return " ".join(dialog.split())
+        # Exclude menu options with markdown backticks (e.g. `git merge`) from command context.
+        menu_opt_start = next(
+            (i for i, line in enumerate(dialog_lines)
+             if re.search(r"^\s*(?:[›>•]\s*)?\d+\s*[).:\]]\s*(?:Allow|Always|Yes|No|Cancel|Reject|Skip|Don't)\b",
+                          line, re.IGNORECASE)), -1)
+        cmd_lines = dialog_lines[:menu_opt_start] if menu_opt_start > 0 else dialog_lines
+        return " ".join(" ".join(cmd_lines).split()) or prompt
     tail = [line for line in text if line.strip()][-OVERSCAN_LINES:]
     context = " ".join(" ".join(tail).split())
     return context or prompt
@@ -1037,8 +1029,8 @@ NEVER_ALLOW_PATTERNS = (
     # §10: never push into main. Pushing a feature branch and opening a PR is protocol
     # work, so banned is not push at large but push into main/master plus history
     # rewrites.
-    r"\bgit\s+push\b[^\n]*\b(?:main|master)\b",
-    r"\bgit\s+push\b[^\n]*--force\b",
+    r"\bgit\s+(?:-C\s+\S+\s+)?push\b[^\n]*\b(?:main|master)\b",
+    r"\bgit\s+(?:-C\s+\S+\s+)?push\b[^\n]*--force\b",
     r"\bgit\s+reset\s+--hard\b",
     r"\bgit\s+clean\b[^\n]*-[a-z]*f",
     r"\bgit\s+filter-branch\b",
@@ -1177,13 +1169,13 @@ DEFAULT_ALLOW_PATTERNS = (
     r"\brm\s+(?:(?![/~$*./-])(?!\.{1,2}(?:\s|$))[^\s]+|/tmp/[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*)",
     r"\brm\s+-[a-zA-Z]+\s+(?:(?![/~$*])(?!\.{1,2}(?:\s|$))[^\s]+|/tmp/[A-Za-z0-9_.-]+)",
     # local git: §10 demands a branch and a commit, so this is allowed;
-    r"\bgit\s+(?:status|diff|log|show|branch|remote|describe|rev-parse|add|commit|"
-    r"checkout|switch|stash|tag|blame|shortlog|reflog)\b",
+    r"\bgit\s+(?:-C\s+\S+\s+)?(?:status|diff|log|show|branch|remote|describe|rev-parse|add|commit|"
+    r"checkout|switch|stash|tag|blame|shortlog|reflog|check-ignore|merge)\b",
     # pair MCP tools
     r'\b(?:Allow\s+(?:the\s+)?pair\s+MCP\s+server\s+to\s+run\s+tool\s+"pair_[a-z_]+"|pair_[a-z_]+)\b',
     # shipping the work: push into a feature branch and PR. The ban on push into
     # main/master plus --force sits in NEVER_ALLOW_PATTERNS, checked first.
-    r"\bgit\s+push\b",
+    r"\bgit\s+(?:-C\s+\S+\s+)?push\b",
     r"\bgh\s+(?:pr|issue|run|workflow)\b",
 )
 

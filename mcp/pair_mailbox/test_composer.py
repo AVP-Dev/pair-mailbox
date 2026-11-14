@@ -317,6 +317,33 @@ class TestNumberedMenuKeys(unittest.TestCase):
         self.assertEqual("allow", composer.permission_verdict(
             context, [r"\bgit\s+status\b"])["verdict"])
 
+    def test_codex_prompt_with_markdown_backticks_in_options_and_git_merge(self) -> None:
+        lines = [
+            "Would you like to run the following command?",
+            "Environment: local",
+            "Reason: Fast-forward merge into dev",
+            "$ git -C /repo merge --ff-only chore/pair-branch",
+            "› 1. Yes, proceed (y)",
+            "  2. Yes, and don't ask again for commands that start with `git -C /repo merge` (p)",
+            "  3. No, and tell Codex what to do differently (esc)",
+            "Press enter to confirm or esc to cancel"
+        ]
+        prompt = composer.detect_permission_menu(lines)
+        self.assertIsNotNone(prompt)
+        self.assertEqual("1", composer.menu_allow_key(lines))
+        context = composer.extract_permission_context(lines, prompt)
+        self.assertNotIn("`", context)
+        verdict = composer.permission_verdict(context, composer.DEFAULT_ALLOW_PATTERNS)
+        self.assertEqual("allow", verdict["verdict"])
+        # Verify push with -C to main or with --force is still refused by NEVER_ALLOW_PATTERNS
+        self.assertEqual("refuse", composer.permission_verdict(
+            "git -C /repo push origin main", composer.DEFAULT_ALLOW_PATTERNS)["verdict"])
+        self.assertEqual("refuse", composer.permission_verdict(
+            "git -C /repo push --force origin feature", composer.DEFAULT_ALLOW_PATTERNS)["verdict"])
+        # While normal branch push is allowed
+        self.assertEqual("allow", composer.permission_verdict(
+            "git -C /repo push origin feature", composer.DEFAULT_ALLOW_PATTERNS)["verdict"])
+
     def test_codex_mcp_permission_prompt_detection_and_approval(self) -> None:
         header = 'Allow the pair MCP server to run tool "pair_claim"?'
         lines = [header, "reason: I am the explicitly launched codex writer",
