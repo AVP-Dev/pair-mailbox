@@ -396,8 +396,9 @@ class TestAutonomyTriggers(PairTestCase):
     """The mode picks once at start, and the pick place must show: a sourceless level
     turns in a month into a dispute over "why this round closed itself"."""
 
-    def resolve(self, flag: str | None = None, task: str = "") -> tuple[str, str]:
-        return resolve_autonomy(self.root, task=task, flag=flag)
+    def resolve(self, flag: str | None = None, task: str = "",
+                current: str | None = None) -> tuple[str, str]:
+        return resolve_autonomy(self.root, task=task, flag=flag, current=current)
 
     def declare(self, text: str) -> None:
         (self.root / "autonomy").write_text(text, encoding="utf-8")
@@ -413,8 +414,23 @@ class TestAutonomyTriggers(PairTestCase):
         self.declare("semi")
         self.assertEqual(self.resolve(flag="observe"), ("observe", "flag"))
 
-    def test_a_task_line_beats_the_file(self) -> None:
+    def test_saved_project_state_beats_the_legacy_file(self) -> None:
         self.declare("observe")
+        self.assertEqual(self.resolve(current="semi"), ("semi", "state"))
+
+    def test_explicit_mode_beats_the_saved_project_state(self) -> None:
+        self.assertEqual(self.resolve(flag="auto", current="semi"), ("auto", "flag"))
+
+    def test_task_directive_does_not_change_a_saved_project_mode(self) -> None:
+        self.assertEqual(self.resolve(task="autonomy: observe", current="semi"),
+                         ("semi", "state"))
+
+    def test_legacy_project_mode_beats_a_task_directive(self) -> None:
+        self.declare("observe")
+        self.assertEqual(self.resolve(task="autonomy: semi — fix the test"),
+                         ("observe", "file"))
+
+    def test_a_task_line_initializes_a_project_without_a_saved_mode(self) -> None:
         self.assertEqual(self.resolve(task="autonomy: semi — fix the test"),
                          ("semi", "task"))
 
@@ -438,14 +454,32 @@ class TestAutonomyTriggers(PairTestCase):
         self.declare("semi")
         self.assertEqual(self.resolve(flag="turbo"), ("semi", "file"))
 
-    def test_the_launcher_writes_the_level_and_where_it_came_from(self) -> None:
+    def test_the_launcher_imports_legacy_file_once(self) -> None:
         self.declare("semi")
+        self.store.mutate(lambda state: state.pop("autonomy", None))
         self.assertEqual(main(["--state", str(self.root), "launch-autonomy"]), 0)
         self.assertEqual(self.store.read()["autonomy"], "semi")
         entry = [e for e in self.store.read_transcript(20) if e.get("kind") == "autonomy"][-1]
         self.assertEqual(entry["via"], "file", "the decision source must land in the journal")
 
-    def test_the_launcher_says_auto_and_where_it_came_from(self) -> None:
+    def test_bare_launcher_preserves_saved_project_mode_without_a_false_change_event(self) -> None:
+        self.set_autonomy("semi")
+        before = len([e for e in self.store.read_transcript(100) if e.get("kind") == "autonomy"])
+        self.assertEqual(main(["--state", str(self.root), "launch-autonomy"]), 0)
+        self.assertEqual(self.store.read()["autonomy"], "semi")
+        after = len([e for e in self.store.read_transcript(100) if e.get("kind") == "autonomy"])
+        self.assertEqual(after, before, "reattaching must not invent a mode change")
+
+    def test_explicit_launcher_mode_updates_saved_project_mode(self) -> None:
+        self.set_autonomy("semi")
+        self.assertEqual(main(["--state", str(self.root), "launch-autonomy",
+                               "--flag", "observe"]), 0)
+        self.assertEqual(self.store.read()["autonomy"], "observe")
+        entry = [e for e in self.store.read_transcript(20) if e.get("kind") == "autonomy"][-1]
+        self.assertEqual(entry["via"], "flag")
+
+    def test_old_state_without_setting_defaults_to_auto(self) -> None:
+        self.store.mutate(lambda state: state.pop("autonomy", None))
         self.assertEqual(main(["--state", str(self.root), "launch-autonomy"]), 0)
         self.assertEqual(self.store.read()["autonomy"], "auto")
         entry = [e for e in self.store.read_transcript(20) if e.get("kind") == "autonomy"][-1]

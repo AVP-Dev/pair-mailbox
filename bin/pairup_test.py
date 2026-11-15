@@ -433,7 +433,7 @@ class PairupTmuxLaunchCase(unittest.TestCase):
         self.commands.mkdir()
         for cli in ("codex", "agy", "claude"):
             command = self.commands / cli
-            command.write_text("#!/bin/sh\nprintf '%s\\n' \"$PWD|$PAIR_STATE|" + cli + "\" > \"$PWD/" + cli + ".started\"\nexec sleep 120\n")
+            command.write_text("#!/bin/sh\nprintf '%s\\n' \"$PWD|$PAIR_STATE|" + cli + "\" > \"" + str(self.base / (cli + ".started")) + "\"\nexec sleep 120\n")
             command.chmod(0o755)
         self.env = dict(os.environ)
         self.env.update(HOME=str(self.home), PATH=str(self.commands) + os.pathsep + self.env["PATH"], TERM="xterm-256color")
@@ -463,13 +463,19 @@ class PairupTmuxLaunchCase(unittest.TestCase):
             except ProcessLookupError:
                 pass
 
-    def launch(self, critic: str = "agy", foreign: bool = False) -> subprocess.Popen:
+    def launch(self, critic: str = "agy", foreign: bool = False,
+               autonomy: str | None = None, task: str | None = None) -> subprocess.Popen:
         env = dict(self.env)
         if foreign:
             probe = self.tmux("display-message", "-p", "-t", "foreign", "#{socket_path}", foreign=True)
             self.assertEqual(probe.returncode, 0, probe.stderr)
             env["TMUX"] = probe.stdout.strip() + ",1,0"
-        command = shlex.join([str(PAIRUP), "--in-place", "--writer", "codex", "--swap", critic])
+        args = [str(PAIRUP), "--in-place", "--writer", "codex", "--swap", critic]
+        if autonomy:
+            args.append("--" + autonomy)
+        if task is not None:
+            args.extend(["--task", task])
+        command = shlex.join(args)
         proc = subprocess.Popen(script_command(command), cwd=self.project,
                                 env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         self.procs.append(proc)
@@ -479,7 +485,7 @@ class PairupTmuxLaunchCase(unittest.TestCase):
         deadline = time.monotonic() + 20
         while time.monotonic() < deadline:
             clients = self.tmux("list-clients", "-F", "#{client_pid}")
-            if (self.project / (critic + ".started")).exists() and clients.stdout.strip():
+            if (self.base / (critic + ".started")).exists() and clients.stdout.strip():
                 return
             if proc.poll() is not None:
                 self.fail("launcher exited: " + str(proc.communicate()))
@@ -514,6 +520,57 @@ class PairupTmuxLaunchCase(unittest.TestCase):
         self.assertIn(writer, after)
         self.assertIn("project:claude (critic)", after)
         self.detach(third)
+
+    def test_autonomy_setting_persists_across_pairup_process_restarts(self) -> None:
+        """Only an explicit mode option changes the standing project setting.
+
+        Each call starts a new pairup process and reuses the existing terminal
+        session, exercising the same persisted path used after closing a shell.
+        """
+        first = self.launch(task="autonomy: semi\nVerify persistent project autonomy")
+        self.await_launch(first, "agy")
+        self.assertEqual(json.loads((self.project / ".pair" / "state.json").read_text())
+                         ["autonomy"], "semi")
+        transcript = (self.project / ".pair" / "transcript.jsonl").read_text(encoding="utf-8")
+        self.assertIn('"via": "task"', transcript)
+        self.detach(first)
+
+        resumed = self.launch()
+        self.await_launch(resumed, "agy")
+        self.assertEqual(json.loads((self.project / ".pair" / "state.json").read_text())
+                         ["autonomy"], "semi",
+                         "a bare pairup reattach must not reset the saved level to auto")
+        self.detach(resumed)
+
+        task_directive = self.launch(task="autonomy: observe\nContinue the project task")
+        self.await_launch(task_directive, "agy")
+        self.assertEqual(json.loads((self.project / ".pair" / "state.json").read_text())
+                         ["autonomy"], "semi",
+                         "a later task directive must not silently change the saved mode")
+        self.detach(task_directive)
+
+        explicit = self.launch(autonomy="observe")
+        self.await_launch(explicit, "agy")
+        self.assertEqual(json.loads((self.project / ".pair" / "state.json").read_text())
+                         ["autonomy"], "observe")
+        self.detach(explicit)
+
+    def test_each_autonomy_shorthand_persists_and_bare_pairup_restores_it(self) -> None:
+        for mode in ("auto", "semi", "observe"):
+            with self.subTest(mode=mode):
+                explicit = self.launch(autonomy=mode)
+                self.await_launch(explicit, "agy")
+                state_path = self.project / ".pair" / "state.json"
+                self.assertEqual(json.loads(state_path.read_text(encoding="utf-8"))
+                                 ["autonomy"], mode)
+                self.detach(explicit)
+
+                resumed = self.launch()
+                self.await_launch(resumed, "agy")
+                self.assertEqual(json.loads(state_path.read_text(encoding="utf-8"))
+                                 ["autonomy"], mode,
+                                 "bare pairup must restore the mode saved by its explicit flag")
+                self.detach(resumed)
 
     def test_live_writer_change_refuses_without_changing_authority(self) -> None:
         proc = self.launch()

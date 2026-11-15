@@ -154,13 +154,17 @@ reviews.
 
 ## 3. A read-only agent proposes patches, it does not apply them
 
-One command (preferred):
+One command (preferred for a read-only worktree):
 
 ```
-pair_propose(files=["a.py", "b.py"], subject="what it fixes")
-# the server builds the diff itself, seals it, and delivers path+hash
+pair_propose(diff="<unified diff>", subject="what it fixes")
+# the server validates paths, stores the diff, seals it, and delivers path+hash
 # to the writer via pair_send with expects_reply
 ```
+
+`pair_propose(files=[...])` remains compatible for sessions where the critic's
+worktree is writable and the server can build the diff. Under the OS read-only
+role boundary, send diff content directly; do not try to edit the project.
 
 Manual path (legacy, for exotic cases — e.g. a diff assembled by hand):
 

@@ -33,6 +33,11 @@ CLIENT = ROOT / "mcp" / "pair_mailbox" / "mcp_socket_client.py"
 REDIAL = "5"      # seconds, bounded — never an unbounded supervisor
 
 
+def unpaired_env() -> dict[str, str]:
+    """These subprocess tests exercise a standalone client, not the host pair."""
+    return {key: value for key, value in os.environ.items() if not key.startswith("PAIR_")}
+
+
 class ClientRedialCase(unittest.TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
@@ -43,6 +48,7 @@ class ClientRedialCase(unittest.TestCase):
              "phase": "implement", "seq": 0}), encoding="utf-8")
         self.sock = str(self.proj / ".pair" / ".server-redialrole.sock")
         self.procs: list[subprocess.Popen] = []
+        self.daemons: list[subprocess.Popen] = []
 
     def tearDown(self) -> None:
         for proc in self.procs:
@@ -59,8 +65,9 @@ class ClientRedialCase(unittest.TestCase):
             [sys.executable, str(SERVER), "--role", "redialrole",
              "--state", str(self.proj / ".pair"), "--socket", self.sock],
             cwd=str(self.proj), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            text=True)
+            text=True, env=unpaired_env())
         self.procs.append(proc)
+        self.daemons.append(proc)
         for _ in range(200):
             if os.path.exists(self.sock):
                 try:
@@ -77,31 +84,20 @@ class ClientRedialCase(unittest.TestCase):
         return proc
 
     def _kill_daemon(self) -> int:
-        """Kill the process holding this role's lock — the fd-scan, the only
-        liveness proof (round 108's lesson: argv/pgrep checks returned empty
-        for live servers). Returns the dead pid, 0 if none held the role."""
-        lock = str((self.proj / ".pair" / f".server-redialrole.lock").resolve())
-        for entry in os.listdir("/proc"):
-            if not entry.isdigit():
-                continue
-            fd_dir = Path("/proc") / entry / "fd"
-            try:
-                fds = os.listdir(fd_dir)
-            except OSError:
-                continue
-            for fd in fds:
-                try:
-                    linked = os.readlink(fd_dir / fd)
-                except OSError:
-                    continue
-                if linked == lock:
-                    subprocess.run(["kill", entry], capture_output=True, timeout=10)
-                    time.sleep(0.3)
-                    return int(entry)
-        return 0
+        """Kill the exact daemon process started by this test on any host OS."""
+        daemon = next((proc for proc in self.daemons if proc.poll() is None), None)
+        if daemon is None:
+            return 0
+        daemon.terminate()
+        try:
+            daemon.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            daemon.kill()
+            daemon.wait(timeout=10)
+        return daemon.pid
 
     def _client(self, redial: bool) -> subprocess.Popen:
-        env = dict(os.environ)
+        env = unpaired_env()
         env["PAIR_SOCKET_REDIAL"] = REDIAL if redial else "0"
         proc = subprocess.Popen(
             [sys.executable, str(CLIENT), "redialrole",

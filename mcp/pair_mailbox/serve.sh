@@ -273,6 +273,21 @@ if ! "$python" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 8) else 1)'
   exit 6
 fi
 
+# An OS-sandboxed critic must not inherit a protocol server with direct access
+# to .pair. The launcher raises the role daemon before entering the sandbox and
+# records this transport; this thin child can only call the daemon's MCP API.
+if "$python" - "$state/state.json" <<'PY' >/dev/null 2>&1
+import json, sys
+try:
+    with open(sys.argv[1], encoding="utf-8") as f:
+        raise SystemExit(0 if json.load(f).get("transport") == "socket" else 1)
+except (OSError, ValueError):
+    raise SystemExit(1)
+PY
+then
+  PAIR_STATE="$state" exec "$python" "$here/mcp_socket_client.py" "$role"
+fi
+
 if [ -n "$pane" ]; then
   exec "$python" "$here/server.py" --role "$role" --state "$state" --pane "$pane"
 else

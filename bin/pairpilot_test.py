@@ -1423,7 +1423,7 @@ class TestTmuxPaths(PilotCase):
     """Paths that call tmux. They need a stub, or they check only live — exactly where
     append_transcript fell with a foreign role=."""
 
-    def fake_tmux_pilot(self, alive=True, prompt=None, verdict="allow"):
+    def fake_tmux_pilot(self, alive=True, prompt=None, verdict="allow", rejection=True):
         pilot = self.pilot()
         pilot.tmux = [str(self.fake_tmux)]
         pairpilot.pane_alive = lambda tmux, pane: alive
@@ -1433,17 +1433,22 @@ class TestTmuxPaths(PilotCase):
                                             "prompt": prompt or "",
                                             "why": "on the allowlist" if verdict == "allow" else "off the allowlist",
                                             "matched": None})
+        pairpilot.reject_permission_prompt = (
+            lambda tmux, pane: {"rejected": rejection,
+                                "why": "explicitly declined" if rejection else "no safe denial option"})
         return pilot
 
     def tearDown(self) -> None:
         pairpilot.pane_alive = self._real_alive
         pairpilot.resolve_permission_prompt = self._real_prompt
+        pairpilot.reject_permission_prompt = self._real_reject_prompt
         pairpilot.subprocess = self._real_subprocess
         super().tearDown()
 
     def setUp(self) -> None:
         self._real_alive = getattr(pairpilot, "pane_alive", None)
         self._real_prompt = getattr(pairpilot, "resolve_permission_prompt", None)
+        self._real_reject_prompt = getattr(pairpilot, "reject_permission_prompt", None)
         self._real_subprocess = getattr(pairpilot, "subprocess", None)
         super().setUp()
 
@@ -1622,13 +1627,55 @@ class TestTmuxPaths(PilotCase):
         self.assertIn("pilot_unblock", self.transcript_kinds())
 
     def test_refused_permission_is_recorded_not_pressed(self) -> None:
-        """A refusal is a result. Silently skipping "y" is banned: the human must know the
-        pane stands and why he must step to it himself."""
+        """A refusal remains a denial; auto recovery may only decline and choose another route."""
         self.write_state(roles={"agy": {"last_seen": ago(10), "pane": "%9"}})
         pilot = self.fake_tmux_pilot(prompt="Allow execution of bash? rm -rf /", verdict="refuse")
         pilot.tick()
         self.assertIn("pilot_unblock_refused", self.transcript_kinds())
         self.assertNotIn("pilot_unblock", self.transcript_kinds())
+
+    def test_auto_mode_declines_refused_prompt_and_queues_safe_recovery(self) -> None:
+        state = self.write_state(autonomy="auto", writer="agy",
+                                 roles={"agy": {"last_seen": ago(10), "pane": "%9"}})
+        pilot = self.fake_tmux_pilot(prompt="Run command? [y/N]", verdict="refuse")
+        pilot.unblock(state)
+        self.assertTrue(pilot.pending("agy"))
+        self.assertIn("allowed method", pilot.pending("agy"))
+        self.assertIn("pilot_auto_permission_denied", self.transcript_kinds())
+        self.assertFalse((self.state_dir / "pilot" / "blocked-round-1.json").exists())
+
+    def test_auto_mode_writes_blocked_report_when_prompt_cannot_be_safely_dismissed(self) -> None:
+        state = self.write_state(autonomy="auto", writer="agy", phase="implement",
+                                 roles={"agy": {"last_seen": ago(10), "pane": "%9"}})
+        pilot = self.fake_tmux_pilot(prompt="unrecognized permission dialog", verdict="refuse",
+                                     rejection=False)
+        pilot.unblock(state)
+        report = (self.state_dir / "REPORT.md").read_text(encoding="utf-8")
+        self.assertIn("Round report 1 — BLOCKED", report)
+        self.assertIn("round remains open", report)
+        self.assertIn("pilot_auto_blocked", self.transcript_kinds())
+        self.assertEqual("implement", self.pilot().state()["phase"])
+
+    def test_auto_mode_reports_after_three_repeated_policy_denials(self) -> None:
+        state = self.write_state(autonomy="auto", writer="agy",
+                                 roles={"agy": {"last_seen": ago(10), "pane": "%9"}})
+        pilot = self.fake_tmux_pilot(prompt="Run command? [y/N]", verdict="refuse")
+        original_remember = pilot.remember
+        pilot.remember = lambda key, *args, **kwargs: (
+            True if key.startswith("auto-refusal-") else original_remember(key, *args, **kwargs))
+        for _ in range(3):
+            pilot.unblock(state)
+        report = (self.state_dir / "REPORT.md").read_text(encoding="utf-8")
+        self.assertIn("repeated denied attempts: 3", report)
+        self.assertIn("pilot_auto_blocked", self.transcript_kinds())
+
+    def test_semi_mode_leaves_refusal_at_its_control_point(self) -> None:
+        state = self.write_state(autonomy="semi", roles={"agy": {"pane": "%9"}})
+        pilot = self.fake_tmux_pilot(prompt="Run command? [y/N]", verdict="refuse")
+        with mock.patch.object(pairpilot, "reject_permission_prompt") as reject:
+            pilot.unblock(state)
+        reject.assert_not_called()
+        self.assertNotIn("pilot_auto_permission_denied", self.transcript_kinds())
 
     def test_observe_mode_never_confirms_a_prompt(self) -> None:
         self.write_state(autonomy="observe", roles={"agy": {"last_seen": ago(10), "pane": "%9"}})

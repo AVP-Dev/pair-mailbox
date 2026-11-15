@@ -9,8 +9,12 @@ mcp/pair_mailbox/test_instruction_block.py	instruction-block
 # The -check suffix (scripts-check, docs-check, pairchat-check): no separate suite,
 # covered by static (verify-changed.sh: static always runs).
 mcp/pair_mailbox/composer.py	composer
+mcp/pair_mailbox/process_tree.py	process-tree
+mcp/pair_mailbox/linux_sandbox.py	linux-sandbox
 mcp/pair_mailbox/store_core.py	store-core
 mcp/pair_mailbox/test_composer.py	composer
+mcp/pair_mailbox/test_process_tree.py	process-tree
+mcp/pair_mailbox/test_linux_sandbox.py	linux-sandbox
 mcp/pair_mailbox/test_allowlist_bypass.py	composer-bypass
 mcp/pair_mailbox/wait_until.py	wait-until
 mcp/pair_mailbox/test_wait_until.py	wait-until

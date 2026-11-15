@@ -238,12 +238,28 @@ def cmd_autonomy(store: Store, args: argparse.Namespace) -> int:
 
 def cmd_launch_autonomy(store: Store, args: argparse.Namespace) -> int:
     # Mode choice at start, exactly once and before the agents get instructions.
-    # The logic lives here, not in pair-duo, because the bash wrapper has no tests:
-    # a rule with nothing to check it by, we already found once.
+    # The state value is the persistent project setting; the legacy autonomy file
+    # is consulted only when an older state has no autonomy key.
+    state = store.read()
+    # Store.read() merges default_state(), which supplies "auto" for new
+    # projects. Inspect the persisted object as well so an older state that has
+    # no autonomy key can still import its legacy .pair/autonomy value.
+    try:
+        with store.lock():
+            saved = json.loads(store.state_path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        saved = {}
+    except (OSError, ValueError):
+        saved = None
+    current = (autonomy_of(state) if isinstance(saved, dict) and "autonomy" in saved
+               else "observe" if saved is None else None)
     level, source = resolve_autonomy(
-        store.root, task=args.task or "", flag=args.flag,
+        store.root, task=args.task or "", flag=args.flag, current=current,
     )
-    previous = autonomy_of(store.read())
+    previous = autonomy_of(state)
+    if source == "state" and level == previous:
+        print(f"autonomy {level!r} (via saved project setting)")
+        return 0
     store.mutate(lambda state: state.__setitem__("autonomy", level))
     store.append_transcript(
         "autonomy", "launcher", autonomy=level, previous=previous, via=source,

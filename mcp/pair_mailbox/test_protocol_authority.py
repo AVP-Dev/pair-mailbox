@@ -408,6 +408,33 @@ class TestPatchFlow(PairTestCase):
         self.assertRefused(self.peer.tool_pair_propose, ["/abs/x.py"], contains="inside")
         self.assertRefused(self.peer.tool_pair_propose, ["../x.py"], contains="inside")
         self.assertRefused(self.writer.tool_pair_propose, ["x.py"], contains="must not")
+        self.assertRefused(self.peer.tool_pair_propose, None, diff="", contains="non-empty")
+
+    def test_read_only_critic_submits_a_validated_diff_through_mcp(self) -> None:
+        """Critic proposal does not need write access to the shared project tree."""
+        patch_text = (
+            "diff --git a/note.txt b/note.txt\n"
+            "index 5626abf..f719efd 100644\n"
+            "--- a/note.txt\n"
+            "+++ b/note.txt\n"
+            "@@ -1 +1 @@\n"
+            "-one\n"
+            "+two\n"
+        )
+        result = self.peer.tool_pair_propose(diff=patch_text, subject="read-only proposal")
+        self.assertEqual(result["files"], ["note.txt"])
+        self.assertEqual(Path(result["path"]).read_text(encoding="utf-8"), patch_text)
+        self.assertEqual(len(result["sha256"]), 64)
+        self.assertTrue(self.writer.tool_pair_read(limit=10)["messages"][-1]["text"].find(
+            result["sha256"]) >= 0)
+
+    def test_read_only_proposal_rejects_patch_path_escape_and_metadata(self) -> None:
+        for path in ("../../outside", ".pair/state.json", ".git/config"):
+            patch_text = (f"diff --git a/{path} b/{path}\n"
+                          f"--- a/{path}\n+++ b/{path}\n@@ -1 +1 @@\n-old\n+new\n")
+            with self.subTest(path=path):
+                self.assertRefused(self.peer.tool_pair_propose, None,
+                                   diff=patch_text, contains="patch")
 
     def test_propose_builds_seals_and_delivers(self) -> None:
         """The full cycle in one command: worktree diff, seal, the writer letter.

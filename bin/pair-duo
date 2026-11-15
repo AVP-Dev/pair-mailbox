@@ -8,9 +8,8 @@
 # Options:
 #   --worktree    Create an isolated git worktree for the critic pane
 #   --vertical    Split panes vertically (top/bottom) instead of horizontally (left/right)
-#   --autonomy L  observe | semi | auto. How far the pair goes on its own. Without it
-#                 the launcher resolves in this order: a line in the task
-#                 ("autonomy: semi"), then .pair/autonomy, then auto.
+#   --autonomy L  observe | semi | auto. Save a project autonomy mode; without
+#                 it the previous project setting is retained.
 #   --auto --semi --observe   Shorthand for --autonomy
 #   --swap-critic CLI  Replace the critic pane with another CLI (limits ran out).
 #                 Writer untouched (PROTOCOL §2). Needs --state + --project.
@@ -64,8 +63,8 @@ while [[ $# -gt 0 ]]; do
       shift
       ;;
     --autonomy)
-      # How far the pair goes alone. With no flag `pairctl launch-autonomy` decides: a
-      # line in the task, the .pair/autonomy file, else auto.
+      # Without an explicit choice, preserve the project's saved state; the
+      # resolver imports .pair/autonomy only for old state.
       AUTONOMY_OPT="${2:-}"
       shift 2 || { echo "error: --autonomy needs a level" >&2; exit 2; }
       ;;
@@ -136,6 +135,25 @@ if [[ "$PRINT_STATE" -eq 1 ]]; then
   echo "state=$STATE_PATH"
   echo "project=$PROJECT_ROOT_DIR"
   exit 0
+fi
+
+case "$AUTONOMY_OPT" in
+  ""|observe|semi|auto) ;;
+  *)
+    echo "error: --autonomy takes observe, semi or auto (got '$AUTONOMY_OPT')" >&2
+    exit 2
+    ;;
+esac
+
+# Persist/resolve the project mode before starting the supervisor. With no flag
+# or task directive launch-autonomy preserves state.json instead of resetting a
+# saved project to auto because this is a fresh process.
+autonomy_args=(--state "$STATE_PATH" launch-autonomy)
+[[ -n "$AUTONOMY_OPT" ]] && autonomy_args+=(--flag "$AUTONOMY_OPT")
+[[ -n "$TASK" ]] && autonomy_args+=(--task "$TASK")
+"$HERE/pairctl" "${autonomy_args[@]}"
+if [[ -n "$TASK" ]]; then
+  "$HERE/pairctl" --state "$STATE_PATH" task "$TASK"
 fi
 
 # Supervisor before agents (RUNBOOK §3): never doubling the live one — a second
@@ -254,26 +272,6 @@ WRITER_ROLE="${CLI}-writer"
 CRITIC_ROLE="${CLI}-critic"
 WRITER_CMD="$(python3 "$ROOT/mcp/pair_mailbox/launch_context.py" command "$WRITER_ROLE" "$STATE_PATH")"
 CRITIC_CMD="$(python3 "$ROOT/mcp/pair_mailbox/launch_context.py" command "$CRITIC_ROLE" "$STATE_PATH")"
-
-# Autonomy mode picks once, here, before agents took their instructions. The value
-# checks BEFORE launch: a typo silently ignored past start would mean the pair runs
-# a mode the human never thinks, learnable only by fact.
-#
-case "$AUTONOMY_OPT" in
-  ""|observe|semi|auto) ;;
-  *)
-    echo "error: --autonomy takes observe, semi or auto (got '$AUTONOMY_OPT')" >&2
-    exit 2
-    ;;
-esac
-
-if [[ -n "$TASK" ]]; then
-  "$HERE/pairctl" --state "$STATE_PATH" task "$TASK"
-fi
-
-if [[ -n "$AUTONOMY_OPT" || -n "$TASK" ]]; then
-  "$HERE/pairctl" --state "$STATE_PATH" launch-autonomy ${AUTONOMY_OPT:+--flag "$AUTONOMY_OPT"} ${TASK:+--task "$TASK"}
-fi
 
 # Authority is the human's to move (PROTOCOL §2). This script used to run
 # `pairctl assign` unconditionally, so every launch silently handed the role to

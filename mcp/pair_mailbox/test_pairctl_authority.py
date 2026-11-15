@@ -103,6 +103,14 @@ class TestAutonomyCommand(PairTestCase):
         kinds = [entry["kind"] for entry in self.store.read_transcript()]
         self.assertIn("autonomy", kinds)
 
+    def test_autonomy_command_persists_in_project_state_only(self) -> None:
+        legacy = self.root / "autonomy"
+        legacy.write_text("observe", encoding="utf-8")
+        self.assertEqual(self.ctl("autonomy", "semi"), 0)
+        self.assertEqual(self.store.read()["autonomy"], "semi")
+        self.assertEqual(legacy.read_text(encoding="utf-8"), "observe",
+                         "the old file is an import source, not a second settings store")
+
     def test_unknown_autonomy_is_refused(self) -> None:
         # argparse prints usage and exits 2 — same as `pairctl mode`.
         with self.assertRaises(SystemExit) as caught:
