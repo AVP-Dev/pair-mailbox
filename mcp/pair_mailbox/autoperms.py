@@ -155,7 +155,7 @@ def render_agy(home: Path) -> dict[str, Any]:
     deny.append(r"command(regex:git (?:-C \S+ )?push(?:\s+\S+)?$)")
     deny.append(r"command(regex:git (?:-C \S+ )?merge(?:\s|$).*)")
     return {"permissions": {"allow": allow, "deny": deny,
-                            "ask": ["command(*)", "read_url(*)"]}}
+                            "ask": ["read_url(*)"]}}
 
 
 def render_claude(root: Path) -> dict[str, Any]:
