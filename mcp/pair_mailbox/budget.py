@@ -17,6 +17,7 @@ DEFAULT_BUDGET: dict[str, Any] = {
     "max_advances": 10,
     "max_hours": 24.0,
     "max_restarts": 10,
+    "max_repairs": 3,
 }
 
 
@@ -124,6 +125,7 @@ def collect_metrics(state_dir: Path, state: dict[str, Any], now: datetime | None
 
     messages_count = 0
     advances_count = 0
+    repairs_count = 0
 
     if transcript_path.is_file():
         try:
@@ -151,6 +153,8 @@ def collect_metrics(state_dir: Path, state: dict[str, Any], now: datetime | None
                         # Never count the reopen move itself when it started the round
                         if idx != round_start_idx:
                             advances_count += 1
+                        if entry.get("previous") == "verify" and entry.get("phase") == "implement":
+                            repairs_count += 1
         except OSError:
             pass
 
@@ -189,6 +193,7 @@ def collect_metrics(state_dir: Path, state: dict[str, Any], now: datetime | None
         "round": current_round,
         "messages": messages_count,
         "advances": advances_count,
+        "repairs": repairs_count,
         "hours": round(hours, 2),
         "restarts": restarts_count,
         "round_start": effective_start_ts.isoformat() if effective_start_ts else None,
@@ -216,6 +221,8 @@ def check_budget(state_dir: Path, state: dict[str, Any], to_phase: str, now: dat
         breaches.append(f"messages: {metrics['messages']}/{budget['max_messages']}")
     if metrics["advances"] >= budget["max_advances"]:
         breaches.append(f"advances: {metrics['advances']}/{budget['max_advances']}")
+    if metrics.get("repairs", 0) >= budget.get("max_repairs", 3):
+        breaches.append(f"repairs: {metrics['repairs']}/{budget['max_repairs']} (max 3 repair iterations reached without critic approval)")
     if metrics["hours"] >= budget["max_hours"]:
         breaches.append(f"hours: {metrics['hours']:.1f}/{budget['max_hours']}h")
     if metrics["restarts"] >= budget["max_restarts"]:

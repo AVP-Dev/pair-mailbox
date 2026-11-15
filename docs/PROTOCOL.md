@@ -1138,8 +1138,9 @@ Allowed by default:
   direct runs on the host wait for a human (P0);
 - local git: `status`, `diff`, `log`, `add`, `commit`, `checkout`, `switch`,
   `branch`, `stash`;
-- shipping the work: `git push` to a **feature branch** and `gh pr` — §10 requires
-  a PR;
+- shipping the work: `git push <remote> <refspec>` to an explicit **feature branch**
+  and `gh pr` — §10 requires a PR. Bare `git push` and remote-only pushes are refused
+  because they depend on the checked-out branch's upstream;
 - artefact cleanup: `rm -rf build/` with a relative target.
 
 Refused under any allowlist, checked first:
@@ -1150,8 +1151,10 @@ Refused under any allowlist, checked first:
   (`migrate`, `drop table`, `truncate`), production;
 - **system destruction:** `rm -rf /`, `rm -rf ~`, `rm -rf .`, `mkfs`, `dd if=`,
   `> /dev/sda`, `killall`;
-- **git history:** push to `main`/`master`, `--force`, `reset --hard`, `clean -f`,
-  `filter-branch`, `reflog expire` — §10 and §12;
+- **git history:** direct `git merge` (the target is the implicit current branch),
+  push to `main`/`master`/`dev`, any force push, `reset --hard`, `clean -f`,
+  `filter-branch`, `reflog expire` — §10 and §12. Use the preflighted safe-merge
+  wrapper for integrations;
 - **network and package installs:** `curl`, `wget`, `nc -`, `pip install`,
   `npm install`, `npm publish`. Not because the network is dangerous in itself, but
   because the network can carry out what §12 protects, and installing a package
@@ -1223,19 +1226,32 @@ word from far up the screen.
 
 Every CLI has its own mechanism and it fires **before** any of ours. For OpenCode
 that is `permission` in `opencode.jsonc` and the `--auto` flag: in auto mode,
-requests that are not explicitly denied are confirmed by themselves, while `"deny"`
-rules always apply.
+requests that are not explicitly denied are confirmed by themselves. Rules use
+last-match-wins, so keep the catch-all first, then push asks and explicit feature
+push allows, followed by the protected-branch, force-push and merge denials.
 
 ```jsonc
 {
   "permission": {
     "bash": {
       "*": "allow",
+      "git push*": "ask", "git -C * push*": "ask",
+      "git push [!-]* [!-]*": "allow",
+      "git push -u [!-]* [!-]*": "allow",
+      "git push --set-upstream [!-]* [!-]*": "allow",
+      "git -C * push [!-]* [!-]*": "allow",
+      "git -C * push -u [!-]* [!-]*": "allow",
+      "git -C * push --set-upstream [!-]* [!-]*": "allow",
       "sudo *": "deny", "curl *": "deny", "wget *": "deny",
       "pip install *": "deny", "npm install *": "deny", "npm publish *": "deny",
       "ssh *": "deny", "docker *": "deny", "kubectl *": "deny",
       "terraform *": "deny", "helm *": "deny", "mkfs*": "deny", "killall *": "deny",
-      "git push *main*": "deny", "git push *master*": "deny", "git push --force*": "deny",
+      "git merge *": "deny", "git -C * merge *": "deny",
+      "git push *main*": "deny", "git push *master*": "deny", "git push *dev*": "deny",
+      "git -C * push *main*": "deny", "git -C * push *master*": "deny",
+      "git -C * push *dev*": "deny", "git push *--force*": "deny",
+      "git -C * push *--force*": "deny", "git push *-f*": "deny",
+      "git -C * push *-f*": "deny",
       "git reset --hard *": "deny", "git clean -f*": "deny", "git filter-branch*": "deny"
     },
     "read": {

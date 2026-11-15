@@ -1026,11 +1026,19 @@ NEVER_ALLOW_PATTERNS = (
     r"\bdrop\s+(?:table|database)\b",
     r"\btruncate\b",
     r"\bdelete\s+(?:from|all)\b",
-    # §10: never push into main. Pushing a feature branch and opening a PR is protocol
-    # work, so banned is not push at large but push into main/master plus history
-    # rewrites.
-    r"\bgit\s+(?:-C\s+\S+\s+)?push\b[^\n]*\b(?:main|master)\b",
-    r"\bgit\s+(?:-C\s+\S+\s+)?push\b[^\n]*--force\b",
+    # §10: the target of `git merge` is the current checkout, which cannot be
+    # determined from the command text. Direct merges therefore never auto-confirm;
+    # use the preflighted safe-merge wrapper instead.
+    r"\bgit\s+(?:-C\s+\S+\s+)?merge\b",
+    # A push is safe to auto-confirm only when the command spells out both remote
+    # and refspec. The two common upstream flags are permitted; other forms fail
+    # closed until they can be inspected.
+    r"\bgit\s+(?:-C\s+\S+\s+)?push\b(?!\s+(?:(?:-u|--set-upstream)\s+)?"
+    r"(?!-)(?!\d*>)[^\s><|&;#]+\s+(?!-)(?!\d*>)[^\s><|&;#]+(?:\s|$))",
+    # §10: protected trunks and history rewrites never auto-confirm. Explicit
+    # feature-branch refspecs remain allowed by the positive push rule below.
+    r"\bgit\s+(?:-C\s+\S+\s+)?push\b[^\n]*\b(?:main|master|dev)\b",
+    r"\bgit\s+(?:-C\s+\S+\s+)?push\b[^\n]*(?:--force(?:-[\w-]+)?\b|(?<!\S)-[a-zA-Z]*f[a-zA-Z]*(?:\s|$))",
     r"\bgit\s+reset\s+--hard\b",
     r"\bgit\s+clean\b[^\n]*-[a-z]*f",
     r"\bgit\s+filter-branch\b",
@@ -1170,12 +1178,12 @@ DEFAULT_ALLOW_PATTERNS = (
     r"\brm\s+-[a-zA-Z]+\s+(?:(?![/~$*])(?!\.{1,2}(?:\s|$))[^\s]+|/tmp/[A-Za-z0-9_.-]+)",
     # local git: §10 demands a branch and a commit, so this is allowed;
     r"\bgit\s+(?:-C\s+\S+\s+)?(?:status|diff|log|show|branch|remote|describe|rev-parse|add|commit|"
-    r"checkout|switch|stash|tag|blame|shortlog|reflog|check-ignore|merge)\b",
+    r"checkout|switch|stash|tag|blame|shortlog|reflog|check-ignore)\b",
     # pair MCP tools
     r'\b(?:Allow\s+(?:the\s+)?pair\s+MCP\s+server\s+to\s+run\s+tool\s+"pair_[a-z_]+"|pair_[a-z_]+)\b',
-    # shipping the work: push into a feature branch and PR. The ban on push into
-    # main/master plus --force sits in NEVER_ALLOW_PATTERNS, checked first.
-    r"\bgit\s+(?:-C\s+\S+\s+)?push\b",
+    # Shipping is approved only with an explicit remote and refspec.
+    r"\bgit\s+(?:-C\s+\S+\s+)?push\s+(?:(?:-u|--set-upstream)\s+)?"
+    r"(?!-)(?!\d*>)[^\s><|&;#]+\s+(?!-)(?!\d*>)[^\s><|&;#]+",
     r"\bgh\s+(?:pr|issue|run|workflow)\b",
 )
 
@@ -1320,7 +1328,7 @@ def permission_verdict(prompt: str, allow: list[str] | None = None) -> dict:
                 continue
             if re.search(pattern, segment, re.IGNORECASE):
                 return {"verdict": "refuse", "matched": pattern,
-                        "why": f"banned category (§12): {pattern}"}
+                        "why": f"banned safety rule: {pattern}"}
     for segment in segments:
         matched_any = False
         for pattern in patterns:

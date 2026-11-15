@@ -68,6 +68,17 @@ def holder_pid(state_dir: Path, role: str) -> int:
     include `.server-<role>.lock` and holds it is the holder.
     """
     target = str(Path(lock_file(state_dir, role)).resolve())
+    if not os.path.isdir("/proc"):
+        import subprocess
+        try:
+            res = subprocess.run(["lsof", "-t", target], capture_output=True, text=True, timeout=5)
+            if res.returncode == 0 and res.stdout.strip():
+                for line in res.stdout.strip().splitlines():
+                    if line.strip().isdigit():
+                        return int(line.strip())
+        except (OSError, subprocess.SubprocessError):
+            pass
+        return 0
     for entry in os.listdir("/proc"):
         if not entry.isdigit():
             continue

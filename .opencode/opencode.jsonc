@@ -11,16 +11,29 @@
   // by install.sh. Details: docs/SETUP.md "Foreign CLIs read our configs".
 
   // The pair runs with no human (§7b auto): routine runs never ask.
-  // The edge is deny the human sees and changes. A ready block from §13c.
+  // Protected merges/pushes are denied; ambiguous pushes ask; explicit feature
+  // branch refspecs retain automatic approval.
   "permission": {
     "bash": {
       "*": "allow",
+      "git push*": "ask", "git -C * push*": "ask",
+      "git push [!-]* [!-]*": "allow",
+      "git push -u [!-]* [!-]*": "allow",
+      "git push --set-upstream [!-]* [!-]*": "allow",
+      "git -C * push [!-]* [!-]*": "allow",
+      "git -C * push -u [!-]* [!-]*": "allow",
+      "git -C * push --set-upstream [!-]* [!-]*": "allow",
       "sudo *": "deny", "curl *": "deny", "wget *": "deny",
       "pip install *": "deny", "npm install *": "deny", "npm publish *": "deny",
       "ssh *": "deny", "docker *": "deny", "kubectl *": "deny",
       "terraform *": "deny", "helm *": "deny", "mkfs*": "deny", "killall *": "deny",
-      "git push *main*": "deny", "git push *master*": "deny", "git push --force*": "deny",
-      "git reset --hard *": "deny", "git clean -f*": "deny", "git filter-branch *": "deny"
+      "git merge *": "deny", "git -C * merge *": "deny",
+      "git push *main*": "deny", "git push *master*": "deny", "git push *dev*": "deny",
+      "git -C * push *main*": "deny", "git -C * push *master*": "deny",
+      "git -C * push *dev*": "deny", "git push *--force*": "deny",
+      "git -C * push *--force*": "deny", "git push *-f*": "deny",
+      "git -C * push *-f*": "deny", "git reset --hard *": "deny",
+      "git clean -f*": "deny", "git filter-branch *": "deny"
     },
     "edit": "ask",
     "webfetch": "ask"

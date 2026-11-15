@@ -9,6 +9,7 @@ Round-32 verdict debt: the permission block never chokes pair tests.
 from __future__ import annotations
 
 import os
+import fnmatch
 import subprocess
 import sys
 import tempfile
@@ -45,7 +46,7 @@ class TestQuietRunsNeedNoHuman(unittest.TestCase):
 
 
 class TestProjectPermissionBlockMatchesProtocol(unittest.TestCase):
-    """The project-block §13c shape: bash, `*` first means allow, the rest deny.
+    """The project-block §13c shape: broad allow, then push decisions, then denies.
 
     The parser is install.sh (the only jsonc reader in the project), the path from
     the repo root, not cwd: or a run from a subdir reads the wrong file.
@@ -64,9 +65,31 @@ class TestProjectPermissionBlockMatchesProtocol(unittest.TestCase):
         keys = list(block.keys())
         self.assertEqual("*", keys[0])
         self.assertEqual("allow", block["*"])
+        self.assertEqual("ask", block["git push*"])
+        self.assertEqual("ask", block["git -C * push*"])
+        self.assertEqual("allow", block["git push [!-]* [!-]*"])
+        self.assertEqual("deny", block["git merge *"])
+        self.assertEqual("deny", block["git -C * merge *"])
+        self.assertLess(keys.index("git push*"), keys.index("git push [!-]* [!-]*"))
+        self.assertLess(keys.index("git push [!-]* [!-]*"), keys.index("git push *main*"))
+        def decision(command: str) -> str:
+            matches = [value for pattern, value in block.items()
+                       if fnmatch.fnmatchcase(command, pattern)]
+            return matches[-1] if matches else "ask"
+
+        for command in ("git push", "git push origin", "git -C /repo push origin"):
+            self.assertEqual("ask", decision(command), command)
+        for command in ("git push origin feature", "git push -u origin feature",
+                        "git -C /repo push origin feature"):
+            self.assertEqual("allow", decision(command), command)
+        for command in ("git merge feature", "git -C /repo merge feature",
+                        "git push origin main", "git push upstream dev",
+                        "git push origin feature --force", "git -C /repo push -f origin feature"):
+            self.assertEqual("deny", decision(command), command)
         for key, value in block.items():
             if key != "*":
-                self.assertEqual("deny", value, f"the §13c edge holds: {key}")
+                self.assertIn(value, ("allow", "ask", "deny"),
+                              f"the §13c rule has an explicit decision: {key}")
 
 
 class TestRoundedCornerPrompt(unittest.TestCase):
@@ -317,7 +340,7 @@ class TestNumberedMenuKeys(unittest.TestCase):
         self.assertEqual("allow", composer.permission_verdict(
             context, [r"\bgit\s+status\b"])["verdict"])
 
-    def test_codex_prompt_with_markdown_backticks_in_options_and_git_merge(self) -> None:
+    def test_codex_direct_git_merge_is_never_auto_approved(self) -> None:
         lines = [
             "Would you like to run the following command?",
             "Environment: local",
@@ -334,15 +357,40 @@ class TestNumberedMenuKeys(unittest.TestCase):
         context = composer.extract_permission_context(lines, prompt)
         self.assertNotIn("`", context)
         verdict = composer.permission_verdict(context, composer.DEFAULT_ALLOW_PATTERNS)
-        self.assertEqual("allow", verdict["verdict"])
-        # Verify push with -C to main or with --force is still refused by NEVER_ALLOW_PATTERNS
-        self.assertEqual("refuse", composer.permission_verdict(
-            "git -C /repo push origin main", composer.DEFAULT_ALLOW_PATTERNS)["verdict"])
-        self.assertEqual("refuse", composer.permission_verdict(
-            "git -C /repo push --force origin feature", composer.DEFAULT_ALLOW_PATTERNS)["verdict"])
-        # While normal branch push is allowed
-        self.assertEqual("allow", composer.permission_verdict(
-            "git -C /repo push origin feature", composer.DEFAULT_ALLOW_PATTERNS)["verdict"])
+        self.assertEqual("refuse", verdict["verdict"])
+        for command in ("git merge feature", "git merge --ff-only feature",
+                        "git -C /repo merge --ff-only feature"):
+            with self.subTest(command=command):
+                self.assertEqual("refuse", composer.permission_verdict(
+                    command, [r"\bgit\b"])["verdict"],
+                    "a broad custom allowlist cannot authorize a direct merge")
+
+    def test_git_push_requires_explicit_remote_and_refspec(self) -> None:
+        for command in ("git push", "git push origin", "git push -u origin",
+                        "git -C /repo push", "git -C /repo push origin",
+                        "git -C /repo push --set-upstream origin",
+                        "git push origin # upstream is implicit"):
+            with self.subTest(command=command):
+                result = composer.permission_verdict(command, composer.DEFAULT_ALLOW_PATTERNS)
+                self.assertEqual("refuse", result["verdict"])
+                self.assertEqual("refuse", composer.permission_verdict(
+                    command, [r"\bgit\b"])["verdict"],
+                    "an implicit push remains banned under a custom broad allowlist")
+
+        for command in ("git push origin feature", "git push -u origin feature",
+                        "git -C /repo push origin feature",
+                        "git -C /repo push --set-upstream origin feature"):
+            with self.subTest(command=command):
+                self.assertEqual("allow", composer.permission_verdict(
+                    command, composer.DEFAULT_ALLOW_PATTERNS)["verdict"])
+
+        for command in ("git push origin main", "git push upstream master",
+                        "git push origin dev", "git push --force origin feature",
+                        "git push -f origin feature",
+                        "git push --force-with-lease origin feature"):
+            with self.subTest(command=command):
+                self.assertEqual("refuse", composer.permission_verdict(
+                    command, composer.DEFAULT_ALLOW_PATTERNS)["verdict"])
 
     def test_codex_mcp_permission_prompt_detection_and_approval(self) -> None:
         header = 'Allow the pair MCP server to run tool "pair_claim"?'

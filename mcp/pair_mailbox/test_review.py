@@ -172,7 +172,7 @@ class TestDeliveryFloor(unittest.TestCase):
         (self.work / "a.py").write_text("x=1\n", encoding="utf-8")
         git(self.work, "add", "a.py")
         git(self.work, "commit", "-qm", "init")
-        git(self.work, "push", "-q", "origin", "master")
+        git(self.work, "push", "-q", "origin", "HEAD:master")
 
     def tearDown(self) -> None:
         # CI 3.10 teardown race: a background git gc holds .git/objects/pack
@@ -441,7 +441,7 @@ class TestDeliveryGaps(PairTestCase):
         (work / "f.txt").write_text("x\n", encoding="utf-8")
         git(work, "add", "f.txt")
         git(work, "commit", "-qm", "init")
-        git(work, "push", "-q", "origin", "master")
+        git(work, "push", "-q", "origin", "HEAD:master")
         (work / "f.txt").write_text("y\n", encoding="utf-8")
         git(work, "add", "f.txt")
         git(work, "commit", "-qm", "advance")
@@ -494,7 +494,7 @@ class TestDeliveryGaps(PairTestCase):
         (work / "f.txt").write_text("x\n", encoding="utf-8")
         git(work, "add", "f.txt")
         git(work, "commit", "-qm", "init")
-        git(work, "push", "-q", "origin", "master")
+        git(work, "push", "-q", "origin", "HEAD:master")
         (work / "f.txt").write_text("y\n", encoding="utf-8")
         git(work, "add", "f.txt")
         git(work, "commit", "-qm", "advance")
@@ -550,7 +550,7 @@ class TestDeliveryGaps(PairTestCase):
         (work / "f.txt").write_text("x\n", encoding="utf-8")
         git(work, "add", "f.txt")
         git(work, "commit", "-qm", "init")
-        git(work, "push", "-q", "origin", "master")
+        git(work, "push", "-q", "origin", "HEAD:master")
         (work / "f.txt").write_text("y\n", encoding="utf-8")
         git(work, "add", "f.txt")
         git(work, "commit", "-qm", "advance")
