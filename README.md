@@ -198,7 +198,7 @@ portable to macOS even though CLI launch works there.
 - [Round records](docs/rounds/) and [archive](docs/archive/): historical records.
 - [Media](docs/MEDIA.md): assets and recording instructions.
 
-Contributions target `master`. A PR requests merging a working branch into it;
-merged temporary branches can then be removed. See [CONTRIBUTING.md](CONTRIBUTING.md).
+Submit contributions as pull requests targeting `master`. See
+[CONTRIBUTING.md](CONTRIBUTING.md) for the branch, review and verification workflow.
 
 [Aliaksei Patskevich (AVPDev)](https://avpdev.com/) · [MIT license](LICENSE)

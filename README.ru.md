@@ -200,7 +200,7 @@ python -m pip install pynacl
 - [Записи раундов](docs/rounds/) и [архив](docs/archive/): история проекта.
 - [Медиаматериалы](docs/MEDIA.ru.md): ресурсы и инструкции записи.
 
-Готовые изменения попадают в `master`. PR — запрос на слияние рабочей ветки в основную.
-Временную ветку можно удалить после слияния её работы. См. [CONTRIBUTING.md](CONTRIBUTING.md).
+Отправляйте изменения через PR в `master`. Порядок работы с веткой, проверки
+и ревью описан в [CONTRIBUTING.md](CONTRIBUTING.md).
 
 [Aliaksei Patskevich (AVPDev)](https://avpdev.com/) · [Лицензия MIT](LICENSE)
