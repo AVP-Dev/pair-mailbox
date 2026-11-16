@@ -213,6 +213,29 @@ class LaunchSecurityBoundary(unittest.TestCase):
         self.assertIn("never", critic)
         self.assertNotIn("--approve-for-me", critic)
 
+    def test_pi_trust_is_noninteractive_and_critic_file_tools_are_removed(self):
+        writer = context.safe_cli_command(
+            "pi", "pi", True,
+            ["pi", "--no-approve", "--no-tools", "--tools", "read", "task"])
+        self.assertIn("--approve", writer)
+        self.assertNotIn("--no-approve", writer)
+        self.assertNotIn("--no-tools", writer)
+        self.assertNotIn("--tools", writer)
+
+        critic = context.safe_cli_command(
+            "pi", "pi-critic", False,
+            ["pi", "--approve", "--exclude-tools", "bash,edit,write", "review"])
+        self.assertIn("--approve", critic)
+        self.assertIn(["--exclude-tools", "edit,write"],
+                      [critic[i:i + 2] for i in range(len(critic) - 1)])
+        self.assertNotIn("bash,edit,write", critic)
+
+    def test_pi_tool_policy_overrides_require_complete_values(self):
+        for option in ("--tools", "--exclude-tools"):
+            with self.subTest(option=option):
+                with self.assertRaisesRegex(ValueError, "needs a value"):
+                    context.safe_cli_command("pi", "pi", True, ["pi", option])
+
     def test_every_profile_refuses_bypass_flags_and_wrong_executable(self):
         for profile in ("agy", "codex", "claude", "opencode", "pi", "omp"):
             with self.subTest(profile=profile):

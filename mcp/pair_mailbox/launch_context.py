@@ -19,6 +19,8 @@ import tempfile
 import time
 from pathlib import Path
 
+from pi_cli_policy import safe_pi_command
+
 ROOT = Path(__file__).resolve().parents[2]
 PREFIX = "PAIR_LAUNCH_"
 MCP_ENV_VARS = ["PAIR_LAUNCH_PID", "PAIR_LAUNCH_START", "PAIR_LAUNCH_PROFILE",
@@ -264,11 +266,7 @@ def _reject_codex_security_override(value: str) -> None:
 
 def safe_cli_command(profile: str, role: str, is_writer: bool,
                      command: list[str]) -> list[str]:
-    """Reject bypasses and enforce a CLI-native unattended mode per role.
-
-    This does not grant project authority: the OS boundary below enforces the
-    critic's read-only role, and the protocol remains the only patch broker.
-    """
+    """Enforce safe per-role CLI flags; OS sandbox and protocol enforce file authority."""
     if not command:
         raise ValueError("paired launch needs a CLI command")
     executable = Path(command[0]).name.lower()
@@ -425,6 +423,8 @@ def safe_cli_command(profile: str, role: str, is_writer: bool,
         # silently changes the task instead of enabling autonomous mode.
         insertion = 1 if args and not args[0].startswith("-") else 0
         args.insert(insertion, "--auto")
+    elif profile == "pi":
+        return safe_pi_command(command, is_writer)
     elif profile == "omp":
         cleaned = []
         index = 0
