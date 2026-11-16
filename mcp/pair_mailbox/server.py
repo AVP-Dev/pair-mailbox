@@ -777,6 +777,7 @@ from store_core import (  # noqa: E402,F401 - re-export, the seam's public face
     _transcript_hash,
     _transcript_tail,
 )
+from task_store import StaleTaskFence, TaskStoreError  # noqa: E402 - task API errors
 
 
 def tmux_command() -> list[str]:
@@ -2730,26 +2731,23 @@ class PairSession:
 
     def tool_pair_task(self, action: str, id: int | None = None, text: str = "",
                         reason: str = "", scope: str = "open",
-                        limit: int | None = None, offset: int = 0) -> dict[str, Any]:
-        """The shared task list: one truth for two, not a copy each.
-
-        The list never replaces notes but closes one hole: a task added mid-round
-        silently vanished, because state held one task line and the new overwrote the
-        old. Proven: the round closed as "task B" with evidence gathered for task A.
-
-        Rights run asymmetric, and that is a decision, not a gap: the critic opens a
-        task — or it could never say "I found this too" without writing into another
-        note — but the writer closes it, because it implements it.
-
-        The default answer is the OPEN window, not the whole history. Measured on the
-        live room: 137 tasks, one of them open, and the full list cost 29 784 tokens
-        per call — the largest single token sink in the room, paid by every agent
-        that only wanted to know what is open right now. The history is still there,
-        behind scope="history", and the answer says how much it left out.
-        """
+                        limit: int | None = None, offset: int = 0,
+                        idempotency_key: str | None = None,
+                        fencing_token: int | None = None) -> dict[str, Any]:
+        """Shared task list: all roles add/list; only writer closes. Open tasks default."""
         action = str(action or "").strip()
         if action not in ("add", "done", "drop", "list"):
             raise ProtocolError(f"unknown task action {action!r}. Use add, done, drop or list.")
+        if idempotency_key is not None and (
+            not isinstance(idempotency_key, str) or not idempotency_key.strip()
+            or len(idempotency_key) > 256
+        ):
+            raise ProtocolError("`idempotency_key` must be 1–256 non-space characters.")
+        if fencing_token is not None and (
+            isinstance(fencing_token, bool) or not isinstance(fencing_token, int)
+            or fencing_token < 0
+        ):
+            raise ProtocolError("`fencing_token` must be a non-negative integer.")
         state = self.store.read()
 
         if action == "list":
@@ -2791,21 +2789,18 @@ class PairSession:
             if len(body) > 2000:
                 raise ProtocolError("A task longer than 2000 characters is not a task.")
 
-            def add(st):
-                item = {
-                    "id": next_task_id(st), "text": body, "status": OPEN_TASK,
-                    "added_at": utcnow(), "added_by": self.role,
-                    "round": int(st.get("round", 0)), "reason": "",
-                    "closed_at": None, "closed_by": None,
-                }
-                st.setdefault("tasks", []).append(item)
-                return item
-
-            item = self.store.mutate(add)
+            item, replayed = self.store.add_task({
+                "id": None, "text": body, "status": OPEN_TASK,
+                "added_at": utcnow(), "added_by": self.role,
+                "round": int(state.get("round", 0)), "reason": "",
+                "closed_at": None, "closed_by": None,
+            }, actor=self.role, idempotency_key=idempotency_key)
             write_task_banner(self.store.root, self.store.read())
-            self.store.append_transcript("task_added", self.role, task_id=item["id"],
-                                         text=body[:200])
+            if not replayed:
+                self.store.append_transcript("task_added", self.role, task_id=item["id"],
+                                             text=body[:200])
             return {"task": item,
+                    "idempotent_replay": replayed,
                     "why_it_matters": "An open task keeps the round from closing until it is "
                                       "done or dropped with a reason."}
 
@@ -2818,37 +2813,26 @@ class PairSession:
             )
         target = int(id or 0)
 
-        def close(st):
-            items = st.setdefault("tasks", [])
-            match = next((item for item in items if int(item.get("id", 0)) == target), None)
-            if not match:
-                known = ", ".join(str(item.get("id")) for item in items) or "none yet"
-                raise ProtocolError(f"no task #{target}. Known ids: {known}.")
-            if match.get("status") != OPEN_TASK:
-                raise ProtocolError(
-                    f"task #{target} is already {match.get('status')!r}.",
-                    "Nothing to change. If it came back up, add a new task that says so.",
-                )
-            if action == "drop" and not str(reason or "").strip():
-                raise ProtocolError(
-                    f"task #{target} cannot be dropped without a reason.",
-                    "Say in the reason why it is not needed, so the record shows the decision "
-                    "instead of a silent gap. If it is done, use action=\"done\".",
-                )
-            match["status"] = "done" if action == "done" else "dropped"
-            match["reason"] = str(reason or "").strip()
-            match["closed_at"] = utcnow()
-            match["closed_by"] = self.role
-            # Round 94 D2: bind by close-round, not add-round.
-            match["closed_round"] = int(st.get("round", 0))
-            return match
-
-        item = self.store.mutate(close)
+        try:
+            item, replayed = self.store.close_task(
+                target, "done" if action == "done" else "dropped", reason,
+                actor=self.role, expected_fencing_token=fencing_token,
+                idempotency_key=idempotency_key,
+            )
+        except StaleTaskFence as exc:
+            raise ProtocolError(
+                str(exc), "Read the current task fence, then retry with fencing_token."
+            ) from exc
+        except TaskStoreError as exc:
+            hint = ("Say why the task is not needed, or use action=\"done\"." if action == "drop"
+                    else "Check the task id and its current status.")
+            raise ProtocolError(str(exc), hint) from exc
         write_task_banner(self.store.root, self.store.read())
-        self.store.append_transcript("task_closed", self.role, task_id=item["id"],
-                                     status=item["status"], reason=item["reason"][:200])
+        if not replayed:
+            self.store.append_transcript("task_closed", self.role, task_id=item["id"],
+                                         status=item["status"], reason=item["reason"][:200])
         remaining = [i["id"] for i in open_tasks(self.store.read())]
-        return {"task": item, "still_open": remaining,
+        return {"task": item, "still_open": remaining, "idempotent_replay": replayed,
                 "how_to_use": "Closing is honest bookkeeping. If the work is not actually "
                               "finished, leave it open or drop it with a reason — the round "
                               "cannot close over an open task, and that is the point."}
@@ -3921,6 +3905,20 @@ def tool_definitions() -> list[dict[str, Any]]:
                     "offset": {
                         "type": "integer", "minimum": 0, "default": 0,
                         "description": "For list: how many tasks to skip before the window starts.",
+                    },
+                    "idempotency_key": {
+                        "type": "string",
+                        "description": (
+                            "Optional stable key for retry-safe add/done/drop calls. Reusing the "
+                            "same key with the same role returns the original task transition."
+                        ),
+                    },
+                    "fencing_token": {
+                        "type": "integer", "minimum": 0,
+                        "description": (
+                            "Optional expected fence for done/drop. A stale token is refused "
+                            "after any newer task transition."
+                        ),
                     },
                 },
                 "required": ["action"],

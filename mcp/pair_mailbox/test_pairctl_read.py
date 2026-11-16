@@ -132,6 +132,19 @@ class TestMultiProject(PairTestCase):
         self.assertFalse(row["closed"])
         self.assertTrue(row["stuck"])
 
+    def test_project_overview_uses_sqlite_task_source_after_cutover(self) -> None:
+        root = self._project("task-source")
+        store = Store(root)
+        store.add_task({"id": None, "text": "authoritative task", "status": "open",
+                        "added_by": "human", "round": 0}, "human", "overview-task")
+        state = json.loads((root / "state.json").read_text(encoding="utf-8"))
+        state["tasks"] = []  # stale compatibility projection must not win.
+        (root / "state.json").write_text(json.dumps(state), encoding="utf-8")
+
+        row = project_row(root)
+
+        self.assertEqual("authoritative task", row["task"])
+
     def test_table_columns_line_up_for_long_project_names(self) -> None:
         self._project("a-very-long-project-name-here", events=1)
         self._project("tiny", events=1)
@@ -380,7 +393,8 @@ class TestMultiProject(PairTestCase):
         """
         from pairctl_read import extract_state
         explicit = str(self.root)
-        self.assertEqual(extract_state(["--state", explicit, "status"])[0], Path(explicit))
+        self.assertEqual(extract_state(["--state", explicit, "status"])[0],
+                         Path(explicit).resolve())
         old = os.environ.get("PAIR_STATE")
         os.environ["PAIR_STATE"] = explicit
         try:
@@ -390,7 +404,7 @@ class TestMultiProject(PairTestCase):
             # ...unless the operator says so on purpose.
             os.environ["PAIR_TRUST_ENV"] = "1"
             try:
-                self.assertEqual(extract_state(["status"])[0], Path(explicit),
+                self.assertEqual(extract_state(["status"])[0], Path(explicit).resolve(),
                                  "PAIR_TRUST_ENV=1 must keep the room named")
             finally:
                 os.environ.pop("PAIR_TRUST_ENV", None)
