@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sys
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -53,6 +54,45 @@ class TestHeartbeatPersistence(unittest.TestCase):
                                wraps=store_core.atomic_write_json) as write:
             self.store.mutate(lambda state: None)
         write.assert_not_called()
+
+
+class TestProjectRoot(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.repo = Path(self.tmp.name) / "repo"
+        self.repo.mkdir()
+        (self.repo / ".git").mkdir()
+        self.store = store_core.Store(self.repo / ".pair", allow_create=True)
+
+    def tearDown(self) -> None:
+        self.tmp.cleanup()
+
+    def test_shared_state_resolves_active_linked_worktree(self) -> None:
+        worktree = Path(self.tmp.name) / "linked-worktree"
+        nested = worktree / "mcp" / "pair_mailbox"
+        nested.mkdir(parents=True)
+        git_dir = self.repo / ".git" / "worktrees" / "linked-worktree"
+        git_dir.mkdir(parents=True)
+        (git_dir / "commondir").write_text("../..\n", encoding="utf-8")
+        (worktree / ".git").write_text(f"gitdir: {git_dir}\n", encoding="utf-8")
+
+        previous = Path.cwd()
+        try:
+            os.chdir(nested)
+            self.assertEqual(worktree.resolve(), self.store.project_root)
+        finally:
+            os.chdir(previous)
+
+    def test_unrelated_repository_keeps_state_project_root(self) -> None:
+        foreign = Path(self.tmp.name) / "foreign"
+        (foreign / ".git").mkdir(parents=True)
+
+        previous = Path.cwd()
+        try:
+            os.chdir(foreign)
+            self.assertEqual(self.repo.resolve(), self.store.project_root)
+        finally:
+            os.chdir(previous)
 
 
 if __name__ == "__main__":

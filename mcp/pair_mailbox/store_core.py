@@ -57,6 +57,54 @@ def log(message: str) -> None:
     print(f"[{SERVER_NAME}] {message}", file=sys.stderr, flush=True)
 
 
+def _git_dir(repo_root: Path) -> Path | None:
+    """Resolve a repository's git directory, including linked worktrees."""
+    marker = repo_root / ".git"
+    try:
+        if marker.is_dir():
+            return marker.resolve()
+        if not marker.is_file():
+            return None
+        kind, separator, target = marker.read_text(encoding="utf-8").strip().partition(":")
+        if kind.strip() != "gitdir" or not separator or not target.strip():
+            return None
+        git_dir = Path(target.strip())
+        if not git_dir.is_absolute():
+            git_dir = repo_root / git_dir
+        return git_dir.resolve()
+    except (OSError, UnicodeError):
+        return None
+
+
+def _git_common_dir(repo_root: Path) -> Path | None:
+    """Return the common git directory shared by a main checkout and worktrees."""
+    git_dir = _git_dir(repo_root)
+    if git_dir is None:
+        return None
+    common_file = git_dir / "commondir"
+    try:
+        if not common_file.is_file():
+            return git_dir
+        target = Path(common_file.read_text(encoding="utf-8").strip())
+        if not target.is_absolute():
+            target = git_dir / target
+        return target.resolve()
+    except (OSError, UnicodeError):
+        return None
+
+
+def _git_toplevel(start: Path) -> Path | None:
+    """Find the closest repository root above a process working directory."""
+    try:
+        current = start.resolve()
+    except (OSError, RuntimeError):
+        return None
+    for candidate in (current, *current.parents):
+        if _git_dir(candidate) is not None:
+            return candidate
+    return None
+
+
 CHAIN_GENESIS = "chain-genesis-v1"
 
 class ProtocolError(Exception):
@@ -284,7 +332,16 @@ class Store:
         A separate property, not a silent `parent` at the use site: swapping the
         root in one caller and forgetting in another is exactly how the bug arrived.
         """
-        return self.root.parent if self.root.name == ".pair" else self.root
+        base = (self.root.parent if self.root.name == ".pair" else self.root).resolve()
+        base_common = _git_common_dir(base)
+        if base_common is not None:
+            try:
+                active = _git_toplevel(Path.cwd())
+            except OSError:
+                active = None
+            if active is not None and _git_common_dir(active) == base_common:
+                return active
+        return base
 
     def default_state(self) -> dict[str, Any]:
         return {
