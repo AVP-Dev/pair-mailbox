@@ -82,6 +82,23 @@ pairup --swap agy                    # Replace critic, retain writer
 pairup --worktree feature/retry      # Run in a separate Git worktree
 ```
 
+### Project autonomy
+
+Choose a mode with `pairup --auto`, `pairup --semi` or `pairup --observe`. The
+choice is saved for this project and survives terminal, agent and session
+restarts. A later bare `pairup` reuses it; a project with no saved choice starts
+in `auto`. An explicit mode flag changes the saved setting.
+
+| Mode | What happens |
+|---|---|
+| `auto` | Writer and Critic work through discussion, fixes, tests, acceptance and the final report without routine human confirmations. |
+| `semi` | Routine work is autonomous; the human confirms the configured close checkpoint with `pairctl ok`. |
+| `observe` | The supervisor observes and reports without automatic decisions or restarts. Evidence gates still apply. |
+
+Every mode uses the same role permissions and security boundary. If policy blocks
+an operation, the agents use an allowed route or record the blocker; autonomy
+never turns off the sandbox or authorizes restricted actions.
+
 Use one quoted task argument. `pairup codex agy` does not select two CLIs and is
 not supported. Run `pairup --help` for all options.
 For two copies of the same CLI, run the engine script from your target project:
@@ -133,8 +150,13 @@ recovery. `finish.sh` is a slower maintenance entry point; use `pairup` daily.
 - In an enrolled pair, `pair_state` and `pair_claim` are **MCP tool calls**, not
   shell commands. The writer edits; the critic reviews and proposes SHA-256-sealed
   patches. A disconnected critic retains its read-only boundary.
-- Server checks apply to pair operations. This is not an OS sandbox; CLI permissions
-  and agent instructions also matter. See the [threat model](docs/THREAT_MODEL.md).
+- The launcher validates each CLI's role-specific permission policy. An
+  OS-enforced read-only sandbox blocks the critic from writing project files,
+  Git metadata and pair state: Seatbelt on macOS or bubblewrap plus seccomp on
+  Linux. The critic sends proposed changes through the sealed MCP patch path.
+  Launch policy rejects permission and sandbox bypass flags. These rules are
+  the same in every autonomy mode; they do not claim to isolate the whole host.
+  See the [threat model](docs/THREAT_MODEL.md).
 - The mailbox stores messages. `pair_deliver` attempts a tmux wake-up; delivery
   does not prove that the peer read or acted on the task.
 - Mailbox reading is bounded: **one read per turn**. Use the returned `ack_token`
