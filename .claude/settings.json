@@ -88,7 +88,8 @@
       "Bash(npm test:*)",
       "Bash(npm ci:*)",
       "Bash(jest:*)",
-      "Bash(node --test:*)"
+      "Bash(node --test:*)",
+      "Bash(git merge:*)"
     ]
   }
 }

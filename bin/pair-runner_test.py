@@ -83,13 +83,13 @@ class RunnerCase(unittest.TestCase):
 
 class TestRunnerConfig(RunnerCase):
     def test_the_config_names_the_role_and_the_room(self) -> None:
-        proc = self._run("--role", "runner-role", "--state", str(self.room),
+        proc = self._run("--role", "opencode", "--state", str(self.room),
                          "--print-config")
         self.assertEqual(proc.returncode, 0, proc.stderr)
         config = json.loads(proc.stdout)
         entry = config["mcp"]["pair"]
         self.assertEqual(entry["command"], [
-            "sh", str(SERVE), "runner-role", "--state", str(self.room.resolve())])
+            "sh", str(SERVE), "opencode"])
         self.assertTrue(entry["enabled"])
         self.assertEqual(entry["timeout"], 65000)
 
@@ -119,8 +119,10 @@ class TestRunnerConfig(RunnerCase):
 
 class TestRunnerChild(RunnerCase):
     def test_the_child_is_a_subprocess_with_a_pane_free_environment(self) -> None:
-        record = self.base / "child.json"
-        stub = self.base / "stub-cli"
+        output = tempfile.TemporaryDirectory(prefix="pair-runner-output-")
+        self.addCleanup(output.cleanup)
+        record = Path(output.name) / "child.json"
+        stub = self.base / "opencode"
         stub.write_text(
             "#!/usr/bin/env python3\n"
             "import json, os, sys\n"
@@ -128,26 +130,29 @@ class TestRunnerChild(RunnerCase):
             f"open({str(record)!r}, 'w'))\n",
             encoding="utf-8")
         stub.chmod(0o755)
-        proc = self._run("--role", "runner-role", "--state", str(self.room),
+        proc = self._run("--role", "opencode", "--state", str(self.room),
                          "--cli-bin", str(stub), "--message", "hello runner")
         self.assertEqual(proc.returncode, 0, proc.stderr)
         seen = json.loads(record.read_text(encoding="utf-8"))
         self.assertIn("hello runner", seen["argv"], seen["argv"])
         env = seen["env"]
-        for name in ("TMUX", "TMUX_PANE", "PAIR_PANE", "PAIR_STATE", "PAIR_ROLE"):
+        for name in ("TMUX", "TMUX_PANE", "PAIR_PANE"):
             self.assertNotIn(name, env, f"the child must not inherit {name}")
+        self.assertEqual(env["PAIR_STATE"], str(self.room.resolve()))
+        self.assertEqual(env["PAIR_ROLE"], "opencode")
         self.assertEqual(env["PAIR_DISABLE_ANCESTRY_PANE"], "1")
         config = json.loads(env["OPENCODE_CONFIG_CONTENT"])
-        self.assertEqual(config["mcp"]["pair"]["command"][2], "runner-role")
-        self.assertEqual(config["mcp"]["pair"]["command"][4], str(self.room.resolve()))
+        self.assertEqual(config["mcp"]["pair"]["command"][2], "opencode")
 
 
     def test_a_named_model_reaches_the_command_line(self) -> None:
         """The model is named, not inherited: the host's default refused the
         request on this host, and a launch that cannot say which model answers
         it fails for reasons the operator cannot see."""
-        record = self.base / "child.json"
-        stub = self.base / "stub-cli"
+        output = tempfile.TemporaryDirectory(prefix="pair-runner-output-")
+        self.addCleanup(output.cleanup)
+        record = Path(output.name) / "child.json"
+        stub = self.base / "opencode"
         stub.write_text(
             "#!/usr/bin/env python3\n"
             "import json, os, sys\n"
@@ -155,13 +160,46 @@ class TestRunnerChild(RunnerCase):
             f"open({str(record)!r}, 'w'))\n",
             encoding="utf-8")
         stub.chmod(0o755)
-        proc = self._run("--role", "runner-role", "--state", str(self.room),
+        proc = self._run("--role", "opencode", "--state", str(self.room),
                          "--cli-bin", str(stub), "--model", "provider/model",
                          "--message", "hello runner")
         self.assertEqual(proc.returncode, 0, proc.stderr)
         argv = json.loads(record.read_text(encoding="utf-8"))["argv"]
         self.assertIn("-m", argv)
         self.assertEqual(argv[argv.index("-m") + 1], "provider/model")
+
+    @unittest.skipUnless(sys.platform == "darwin" and os.path.exists("/usr/bin/sandbox-exec"),
+                         "live role sandbox integration requires macOS Seatbelt")
+    def test_runner_critic_is_os_read_only_for_the_project(self) -> None:
+        project = _git_repo(self.base / "project")
+        room = project / ".pair"
+        room.mkdir()
+        (room / "state.json").write_text(json.dumps(
+            {"round": 1, "mode": "fix", "autonomy": "auto", "writer": "codex",
+             "phase": "implement", "roles": {}, "tasks": [], "seq": 0}), encoding="utf-8")
+        (room / "engine").write_text(str(ROOT), encoding="utf-8")
+        target = project / "source.txt"
+        target.write_text("original", encoding="utf-8")
+        external = self.base / "outside.txt"
+        stub = self.base / "opencode"
+        stub.write_text(
+            "#!/usr/bin/env python3\n"
+            "from pathlib import Path\n"
+            "import sys\n"
+            "target, external = sys.argv[-1].split(' ', 1)\n"
+            "denied = False\n"
+            "try: Path(target).write_text('changed')\n"
+            "except OSError: denied = True\n"
+            "Path(external).write_text('outside write allowed')\n"
+            "print(denied)\n",
+            encoding="utf-8")
+        stub.chmod(0o755)
+        proc = self._run("--role", "opencode", "--state", str(room), "--cwd", str(project),
+                         "--cli-bin", str(stub), "--message", f"{target} {external}")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(target.read_text(encoding="utf-8"), "original")
+        self.assertEqual(external.read_text(encoding="utf-8"), "outside write allowed")
+        self.assertIn("True", proc.stdout)
 
 
 class Server:

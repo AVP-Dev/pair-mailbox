@@ -25,6 +25,7 @@ staleness-detector	static	1	python3 scripts/staleness-detector.py
 backlog-lint	static	1	python3 scripts/backlog_check_test.py && python3 scripts/backlog-check.py
 # --- positive: behaviour that must work ---
 launch-context	positive	1	python3 -m unittest discover -s mcp/pair_mailbox -p test_launch_context.py
+pi-cli-policy	positive	1	python3 -m unittest discover -s mcp/pair_mailbox -p test_pi_cli_policy.py
 instruction-block	positive	1	python3 -m unittest discover -s mcp/pair_mailbox -p test_instruction_block.py
 finish	positive	1	python3 finish_test.py
 # Five suites past moving obligations out of `server.py`: one test file per source.
@@ -82,6 +83,8 @@ liveness	positive	1	python3 mcp/pair_mailbox/test_liveness.py	serial
 digest	positive	1	python3 mcp/pair_mailbox/test_digest.py
 panes	positive	1	python3 mcp/pair_mailbox/test_panes.py	serial
 composer	positive	1	python3 mcp/pair_mailbox/test_composer.py	serial
+process-tree	positive	1	python3 mcp/pair_mailbox/test_process_tree.py	serial
+linux-sandbox	positive	1	python3 mcp/pair_mailbox/test_linux_sandbox.py	serial
 composer-bypass	positive	1	python3 mcp/pair_mailbox/test_allowlist_bypass.py	serial
 wait-until	positive	1	python3 mcp/pair_mailbox/test_wait_until.py
 mcpprestart	positive	1	python3 bin/pairmcprestart_test.py

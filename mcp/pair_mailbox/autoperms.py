@@ -8,8 +8,8 @@ canonical list plus renderer views.
 
 Bypass flags (`--dangerously-skip-permissions`, `-a never`) stay deliberately
 unused: they drop every ban. The prompt lifts by a native allow-list, deny stays
-indisputable. Where no native layer stands (codex, pi) the profile stays on the
-pilot — a decision, not an undone bit.
+indisputable. Claude's permission-mode auto is paired with a fail-closed native
+Bash sandbox; role separation is enforced outside the CLI as well.
 """
 
 from __future__ import annotations
@@ -173,7 +173,16 @@ def render_claude(root: Path) -> dict[str, Any]:
              "Bash(pip install:*)", "Bash(npm install:*)", "Bash(bun add:*)",
              "Bash(git merge:*)", "Bash(git push --force:*)", "Bash(git reset --hard:*)"]
     deny += [f"Bash({item}:*)" for item in DENY["testruns"]]
-    return {"permission": {"allow": allow, "deny": deny}}
+    return {
+        "permission": {"allow": allow, "deny": deny},
+        "sandbox": {
+            "enabled": True,
+            "failIfUnavailable": True,
+            "allowUnsandboxedCommands": False,
+            "enableWeakerNestedSandbox": False,
+            "enableWeakerNetworkIsolation": False,
+        },
+    }
 
 
 RENDERERS = {

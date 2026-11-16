@@ -247,17 +247,18 @@ def main(argv: list[str]) -> int:
     if not argv or argv[0] in ("-h", "--help"):
         print(__doc__.strip())
         return 0 if argv else 2
-    from launch_context import configured_role, enrolled_state, ensure_daemon, standalone
+    from launch_context import (configured_role, enrolled_state, ensure_daemon,
+                                role_socket_path, standalone)
     explicit = any(arg in ("--state", "--socket") or arg.startswith(("--state=", "--socket="))
                    for arg in argv[1:])
     enrolled = enrolled_state(argv[0]) if not explicit else None
     if not explicit and enrolled is None:
         return standalone()
     state_dir = enrolled or _resolve_state_dir(argv)
-    path = _resolve_socket(state_dir, argv)
+    role = configured_role(argv[0])
+    explicit_socket = any(arg == "--socket" or arg.startswith("--socket=") for arg in argv[1:])
+    path = _resolve_socket(state_dir, argv) if explicit_socket else role_socket_path(state_dir, role)
     if enrolled is not None:
-        role = configured_role(argv[0])
-        path = str(state_dir / f".server-{role}.sock")
         ensure_daemon(role, state_dir)
     if not os.path.exists(path):
         print(f"pair client: no daemon at {path} — pairup raises it "

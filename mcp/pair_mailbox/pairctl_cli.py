@@ -206,12 +206,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     launch = sub.add_parser(
         "launch-autonomy",
-        help="choose the level once at launch, from a flag, a task line, .pair/autonomy, "
-             "or the default 'auto' — strongest source first",
+        help="resolve the project mode from a flag, saved state, legacy .pair/autonomy, "
+             "an initial task directive, or default 'auto'",
     )
     launch.add_argument("--flag", default=None, choices=list(AUTONOMIES),
                         help="what bin/pair-duo was given")
-    launch.add_argument("--task", default="", help="the task text, may start with 'autonomy: semi'")
+    launch.add_argument("--task", default="", help="the initial task; its autonomy line applies only before a project mode is saved")
 
     ok = sub.add_parser(
         "ok",

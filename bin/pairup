@@ -57,18 +57,21 @@ _resolve_reason="$(printf '%s' "$_resolved" | sed -n '2p')"
 
 usage() {
   sed -n '2,14p' "$0" | sed 's/^# //; s/^#//'
-  echo "usage: pairup [TASK] [--install] [--writer <role>] [--swap <cli>] [--worktree <branch>] [--in-place] [--task TEXT] [--state DIR]"
+  echo "usage: pairup [TASK] [--auto|--semi|--observe] [--install] [--writer <role>] [--swap <cli>] [--worktree <branch>] [--in-place] [--task TEXT] [--state DIR]"
   echo "  --install    place shim in ~/.local/bin (once), exit"
   echo "  --writer <role> assign this project's writer and launch the pair"
   echo "  --swap <cli> recreate the critic pane with a new CLI, leave the writer alone"
   echo "  --worktree, -w <branch> run the pair in an isolated git worktree (the DEFAULT)"
   echo "  --in-place    run the pair in this checkout (opt out of the worktree)"
   echo "  --task TEXT  record a task before launch"
+  echo "  --auto|--semi|--observe  set and save this project's autonomy mode"
+  echo "  --autonomy MODE  legacy spelling for the autonomy mode"
   echo "  --state DIR  explicit state dir (default: walk-up from cwd)"
 }
 TASK=""
 SWAP=""
 WANT_WRITER=""
+AUTONOMY_OPT=""
 WORKTREE_BRANCH=""
 IN_PLACE=""
 # The directory the agents WORK in. It is the worktree when the launch made
@@ -89,6 +92,12 @@ while [ $# -gt 0 ]; do
       ;;
     --swap) SWAP="${2:-}"; shift 2 || { echo "error: --swap needs a CLI" >&2; exit 2; } ;;
     --task) TASK="${2:-}"; shift 2 || { echo "error: --task needs text" >&2; exit 2; } ;;
+    --auto|--semi|--observe) AUTONOMY_OPT="${1#--}"; shift ;;
+    --autonomy)
+      AUTONOMY_OPT="${2:-}"
+      case "$AUTONOMY_OPT" in auto|semi|observe) ;; *) echo "error: --autonomy takes auto, semi or observe" >&2; exit 2 ;; esac
+      shift 2 || { echo "error: --autonomy needs a level" >&2; exit 2; }
+      ;;
     --writer) WANT_WRITER="${2:-}"; shift 2 || { echo "error: --writer needs a role" >&2; exit 2; } ;;
     --worktree|-w) WORKTREE_BRANCH="${2:-}"; shift 2 || { echo "error: --worktree needs a branch" >&2; exit 2; } ;;
     --in-place) IN_PLACE="1"; shift ;;
@@ -190,7 +199,7 @@ if [ -z "$STATE_DIR" ]; then
 import json, sys, datetime
 root, engine_root = sys.argv[1], sys.argv[2]
 now = datetime.datetime.now(datetime.timezone.utc).isoformat()
-st = {"task": "", "mode": "fix", "autonomy": "auto", "writer": None,
+st = {"task": "", "mode": "fix", "writer": None,
       "phase": "scoping", "round": 0, "created_at": now, "updated_at": now,
       "roles": {}, "seen": {}, "patches": {}, "evidence": [],
       "human_ok": [], "tasks": [], "engine_root": engine_root}
@@ -242,6 +251,14 @@ export PAIR_STATE="$STATE_DIR"
 
 PAIRCTL="$PAIRUP_ROOT/bin/pairctl"
 PILOT="$PAIRUP_ROOT/bin/pairpilot"
+
+# Resolve autonomy before the pilot or either CLI starts. A bare pairup reads the
+# project's saved state; explicit flags and legacy task directives update that
+# same setting through pairctl. No second mode store is introduced.
+autonomy_args=(--state "$STATE_DIR" launch-autonomy)
+[ -n "$AUTONOMY_OPT" ] && autonomy_args+=(--flag "$AUTONOMY_OPT")
+[ -n "$TASK" ] && autonomy_args+=(--task "$TASK")
+PAIR_STATE="$STATE_DIR" "$PAIRCTL" "${autonomy_args[@]}"
 
 # --- 0. writer in one command: the flag beats everything, then the project
 # policy, then the global one. The human remembers two words, not the full pairctl path.

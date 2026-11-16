@@ -557,12 +557,15 @@ class TestPaneRoleLookup(InstallCase):
         # launch reads. Substring search is banned: such a process satisfies the substring
         # yet never serves as the role server, while the bug would cost a foreign pid in
         # a foreign record.
-        namesake = subprocess.Popen(["sleep", "30", "probe-role"])
+        namesake = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)",
+                                     "probe-role"])
         self.addCleanup(namesake.kill)
         child = subprocess.Popen(
             [sys.executable, str(ROOT / "mcp/pair_mailbox/server.py"),
              "--role", "probe-role", "--state", str(Path(tempfile.mkdtemp()) / ".pair")],
-            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            env={key: value for key, value in os.environ.items()
+                 if not key.startswith("PAIR_")})
         self.addCleanup(child.kill)
         # The search takes a fixed child order. The real `/proc` walk order is arbitrary,
         # and on an arbitrary order these checks blinked: now catching the "find the role
@@ -591,7 +594,8 @@ class TestPaneRoleLookup(InstallCase):
         order is arbitrary, and on it swapping exact for substring caught only at
         times. Here the reverse — one concrete process, one question to it.
         """
-        namesake = subprocess.Popen(["sleep", "30", "probe-role"])
+        namesake = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)",
+                                     "probe-role"])
         self.addCleanup(namesake.kill)
         time.sleep(0.1)
         composer = composer_module()

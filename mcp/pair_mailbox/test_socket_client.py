@@ -26,6 +26,11 @@ SERVER = ROOT / "mcp" / "pair_mailbox" / "server.py"
 CLIENT = ROOT / "mcp" / "pair_mailbox" / "mcp_socket_client.py"
 
 
+def unpaired_env() -> dict[str, str]:
+    """These process-level tests exercise an ordinary MCP launch, not the host pair."""
+    return {key: value for key, value in os.environ.items() if not key.startswith("PAIR_")}
+
+
 class ThinClientCase(unittest.TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
@@ -52,7 +57,7 @@ class ThinClientCase(unittest.TestCase):
             [sys.executable, str(SERVER), "--role", "testcli",
              "--state", str(self.proj / ".pair"), "--socket", self.sock_path],
             cwd=str(self.proj), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            text=True)
+            text=True, env=unpaired_env())
         self.procs.append(proc)
         for _ in range(200):
             if os.path.exists(self.sock_path):
@@ -74,7 +79,7 @@ class ThinClientCase(unittest.TestCase):
             [sys.executable, str(CLIENT), "testcli",
              "--state", str(self.proj / ".pair"), "--socket", self.sock_path],
             cwd=str(self.proj), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE, text=True, bufsize=1)
+            stderr=subprocess.PIPE, text=True, bufsize=1, env=unpaired_env())
         self.procs.append(proc)
         return proc
 
@@ -161,7 +166,8 @@ class ThinClientCase(unittest.TestCase):
         result = subprocess.run(
             [sys.executable, str(CLIENT), "testcli",
              "--state", str(self.proj / ".pair"), "--socket", self.sock_path],
-            cwd=str(self.proj), capture_output=True, text=True, timeout=60)
+            cwd=str(self.proj), capture_output=True, text=True, timeout=60,
+            env=unpaired_env())
         self.assertNotEqual(result.returncode, 0)
         combined = (result.stderr or "") + (result.stdout or "")
         self.assertIn("no daemon", combined)

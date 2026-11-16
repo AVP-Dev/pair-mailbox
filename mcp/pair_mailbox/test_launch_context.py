@@ -6,9 +6,11 @@ import io
 import json
 import os
 import signal
+import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -127,6 +129,18 @@ class LaunchMembership(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "paired CLI profile"):
             self.enrolled("agy")
 
+    @unittest.skipUnless(context.platform.system() == "Darwin",
+                         "Darwin libproc/sysctl process identity is platform-specific")
+    def test_darwin_process_identity_does_not_execute_ps(self):
+        with patch.object(context.subprocess, "run",
+                          side_effect=AssertionError("must not execute external process tools")):
+            info = context.process_info(os.getpid())
+        self.assertIsNotNone(info)
+        self.assertEqual(os.getpid(), info["pid"])
+        self.assertEqual(os.getppid(), info["ppid"])
+        self.assertTrue(info["start"])
+        self.assertTrue(info["argv"])
+
     def actual_launcher(self, socket_backend=False):
         cli = Path(self.tmp.name) / "codex"
         command = ([sys.executable, str(PKG / "mcp_socket_client.py"), "codex"]
@@ -169,6 +183,266 @@ class LaunchMembership(unittest.TestCase):
 
     def test_enrolled_socket_parent_starts_daemon_but_nested_cli_does_not_join(self):
         self.actual_launcher(socket_backend=True)
+
+
+class LaunchSecurityBoundary(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(prefix="pair-launch-boundary-")
+        self.addCleanup(self.tmp.cleanup)
+        self.project = Path(self.tmp.name) / "project"
+        self.project.mkdir()
+        self.state = self.project / ".pair"
+        self.state.mkdir()
+        (self.state / "state.json").write_text(json.dumps({"writer": "codex"}))
+
+    def test_codex_writer_uses_workspace_write_auto_review_and_critic_is_read_only(self):
+        writer = context.safe_cli_command(
+            "codex", "codex", True,
+            ["codex", "--no-daemon", "--sandbox", "danger-full-access", "-c", "model=x"])
+        self.assertIn("--approve-for-me", writer)
+        self.assertNotIn("danger-full-access", writer)
+        self.assertIn(["-c", "model=x"], [writer[i:i + 2] for i in range(len(writer) - 1)])
+        self.assertIn(["-c", "sandbox_workspace_write.writable_roots=[]"],
+                      [writer[i:i + 2] for i in range(len(writer) - 1)])
+        self.assertIn(["-c", "sandbox_workspace_write.network_access=false"],
+                      [writer[i:i + 2] for i in range(len(writer) - 1)])
+
+        critic = context.safe_cli_command("codex", "codex-critic", False,
+                                          ["codex", "--resume", "thread"])
+        self.assertIn("read-only", critic)
+        self.assertIn("never", critic)
+        self.assertNotIn("--approve-for-me", critic)
+
+    def test_pi_trust_is_noninteractive_and_critic_file_tools_are_removed(self):
+        writer = context.safe_cli_command(
+            "pi", "pi", True,
+            ["pi", "--no-approve", "--no-tools", "--tools", "read", "task"])
+        self.assertIn("--approve", writer)
+        self.assertNotIn("--no-approve", writer)
+        self.assertNotIn("--no-tools", writer)
+        self.assertNotIn("--tools", writer)
+
+        critic = context.safe_cli_command(
+            "pi", "pi-critic", False,
+            ["pi", "--approve", "--exclude-tools", "bash,edit,write", "review"])
+        self.assertIn("--approve", critic)
+        self.assertIn(["--exclude-tools", "edit,write"],
+                      [critic[i:i + 2] for i in range(len(critic) - 1)])
+        self.assertNotIn("bash,edit,write", critic)
+
+    def test_pi_tool_policy_overrides_require_complete_values(self):
+        for option in ("--tools", "--exclude-tools"):
+            with self.subTest(option=option):
+                with self.assertRaisesRegex(ValueError, "needs a value"):
+                    context.safe_cli_command("pi", "pi", True, ["pi", option])
+
+    def test_every_profile_refuses_bypass_flags_and_wrong_executable(self):
+        for profile in ("agy", "codex", "claude", "opencode", "pi", "omp"):
+            with self.subTest(profile=profile):
+                with self.assertRaisesRegex(ValueError, "unsafe permission/sandbox bypass"):
+                    context.safe_cli_command(profile, profile, True,
+                                             [profile, "--dangerously-skip-permissions"])
+        for profile, flag in (("claude", "--allow-dangerously-skip-permissions"),
+                              ("omp", "--auto-approve"), ("omp", "--approval-mode=yolo")):
+            with self.subTest(profile=profile, flag=flag):
+                with self.assertRaises(ValueError):
+                    context.safe_cli_command(profile, profile, True, [profile, flag])
+        with self.assertRaisesRegex(ValueError, "must execute"):
+            context.safe_cli_command("codex", "codex", True, ["sh", "-c", "codex"])
+
+    def test_codex_security_config_and_extra_write_roots_cannot_be_overridden(self):
+        for override in (
+            ["-c", 'sandbox_mode="danger-full-access"'],
+            ["-c", 'sandbox_workspace_write.writable_roots=["/tmp"]'],
+            ["--config=sandbox_workspace_write.network_access=true"],
+        ):
+            with self.subTest(override=override):
+                with self.assertRaisesRegex(ValueError, "sandbox/approval config"):
+                    context.safe_cli_command("codex", "codex", True, ["codex", *override])
+
+    def test_codex_cwd_add_dir_and_worktree_overrides_are_removed(self):
+        command = context.safe_cli_command(
+            "codex", "codex", True,
+            ["codex", "--cd", "/tmp", "--add-dir=/", "--worktree", "--resume", "thread"])
+        self.assertNotIn("/tmp", command)
+        self.assertNotIn("/", command)
+        self.assertNotIn("--worktree", command)
+        self.assertIn(["--resume", "thread"],
+                      [command[i:i + 2] for i in range(len(command) - 1)])
+
+    def test_critic_launch_fails_closed_without_a_supported_os_backend(self):
+        with self.assertRaisesRegex(ValueError, "no OS read-only backend"):
+            context.role_sandbox_argv("agy-critic", self.state, ["agy"],
+                                      workspace=self.project, system="Plan9")
+
+    def test_preflight_detaches_existing_hardlink_aliases(self):
+        target = self.project / "tracked.txt"
+        target.write_text("original", encoding="utf-8")
+        alias = Path(self.tmp.name) / "outside-alias.txt"
+        os.link(target, alias)
+        original_inode = target.stat().st_ino
+
+        context._break_external_hardlinks([self.project], self.project)
+
+        self.assertEqual(target.read_text(encoding="utf-8"), "original")
+        self.assertEqual(target.stat().st_nlink, 1)
+        self.assertNotEqual(target.stat().st_ino, original_inode)
+        alias.write_text("changed outside", encoding="utf-8")
+        self.assertEqual(target.read_text(encoding="utf-8"), "original")
+
+    def test_claude_and_agy_modes_are_role_specific_and_safe(self):
+        writer = context.safe_cli_command("claude", "claude", True,
+                                          ["claude", "--resume", "abc", "--add-dir", "/tmp"])
+        self.assertEqual(writer[-2:], ["--permission-prompts", "none"])
+        settings = json.loads(writer[writer.index("--settings") + 1])
+        self.assertTrue(settings["sandbox"]["enabled"])
+        self.assertTrue(settings["sandbox"]["failIfUnavailable"])
+        self.assertFalse(settings["sandbox"]["allowUnsandboxedCommands"])
+        self.assertNotIn("/tmp", writer)
+
+        critic = context.safe_cli_command("claude", "claude-critic", False, ["claude"])
+        self.assertIn(["--permission-mode", "dontAsk"],
+                      [critic[i:i + 2] for i in range(len(critic) - 1)])
+        self.assertEqual(critic[-2:], ["--permission-prompts", "none"])
+
+        agy = context.safe_cli_command("agy", "agy", True, ["agy", "--add-dir=/tmp"])
+        self.assertEqual(agy[-2:], ["--mode=auto", "--sandbox"])
+        self.assertNotIn("/tmp", agy)
+        with self.assertRaisesRegex(ValueError, "always-proceed"):
+            context.safe_cli_command("agy", "agy", True,
+                                     ["agy", "--mode=always-proceed"])
+
+    def test_omp_uses_write_mode_and_rejects_config_overlay(self):
+        command = context.safe_cli_command("omp", "omp", True,
+                                           ["omp", "--cwd=/", "--approval-mode=always-ask"])
+        self.assertEqual(command[-1], "--approval-mode=write")
+        self.assertNotIn("/", command)
+        with self.assertRaisesRegex(ValueError, "config overlays"):
+            context.safe_cli_command("omp", "omp", True, ["omp", "--config=tools.approvalMode=yolo"])
+
+    def test_opencode_auto_precedes_the_positional_prompt(self):
+        prompt = "write a report"
+        command = context.safe_cli_command(
+            "opencode", "opencode", True,
+            ["opencode", "run", "--standalone", "--auto", prompt])
+        self.assertEqual(command[-1], prompt)
+        self.assertLess(command.index("--auto"), len(command) - 1)
+
+    @unittest.skipUnless(context.platform.system() == "Darwin" and
+                         context.shutil.which("sandbox-exec"),
+                         "macOS Seatbelt is required for the live access test")
+    def test_critic_cannot_write_project_through_symlink_or_hardlink(self):
+        subprocess.run(["git", "init", "-q", str(self.project)], check=True)
+        target = self.project / "source.txt"
+        target.write_text("original", encoding="utf-8")
+        alias = Path(self.tmp.name) / "alias.txt"
+        alias.symlink_to(target)
+        old_hardlink = Path(self.tmp.name) / "old-hardlink.txt"
+        os.link(target, old_hardlink)
+        new_hardlink = Path(self.tmp.name) / "new-hardlink.txt"
+        external = Path(self.tmp.name) / "outside.txt"
+        code = (
+            "from pathlib import Path; import os, sys; "
+            "symlink_denied=False; "
+            "\ntry: Path(sys.argv[1]).write_text('changed through symlink')\n"
+            "except OSError: symlink_denied=True\n"
+            "hardlink_create_denied=False; "
+            "\ntry: os.link(sys.argv[3], sys.argv[4])\n"
+            "except OSError: hardlink_create_denied=True\n"
+            "Path(sys.argv[2]).write_text('changed through old alias')\n"
+            "Path(sys.argv[5]).write_text('allowed outside project')\n"
+            "print(symlink_denied, hardlink_create_denied)"
+        )
+        argv = context.role_sandbox_argv(
+            "agy-critic", self.state,
+            [sys.executable, "-c", code, str(alias), str(old_hardlink),
+             str(target), str(new_hardlink), str(external)],
+            workspace=self.project, system="Darwin")
+        result = subprocess.run(argv, capture_output=True, text=True, timeout=20)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), "True True")
+        self.assertEqual(target.read_text(encoding="utf-8"), "original")
+        self.assertEqual(old_hardlink.read_text(encoding="utf-8"), "changed through old alias")
+        self.assertEqual(external.read_text(encoding="utf-8"), "allowed outside project")
+
+    @unittest.skipUnless(context.platform.system() == "Darwin" and
+                         context.shutil.which("sandbox-exec"),
+                         "macOS Seatbelt is required for the live socket test")
+    def test_critic_can_use_brokered_mcp_socket_inside_read_only_state_path(self):
+        os.chmod(self.state, 0o700)
+        socket_path = Path(context.prepare_role_socket_path(self.state, "agy-critic"))
+        listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.addCleanup(listener.close)
+        listener.bind(str(socket_path))
+        self.addCleanup(lambda: socket_path.unlink(missing_ok=True))
+        listener.listen(1)
+        listener.settimeout(10)
+
+        received = []
+
+        def serve_one():
+            try:
+                connection, _ = listener.accept()
+                with connection:
+                    received.append(connection.recv(4))
+                    connection.sendall(b"pong")
+            except OSError as exc:
+                received.append(str(exc).encode())
+
+        worker = threading.Thread(target=serve_one, daemon=True)
+        worker.start()
+        code = (
+            "import socket,sys; c=socket.socket(socket.AF_UNIX); "
+            "c.connect(sys.argv[1]); c.sendall(b'ping'); "
+            "print(c.recv(4).decode())"
+        )
+        argv = context.role_sandbox_argv(
+            "agy-critic", self.state, [sys.executable, "-c", code, str(socket_path)],
+            workspace=self.project, system="Darwin")
+        result = subprocess.run(argv, capture_output=True, text=True, timeout=20)
+        worker.join(timeout=2)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), "pong")
+        self.assertEqual(received, [b"ping"])
+
+    @unittest.skipUnless(context.platform.system() == "Linux" and context.shutil.which("bwrap"),
+                         "Linux bubblewrap is required for the live access test")
+    def test_critic_cannot_write_project_or_link_around_bwrap_read_only_mount(self):
+        bwrap = context.shutil.which("bwrap")
+        probe = subprocess.run([bwrap, "--ro-bind", "/", "/", "--", "/bin/true"],
+                               capture_output=True, text=True, timeout=10)
+        if probe.returncode:
+            self.skipTest(f"bubblewrap namespaces unavailable: {probe.stderr.strip()}")
+        subprocess.run(["git", "init", "-q", str(self.project)], check=True)
+        target = self.project / "source.txt"
+        target.write_text("original", encoding="utf-8")
+        old_alias = Path(self.tmp.name) / "old-alias.txt"
+        os.link(target, old_alias)
+        new_alias = Path(self.tmp.name) / "new-alias.txt"
+        code = (
+            "from pathlib import Path; import os, sys; "
+            "write_denied=False; link_denied=False; "
+            "\ntry: Path(sys.argv[1]).write_text('changed')\n"
+            "except OSError: write_denied=True\n"
+            "try: os.link(sys.argv[1], sys.argv[3])\n"
+            "except OSError: link_denied=True\n"
+            "Path(sys.argv[2]).write_text('changed through old alias')\n"
+            "print(write_denied, link_denied)"
+        )
+        argv = context.role_sandbox_argv(
+            "agy-critic", self.state,
+            [sys.executable, "-c", code, str(target), str(old_alias), str(new_alias)],
+            workspace=self.project, system="Linux")
+        fd = int(argv[argv.index("--seccomp") + 1])
+        try:
+            result = subprocess.run(argv, pass_fds=(fd,), capture_output=True,
+                                    text=True, timeout=20)
+        finally:
+            os.close(fd)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), "True True")
+        self.assertEqual(target.read_text(encoding="utf-8"), "original")
+        self.assertEqual(old_alias.read_text(encoding="utf-8"), "changed through old alias")
 
 
 if __name__ == "__main__":

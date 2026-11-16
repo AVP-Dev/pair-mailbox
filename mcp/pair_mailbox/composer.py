@@ -23,6 +23,7 @@ import time
 import json
 from typing import Sequence, Union
 from pathlib import Path
+from process_tree import cmdline as _cmdline, descendants as _descendants
 
 # A live line scrolls; take the snapshot window with margin.
 CAPTURE_LINES = 40
@@ -438,14 +439,6 @@ def pane_pid(tmux: TmuxCommand, pane: str) -> int:
     return pid if pid > 0 else 0
 
 
-def _cmdline(pid: int) -> list:
-    try:
-        raw = Path(f"/proc/{pid}/cmdline").read_bytes()
-    except OSError:
-        return []
-    return [part.decode("utf-8", "replace") for part in raw.split(b"\0") if part]
-
-
 def _is_role_server(pid: int, role: str) -> bool:
     """Whether the process is `server.py --role <role>`, or not.
 
@@ -462,41 +455,12 @@ def _is_role_server(pid: int, role: str) -> bool:
     return False
 
 
-def _descendants(root: int) -> list:
-    """All child processes of `/proc`, breadth-first.
-
-    Order matters: the nearest ancestor goes first, and with several candidates
-    the one closer to the pane wins, not the bigger pid.
-    """
-    children: dict = {}
-    try:
-        entries = os.listdir("/proc")
-    except OSError:
-        return []
-    for entry in entries:
-        if not entry.isdigit():
-            continue
-        try:
-            stat = Path(f"/proc/{entry}/stat").read_text()
-            ppid = int(stat.rsplit(")", 1)[1].split()[1])
-        except (OSError, IndexError, ValueError):
-            continue
-        children.setdefault(ppid, []).append(int(entry))
-    out, frontier = [], [root]
-    while frontier:
-        current = frontier.pop(0)
-        for child in children.get(current, []):
-            out.append(child)
-            frontier.append(child)
-    return out
-
-
 def find_role_pid(root: int, role: str) -> int:
     """The role server among `root` descendants, or 0.
 
     Split from `pane_role_pid` on purpose: tmux here only learns the pane pid,
-    while the whole "who sits in the pane" question resolves over `/proc`. The
-    split serves checkability — merging them was exactly what let the bug live:
+    while the whole "who sits in the pane" question resolves over the process
+    tree backend. The split serves checkability — merging them was exactly what let the bug live:
     the function checked by a stub that never touched the code below.
     """
     if not root or not role:
@@ -524,7 +488,8 @@ def pane_role_pid(tmux: TmuxCommand, pane: str, role: str) -> int:
     would assemble from snapshots of different panes.
 
     Zero means "not found", never an error: the caller must read it as "unknown",
-    not "no pane". Off Linux no process tree exists, and the honest answer is 0.
+    not "no pane". Linux uses `/proc`; Darwin uses `ps` for the tree and libproc
+    for each candidate's argv. Other hosts have no supported process backend.
     """
     return find_role_pid(pane_pid(tmux, pane), role)
 
@@ -895,6 +860,8 @@ PERMISSION_HEADER = re.compile(
 # privilege.
 MENU_ALLOW_ITEM = re.compile(
     r"^\s*(?:[›>•]\s*)?(\d+)\s*[).:\]]\s*(Allow\s+once|Always\s+allow|Allow|Yes)\b", re.IGNORECASE)
+MENU_DENY_ITEM = re.compile(
+    r"^\s*(?:[›>•]\s*)?(\d+)\s*[).:\]]\s*(No|Deny|Cancel|Reject|Skip)\b", re.IGNORECASE)
 
 
 def menu_allow_key(lines: list) -> str | None:
@@ -1393,6 +1360,49 @@ def resolve_permission_prompt(tmux: TmuxCommand, pane: str, allow: list[str] | N
     return {"approved": True, "verdict": "allow", "prompt": prompt,
             "why": decision["why"], "matched": decision["matched"],
             "menu": bool(menu)}
+
+
+def reject_permission_prompt(tmux: TmuxCommand, pane: str) -> dict:
+    """Dismiss a recognized permission prompt without approving its operation.
+
+    The function acts only on an explicit denial choice, a visible Escape-to-cancel
+    permission menu, or a yes/no prompt with an empty composer. It verifies that
+    the prompt disappeared before reporting success. Unknown layouts remain
+    untouched so the caller can record a durable blocker instead of guessing.
+    """
+    if not pane_alive(tmux, pane):
+        return {"rejected": False, "why": "pane dead"}
+    lines = capture(tmux, pane)
+    menu = detect_permission_menu(lines)
+    prompt = menu or detect_permission_prompt(lines)
+    if not prompt:
+        return {"rejected": False, "why": "no recognized permission prompt"}
+
+    if menu:
+        deny_key = next((m.group(1) for line in lines
+                         if (m := MENU_DENY_ITEM.match(line))), None)
+        if deny_key:
+            _send_keys(tmux, pane, deny_key)
+            _send_keys(tmux, pane, "Enter")
+        elif any(re.search(r"(?:esc|escape)\s+to\s+cancel", line, re.IGNORECASE)
+                 for line in lines):
+            _send_keys(tmux, pane, "Escape")
+        else:
+            return {"rejected": False, "why": "permission menu has no explicit cancel choice"}
+    else:
+        line = composer_line(lines)
+        explicit_negative = any(re.search(pattern, prompt, re.IGNORECASE) for pattern in (
+            r"\[[yY]/[nN](?:/[a-zA-Z]+)?\]", r"\([yY]/[nN]\)", r"\[yes/no\]"))
+        if (not explicit_negative or line is None
+                or (not detect_permission_prompt([line]) and not is_composer_empty(line))):
+            return {"rejected": False, "why": "yes/no denial is not safely addressable"}
+        _send_keys(tmux, pane, "n")
+        _send_keys(tmux, pane, "Enter")
+
+    remaining = capture(tmux, pane)
+    if detect_permission_menu(remaining) or detect_permission_prompt(remaining):
+        return {"rejected": False, "why": "permission prompt remained after denial"}
+    return {"rejected": True, "why": "permission request explicitly declined"}
 
 
 def submit_verified(tmux: TmuxCommand, pane: str, body: str) -> str:

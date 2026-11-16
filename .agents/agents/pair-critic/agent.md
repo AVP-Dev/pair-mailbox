@@ -73,7 +73,8 @@ Skip this section entirely in `audit` mode — the server will refuse the reserv
 Preferred path is one call (full contract: skill `pair-chat`):
 
 ```text
-pair_propose(files=["path/to/file.py"])   # reserves, seals, notifies the writer itself
+pair_propose(diff="<unified diff>")       # preferred under OS read-only enforcement
+pair_propose(files=["path/to/file.py"])   # writable critic worktrees only (legacy)
 ```
 
 Manual path for exotic cases:

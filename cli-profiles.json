@@ -19,7 +19,7 @@
     "instructions": "~/.config/opencode/AGENTS.md"
   },
   "agy": {
-    "launch": "agy --dangerously-skip-permissions",
+    "launch": "agy --mode=auto --sandbox",
     "initial_prompt": "--prompt-interactive",
     "label": "Antigravity CLI",
     "mcp": {
@@ -36,7 +36,7 @@
     "instructions": "~/.gemini/AGENTS.md"
   },
   "codex": {
-    "launch": "codex --no-daemon --dangerously-bypass-approvals-and-sandbox",
+    "launch": "codex --no-daemon --approve-for-me",
     "initial_prompt": "positional",
     "label": "Codex CLI",
     "mcp": {
@@ -52,7 +52,7 @@
     "instructions": "~/.codex/AGENTS.md"
   },
   "claude": {
-    "launch": "claude --dangerously-skip-permissions",
+    "launch": "claude --permission-mode auto",
     "label": "Claude Code",
     "mcp": {
       "path": "~/.claude.json",
@@ -85,7 +85,7 @@
     "instructions": "~/.pi/agent/AGENTS.md"
   },
   "omp": {
-    "launch": "omp",
+    "launch": "omp --approval-mode=write",
     "label": "OMP Coding Agent",
     "supports_compact": true,
     "mcp": {

@@ -9,9 +9,9 @@ does not use tmux.
 The contract, in one place:
 
   * Zero Pip: the standard library only, Python 3.8+. Nothing is installed.
-  * The child is a subprocess with a per-launch MCP configuration. The pair
-    server entry names THIS room and THIS child's role, so the child's
-    `pair_*` tools work without a terminal.
+  * The child is launched through the same validated role boundary as pairup.
+    Its MCP entry names the role; the launch boundary supplies the project room
+    and identity so its `pair_*` tools work without a terminal.
   * The mailbox is the channel. `pair_send` lands the letter in the room;
     `pair_deliver` has no pane to type a pointer into and says so. The runner
     promises delivery into the mailbox, never a wake-up.
@@ -142,7 +142,7 @@ def build_config(role: str, room: Path) -> dict:
     """
     return {"mcp": {"pair": {
         "type": "local",
-        "command": ["sh", str(SERVE), role, "--state", str(room)],
+        "command": ["sh", str(SERVE), role],
         "enabled": True,
         "timeout": MCP_TIMEOUT_MS,
     }}}
@@ -223,13 +223,19 @@ def main(argv: list | None = None) -> int:
     if args.print_config:
         print(json.dumps(config, ensure_ascii=False, indent=2))
         return 0
+    sys.path.insert(0, str(ROOT / "mcp" / "pair_mailbox"))
+    from launch_context import launch_argv, profile_for  # noqa: PLC0415
+    if profile_for(args.role) != args.cli:
+        raise RunnerError(
+            f"pair-runner: role {args.role!r} is not an instance of the configured {args.cli!r} profile")
     child_argv = build_argv(args.cli, args.cli_bin or None, message, args.model)
+    launched_argv = launch_argv(args.role, room, child_argv)
     if args.dry_run:
-        print(json.dumps({"argv": child_argv, "cwd": str(cwd),
+        print(json.dumps({"argv": launched_argv, "cli_argv": child_argv, "cwd": str(cwd),
                           "config": config}, ensure_ascii=False, indent=2))
         return 0
     try:
-        proc = subprocess.Popen(child_argv, cwd=str(cwd), env=child_env(config))
+        proc = subprocess.Popen(launched_argv, cwd=str(cwd), env=child_env(config))
     except OSError as exc:
         raise RunnerError(f"pair-runner: cannot launch {child_argv[0]!r}: {exc}") from None
     try:

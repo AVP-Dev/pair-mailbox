@@ -67,13 +67,14 @@ class DuoRoleCase(unittest.TestCase):
                        capture_output=True, timeout=20)
         self._tmp.cleanup()
 
-    def _run_duo_in_tmux(self) -> None:
+    def _run_duo_in_tmux(self, autonomy: str | None = None) -> None:
         """Run the duo inside a tmux session: two panes, one stub CLI each."""
         env = dict(os.environ)
         env["PATH"] = f"{self.stub_dir}:{env['PATH']}"
+        mode_arg = f" --{autonomy}" if autonomy else ""
         command = (
             f"cd '{self.project}' && PAIR_STATE='{self.state}' "
-            f"'{DUO}' {CLI} >'{self.state}/duo.log' 2>&1; sleep 60")
+            f"'{DUO}'{mode_arg} {CLI} >'{self.state}/duo.log' 2>&1; sleep 60")
         subprocess.run(["tmux", "new-session", "-d", "-s", self.session,
                         "-c", str(self.project), "sh", "-c", command],
                        capture_output=True, timeout=30, env=env)
@@ -108,6 +109,13 @@ class DuoRoleCase(unittest.TestCase):
                             f"the role must extend the configured one: {role!r}")
             self.assertIn(role, (f"{CLI}-writer", f"{CLI}-critic"),
                           f"the duo names its two roles, got {role!r}")
+
+    def test_autonomy_shorthand_is_persisted_before_pair_duo_launch(self) -> None:
+        self._run_duo_in_tmux("semi")
+        self.assertEqual(len(self._roles()), 2,
+                         (self.state / "duo.log").read_text(encoding="utf-8"))
+        state = json.loads((self.state / "state.json").read_text(encoding="utf-8"))
+        self.assertEqual(state["autonomy"], "semi")
 
 
 class DuoStateResolutionCase(unittest.TestCase):

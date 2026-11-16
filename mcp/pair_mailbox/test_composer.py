@@ -440,6 +440,38 @@ class TestNumberedMenuKeys(unittest.TestCase):
             composer.extract_permission_context(lines, prompt), [r"\bgit\s+status\b"])
         self.assertEqual("refuse", result["verdict"])
 
+    def test_auto_recovery_can_decline_a_numbered_permission_menu(self) -> None:
+        lines = ["Permission required", "Run command: rm -rf /", "1. Run once",
+                 "2. Always allow", "3. Cancel"]
+        sent = []
+        with mock.patch.object(composer, "pane_alive", return_value=True), \
+                mock.patch.object(composer, "capture", side_effect=[lines, ["request cancelled"]]), \
+                mock.patch.object(composer, "_send_keys",
+                                  side_effect=lambda tmux, pane, key: sent.append(key)):
+            result = composer.reject_permission_prompt("tmux", "%7")
+        self.assertTrue(result["rejected"])
+        self.assertEqual(["3", "Enter"], sent)
+
+    def test_auto_recovery_declines_explicit_yes_no_and_verifies_dismissal(self) -> None:
+        prompt = ["pytest", "Would you like to run the following command? [y/N]", "❯ "]
+        sent = []
+        with mock.patch.object(composer, "pane_alive", return_value=True), \
+                mock.patch.object(composer, "capture", side_effect=[prompt, ["cancelled", "❯ "]]), \
+                mock.patch.object(composer, "_send_keys",
+                                  side_effect=lambda tmux, pane, key: sent.append(key)):
+            result = composer.reject_permission_prompt("tmux", "%7")
+        self.assertTrue(result["rejected"])
+        self.assertEqual(["n", "Enter"], sent)
+
+    def test_auto_recovery_never_guesses_a_denial_key(self) -> None:
+        lines = ["Permission required", "1. Run once", "2. Always allow"]
+        with mock.patch.object(composer, "pane_alive", return_value=True), \
+                mock.patch.object(composer, "capture", return_value=lines), \
+                mock.patch.object(composer, "_send_keys") as send:
+            result = composer.reject_permission_prompt("tmux", "%7")
+        self.assertFalse(result["rejected"])
+        send.assert_not_called()
+
 
 class TestSubmitVerifiedUsesComposerLine(unittest.TestCase):
     def test_old_screen_history_does_not_trigger_another_enter(self) -> None:

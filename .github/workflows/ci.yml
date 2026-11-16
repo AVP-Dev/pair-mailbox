@@ -32,7 +32,11 @@ jobs:
       - name: Install System Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y tmux
+          sudo apt-get install -y apparmor-profiles apparmor-utils bubblewrap tmux
+          # Keep Ubuntu's global AppArmor user-namespace restriction enabled;
+          # allow only Bubblewrap to create the namespaces required by the sandbox.
+          sudo install -m 0644 /usr/share/apparmor/extra-profiles/bwrap-userns-restrict /etc/apparmor.d/bwrap-userns-restrict
+          sudo apparmor_parser -r /etc/apparmor.d/bwrap-userns-restrict
           python3 -m pip install pynacl
 
       - name: Run Static & Hygiene Gates

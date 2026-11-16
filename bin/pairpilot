@@ -65,6 +65,7 @@ try:
         pane_pid,
         pane_role_pid,
         resolve_permission_prompt,
+        reject_permission_prompt,
         ring_refusal_reason,
     )
     from guard import (  # noqa: E402 - one rule must not kill the pass
@@ -1498,7 +1499,7 @@ class Pilot:
                 # pilot while a queued nudge was still waiting for the composer.
                 # Only a REPORT may spend it: the ask file buys one report of
                 # the supervisor's own choosing, and the peer's mail is not that.
-                if kind != "mail" and self.consume_trigger():
+                if kind == "report" and self.consume_trigger():
                     log("the ask trigger is spent — the pilot is quiet again until "
                         "a new one is created")
 
@@ -2191,6 +2192,7 @@ class Pilot:
                     self.store.append_transcript("pilot_restart_impossible", "pairpilot",
                                                  target=role, pid=pid, why="no live pane")
                     log(f"{role}: process dead (pid {pid}), but no window — a human is needed")
+                    self.block_auto_round(state, role, "agent process died and its pane is unavailable")
                 continue
             # The pane may have reached the role by inheritance: the agent record stayed, but
             # someone live already sits there. Knocking on another window is pointless —
@@ -2208,6 +2210,8 @@ class Pilot:
                                                  target=role, pid=pid, pane=pane,
                                                  why=f"pane held by live role {squatter}")
                     log(f"{role}: pane {pane} held by live role {squatter} — leaving alone")
+                    self.block_auto_round(state, role,
+                                          f"agent process died and its pane is occupied by live role {squatter}")
                 continue
             # A live pane with a dead record role does not yet mean the role fell.
             # A `%N` number — or any pane address — outlives the death of the process
@@ -2241,6 +2245,8 @@ class Pilot:
                                                  target=role, pid=pid, why="no launch command known")
                     log(f"{role}: process dead, and I know no launch command — tell "
                         f"pairpilot --launch {role}='command' or append to .pair/restart.json")
+                    self.block_auto_round(state, role,
+                                          "agent process died and no safe restart command is configured")
                 continue
             # Two limits, and both are needed. The pid mark stops touching the same
             # fallen process again. But it alone is NOT enough: if the launch
@@ -2257,6 +2263,7 @@ class Pilot:
                 log(f"{role}: restart paused — {self.restart_limit} attempts in "
                     f"{int(self.restart_window / 60)} min. The launch command looks wrong: "
                     f"{self.launch_command(role)!r}. Waiting on the human.")
+                self.block_auto_round(state, role, "agent restart retry limit reached")
                 continue
             self.note_restart(role)
             from launch_context import launch_shell
@@ -2305,6 +2312,8 @@ class Pilot:
                 self.store.append_transcript("pilot_restart_failed", "pairpilot", target=role,
                                              pane=pane, pid=pid, command=command, why=detail)
                 log(f"{role}: restart failed — {detail or 'reason unnamed'}")
+                self.block_auto_round(state, role,
+                                      f"agent restart failed: {detail or 'reason unnamed'}")
 
     def stalled_patches(self, state: dict) -> None:
         """A sealed patch nobody applied or rejected.
@@ -2390,6 +2399,54 @@ class Pilot:
         log("permissions.json not found — running on the default list "
             f"({len(DEFAULT_ALLOW_PATTERNS)} patterns). \u00a712 bans always hold.")
 
+    def count_auto_refusal(self, state: dict, role: str, prompt: str) -> int:
+        """Persist the same denied operation's retry count across supervisor restarts."""
+        root = self.state_dir / "pilot"
+        root.mkdir(parents=True, exist_ok=True)
+        path = root / f"auto-refusal-{state.get('round')}-{stable_tag(role + prompt)}.json"
+        try:
+            record = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            record = {"round": state.get("round"), "role": role, "attempts": 0}
+        record["attempts"] = int(record.get("attempts", 0)) + 1
+        record["updated_at"] = now_iso()
+        temp = path.with_suffix(".tmp")
+        temp.write_text(json.dumps(record, ensure_ascii=False), encoding="utf-8")
+        temp.replace(path)
+        return record["attempts"]
+
+    def block_auto_round(self, state: dict, role: str, reason: str,
+                         prompt: str = "", attempts: int | None = None) -> None:
+        """Publish a durable blocked report without closing or advancing the round."""
+        if autonomy(state) != "auto":
+            return
+        round_number = int(state.get("round", 0))
+        root = self.state_dir / "pilot"
+        root.mkdir(parents=True, exist_ok=True)
+        path = root / f"blocked-round-{round_number}.json"
+        if path.exists():
+            return
+        record = {"round": round_number, "status": "blocked", "role": role,
+                  "reason": reason, "prompt": prompt[:160], "attempts": attempts,
+                  "blocked_at": now_iso()}
+        temp = path.with_suffix(".tmp")
+        temp.write_text(json.dumps(record, ensure_ascii=False, indent=2), encoding="utf-8")
+        temp.replace(path)
+        self.store.append_transcript("pilot_auto_blocked", "pairpilot", target=role,
+                                     round=round_number, reason=reason,
+                                     prompt=prompt[:120], attempts=attempts)
+        report = write_report(self.state_dir, state)
+        journal = write_tasks_md(self.state_dir, state)
+        self.store.append_transcript("pilot_blocked_report", "pairpilot",
+                                     round=round_number, path=str(report), journal=str(journal))
+        writer = state.get("writer")
+        if writer and writer != role and (state.get("roles") or {}).get(writer, {}).get("pane"):
+            self.enqueue(writer,
+                         "[pairpilot] Auto mode has a durable safety blocker. Do not retry the denied operation. "
+                         "Complete any safe remaining work, then leave the task open with the blocker, partial "
+                         "results, and checks already completed.", state, kind="safety")
+        log(f"round {round_number} blocked by a safety/recovery limit; report: {report}")
+
     def unblock(self, state: dict) -> None:
         """The agent stands at [y/N]. Till morning that looks like a hang, though
         a single Enter would settle it.
@@ -2418,7 +2475,36 @@ class Pilot:
                 if self.remember(f"unblock-refused-{role}-{stable_tag(prompt)}"):
                     self.store.append_transcript("pilot_unblock_refused", "pairpilot", target=role,
                                                  prompt=prompt[:120], why=result.get("why"))
-                    log(f"{role}: did NOT confirm “{prompt[:50]}» — {result.get('why')}. A human is needed.")
+                    log(f"{role}: did NOT confirm “{prompt[:50]}» — {result.get('why')}.")
+                if autonomy(state) == "auto":
+                    denial = reject_permission_prompt(self.tmux, pane)
+                    if not denial.get("rejected"):
+                        self.block_auto_round(
+                            state, role,
+                            "policy refused a permission request and no verified safe dismissal was available: "
+                            f"{denial.get('why', 'unknown prompt layout')}",
+                            prompt=prompt)
+                    elif self.remember(
+                            f"auto-refusal-{state.get('round')}-{role}-{stable_tag(prompt)}", ttl=60):
+                        attempts = self.count_auto_refusal(state, role, prompt)
+                        self.store.append_transcript("pilot_auto_permission_denied", "pairpilot",
+                                                     target=role, round=state.get("round"),
+                                                     attempts=attempts, prompt=prompt[:120],
+                                                     why=result.get("why"))
+                        if attempts >= 3:
+                            self.block_auto_round(
+                                state, role,
+                                f"the same policy-denied operation recurred {attempts} times; "
+                                "the agent must stop retrying and report allowed alternatives exhausted",
+                                prompt=prompt, attempts=attempts)
+                        else:
+                            self.enqueue(
+                                role,
+                                "[pairpilot] This operation was denied by the permission policy and was safely declined. "
+                                "Continue using an allowed method that preserves the sandbox; do not retry the denied "
+                                "operation or ask the user. If no allowed route exists, finish by recording the exact "
+                                "blocker, partial results, and checks already completed.",
+                                state, kind="safety")
 
     # ---------------------------------------------------------------- report
 
@@ -2610,6 +2696,14 @@ def write_report(state_dir: Path, state: dict) -> Path:
                 if item.get("round") == int(state.get("round", 0))]
     stalled = [path for path, record in (state.get("patches") or {}).items()
                if record.get("sealed") and not record.get("applied")]
+    blocked = None
+    block_path = state_dir / "pilot" / f"blocked-round-{int(state.get('round', 0))}.json"
+    try:
+        candidate = json.loads(block_path.read_text(encoding="utf-8"))
+        if candidate.get("round") == int(state.get("round", 0)):
+            blocked = candidate
+    except (OSError, ValueError, TypeError):
+        pass
 
     notes = []
     notes_dir = state_dir / "notes"
@@ -2628,13 +2722,26 @@ def write_report(state_dir: Path, state: dict) -> Path:
     except OSError:
         cards = []
 
+    outcome = "COMPLETED" if state.get("phase") == "done" else ("BLOCKED" if blocked else "IN PROGRESS")
     lines = [
-        f"# Round report {state.get('round')}",
+        f"# Round report {state.get('round')} — {outcome}",
         "",
         f"- task: {state.get('task') or 'NOT SET'}",
         f"- phase: {state.get('phase')}   mode: {state.get('mode')}   autonomy: {autonomy(state)}",
         f"- writer: {state.get('writer') or 'UNASSIGNED'}",
+        f"- outcome: {outcome}",
         "",
+    ]
+    if blocked:
+        lines += ["## Autonomous execution blocker", "",
+                  f"- {blocked.get('reason', 'unspecified policy/recovery blocker')}",
+                  f"- role: {blocked.get('role', 'unknown')}"]
+        if blocked.get("attempts") is not None:
+            lines.append(f"- repeated denied attempts: {blocked['attempts']}")
+        lines += ["- the round remains open; the system did not bypass its sandbox or mark the task complete.", ""]
+        if state.get("phase") == "done":
+            lines += ["The blocker was recorded before the round completed; this final report reflects the later completion.", ""]
+    lines += [
         "## Tasks: done / not done",
         "",
     ]
@@ -2673,7 +2780,7 @@ def write_report(state_dir: Path, state: dict) -> Path:
     lines += [
         "",
         f"Refusals and lost deliveries: {refused}.",
-        f"Permissions NOT self-confirmed: {denied}.",
+        f"Permission requests denied by policy or left unconfirmed: {denied}.",
         f"Restarted fallen agents: {restarted}.",
         "",
         "## What this report does NOT prove",
@@ -2695,13 +2802,15 @@ def write_report(state_dir: Path, state: dict) -> Path:
         lines.append("Restart never happened, a human is needed:")
         lines += [f"- {event.get('target')}: {event.get('why')}" for event in restarts_blocked]
     if denied:
-        lines.append("Permission requests left to the human:")
+        lines.append("Permission requests the system did not approve:")
         lines += [f"- {event.get('target')}: {event.get('why')}"
                   for event in events if event.get("kind") in ("pilot_unblock_refused", "unblock_refused")]
     if state.get("phase") != "done":
         blockers = _done_blockers(state)
         lines.append("What blocks the round close:")
         lines += [f"- {item}" for item in blockers] or ["- nothing"]
+        if blocked:
+            lines.append(f"- auto mode stopped at its safety/recovery boundary: {blocked.get('reason', 'unspecified blocker')}")
     lines += ["", "## Backlog parked this round", ""]
     if parked or cards:
         for e in parked:

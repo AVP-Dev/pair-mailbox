@@ -133,6 +133,11 @@ class TestRenderers(unittest.TestCase):
         self.assertIn("Bash(sudo:*)", perms["deny"])
         self.assertIn("Bash(git merge:*)", perms["deny"])
         self.assertIn("Read(./.env)", perms["deny"])
+        sandbox = payload["sandbox"]
+        self.assertTrue(sandbox["enabled"])
+        self.assertTrue(sandbox["failIfUnavailable"],
+                        "Claude must not silently continue without its sandbox")
+        self.assertFalse(sandbox["allowUnsandboxedCommands"])
 
     def test_allow_covers_routine(self) -> None:
         """With no this the allow reads useless: routine would still ask.

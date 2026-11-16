@@ -36,6 +36,7 @@ import fcntl
 import hashlib
 import json
 import os
+import posixpath
 import re
 import shutil
 import subprocess
@@ -309,8 +310,66 @@ def autonomy_file_path(state_dir: Path) -> Path:
     return state_dir / "autonomy"
 
 
-# A task may carry its own level on its first line: `autonomy: semi`. Anchored to the
-# start so a word inside the prose cannot change how much authority the pair takes.
+def _paths_from_unified_diff(diff: str) -> list[str]:
+    """Validate every path-bearing header before a critic diff enters .pair.
+
+    The patch is data, not a command, but `git apply` must never be handed an
+    absolute path, traversal, protocol metadata path, or an unbounded payload.
+    """
+    if not isinstance(diff, str) or not diff.strip():
+        raise ProtocolError("`diff` must be a non-empty unified diff.")
+    if len(diff.encode("utf-8")) > 1_000_000:
+        raise ProtocolError("`diff` exceeds the 1 MB patch limit.")
+
+    paths: set[str] = set()
+
+    def checked(raw: str) -> str:
+        if not raw or raw.startswith(("/", "\\")) or "\\" in raw:
+            raise ProtocolError("patch paths must be relative project paths.")
+        if any(char in raw for char in GLOB_CHARS) or "\x00" in raw:
+            raise ProtocolError("patch paths cannot contain globs or NUL.")
+        parts = raw.split("/")
+        if any(part in ("", ".", "..") for part in parts):
+            raise ProtocolError("patch paths cannot contain empty, `.` or `..` components.")
+        if parts[0] == ".git" or parts[0] == ".pair":
+            raise ProtocolError("patches cannot modify Git metadata or pair state.")
+        if posixpath.normpath(raw) != raw:
+            raise ProtocolError("patch paths must be normalized project paths.")
+        return raw
+
+    current_section: set[str] = set()
+    saw_hunk = False
+    for line in diff.splitlines():
+        if line.startswith("diff --git "):
+            current_section = set()
+            saw_hunk = False
+            header = line[len("diff --git "):]
+            old, separator, new = header.rpartition(" b/")
+            if not separator or not old.startswith("a/") or '"' in header:
+                raise ProtocolError("unsupported or malformed `diff --git` path header.")
+            current_section.add(checked(old[2:]))
+            current_section.add(checked(new))
+            paths.update(current_section)
+            continue
+        if line.startswith("@@"):
+            saw_hunk = True
+            continue
+        if not saw_hunk and (line.startswith("--- ") or line.startswith("+++ ")):
+            raw = line[4:].split("\t", 1)[0]
+            if raw == "/dev/null":
+                continue
+            if raw.startswith("a/") or raw.startswith("b/"):
+                paths.add(checked(raw[2:]))
+            else:
+                raise ProtocolError("unified diff headers must use a/ or b/ project paths.")
+
+    if not paths:
+        raise ProtocolError("`diff` contains no file changes.")
+    return sorted(paths)
+
+
+# A task may initialize autonomy on its first line when the project has no saved
+# mode: `autonomy: semi`. Anchored to the start so prose cannot change the mode.
 AUTONOMY_TASK_RE = re.compile(
     r"\A\s*autonomy\s*[:=]\s*(observe|semi|auto)\b", re.IGNORECASE,
 )
@@ -320,27 +379,27 @@ def resolve_autonomy(
     state_dir: Path,
     task: str = "",
     flag: str | None = None,
+    current: str | None = None,
 ) -> tuple[str, str]:
     """Decide the autonomy level and say where the decision came from.
 
-    Four sources, strongest first: an explicit flag from the launcher, a line in the
-    task, a file in the project, and the default. The source travels with the value
-    into the transcript, because a level nobody can account for is a level that will
-    be disputed later — "why was this round allowed to close itself?" is a question
-    with no answer unless the reason was written down when it was decided.
+    Five sources, strongest first: an explicit launcher flag, the persistent mode in
+    state.json, the one-time legacy file import, a task directive for projects with
+    no saved mode, and the default. A task must not silently change a standing project
+    setting during attach or recovery. The source travels into the transcript so the
+    decision remains attributable.
 
-    A malformed file or flag falls through to the next source instead of failing the
-    launch. Refusing to start is a worse answer than starting with a level the
-    operator can see in `pairctl status`.
+    The state value is canonical once present. The file is a one-time compatibility
+    import for projects created before autonomy lived in state.json. A malformed flag
+    falls through; explicit CLI parsing rejects invalid values before this resolver.
     """
     if flag:
         level = flag.strip().lower()
         if level in AUTONOMIES:
             return level, "flag"
 
-    match = AUTONOMY_TASK_RE.match(task or "")
-    if match:
-        return match.group(1).lower(), "task"
+    if current in AUTONOMIES:
+        return current, "state"
 
     try:
         if autonomy_file_path(state_dir).is_file():
@@ -351,6 +410,10 @@ def resolve_autonomy(
                 return declared, "file"
     except OSError:
         pass  # an unreadable file is a fall-through, not a launch failure
+
+    match = AUTONOMY_TASK_RE.match(task or "")
+    if match:
+        return match.group(1).lower(), "task"
 
     return "auto", "default"
 
@@ -3043,36 +3106,38 @@ class PairSession:
             ),
         }
 
-    def tool_pair_propose(self, files: list[str], subject: str = "") -> dict[str, Any]:
+    def tool_pair_propose(self, files: list[str] | None = None, subject: str = "",
+                          diff: str | None = None) -> dict[str, Any]:
         """One command instead of six reserve→seal→send→verify→applied steps.
 
-        The server builds the unified diff over the worktree itself (`git diff HEAD --
-        files`), reserves and seals the patch itself, drops the writer letter with
-        path+hash via `pair_send` with `expects_reply`. The critic only names files —
-        the 0600-and-sha ceremony vanishes by hand. Non-writers only: the writer edits
-        the tree directly. The manual path (reserve→seal) stays for exotica, marked
-        legacy in the protocol.
+        A read-only critic may submit the unified diff through MCP; the server
+        validates its paths, stores it in the reserved patch area and preserves the
+        existing SHA-256 lifecycle. `files=[...]` remains compatible for sessions
+        where the critic's worktree is writable and the server can build the diff.
         """
         self._require_fix_mode("propose a patch")
         self._require_not_writer("propose patches")
-        if not isinstance(files, list) or not files:
-            raise ProtocolError("`files` is required: non-empty list of paths.")
-        clean = [str(item).strip() for item in files if str(item or "").strip()]
-        if not clean:
-            raise ProtocolError("`files` is required: non-empty list of paths.")
-        if any(char in item for item in clean for char in GLOB_CHARS):
-            raise ProtocolError("exact paths only, no globs.")
-        if any(item.startswith("/") or ".." in item.split("/") for item in clean):
-            raise ProtocolError("paths stay inside the project: no absolute, no `..`.")
-        proc = subprocess.run(
-            ["git", "diff", "--no-ext-diff", "HEAD", "--", *clean],
-            cwd=str(self.store.project_root), capture_output=True, text=True,
-            timeout=30)
-        if proc.returncode != 0:
-            raise ProtocolError(f"git diff failed: {(proc.stderr or '').strip()[:200]}")
-        diff = proc.stdout
-        if not diff.strip():
-            raise ProtocolError("no changes in these files: nothing to propose.")
+        if (diff is None) == (files is None):
+            raise ProtocolError("provide exactly one of `diff` or `files`.")
+        if diff is None:
+            if not isinstance(files, list) or not files:
+                raise ProtocolError("`files` is required: non-empty list of paths.")
+            clean = [str(item).strip() for item in files if str(item or "").strip()]
+            if not clean:
+                raise ProtocolError("`files` is required: non-empty list of paths.")
+            if any(char in item for item in clean for char in GLOB_CHARS):
+                raise ProtocolError("exact paths only, no globs.")
+            if any(item.startswith("/") or ".." in item.split("/") for item in clean):
+                raise ProtocolError("paths stay inside the project: no absolute, no `..`.")
+            proc = subprocess.run(
+                ["git", "diff", "--no-ext-diff", "HEAD", "--", *clean],
+                cwd=str(self.store.project_root), capture_output=True, text=True,
+                timeout=30)
+            if proc.returncode != 0:
+                raise ProtocolError(f"git diff failed: {(proc.stderr or '').strip()[:200]}")
+            diff = proc.stdout
+        else:
+            clean = _paths_from_unified_diff(diff)
         reserved = self.tool_pair_patch_reserve()
         path = reserved["path"]
         Path(path).write_text(diff, encoding="utf-8")
@@ -3649,20 +3714,21 @@ def tool_definitions() -> list[dict[str, Any]]:
             "name": "pair_propose",
             "description": (
                 "Propose a change in one call instead of six steps "
-                "(reserve, write diff, seal, send path+hash, verify, applied). "
-                "The server builds the unified diff itself (git diff HEAD over "
-                "your worktree files), seals it, and delivers path+hash to the "
-                "writer with a review request. Non-writers only; the writer "
-                "edits files directly. The manual path stays for exotic cases."
+                "(reserve, seal, send path+hash, verify, applied). A read-only "
+                "critic supplies a unified diff through MCP; the server validates "
+                "paths, stores and seals it, then delivers the patch to the writer. "
+                "For compatibility, `files` may name already-edited worktree files."
             ),
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "files": {"type": "array", "items": {"type": "string"},
-                              "description": "Worktree paths with your changes."},
+                              "description": "Legacy: worktree paths with your changes."},
+                    "diff": {"type": "string",
+                             "description": "Unified diff text. Use this when the OS sandbox makes the project read-only."},
                     "subject": {"type": "string", "description": "Optional review subject."},
                 },
-                "required": ["files"],
+                "required": [],
             },
         },
         {
@@ -4456,7 +4522,8 @@ def main(argv: list[str] | None = None) -> int:
         server.run()
         return 0
     if socket_path == "auto":
-        socket_path = str(store.root / f".server-{args.role}.sock")
+        from launch_context import role_socket_path
+        socket_path = role_socket_path(store.root, args.role)
     # `once=False` for the daemon: the whole point is that the transport outlives
     # one client, so a CLI may die and reconnect with its context intact.
     # PAIR_SOCKET_ONCE=1 serves exactly one client — the shape the round-trip
