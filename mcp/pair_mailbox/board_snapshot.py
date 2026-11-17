@@ -19,6 +19,9 @@ HTML itself, written by `bin/pairboard`.
 from __future__ import annotations
 
 import json
+import shutil
+import sqlite3
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -266,46 +269,75 @@ def build_snapshot(state_dir: Path, *, limit: int = DEFAULT_EVENTS,
     # Store on a state that may not be there: `allow_create=True` keeps the empty
     # state and `read_error` carries the reason. Everywhere else the default
     # `allow_create=False` refuses.
-    store = Store(state_dir, allow_create=True)
-    read_error = _state_read_error(state_dir)
-    try:
-        state = store.read()
-    except Exception as error:  # noqa: BLE001 - the reason shows, never swallowed
-        state = store.default_state()
-        read_error = read_error or str(error)
+    # Store construction performs the one-time task migration and creates its
+    # service directories/lock. A dashboard read must not mutate the live state,
+    # so give Store an isolated snapshot. SQLite's backup API captures a coherent
+    # view even when the live task database is in WAL mode.
+    with tempfile.TemporaryDirectory(prefix="pairboard-") as scratch:
+        snapshot_dir = Path(scratch) / "state"
+        if state_dir.is_dir():
+            shutil.copytree(state_dir, snapshot_dir,
+                            ignore=shutil.ignore_patterns("state.db", "state.db-wal",
+                                                          "state.db-shm", ".lock"))
+        else:
+            snapshot_dir.mkdir(parents=True)
+        live_db = state_dir / "state.db"
+        if live_db.is_file():
+            for suffix in ("", "-wal", "-shm"):
+                live_file = Path(str(live_db) + suffix)
+                if live_file.is_file():
+                    shutil.copy2(live_file, Path(str(snapshot_dir / "state.db") + suffix))
+            source = sqlite3.connect(str(snapshot_dir / "state.db"))
+            stable_db = Path(scratch) / "stable.db"
+            target = sqlite3.connect(str(stable_db))
+            try:
+                source.backup(target)
+                target.execute("PRAGMA journal_mode=WAL")
+            finally:
+                target.close()
+                source.close()
+            for suffix in ("", "-wal", "-shm"):
+                Path(str(snapshot_dir / "state.db") + suffix).unlink(missing_ok=True)
+            stable_db.replace(snapshot_dir / "state.db")
+        store = Store(snapshot_dir, allow_create=True)
+        read_error = _state_read_error(state_dir)
+        try:
+            state = store.read()
+        except Exception as error:  # noqa: BLE001 - the reason shows, never swallowed
+            state = store.default_state()
+            read_error = read_error or str(error)
+        entries = store.read_transcript(limit)
+        try:
+            total = store.transcript_entry_count()
+        except Exception:  # noqa: BLE001 - the counter is decor, its lack is no reason to fall
+            total = len(entries)
 
-    entries = store.read_transcript(limit)
-    try:
-        total = store.transcript_entry_count()
-    except Exception:  # noqa: BLE001 - the counter is decor, its lack is no reason to fall
-        total = len(entries)
-
-    tasks = _task_rows(state)
-    event_age = _age(entries[-1].get("ts")) if entries else None
-    try:
-        from server_freshness import proc_available as _proc_available
-        no_proc = not _proc_available()
-    except Exception:
-        no_proc = False
-    return {
-        "generated_at": utcnow(),
-        "project": state_dir.parent.name or str(state_dir),
-        "platform_no_proc": no_proc,
-        "state_dir": str(state_dir),
-        "read_error": read_error,
-        "stale_after": int(stale_after),
-        "watch": False,
-        "round": _round_section(state, event_age),
-        "roles": _role_rows(state),
-        "waiting": _obligation_rows(store),
-        "discussion": _discussion_rows(store),
-        "pilot": pilot_section(state_dir, entries),
-        "tasks": tasks,
-        "events": _event_rows(entries),
-        "counts": {"events_shown": len(entries), "events_total": total,
-                   "tasks_open": sum(1 for row in tasks if row["status"] == "open"),
-                   "roles": len(state.get("roles") or {})},
-    }
+        tasks = _task_rows(state)
+        event_age = _age(entries[-1].get("ts")) if entries else None
+        try:
+            from server_freshness import proc_available as _proc_available
+            no_proc = not _proc_available()
+        except Exception:
+            no_proc = False
+        return {
+            "generated_at": utcnow(),
+            "project": state_dir.parent.name or str(state_dir),
+            "platform_no_proc": no_proc,
+            "state_dir": str(state_dir),
+            "read_error": read_error,
+            "stale_after": int(stale_after),
+            "watch": False,
+            "round": _round_section(state, event_age),
+            "roles": _role_rows(state),
+            "waiting": _obligation_rows(store),
+            "discussion": _discussion_rows(store),
+            "pilot": pilot_section(state_dir, entries),
+            "tasks": tasks,
+            "events": _event_rows(entries),
+            "counts": {"events_shown": len(entries), "events_total": total,
+                       "tasks_open": sum(1 for row in tasks if row["status"] == "open"),
+                       "roles": len(state.get("roles") or {})},
+        }
 
 
 def snapshot_json(snapshot: dict[str, Any]) -> str:

@@ -123,26 +123,15 @@ class BuildOnceTest(CliTestCase):
 
     def test_state_is_never_modified(self):
         def contents() -> dict[str, bytes]:
-            # Files only: `Store` creates service dirs (mailbox, notes, patches, obligations),
-            # and reading a dir in bytes falls with IsADirectoryError — checking the wrong thing.
-            # `.lock` is the protocol own service file: `Store` creates it on access, the server
+            # Files only: reading a directory as bytes fails, while this check is about
+            # whether the dashboard changed any persistent state files.
             return {path.name: path.read_bytes() for path in self.state.iterdir()
                     if path.is_file()}
 
         before = contents()
         self.run_cli("--state", str(self.state), "--out", str(self.out))
         after = contents()
-        # does exactly the same. Excluded for cause, never "just in case": the "nothing
-        # writes" demand covers pair state, while `.lock` is no state but the access lock to
-        # it. All the rest must match byte for byte.
-        # it. All the rest must match byte for byte.
-        # must match byte for byte.
-        lock = {".lock"}
-        self.assertEqual({k: v for k, v in after.items() if k not in lock},
-                         {k: v for k, v in before.items() if k not in lock},
-                         "the dashboard changed the state it watches")
-        self.assertEqual(set(after) - set(before), lock,
-                         "the dashboard created something in .pair/ besides the service .lock")
+        self.assertEqual(after, before, "the dashboard changed the state it watches")
 
     def test_print_json_writes_no_html(self):
         proc = self.run_cli("--state", str(self.state), "--print-json")

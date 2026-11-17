@@ -138,9 +138,9 @@ class PairupLaunchCase(unittest.TestCase):
             if status is None:
                 os.kill(pid, signal.SIGKILL)
                 _, status = os.waitpid(pid, 0)
-        finally:
-            os.close(master)
-        return subprocess.CompletedProcess(command, os.waitstatus_to_exitcode(status),
+        finally: os.close(master)
+        exit_code = os.waitstatus_to_exitcode(status) if hasattr(os, "waitstatus_to_exitcode") else (os.WEXITSTATUS(status) if os.WIFEXITED(status) else -os.WTERMSIG(status) if os.WIFSIGNALED(status) else 1)
+        return subprocess.CompletedProcess(command, exit_code,
                                             output.decode(errors="replace"), "")
 
     def calls(self):

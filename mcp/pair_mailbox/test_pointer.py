@@ -78,23 +78,28 @@ class TestPointerRecognition(unittest.TestCase):
         self.assertEqual(0, pointers.own_pointer_length(
             "╰─ keep this text " + repeated, "agy"))
 
-    def test_doubled_p_pairpilot_notice_is_recognized_only_for_pairpilot_cleanup(self) -> None:
-        notice = "ppair: message from pairpilot. Read pair_read. (1 unread)"
-        self.assertEqual(len(notice), pointers.own_pointer_length("╰─ " + notice, "pairpilot"))
-        self.assertEqual(0, pointers.own_pointer_length("╰─ " + notice, "agy"))
+    def test_repeated_p_prefixes_are_recognized_for_system_pointers(self) -> None:
+        for notice in (
+                "ppair: message from pairpilot. Read pair_read. (1 unread)",
+                "pppair: message from pairpilot. Read pair_read. (1 unread)",
+                "pppair: message from agy. Read pair_read.",
+                "pp[pair] agy: new message in the mailbox (seq 9), read pair_read"):
+            self.assertEqual(len(notice), pointers.own_pointer_length("╰─ " + notice, "agy"))
+        self.assertEqual(0, pointers.own_pointer_length(
+            "╰─ pp[pair] agy: new message in the mailbox (seq 9), read pair_read", "omp"))
 
 
 class TestClearOwnPointer(unittest.TestCase):
     def _clear(self, line: str, role: str = "agy") -> tuple[int, list[int]]:
-        erased: list[int] = []
+        erased: list[tuple[str, ...]] = []
 
-        def fake_erase(_tmux, _pane, count):
-            erased.append(count)
+        def fake_send(_tmux, _pane, *keys):
+            erased.append(keys)
 
         with mock.patch.object(pointers, "capture", return_value=[line]), \
              mock.patch.object(pointers, "composer_line",
                                side_effect=lambda lines: lines[0]), \
-             mock.patch.object(pointers, "erase", side_effect=fake_erase):
+             mock.patch.object(pointers, "_send_keys", side_effect=fake_send):
             count = pointers.clear_own_pointer("tmux", "%1", role)
         return count, erased
 
@@ -102,15 +107,14 @@ class TestClearOwnPointer(unittest.TestCase):
         prompt = pointers.ring_prompt("agy")
         count, erased = self._clear("╰─ " + prompt)
         self.assertEqual(len(prompt), count)
-        self.assertEqual([len(prompt)], erased,
-                         "exactly our own text goes, by its own length")
+        self.assertEqual([("C-u",)], erased, "our pointer is cleared atomically")
 
     def test_repeated_own_pointers_are_all_erased_without_touching_other_text(self) -> None:
         prompt = pointers.ring_prompt("agy")
         repeated = " ".join((prompt, prompt, prompt))
         count, erased = self._clear("╰─ " + repeated)
         self.assertEqual(len(repeated), count)
-        self.assertEqual([len(repeated)], erased)
+        self.assertEqual([("C-u",)], erased)
 
     def test_a_composer_with_the_human_text_is_left_alone(self) -> None:
         count, erased = self._clear("╰─ the human wrote this")
@@ -119,10 +123,10 @@ class TestClearOwnPointer(unittest.TestCase):
 
     def test_a_pane_we_cannot_read_is_left_alone(self) -> None:
         with mock.patch.object(pointers, "capture", side_effect=OSError("no tmux")), \
-             mock.patch.object(pointers, "erase") as erase:
+             mock.patch.object(pointers, "_send_keys") as send:
             count = pointers.clear_own_pointer("tmux", "%1", "agy")
         self.assertEqual(0, count)
-        erase.assert_not_called()
+        send.assert_not_called()
 
 
 if __name__ == "__main__":

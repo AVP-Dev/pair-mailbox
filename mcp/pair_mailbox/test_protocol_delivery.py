@@ -552,17 +552,18 @@ class TestOwnPointerResidue(PairTestCase):
         def fake_capture(_tmux, _pane):
             return screen["lines"]
 
-        def fake_erase(_tmux, _pane, count):
-            erased.append(count)
+        def fake_send(_tmux, _pane, *keys):
+            self.assertEqual(("C-u",), keys)
+            erased.append(pointers.own_pointer_length(screen["lines"][0], "writer-agent"))
             screen["lines"] = ["╰─ "]
 
-        orig_capture, orig_erase = pointers.capture, pointers.erase
+        orig_capture, orig_send = pointers.capture, pointers._send_keys
         orig_line = composer.composer_line
         pointers.capture = fake_capture
-        pointers.erase = fake_erase
+        pointers._send_keys = fake_send
         composer.composer_line = lambda lines: screen["lines"][0]
         self.addCleanup(setattr, pointers, "capture", orig_capture)
-        self.addCleanup(setattr, pointers, "erase", orig_erase)
+        self.addCleanup(setattr, pointers, "_send_keys", orig_send)
         self.addCleanup(setattr, composer, "composer_line", orig_line)
         return erased, screen
 
