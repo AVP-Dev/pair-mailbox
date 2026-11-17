@@ -28,7 +28,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "mcp" / "pair_mailbox"))
-from process_tree import pair_mailbox_servers, process_start_time  # noqa: E402
+from process_tree import (pair_mailbox_servers, process_ids, process_info,
+                          process_start_time)  # noqa: E402
 
 
 def resolve_state(explicit: str | None) -> Path:
@@ -174,20 +175,26 @@ def live_servers(state_dir: Path) -> list[dict]:
 
 
 def pilot_procs(state_dir: Path) -> list[dict]:
-    out = subprocess.run(["ps", "-eo", "pid,lstart,args"],
-                         capture_output=True, text=True).stdout or ""
     found = []
-    for line in out.splitlines():
-        if "pairpilot" not in line or str(state_dir) not in line:
-            continue
-        parts = line.split()
-        if len(parts) < 7:
+    wanted = state_dir.resolve()
+    for pid in process_ids():
+        info = process_info(pid)
+        argv = info.get("argv", []) if info else []
+        if not argv or not any(Path(arg).name == "pairpilot" for arg in argv):
             continue
         try:
-            pid = int(parts[0])
-        except ValueError:
+            raw_state = argv[argv.index("--state") + 1]
+        except (ValueError, IndexError):
+            raw_state = next((arg.split("=", 1)[1] for arg in argv
+                              if arg.startswith("--state=")), "")
+        if not raw_state:
             continue
-        found.append({"pid": pid, "start": " ".join(parts[1:6])})
+        try:
+            if Path(raw_state).resolve() != wanted:
+                continue
+        except (OSError, RuntimeError):
+            continue
+        found.append({"pid": pid})
     return found
 
 
@@ -253,27 +260,6 @@ def diagnose(state_dir: Path) -> list[dict]:
                          "verdict": "STALE" if stale else "FRESH",
                          "detail": "kill, then relaunch" if stale else "leave alone"})
     return rows
-
-
-def print_plan(rows: list[dict]) -> int:
-    stale = [r for r in rows if r["verdict"] == "STALE" and r["pid"]]
-    print(f"pairrestart — {len(rows)} things checked")
-    print()
-    for row in rows:
-        pid = str(row["pid"]) if row["pid"] else "—"
-        extra = f"started {row.get('started')} code {row.get('code')}" if row.get("started") else ""
-        print(f"[{row['verdict']:<6}] {row['kind']:<5} {row['name']:<8} pid {pid:<7} {extra} → {row['detail']}")
-    print()
-    if not stale:
-        print("Nothing stale. Changes nothing.")
-        return 0
-    doomed_roles = [r["name"] for r in stale if r["kind"] == "role"]
-    if doomed_roles:
-        print("Note: killing a role's server drops that session's pair tools until it")
-        print("reconnects its MCP (/mcp, or restart the CLI).")
-        print(f"Killing {', '.join(doomed_roles)}'s server is in this plan — confirm it is yours to disturb.")
-    print(f"Will kill {len(stale)} process(es). Fresh servers are NOT in this plan.")
-    return len(stale)
 
 
 def ask(explicit_yes: bool) -> bool:

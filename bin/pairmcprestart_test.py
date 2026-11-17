@@ -147,6 +147,30 @@ class TestServerInventory(unittest.TestCase):
         self.assertEqual("42", module["server_pid"]("codex"))
         scanner.assert_called_once_with(state, "codex")
 
+    def test_duplicate_project_role_servers_are_ambiguous(self) -> None:
+        module = _load_module()
+        state = Path("/tmp/project/.pair")
+        module["STATE"] = state
+        rows = [{"pid": 42, "role": "codex"}, {"pid": 43, "role": "codex"}]
+        module["pair_mailbox_servers"] = mock.Mock(return_value=rows)
+        self.assertEqual("", module["server_pid"]("codex"))
+        self.assertEqual(rows, module["server_matches"]("codex"))
+
+    def test_reconnect_refuses_duplicate_daemons_before_touching_pane(self) -> None:
+        import contextlib
+        import io
+
+        module = _load_module()
+        module["pair_mailbox_servers"] = mock.Mock(return_value=[
+            {"pid": 42, "role": "codex"}, {"pid": 43, "role": "codex"}])
+        output = io.StringIO()
+        with contextlib.redirect_stderr(output), mock.patch.object(
+                module["subprocess"], "run") as run:
+            result = module["reconnect"]("codex", "%1", False)
+        self.assertEqual(1, result)
+        self.assertIn("multiple servers", output.getvalue())
+        run.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

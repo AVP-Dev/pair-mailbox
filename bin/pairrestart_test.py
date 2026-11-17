@@ -176,6 +176,20 @@ class TestDiagnose(unittest.TestCase):
                 found = PR.live_servers(mine)
         self.assertEqual(found, [])
 
+    def test_macos_libproc_inventory_finds_only_the_exact_project_pilot(self) -> None:
+        """macOS process argv comes from libproc, avoiding unsupported/denied ps."""
+        state = Path("/tmp/project/.pair")
+        processes = {
+            1234: {"argv": ["python3", "/repo/bin/pairpilot", "--state", str(state)]},
+            5678: {"argv": ["python3", "/other/bin/pairpilot", "--state", "/tmp/foreign/.pair"]},
+        }
+        with mock.patch.object(PR, "process_ids", return_value=[1234, 5678]), \
+                mock.patch.object(PR, "process_info", side_effect=processes.get), \
+                mock.patch.object(PR.subprocess, "run") as run:
+            found = PR.pilot_procs(state)
+        self.assertEqual([{"pid": 1234}], found)
+        run.assert_not_called()
+
 
 
 
