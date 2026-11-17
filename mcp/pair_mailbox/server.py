@@ -1376,8 +1376,11 @@ class PairSession:
 
     # ------------------------------------------------------------------ tools
 
-    def tool_pair_state(self) -> dict[str, Any]:
+    def tool_pair_state(self, workspace: str = "") -> dict[str, Any]:
         """Read the shared state, the roster, and this role's standing."""
+        if workspace and self.store.record_role_workspace(self.role, Path(workspace)) is None:
+            raise ProtocolError("workspace is not a checkout of this pair's project",
+                                "Pass this project's checkout or a linked worktree.")
         from panes import pane_identity_cache
         with pane_identity_cache():
             return self._tool_pair_state_cached()
@@ -3593,8 +3596,6 @@ class PairSession:
         # a sign of life, or an agent handed a `refusal` would read dead while just talking
         # to the server. An unknown tool misses this: a name typo is no sign of life, and
         # growing the roster over it is needless.
-        # needless.
-        # needless.
         if handler is not None:
             try:
                 self.store.mutate(lambda state: self._heartbeat(state, request_meta))
@@ -3682,7 +3683,7 @@ def tool_definitions() -> list[dict[str, Any]]:
                 "Read the shared collaboration state: the task, who holds write authority, the current "
                 "phase, the roster of participating roles, and how many messages you have unread."
             ),
-            "inputSchema": {"type": "object", "properties": {}, "required": []},
+            "inputSchema": {"type": "object", "properties": {"workspace": {"type": "string", "description": "Optional active checkout path; verified and saved for this role."}}, "required": []},
         },
         {
             "name": "pair_ping",
@@ -4128,7 +4129,7 @@ def tool_definitions() -> list[dict[str, Any]]:
 
 
 HANDLERS = {
-    "pair_state": lambda session, args: session.tool_pair_state(),
+    "pair_state": lambda session, args: session.tool_pair_state(**args),
     "pair_ping": lambda session, args: session.tool_pair_ping(),
     "pair_deliver": lambda session, args: session.tool_pair_deliver(**args),
     "pair_claim": lambda session, args: session.tool_pair_claim(**args),
@@ -4375,8 +4376,8 @@ class MCPServer:
                 "instructions": (
                     f"You are role {self.session.role!r} in a two-agent collaboration. One role holds write "
                     "authority and edits project files; the other is read-only and proposes sealed patches. "
-                    "Authority is transferred only by the human through pairctl, never by a message. "
-                    "Call pair_state first to see where you stand. Read peer messages with pair_read; "
+                    "Authority is transferred only by the human through pairctl, never by a message. Call pair_state(workspace=<active checkout path>) first, then pair_task(action='list'). "
+                    "Read peer messages with pair_read; "
                     "ACK returned batches with their exact ack_token after processing. Retries replay; "
                     "messages remain unread until ACK, and pair_state shows the pending batch."
                 ),

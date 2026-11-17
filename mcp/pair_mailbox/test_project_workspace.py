@@ -25,9 +25,15 @@ class ProjectWorkspace(unittest.TestCase):
             (git_dir / "commondir").write_text("../..\n", encoding="utf-8")
             (worktree / ".git").write_text(f"gitdir: {git_dir}\n", encoding="utf-8")
             store = Store(repo / ".pair", allow_create=True)
+            from server import PairSession, ProtocolError
+            session = PairSession("codex", store)
 
+            session.tool_pair_state(workspace=str(worktree))
+            self.assertEqual(str(worktree.resolve()), store.read()["roles"]["codex"]["workspace"])
             self.assertEqual(worktree.resolve(), store.record_role_workspace("codex", worktree))
             self.assertEqual(worktree.resolve(), store.project_root_for("codex"))
+            with self.assertRaises(ProtocolError):
+                session.tool_pair_state(workspace=str(Path(tmp) / "foreign"))
 
     def test_foreign_workspace_is_ignored(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -70,9 +76,10 @@ class ProjectWorkspace(unittest.TestCase):
                                   check=True, capture_output=True, text=True).stdout.strip()
 
             store = Store(repo / ".pair", allow_create=True)
-            store.record_role_workspace("writer-agent", worktree)
             from server import PairSession
-            PairSession("writer-agent", store).tool_pair_evidence(
+            session = PairSession("writer-agent", store)
+            session.tool_pair_state(workspace=str(worktree))
+            session.tool_pair_evidence(
                 kind="test", value="12 passed, exit 0")
             self.assertEqual(head, store.read()["evidence"][-1]["head"])
 
