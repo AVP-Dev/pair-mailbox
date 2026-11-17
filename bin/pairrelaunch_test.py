@@ -26,6 +26,45 @@ def load_relauncher():
 
 
 class RelaunchTests(unittest.TestCase):
+    def test_codex_exits_tui_before_submitting_resume_command(self) -> None:
+        relaunch = load_relauncher()
+        commands = []
+        pane_states = iter(["codex", "-zsh"])
+
+        def fake_tmux(*args):
+            commands.append(args)
+            if args[0] == "display-message":
+                return 0, next(pane_states)
+            return 0, ""
+
+        with mock.patch.object(relaunch, "tmux", side_effect=fake_tmux), \
+                mock.patch.object(relaunch.time, "sleep"):
+            started, detail = relaunch.restart_in_pane("codex", "%0", "resume command")
+
+        self.assertTrue(started)
+        self.assertIn("shell", detail)
+        exit_index = commands.index(("send-keys", "-t", "%0", "-l", "/exit"))
+        submit_index = commands.index(("send-keys", "-t", "%0", "-l", "resume command"))
+        self.assertLess(exit_index, submit_index)
+        self.assertEqual(2, sum(args[0] == "display-message" for args in commands))
+
+    def test_codex_does_not_submit_command_if_tui_stays_open(self) -> None:
+        relaunch = load_relauncher()
+        commands = []
+
+        def fake_tmux(*args):
+            commands.append(args)
+            return (0, "codex") if args[0] == "display-message" else (0, "")
+
+        with mock.patch.object(relaunch, "tmux", side_effect=fake_tmux), \
+                mock.patch.object(relaunch.time, "sleep"):
+            started, detail = relaunch.restart_in_pane("codex", "%0", "resume command")
+
+        self.assertFalse(started)
+        self.assertIn("not sent", detail)
+        self.assertFalse(any(args[:4] == ("send-keys", "-t", "%0", "-l")
+                             and args[-1] == "resume command" for args in commands))
+
     def test_codex_uses_saved_session_resume_command(self) -> None:
         relaunch = load_relauncher()
         calls = []

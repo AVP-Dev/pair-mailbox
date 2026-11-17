@@ -134,6 +134,41 @@ def relaunch_lock(role: str):
     return handle
 
 
+def pane_command(pane: str) -> str:
+    code, out = tmux("display-message", "-p", "-t", pane, "#{pane_current_command}")
+    return out.strip() if code == 0 else ""
+
+
+def restart_in_pane(role: str, pane: str, command: str) -> tuple[bool, str]:
+    """Exit Codex's TUI before typing a shell command; never inject into its composer."""
+    if profile_for(role) == "codex":
+        # C-c interrupts a running model turn; /exit is the documented TUI
+        # command that returns control to the pane's shell. Typing a launch
+        # command before observing the shell would submit it as a user prompt.
+        tmux("send-keys", "-t", pane, "C-c")
+        time.sleep(1)
+        tmux("send-keys", "-t", pane, "-l", "/exit")
+        tmux("send-keys", "-t", pane, "Enter")
+        for _ in range(20):
+            if pane_command(pane).lower().lstrip("-") in {"zsh", "bash", "sh", "fish"}:
+                break
+            time.sleep(0.5)
+        else:
+            return False, "Codex did not exit to a shell; launch command was not sent"
+    else:
+        # Other CLIs retain their established restart behavior.
+        tmux("send-keys", "-t", pane, "C-c")
+        time.sleep(3)
+        tmux("send-keys", "-t", pane, "C-c")
+        time.sleep(2)
+
+    tmux("send-keys", "-t", pane, "-l", "")
+    tmux("send-keys", "-t", pane, "-l", command)
+    time.sleep(1)
+    tmux("send-keys", "-t", pane, "Enter")
+    return True, "launch command submitted from shell"
+
+
 def main() -> int:
     global STATE
     ap = argparse.ArgumentParser(description="Relaunch a role's CLI to restore its pair MCP.")
@@ -185,17 +220,11 @@ def main() -> int:
             print(f"[ok   ] {role}: server came back while we held the lock — "
                   f"nothing to relaunch")
             return 0
-        print(f"[start] {role}: C-c, clear composer, launch {cmd!r} in {pane}")
-        tmux("send-keys", "-t", pane, "C-c")
-        time.sleep(3)
-        # A second C-c in case a modal held the pane; then a truly empty line so
-        # nothing of the previous composer survives to be appended to.
-        tmux("send-keys", "-t", pane, "C-c")
-        time.sleep(2)
-        tmux("send-keys", "-t", pane, "-l", "")
-        tmux("send-keys", "-t", pane, "-l", cmd)
-        time.sleep(1)
-        tmux("send-keys", "-t", pane, "Enter")
+        print(f"[start] {role}: relaunch {cmd!r} in {pane}")
+        started, detail = restart_in_pane(role, pane, cmd)
+        if not started:
+            print(f"[FAIL ] {role}: {detail}", file=sys.stderr)
+            return 1
         # The process is the honest signal. 45s was enough in measurement.
         for _ in range(15):
             time.sleep(3)
