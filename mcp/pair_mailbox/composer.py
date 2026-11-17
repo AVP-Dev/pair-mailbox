@@ -72,6 +72,7 @@ TUI_HINT_PHRASES = (
     r"to change thinking effort",
     r"to change model",
     r"to scroll",
+    r"Auto mode: edits & safe commands auto-approved \(shift\+tab to cycle\)",
     r"commands?",
     r"ctrl\+[a-z]\s+[a-z][a-z ]*",
     r"(?:[a-z]+\s+)*to (?:change|scroll|select|confirm|switch|exit|navigate|toggle|submit|cancel)",

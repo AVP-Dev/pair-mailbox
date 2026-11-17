@@ -445,5 +445,33 @@ class LaunchSecurityBoundary(unittest.TestCase):
         self.assertEqual(old_alias.read_text(encoding="utf-8"), "changed through old alias")
 
 
+class StartupResumePrompt(unittest.TestCase):
+    def test_closed_selected_task_reaches_both_roles_as_resume_context(self):
+        prompt = context.initial_prompt(
+            "codex", "writer", "auto",
+            {"id": 20, "text": "Work3 coordinator", "status": "done"},
+            "/project/.worktrees/work3",
+        )
+        self.assertIn("resume the selected task #20 [done]: Work3 coordinator", prompt)
+        self.assertIn("explicitly selected this item at startup", prompt)
+        self.assertNotIn("work on the open task", prompt)
+
+    def test_selected_dirty_worktree_is_named_when_no_task_card_exists(self):
+        prompt = context.initial_prompt("agy", "read-only critic", "auto",
+                                        resume_workspace="/project/.worktrees/recovery")
+        self.assertIn("resume the uncommitted worktree at /project/.worktrees/recovery", prompt)
+
+    def test_ordinary_launch_keeps_the_existing_no_task_instruction(self):
+        prompt = context.initial_prompt("codex", "writer", "auto")
+        self.assertIn("If no task is open, report ready and wait", prompt)
+
+    def test_auto_mode_finishes_open_tasks_and_continues_after_git_block(self):
+        prompt = context.initial_prompt("codex", "writer", "auto")
+        self.assertIn("Finish every open task", prompt)
+        self.assertIn("do not stop after one task or an arbitrary batch size", prompt)
+        self.assertIn("continue other open work instead of abandoning the round", prompt)
+        self.assertIn("never weaken the sandbox", prompt)
+
+
 if __name__ == "__main__":
     unittest.main()

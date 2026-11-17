@@ -383,6 +383,12 @@ class TaskStore:
                  idempotency_key: str | None = None) -> tuple[dict[str, Any], bool]:
         request = {"action": "add", "text": str(task.get("text") or ""),
                    "round": int(task.get("round", 0))}
+        # Execution routing is part of the request identity. Without it, a retry
+        # that reuses an add key with a different adapter requirement would
+        # silently return the first task.
+        for field in ("cli_profile", "execution_requirements", "requirements"):
+            if field in task:
+                request[field] = task[field]
         item = dict(task)
         key = str(idempotency_key or uuid.uuid4().hex)
         connection = self._connect()
@@ -583,8 +589,11 @@ class TaskStore:
                         action: str, expected_fencing_token: int,
                         lease_token: int | None = None,
                         idempotency_key: str | None = None,
-                        now: float | None = None) -> tuple[dict[str, Any], bool]:
+                        now: float | None = None,
+                        release_lease: bool = False) -> tuple[dict[str, Any], bool]:
         """Apply a fenced transition; supplying a lease token requires a live lease."""
+        if release_lease and lease_token is None:
+            raise TaskStoreError("release_lease requires the current lease token")
         key = str(idempotency_key or uuid.uuid4().hex)
         current_time = time.time() if now is None else float(now)
         connection = self._connect()
@@ -593,6 +602,8 @@ class TaskStore:
             request = {"action": action, "task_id": int(task_id), "updates": updates,
                        "expected_fencing_token": int(expected_fencing_token),
                        "lease_token": lease_token}
+            if release_lease:
+                request["release_lease"] = True
             replay = self._idempotent_result(connection, actor, idempotency_key, request)
             if replay is not None:
                 connection.commit()
@@ -618,7 +629,8 @@ class TaskStore:
             item = _validate_task(item)
             fence += 1
             lease_update = (", lease_owner=NULL, lease_expires_at=NULL"
-                            if item.get("status") in ("done", "dropped") else "")
+                            if release_lease or item.get("status") in ("done", "dropped")
+                            else "")
             changed = connection.execute(
                 "UPDATE tasks SET payload_json=?, version=?, fencing_token=?" + lease_update +
                 " WHERE id=? AND fencing_token=?",
@@ -630,6 +642,74 @@ class TaskStore:
             self._record(connection, task_id, actor, key, action, fence, result, request)
             connection.commit()
             return result, False
+        except BaseException:
+            if connection.in_transaction:
+                connection.rollback()
+            raise
+        finally:
+            connection.close()
+
+    def reclaim_expired_leases(self, actor: str = "worker-pool-reaper",
+                               now: float | None = None) -> list[int]:
+        """Clear expired leases and return execution jobs to ready atomically.
+
+        A stale owner is fenced before the lease is cleared. Its late heartbeat
+        or completion can therefore never mutate a task reclaimed by another
+        worker.
+        """
+        current_time = time.time() if now is None else float(now)
+        owner = str(actor)
+        connection = self._connect()
+        reclaimed: list[int] = []
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            rows = connection.execute(
+                "SELECT id, payload_json, version, fencing_token, lease_token "
+                "FROM tasks WHERE lease_owner IS NOT NULL "
+                "AND lease_expires_at IS NOT NULL AND lease_expires_at<=? ORDER BY id",
+                (current_time,),
+            ).fetchall()
+            for raw_id, payload, raw_version, raw_fence, raw_lease in rows:
+                task_id = int(raw_id)
+                item = _validate_task(json.loads(payload))
+                if item.get("status") != "open":
+                    continue
+                version, fence, lease_token = map(int, (raw_version, raw_fence, raw_lease))
+                if "execution_status" in item:
+                    try:
+                        attempts = int(item.get("attempts", 0))
+                        max_attempts = int(item.get("max_attempts", 3))
+                    except (TypeError, ValueError) as exc:
+                        raise TaskStoreError(
+                            f"task #{task_id} has invalid worker retry metadata"
+                        ) from exc
+                    if attempts < 0 or max_attempts < 1:
+                        raise TaskStoreError(f"task #{task_id} has invalid worker retry limits")
+                    exhausted = attempts >= max_attempts
+                    item["execution_status"] = "failed" if exhausted else "ready"
+                    if exhausted and not item.get("last_error"):
+                        item["last_error"] = "lease expired after maximum attempts"
+                if "worker_id" in item:
+                    item["worker_id"] = None
+                next_fence = fence + 1
+                changed = connection.execute(
+                    "UPDATE tasks SET payload_json=?, version=?, fencing_token=?, "
+                    "lease_owner=NULL, lease_expires_at=NULL "
+                    "WHERE id=? AND fencing_token=? AND lease_token=? AND lease_expires_at<=?",
+                    (_canonical(item), version + 1, next_fence, task_id, fence,
+                     lease_token, current_time),
+                ).rowcount
+                if changed != 1:
+                    raise StaleTaskFence(f"task #{task_id} lease changed during reclamation")
+                request = {"action": "lease_reclaim", "task_id": task_id,
+                           "lease_token": lease_token, "expected_fencing_token": fence}
+                self._record(connection, task_id, owner,
+                             f"lease-reclaim:{task_id}:{lease_token}",
+                             "lease_reclaimed", next_fence,
+                             _public_task(item, version + 1, next_fence), request)
+                reclaimed.append(task_id)
+            connection.commit()
+            return reclaimed
         except BaseException:
             if connection.in_transaction:
                 connection.rollback()

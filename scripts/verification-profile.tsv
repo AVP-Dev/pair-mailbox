@@ -25,6 +25,7 @@ staleness-detector	static	1	python3 scripts/staleness-detector.py
 backlog-lint	static	1	python3 scripts/backlog_check_test.py && python3 scripts/backlog-check.py
 # --- positive: behaviour that must work ---
 launch-context	positive	1	python3 -m unittest discover -s mcp/pair_mailbox -p test_launch_context.py
+startup-work	positive	1	python3 mcp/pair_mailbox/test_startup_work.py
 pi-cli-policy	positive	1	python3 -m unittest discover -s mcp/pair_mailbox -p test_pi_cli_policy.py
 instruction-block	positive	1	python3 -m unittest discover -s mcp/pair_mailbox -p test_instruction_block.py
 finish	positive	1	python3 finish_test.py
@@ -44,7 +45,10 @@ intent-gate	positive	1	python3 mcp/pair_mailbox/test_intent_gate.py
 plan-gate	positive	1	python3 mcp/pair_mailbox/test_plan_gate.py
 server-freshness	positive	1	python3 mcp/pair_mailbox/test_server_freshness.py
 store-core	positive	1	python3 mcp/pair_mailbox/test_store_core.py
+project-workspace	positive	1	python3 mcp/pair_mailbox/test_project_workspace.py
 task-store	positive	1	python3 mcp/pair_mailbox/test_task_store.py
+worker-pool	positive	1	python3 mcp/pair_mailbox/test_worker_pool.py
+coordinator	positive	1	python3 mcp/pair_mailbox/test_coordinator.py
 heal	positive	1	python3 mcp/pair_mailbox/test_heal.py
 budget	positive	1	python3 mcp/pair_mailbox/test_budget.py
 worktree	positive	1	python3 mcp/pair_mailbox/test_worktree.py

@@ -94,6 +94,5 @@ class TestProjectRoot(unittest.TestCase):
         finally:
             os.chdir(previous)
 
-
 if __name__ == "__main__":
     unittest.main(verbosity=2)

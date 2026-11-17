@@ -2865,7 +2865,8 @@ class PairSession:
         # merge-gate-does-not-require-ci-for-the-head). Outside a git repo there is no
         # head to name, and the record says so instead of inventing one.
         from review import git_head
-        measured_head = git_head(self.store.project_root)
+        project_root = self.store.project_root_for(self.role)
+        measured_head = git_head(project_root)
 
         def apply(state: dict[str, Any]) -> dict[str, Any]:
             # Which task the fact belongs to. Default — the single open one: usually one
@@ -2897,7 +2898,7 @@ class PairSession:
                 if sk is not None:
                     text = f"{record['round']}:{record['kind']}:{record['task'] or ''}:{record['value']}"
                     record["envelope"] = _keys.sign_envelope(
-                        sk, _keys.key_id_for(self.store.project_root, self.role),
+                    sk, _keys.key_id_for(project_root, self.role),
                         record["round"], self.role, "", record["at"], text)
             except Exception:  # noqa: BLE001
                 pass

@@ -67,6 +67,22 @@ class TestPointerRecognition(unittest.TestCase):
         self.assertEqual(len(prompt),
                          pointers.own_pointer_length("╰─ " + prompt + "█", "agy"))
 
+    def test_repeated_own_pointers_are_recognized_as_one_safe_tail(self) -> None:
+        prompt = pointers.ring_prompt("agy")
+        repeated = " ".join((prompt, pointers.mailbox_pointer("agy", 7), prompt))
+        self.assertEqual(len(repeated), pointers.own_pointer_length("╰─ " + repeated, "agy"))
+
+    def test_repeated_pointer_does_not_make_human_prefix_erasable(self) -> None:
+        prompt = pointers.ring_prompt("agy")
+        repeated = " ".join((prompt, prompt, prompt))
+        self.assertEqual(0, pointers.own_pointer_length(
+            "╰─ keep this text " + repeated, "agy"))
+
+    def test_doubled_p_pairpilot_notice_is_recognized_only_for_pairpilot_cleanup(self) -> None:
+        notice = "ppair: message from pairpilot. Read pair_read. (1 unread)"
+        self.assertEqual(len(notice), pointers.own_pointer_length("╰─ " + notice, "pairpilot"))
+        self.assertEqual(0, pointers.own_pointer_length("╰─ " + notice, "agy"))
+
 
 class TestClearOwnPointer(unittest.TestCase):
     def _clear(self, line: str, role: str = "agy") -> tuple[int, list[int]]:
@@ -88,6 +104,13 @@ class TestClearOwnPointer(unittest.TestCase):
         self.assertEqual(len(prompt), count)
         self.assertEqual([len(prompt)], erased,
                          "exactly our own text goes, by its own length")
+
+    def test_repeated_own_pointers_are_all_erased_without_touching_other_text(self) -> None:
+        prompt = pointers.ring_prompt("agy")
+        repeated = " ".join((prompt, prompt, prompt))
+        count, erased = self._clear("╰─ " + repeated)
+        self.assertEqual(len(repeated), count)
+        self.assertEqual([len(repeated)], erased)
 
     def test_a_composer_with_the_human_text_is_left_alone(self) -> None:
         count, erased = self._clear("╰─ the human wrote this")

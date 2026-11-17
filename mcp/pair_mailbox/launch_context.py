@@ -20,6 +20,7 @@ import time
 from pathlib import Path
 
 from pi_cli_policy import safe_pi_command
+from project_workspace import initial_prompt, launch_state
 
 ROOT = Path(__file__).resolve().parents[2]
 PREFIX = "PAIR_LAUNCH_"
@@ -682,7 +683,7 @@ def run_cli(role: str, state: str, command: list[str]) -> int:
     if not command:
         raise ValueError("paired launch needs a CLI command")
     state_path = Path(state).resolve()
-    state_data = json.loads((state_path / "state.json").read_text(encoding="utf-8"))
+    state_data = launch_state(state_path, role, Path.cwd())
     is_writer = state_data.get("writer") == role
     command = safe_cli_command(profile, role, is_writer, command)
     env = dict(os.environ)
@@ -704,22 +705,19 @@ def run_cli(role: str, state: str, command: list[str]) -> int:
         state_data = json.loads((Path(state) / "state.json").read_text(encoding="utf-8"))
         standing = "writer" if state_data.get("writer") == role else "read-only critic"
         autonomy = state_data.get("autonomy", "auto")
-        autonomy_guidance = {
-            "auto": ("No intermediate human approvals are expected. Keep working through review, fixes, "
-                     "tests, acceptance, and the final report. When policy denies an operation, use a "
-                     "permitted route; if none exists, record the blocker and evidence without weakening "
-                     "the sandbox or falsely closing the task."),
-            "semi": ("Complete routine work autonomously and stop only at the configured human checkpoint. "
-                     "Keep the security boundary unchanged."),
-            "observe": ("The supervisor observes and reports without taking automatic decisions. "
-                        "Keep the security boundary unchanged."),
-        }.get(autonomy, "Keep working within the configured security boundary.")
-        prompt = (f"You were explicitly launched as {role}, initially the {standing}. "
-                  "If MCP fails, retain that write boundary and repair the connection. Read pair_state, "
-                  "then pair_task(action='list'), respect your assigned write boundary, "
-                  f"and work on the open task. Project autonomy is {autonomy}: {autonomy_guidance} "
-                  "Communicate directly through pair_*; do not ask the user to relay messages. "
-                  "If no task is open, report ready and wait.")
+        resume_task = None
+        resume_task_id = os.environ.get("PAIR_RESUME_TASK_ID", "").strip()
+        if resume_task_id:
+            from store_core import Store
+            selected_state = Store(state_path).read()
+            resume_task = next((item for item in selected_state.get("tasks", [])
+                                if str(item.get("id")) == resume_task_id), None)
+            if resume_task is None:
+                raise ValueError(f"selected resume task #{resume_task_id} disappeared before launch")
+        resume_workspace = os.environ.get("PAIR_RESUME_WORKSPACE", "").strip()
+        prompt = initial_prompt(role, standing, autonomy, resume_task, resume_workspace)
+        env.pop("PAIR_RESUME_TASK_ID", None)
+        env.pop("PAIR_RESUME_WORKSPACE", None)
         command += ["--" if prompt_arg == "positional" else prompt_arg, prompt]
     command = role_sandbox_argv(role, state_path, command, workspace=Path.cwd())
     if not is_writer:

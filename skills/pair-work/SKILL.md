@@ -318,6 +318,10 @@ Only in `mode=fix`. In `audit` — none of this: git is not touched at all.
 - At the end: `git push` and a GitHub PR. **This is part of the work, not a separate action.**
 - **Never push to `main`.** Branch and PR only.
 - Do not tell the user that push and PR are "their business". That is your job.
+- In `autonomy=auto`, finish the full open task list, not just its first item or a
+  convenient batch. If Git or GitHub access is denied, keep the verified working-tree
+  changes and evidence, report the exact failed operation, and continue independent
+  open tasks. Never weaken the sandbox or claim a commit/PR that did not happen.
 
 ## 6. When to stop
 

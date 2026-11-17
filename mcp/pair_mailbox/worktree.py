@@ -305,6 +305,12 @@ def _main_worktree(repo_dir: Path) -> Path | None:
     return None
 
 
+def project_root(repo_dir: Path) -> Path:
+    """Resolve a linked checkout to the project's canonical main worktree."""
+    root = Path(repo_dir).resolve()
+    return _main_worktree(root) or root
+
+
 def default_branch(repo_dir: Path) -> str:
     """The branch a launch worktree gets when nobody named one.
 
@@ -322,7 +328,7 @@ def default_branch(repo_dir: Path) -> str:
     A launch worktree's branch is ephemeral by nature, and it must land in
     the ephemeral class so it can be cleaned up once it is merged.
     """
-    root = Path(repo_dir).resolve()
+    root = project_root(Path(repo_dir))
     digest = hashlib.sha256(str(root).encode("utf-8")).hexdigest()[:8]
     name = root.name or "project"
     return f"chore/pair-{name}-{digest}"

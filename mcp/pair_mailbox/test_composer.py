@@ -193,6 +193,7 @@ class TestTuiHintsAreNotContent(unittest.TestCase):
         "❯ ⇧⇥ to change model",
         "❯ ctrl+x commands",
         "❯ ↑↓ to scroll",
+        "> Auto mode: edits & safe commands auto-approved (shift+tab to cycle)",
         "❯",
         "› Ask Codex to do anything",
     ]
@@ -205,10 +206,17 @@ class TestTuiHintsAreNotContent(unittest.TestCase):
 
     def test_real_text_after_hint_stays_busy(self) -> None:
         for line in ("❯ hello, deal with the silent critic",
-                     "❯ ctrl+x does not help: text"):
+                     "❯ ctrl+x does not help: text",
+                     "> Auto mode: edits & safe commands auto-approved (shift+tab to cycle) reply"):
             with self.subTest(line=line):
                 self.assertFalse(composer.is_composer_empty(line),
                                  "real text stays text")
+
+    def test_antigravity_auto_mode_hint_is_empty_but_typed_text_is_not(self) -> None:
+        captured = "> Auto mode: edits & safe commands auto-approved (shift+tab to cycle)"
+        self.assertEqual(captured, composer.composer_line(["work", captured]))
+        self.assertTrue(composer.is_composer_empty(captured))
+        self.assertFalse(composer.is_composer_empty(captured + " continue"))
 
     def test_opencode_geometry_unchanged(self) -> None:
         panel = ["…", "  ┃  Ask anything…", "  ╹" + "▀" * 30,
@@ -255,7 +263,42 @@ class TestTuiHintsAreNotContent(unittest.TestCase):
         self.assertNotEqual("script text", composer.composer_line(panel))
 
 
+class TestAntigravityAutoModeDelivery(unittest.TestCase):
+    hint = "> Auto mode: edits & safe commands auto-approved (shift+tab to cycle)"
 
+    def setUp(self) -> None:
+        self.original = (composer.capture, composer._tmux, composer.pane_alive,
+                         composer.subprocess.run)
+
+    def tearDown(self) -> None:
+        (composer.capture, composer._tmux, composer.pane_alive,
+         composer.subprocess.run) = self.original
+
+    def test_idle_auto_mode_hint_allows_delivery(self) -> None:
+        captures = [[self.hint], ["> wake the idle critic"], ["> wake the idle critic"]]
+        sent: list[list[str]] = []
+        composer.capture = lambda _tmux, _pane: captures.pop(0) if len(captures) > 1 else captures[0]
+        composer._tmux = lambda: "tmux"
+        composer.pane_alive = lambda _tmux, _pane: True
+        composer.subprocess.run = lambda cmd, **_kwargs: (
+            sent.append(cmd) or subprocess.CompletedProcess(cmd, 0, "", ""))
+
+        result = composer.deliver("%7", "wake the idle critic", submit=False)
+
+        self.assertTrue(result["delivered"])
+        self.assertTrue(any("send-keys" in cmd for cmd in sent))
+
+    def test_real_text_beside_auto_mode_hint_is_never_overwritten(self) -> None:
+        sent: list[list[str]] = []
+        composer.capture = lambda _tmux, _pane: [self.hint + " please review"]
+        composer._tmux = lambda: "tmux"
+        composer.pane_alive = lambda _tmux, _pane: True
+        composer.subprocess.run = lambda cmd, **_kwargs: (
+            sent.append(cmd) or subprocess.CompletedProcess(cmd, 0, "", ""))
+
+        with self.assertRaises(composer.ComposerBusy):
+            composer.deliver("%7", "wake the idle critic", submit=False)
+        self.assertEqual([], sent)
 
 class TestPilotCoverageGaps(unittest.TestCase):
     """The routine the agent stalled on at a prompt, though the protocol allows it.

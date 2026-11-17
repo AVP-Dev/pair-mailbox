@@ -552,7 +552,7 @@ class TestPaneIdentityIsNotLiveness(PairTestCase):
         state_dir.mkdir(parents=True)
         store = Store(state_dir, allow_create=True)
         self.assertEqual(store.root, state_dir)
-        self.assertEqual(store.project_root, state_dir.parent,
+        self.assertEqual(store.project_root, state_dir.parent.resolve(),
                          "the project root is the state-dir parent")
         orig = composer.pane_identity
         composer.pane_identity = lambda tmux, pane: {
@@ -569,7 +569,7 @@ class TestPaneIdentityIsNotLiveness(PairTestCase):
         """.pair` is no dir — meaning this IS the root, parent stands extra."""
         state_dir = Path(tempfile.mkdtemp(prefix="pairtest-"))
         store = Store(state_dir, allow_create=True)
-        self.assertEqual(store.project_root, state_dir)
+        self.assertEqual(store.project_root, state_dir.resolve())
 
     def test_a_shared_parent_directory_is_refused(self) -> None:
         """A pane from ~/work shared across projects means not ours.

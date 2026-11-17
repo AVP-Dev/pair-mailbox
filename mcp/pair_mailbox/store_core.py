@@ -343,6 +343,18 @@ class Store:
                 return active
         return base
 
+    def project_root_for(self, role: str) -> Path:
+        from project_workspace import project_root_for
+        return project_root_for(self, role)
+
+    def record_role_workspace(self, role: str, workspace: Path) -> Path | None:
+        from project_workspace import record_role_workspace
+        return record_role_workspace(self, role, workspace)
+
+    def prepare_role_launch(self, role: str, workspace: Path) -> dict[str, Any]:
+        self.record_role_workspace(role, workspace)
+        return self.read()
+
     def default_state(self) -> dict[str, Any]:
         return {
             "task": "",

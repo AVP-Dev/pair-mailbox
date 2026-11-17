@@ -578,6 +578,26 @@ class TestDurableJournal(PairTestCase):
             self.assertNotEqual(first, worktree.default_branch(two))
             self.assertTrue(first.startswith("chore/pair-"))
 
+    def test_a_repeat_launch_from_linked_worktree_resolves_the_project_root(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp) / "repo"
+            repo.mkdir()
+            subprocess.run(["git", "init", "-q", str(repo)], check=True)
+            subprocess.run(["git", "config", "user.email", "pair@test.local"],
+                           cwd=repo, check=True)
+            subprocess.run(["git", "config", "user.name", "Pair Test"],
+                           cwd=repo, check=True)
+            (repo / "README.md").write_text("base\n", encoding="utf-8")
+            subprocess.run(["git", "add", "README.md"], cwd=repo, check=True)
+            subprocess.run(["git", "commit", "-qm", "initial"], cwd=repo, check=True)
+            linked = repo / ".worktrees" / "pair-launch"
+            linked.parent.mkdir(parents=True)
+            result = worktree.bootstrap_worktree(repo, "chore/pair-launch", linked)
+            self.assertTrue(result["ok"], result.get("error"))
+
+            self.assertEqual(repo.resolve(), worktree.project_root(linked))
+            self.assertEqual(worktree.default_branch(repo), worktree.default_branch(linked))
+
     def test_the_derived_branch_is_in_the_ephemeral_class(self) -> None:
         """§20 reads the class from the NAME. A name outside the known
         patterns is an ANOMALY: a branch no rule can protect and the janitor

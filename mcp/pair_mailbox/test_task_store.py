@@ -2,11 +2,11 @@
 from __future__ import annotations
 
 import json
-import multiprocessing
 import os
 import signal
 import sqlite3
 import stat
+import subprocess
 import sys
 import tempfile
 import threading
@@ -24,21 +24,6 @@ from server import PairSession, ProtocolError  # noqa: E402
 from store_core import Store  # noqa: E402
 from task_store import StaleTaskFence, TaskStore, TaskStoreError  # noqa: E402
 import server_freshness  # noqa: E402
-
-
-def _hold_uncommitted_task_update(root: str, ready: Any) -> None:
-    """Leave a task payload update uncommitted until the parent kills this process."""
-    store = Store(Path(root))
-    connection = store.task_store._connect()
-    connection.execute("BEGIN IMMEDIATE")
-    row = connection.execute("SELECT payload_json FROM tasks WHERE id=1").fetchone()
-    task = json.loads(row[0])
-    task["text"] = "uncommitted write"
-    connection.execute("UPDATE tasks SET payload_json=? WHERE id=1",
-                       (json.dumps(task, sort_keys=True),))
-    ready.set()
-    while True:
-        time.sleep(1)
 
 
 class TestTaskStoreMigration(unittest.TestCase):
@@ -126,22 +111,47 @@ class TestTaskStoreMigration(unittest.TestCase):
             self.skipTest("SIGKILL recovery test requires a POSIX process")
         self.write_state({"tasks": [{"id": 1, "text": "durable", "status": "open"}]})
         initial = Store(self.root).read()["tasks"][0]
-        context = multiprocessing.get_context("fork")
-        ready = context.Event()
-        process = context.Process(
-            target=_hold_uncommitted_task_update, args=(str(self.root), ready)
+        ready = self.root / "writer-ready"
+        child = """
+import json
+import sys
+import time
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+from store_core import Store
+root, ready = Path(sys.argv[2]), Path(sys.argv[3])
+store = Store(root)
+connection = store.task_store._connect()
+connection.execute("BEGIN IMMEDIATE")
+row = connection.execute("SELECT payload_json FROM tasks WHERE id=1").fetchone()
+task = json.loads(row[0])
+task["text"] = "uncommitted write"
+connection.execute("UPDATE tasks SET payload_json=? WHERE id=1",
+                   (json.dumps(task, sort_keys=True),))
+ready.touch()
+while True:
+    time.sleep(1)
+"""
+        process = subprocess.Popen(
+            [sys.executable, "-c", child, str(Path(__file__).resolve().parent),
+             str(self.root), str(ready)],
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
         )
-        process.start()
         try:
-            self.assertTrue(ready.wait(5), "child did not reach its uncommitted update")
+            deadline = time.monotonic() + 5
+            while not ready.exists() and process.poll() is None and time.monotonic() < deadline:
+                time.sleep(0.02)
+            self.assertTrue(ready.exists(), "child did not reach its uncommitted update")
             os.kill(process.pid, signal.SIGKILL)
-            process.join(5)
+            process.wait(timeout=5)
         finally:
-            if process.is_alive():
+            if process.poll() is None:
                 process.kill()
-                process.join(5)
+                process.wait(timeout=5)
 
-        self.assertEqual(-signal.SIGKILL, process.exitcode)
+        self.assertEqual(-signal.SIGKILL, process.returncode)
         recovered = Store(self.root).read()["tasks"][0]
         self.assertEqual(initial, recovered)
 
@@ -233,6 +243,105 @@ class TestTaskStoreTransitions(unittest.TestCase):
             connection.close()
         self.assertIsNone(lease_owner)
         self.assertIsNone(lease_expires_at)
+
+    def test_release_lease_requeues_task_and_fences_previous_owner(self) -> None:
+        item, _ = self.store.add_task(
+            {**self.new_task(), "cli_profile": "codex",
+             "execution_requirements": {"capabilities": ["python"]},
+             "execution_status": "ready"},
+            "writer", "release-lease-add",
+        )
+        lease, _ = self.store.task_store.acquire_lease(
+            item["id"], "worker-a", 30, idempotency_key="release-lease-a", now=100)
+        busy, _ = self.store.task_store.transition_task(
+            item["id"], {"execution_status": "busy", "worker_id": "worker-a"},
+            "worker-a", "worker_claim", lease["fencing_token"],
+            lease_token=lease["lease_token"], idempotency_key="release-lease-claim", now=101)
+        ready, _ = self.store.task_store.transition_task(
+            item["id"], {"execution_status": "ready", "worker_id": None},
+            "worker-a", "worker_retry", busy["fencing_token"],
+            lease_token=lease["lease_token"], idempotency_key="release-lease-fail",
+            now=102, release_lease=True)
+        replayed_ready, was_replayed = self.store.task_store.transition_task(
+            item["id"], {"execution_status": "ready", "worker_id": None},
+            "worker-a", "worker_retry", busy["fencing_token"],
+            lease_token=lease["lease_token"], idempotency_key="release-lease-fail",
+            now=102, release_lease=True)
+
+        replacement, _ = self.store.task_store.acquire_lease(
+            item["id"], "worker-b", 30, idempotency_key="release-lease-b", now=103)
+
+        self.assertEqual("ready", ready["execution_status"])
+        self.assertTrue(was_replayed)
+        self.assertEqual(ready, replayed_ready)
+        self.assertEqual(lease["lease_token"] + 1, replacement["lease_token"])
+        self.assertGreater(replacement["fencing_token"], busy["fencing_token"])
+        with self.assertRaises(StaleTaskFence):
+            self.store.task_store.transition_task(
+                item["id"], {"execution_status": "done"}, "worker-a", "late-complete",
+                busy["fencing_token"], lease_token=lease["lease_token"],
+                idempotency_key="release-lease-late", now=104)
+
+    def test_reclaim_expired_lease_returns_job_to_ready(self) -> None:
+        item, _ = self.store.add_task(
+            {**self.new_task(), "cli_profile": "codex", "execution_status": "ready"},
+            "writer", "reclaim-lease-add",
+        )
+        lease, _ = self.store.task_store.acquire_lease(
+            item["id"], "worker-a", 10, idempotency_key="reclaim-lease-a", now=100)
+        busy, _ = self.store.task_store.transition_task(
+            item["id"], {"execution_status": "busy", "worker_id": "worker-a"},
+            "worker-a", "worker_claim", lease["fencing_token"],
+            lease_token=lease["lease_token"], idempotency_key="reclaim-lease-claim", now=101)
+
+        self.assertEqual([], self.store.task_store.reclaim_expired_leases(now=109))
+        self.assertEqual([item["id"]], self.store.task_store.reclaim_expired_leases(now=110))
+        self.assertEqual([], self.store.task_store.reclaim_expired_leases(now=111))
+        ready = self.store.task_store.list_tasks()[0]
+
+        self.assertEqual("ready", ready["execution_status"])
+        self.assertIsNone(ready["worker_id"])
+        self.assertGreater(ready["fencing_token"], busy["fencing_token"])
+        with self.assertRaises(StaleTaskFence):
+            self.store.task_store.transition_task(
+                item["id"], {"execution_status": "done"}, "worker-a", "late-complete",
+                busy["fencing_token"], lease_token=lease["lease_token"],
+                idempotency_key="reclaim-lease-late", now=111)
+
+    def test_reclaim_after_final_attempt_marks_job_failed(self) -> None:
+        item, _ = self.store.add_task(
+            {**self.new_task(), "cli_profile": "codex", "execution_status": "ready",
+             "attempts": 1, "max_attempts": 1},
+            "writer", "reclaim-exhausted-add",
+        )
+        lease, _ = self.store.task_store.acquire_lease(
+            item["id"], "worker-a", 10, idempotency_key="reclaim-exhausted-a", now=100)
+        self.store.task_store.transition_task(
+            item["id"], {"execution_status": "busy", "worker_id": "worker-a"},
+            "worker-a", "worker_claim", lease["fencing_token"],
+            lease_token=lease["lease_token"], idempotency_key="reclaim-exhausted-claim", now=101)
+
+        self.assertEqual([item["id"]], self.store.task_store.reclaim_expired_leases(now=110))
+        failed = self.store.task_store.list_tasks()[0]
+
+        self.assertEqual("failed", failed["execution_status"])
+        self.assertEqual("lease expired after maximum attempts", failed["last_error"])
+
+    def test_execution_metadata_is_part_of_add_idempotency(self) -> None:
+        first, replayed = self.store.add_task(
+            {**self.new_task(), "cli_profile": "codex",
+             "execution_requirements": {"capabilities": ["python"]}},
+            "writer", "execution-metadata-add",
+        )
+
+        self.assertFalse(replayed)
+        self.assertEqual("codex", first["cli_profile"])
+        with self.assertRaisesRegex(TaskStoreError, "different request"):
+            self.store.add_task(
+                {**self.new_task(), "cli_profile": "claude",
+                 "execution_requirements": {"capabilities": ["python"]}},
+                "writer", "execution-metadata-add",
+            )
 
     def test_failed_transition_rolls_back_task_and_event_atomically(self) -> None:
         item, _ = self.store.add_task(self.new_task(), "writer", "atomic-add")

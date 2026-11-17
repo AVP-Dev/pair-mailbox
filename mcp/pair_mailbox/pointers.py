@@ -64,13 +64,20 @@ def own_pointer_length(line: str | None, role: str) -> int:
     if not line:
         return 0
     cleaned = re.sub(f"[{BOX_GLYPH}|]", "", line).strip()
-    candidates = [shape.format(role=re.escape(role)) + r"$"
+    candidates = [shape.format(role=re.escape(role))
                   for shape in (RING_SHAPE, MAILBOX_SHAPE)]
-    candidates.append(PILOT_WAKE_SHAPE + r"$")
-    for pattern in candidates:
-        match = re.search(pattern, cleaned)
-        if not match:
-            continue
+    candidates.append(PILOT_WAKE_SHAPE)
+    if role == "pairpilot":
+        # Compatibility with the host's doubled-p prefix on a pairpilot wake;
+        # accept only the exact notification text, optionally with its unread count.
+        candidates.append(r"ppair: message from pairpilot\. Read pair_read\.(?: \(\d+ unread\))?")
+    single = "(?:" + "|".join(candidates) + ")"
+    # A previous wake can be retried while its exact pointer is still in the
+    # composer. Recognize a tail made only of our known pointers so repeated
+    # system markers do not wedge the pane forever. Any other prefix remains a
+    # hard refusal; we never erase text merely because it follows our marker.
+    match = re.search(rf"{single}(?:\s+{single})*$", cleaned)
+    if match:
         head = cleaned[: match.start()].strip()
         if head and not is_composer_empty(head):
             # Something else shares the composer: ours is not the only text
