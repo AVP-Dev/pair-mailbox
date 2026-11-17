@@ -19,6 +19,7 @@ from __future__ import annotations
 import ast
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = ROOT / "bin" / "pairmcprestart"
@@ -134,6 +135,17 @@ class TestDeadlines(unittest.TestCase):
         # The handshake is the slowest step: the server process only appears
         # after the toggle lands.
         self.assertGreater(module["HANDSHAKE_TIMEOUT"], module["PICKER_TIMEOUT"])
+
+
+class TestServerInventory(unittest.TestCase):
+    def test_server_pid_uses_project_scoped_inventory(self) -> None:
+        module = _load_module()
+        state = Path("/tmp/project with space/.pair")
+        module["STATE"] = state
+        scanner = mock.Mock(return_value=[{"pid": 42, "role": "codex", "start": 1.0}])
+        module["pair_mailbox_servers"] = scanner
+        self.assertEqual("42", module["server_pid"]("codex"))
+        scanner.assert_called_once_with(state, "codex")
 
 
 if __name__ == "__main__":

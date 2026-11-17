@@ -562,5 +562,20 @@ class StartupResumePrompt(unittest.TestCase):
         self.assertIn("never weaken the sandbox", prompt)
 
 
+class RelaunchPromptMode(unittest.TestCase):
+    def test_resumed_codex_does_not_receive_a_second_startup_prompt(self):
+        profiles = {"codex": {"initial_prompt": "positional"}}
+        self.assertIsNone(context.initial_prompt_mode(
+            "codex", ["codex", "resume", "--last"], profiles))
+
+    def test_fresh_codex_and_other_cli_keep_profile_startup_prompt(self):
+        profiles = {"codex": {"initial_prompt": "positional"},
+                    "agy": {"initial_prompt": "--prompt"}}
+        self.assertEqual("positional", context.initial_prompt_mode(
+            "codex", ["codex", "--no-daemon"], profiles))
+        self.assertEqual("--prompt", context.initial_prompt_mode(
+            "agy", ["agy", "--resume"], profiles))
+
+
 if __name__ == "__main__":
     unittest.main()

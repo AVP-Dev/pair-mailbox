@@ -18,14 +18,15 @@ Single-flight, because a relaunch twice in a row is the round-104 S5 failure sha
 the kernel releases it if the holder dies, so a crash never wedges the role.
 
 Cost, stated rather than hidden: the relaunched CLI loses its IN-MEMORY session
-context. The mailbox, notes, transcript and manifests survive, so the peer
-re-reads state and continues. This is the trade the human picked over unbounded
-picker time.
+context unless its profile defines a resume command. Codex resumes its most
+recent saved session; other profiles start from their configured launch
+command. In every case the mailbox, notes, transcript and manifests survive.
 
 Usage:
   bin/pairrelaunch                the peer role with a live pane (default)
   bin/pairrelaunch --role opencode
   bin/pairrelaunch --check        report only
+  bin/pairrelaunch --state DIR    use shared room state from a worktree
 """
 from __future__ import annotations
 
@@ -40,6 +41,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "mcp/pair_mailbox"))
+from process_tree import pair_mailbox_servers  # noqa: E402
+from launch_context import profile_for  # noqa: E402
 STATE = ROOT / ".pair"
 KNOWN_ROLES = ("omp", "opencode", "agy", "claude", "pi", "codex")
 
@@ -74,18 +77,33 @@ def state_roles() -> list[str]:
 
 def pane_of(role: str) -> str:
     code, out = tmux("list-panes", "-a", "-F",
-                     "#{pane_id}|#{session_name}|#{pane_index}|#{pane_current_command}")
+                     "#{pane_id}|#{session_name}|#{pane_index}|#{pane_current_command}|#{pane_current_path}")
+    if code != 0:
+        return ""
+    try:
+        data = json.loads((STATE / "state.json").read_text(encoding="utf-8"))
+        expected = str((data.get("roles", {}).get(role) or {}).get("pane_uid") or "")
+    except (OSError, ValueError):
+        expected = ""
+    root = ROOT.resolve()
+    matches = []
     for line in out.splitlines():
-        pane_id, _session, _index, command = (line.split("|") + [""] * 4)[:4]
-        if command.strip().lower().startswith(role):
-            return pane_id.strip()
-    return ""
+        pane_id, _session, _index, command, cwd = (line.split("|", 4) + [""] * 5)[:5]
+        try:
+            Path(cwd).resolve().relative_to(root)
+        except (OSError, RuntimeError, ValueError):
+            continue
+        if command.strip().lower() != profile_for(role).lower():
+            continue
+        matches.append(pane_id.strip())
+    if expected and expected in matches:
+        return expected
+    return matches[0] if len(matches) == 1 else ""
 
 
 def server_pid(role: str) -> str:
-    proc = subprocess.run(["pgrep", "-f", f"server.py --role {role}"],
-                          capture_output=True, text=True, timeout=10)
-    return proc.stdout.strip().splitlines()[0] if proc.stdout.strip() else ""
+    matches = pair_mailbox_servers(STATE, role)
+    return str(matches[0]["pid"]) if matches else ""
 
 
 def launch_cmd(role: str) -> str:
@@ -93,7 +111,10 @@ def launch_cmd(role: str) -> str:
     try:
         profiles = json.loads((ROOT / "cli-profiles.json").read_text(encoding="utf-8"))
         from launch_context import launch_shell, profile_for
-        command = str((profiles.get(profile_for(role)) or {}).get("launch") or "").strip()
+        profile = profiles.get(profile_for(role)) or {}
+        # Codex /mcp is informational; its supported in-process reload is an
+        # app-server RPC. Resume its saved conversation while relaunching MCP.
+        command = str(profile.get("resume") or profile.get("launch") or "").strip()
         return launch_shell(role, STATE, command) if command else ""
     except (OSError, ValueError):
         return ""
@@ -114,10 +135,14 @@ def relaunch_lock(role: str):
 
 
 def main() -> int:
+    global STATE
     ap = argparse.ArgumentParser(description="Relaunch a role's CLI to restore its pair MCP.")
     ap.add_argument("--role", default="")
+    ap.add_argument("--state", default="", help="project .pair directory (defaults to this checkout)")
     ap.add_argument("--check", action="store_true", help="report only, touch nothing")
     args = ap.parse_args()
+    if args.state:
+        STATE = Path(args.state).expanduser().resolve()
 
     try:
         mine = str(json.loads((STATE / "state.json").read_text(encoding="utf-8")).get("writer") or "")
