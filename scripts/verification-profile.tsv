@@ -49,6 +49,7 @@ project-workspace	positive	1	python3 mcp/pair_mailbox/test_project_workspace.py
 task-store	positive	1	python3 mcp/pair_mailbox/test_task_store.py
 worker-pool	positive	1	python3 mcp/pair_mailbox/test_worker_pool.py
 coordinator	positive	1	python3 mcp/pair_mailbox/test_coordinator.py
+execution-api	positive	1	python3 mcp/pair_mailbox/test_execution_api.py
 heal	positive	1	python3 mcp/pair_mailbox/test_heal.py
 budget	positive	1	python3 mcp/pair_mailbox/test_budget.py
 worktree	positive	1	python3 mcp/pair_mailbox/test_worktree.py

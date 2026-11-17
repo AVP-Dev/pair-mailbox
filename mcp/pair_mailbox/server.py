@@ -445,7 +445,8 @@ def tasks_of(state: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def open_tasks(state: dict[str, Any]) -> list[dict[str, Any]]:
-    return [item for item in tasks_of(state) if item.get("status") == OPEN_TASK]
+    return [item for item in tasks_of(state)
+            if item.get("status") == OPEN_TASK and "execution_status" not in item]
 
 
 def next_task_id(state: dict[str, Any]) -> int:
@@ -778,6 +779,8 @@ from store_core import (  # noqa: E402,F401 - re-export, the seam's public face
     _transcript_tail,
 )
 from task_store import StaleTaskFence, TaskStoreError  # noqa: E402 - task API errors
+from execution_api import ExecutionAPI  # noqa: E402 - durable execution bridge
+from coordinator import CoordinatorError  # noqa: E402 - runtime routing errors
 
 
 def tmux_command() -> list[str]:
@@ -860,6 +863,7 @@ class PairSession:
             raise SystemExit(f"invalid --role {role!r}: use letters, digits, dot, dash, underscore")
         self.role = role
         self.store = store
+        self.execution = ExecutionAPI(store.task_store, role)
         self._explicit_pane = (pane or "").strip()
         self._last_state_hash: str | None = None
 
@@ -2736,7 +2740,11 @@ class PairSession:
                         reason: str = "", scope: str = "open",
                         limit: int | None = None, offset: int = 0,
                         idempotency_key: str | None = None,
-                        fencing_token: int | None = None) -> dict[str, Any]:
+                        fencing_token: int | None = None,
+                        cli_profile: str | None = None,
+                        execution_requirements: dict[str, Any] | None = None,
+                        requirements: dict[str, Any] | None = None,
+                        max_attempts: int = 3) -> dict[str, Any]:
         """Shared task list: all roles add/list; only writer closes. Open tasks default."""
         action = str(action or "").strip()
         if action not in ("add", "done", "drop", "list"):
@@ -2754,7 +2762,7 @@ class PairSession:
         state = self.store.read()
 
         if action == "list":
-            items = tasks_of(state)
+            items = [item for item in tasks_of(state) if "execution_status" not in item]
             counts = {status: 0 for status in TASK_STATUSES}
             for item in items:
                 status = str(item.get("status") or "")
@@ -2792,17 +2800,37 @@ class PairSession:
             if len(body) > 2000:
                 raise ProtocolError("A task longer than 2000 characters is not a task.")
 
-            item, replayed = self.store.add_task({
+            task_body = {
                 "id": None, "text": body, "status": OPEN_TASK,
                 "added_at": utcnow(), "added_by": self.role,
                 "round": int(state.get("round", 0)), "reason": "",
                 "closed_at": None, "closed_by": None,
-            }, actor=self.role, idempotency_key=idempotency_key)
+            }
+            if cli_profile is not None:
+                task_body["cli_profile"] = cli_profile
+            if execution_requirements is not None:
+                task_body["execution_requirements"] = execution_requirements
+            if requirements is not None:
+                task_body["requirements"] = requirements
+            execution_task = any(key in task_body for key in
+                                 ("cli_profile", "execution_requirements", "requirements"))
+            if execution_task:
+                task_body["max_attempts"] = max_attempts
+                try:
+                    item, replayed = self.execution.submit(
+                        task_body, actor=self.role, idempotency_key=idempotency_key
+                    )
+                except CoordinatorError as exc:
+                    raise ProtocolError(str(exc)) from exc
+            else:
+                item, replayed = self.store.add_task(
+                    task_body, actor=self.role, idempotency_key=idempotency_key
+                )
             write_task_banner(self.store.root, self.store.read())
             if not replayed:
                 self.store.append_transcript("task_added", self.role, task_id=item["id"],
                                              text=body[:200])
-            return {"task": item,
+            return {"task": item, "kind": "execution" if execution_task else "governance",
                     "idempotent_replay": replayed,
                     "why_it_matters": "An open task keeps the round from closing until it is "
                                       "done or dropped with a reason."}
@@ -2839,6 +2867,32 @@ class PairSession:
                 "how_to_use": "Closing is honest bookkeeping. If the work is not actually "
                               "finished, leave it open or drop it with a reason — the round "
                               "cannot close over an open task, and that is the point."}
+
+    def tool_pair_execution(self, action: str, worker_id: str = "",
+                            cli_profile: str = "", capabilities: Any = None,
+                            result: str = "", error: str = "",
+                            retry: bool | None = None) -> dict[str, Any]:
+        from coordinator import CoordinatorError
+        try:
+            return self.execution.worker_call(
+                action, worker_id=worker_id, cli_profile=cli_profile,
+                capabilities=capabilities, result=result, error=error, retry=retry,
+            )
+        except CoordinatorError as exc:
+            raise ProtocolError(str(exc)) from exc
+
+    def tool_pair_coordinator(self, action: str, peer_id: str = "",
+                              worker_id: str = "", members: Any = None,
+                              proposal_id: str = "", approve: bool | None = None
+                              ) -> dict[str, Any]:
+        from coordinator import CoordinatorError
+        try:
+            return self.execution.coordinator_call(
+                action, peer_id=peer_id, worker_id=worker_id, members=members,
+                proposal_id=proposal_id, approve=approve,
+            )
+        except CoordinatorError as exc:
+            raise ProtocolError(str(exc)) from exc
 
     def tool_pair_evidence(self, kind: str, value: str, ok: bool = True,
                            note: str = "", task: int | None = None) -> dict[str, Any]:
@@ -3878,8 +3932,9 @@ def tool_definitions() -> list[dict[str, Any]]:
                 "The shared task list. Add what you found, close what is finished. The round "
                 "cannot close while any task is open, so a task added mid-round cannot be "
                 "forgotten: either it gets done, or it gets dropped with a reason on the "
-                "record. The critic adds tasks it discovered; only the writer closes them, "
-                "because implementing them is the writer's job (PROTOCOL.md 4). "
+                "record. The critic adds tasks it discovered; only the writer closes governance "
+                "tasks. Execution jobs carry an explicit CLI route and are claimed/completed "
+                "through pair_execution; pair_task cannot bypass their lease or worker path. "
                 "action=\"list\" answers with the OPEN tasks and the counts (open/done/dropped) "
                 "— the whole history costs 29 784 tokens per call on a room with 137 tasks, "
                 "and it stays reachable behind scope=\"history\"."
@@ -3891,6 +3946,10 @@ def tool_definitions() -> list[dict[str, Any]]:
                     "id": {"type": "integer",
                            "description": "Which task, for done/drop. Omit for add and list."},
                     "text": {"type": "string", "description": "What to do. Required for add."},
+                    "cli_profile": {"type": "string", "description": "Optional CLI execution route. When supplied, this is a leased execution job."},
+                    "execution_requirements": {"type": "object", "description": "Optional worker capabilities and CLI routing requirements."},
+                    "requirements": {"type": "object", "description": "Compatibility alias for execution_requirements."},
+                    "max_attempts": {"type": "integer", "minimum": 1, "default": 3},
                     "reason": {"type": "string",
                                "description": "Required for drop, and it may not be empty."},
                     "scope": {
@@ -3922,6 +3981,41 @@ def tool_definitions() -> list[dict[str, Any]]:
                             "after any newer task transition."
                         ),
                     },
+                },
+                "required": ["action"],
+            },
+        },
+        {
+            "name": "pair_execution",
+            "description": (
+                "Manage the caller role's leased execution worker. Register with a configured CLI profile, "
+                "claim a routed job, send heartbeats while executing, then complete or fail it. Claims "
+                "are returned to the CLI; this server never shells out to run task text."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "action": {"type": "string", "enum": ["register", "claim", "heartbeat", "complete", "fail", "status"]},
+                    "worker_id": {"type": "string", "description": "Defaults to the authenticated role; other identities are refused."},
+                    "cli_profile": {"type": "string", "description": "Configured CLI profile used when registering."},
+                    "capabilities": {"type": "array", "items": {"type": "string"}},
+                    "result": {"type": "string"},
+                    "error": {"type": "string"},
+                    "retry": {"type": "boolean"},
+                },
+                "required": ["action"],
+            },
+        },
+        {
+            "name": "pair_coordinator",
+            "description": "Register this role's worker as a coordinator peer, inspect topology, propose/vote on topology, or dispatch the next leased job.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "action": {"type": "string", "enum": ["register_peer", "status", "propose", "vote", "dispatch"]},
+                    "peer_id": {"type": "string"}, "worker_id": {"type": "string"},
+                    "members": {"type": "array", "items": {"type": "string"}},
+                    "proposal_id": {"type": "string"}, "approve": {"type": "boolean"},
                 },
                 "required": ["action"],
             },
@@ -4144,6 +4238,8 @@ HANDLERS = {
     "pair_patch_release": lambda session, args: session.tool_pair_patch_release(**args),
     "pair_patch_applied": lambda session, args: session.tool_pair_patch_applied(**args),
     "pair_task": lambda session, args: session.tool_pair_task(**args),
+    "pair_execution": lambda session, args: session.tool_pair_execution(**args),
+    "pair_coordinator": lambda session, args: session.tool_pair_coordinator(**args),
     "pair_evidence": lambda session, args: session.tool_pair_evidence(**args),
     "pair_note": lambda session, args: session.tool_pair_note(**args),
     "pair_note_index": lambda session, args: session.tool_pair_note_index(**args),

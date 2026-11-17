@@ -330,12 +330,20 @@ class TestTaskStoreTransitions(unittest.TestCase):
     def test_execution_metadata_is_part_of_add_idempotency(self) -> None:
         first, replayed = self.store.add_task(
             {**self.new_task(), "cli_profile": "codex",
-             "execution_requirements": {"capabilities": ["python"]}},
+             "execution_requirements": {"capabilities": ["python"]},
+             "max_attempts": 4},
             "writer", "execution-metadata-add",
         )
 
         self.assertFalse(replayed)
         self.assertEqual("codex", first["cli_profile"])
+        with self.assertRaisesRegex(TaskStoreError, "different request"):
+            self.store.add_task(
+                {**self.new_task(), "cli_profile": "codex",
+                 "execution_requirements": {"capabilities": ["python"]},
+                 "max_attempts": 5},
+                "writer", "execution-metadata-add",
+            )
         with self.assertRaisesRegex(TaskStoreError, "different request"):
             self.store.add_task(
                 {**self.new_task(), "cli_profile": "claude",

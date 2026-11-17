@@ -16,7 +16,7 @@ import tempfile
 import time
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 TASK_STATUSES = ("open", "done", "dropped")
 SCHEMA_VERSION = "1"
@@ -129,6 +129,102 @@ class TaskStore:
         self.marker_path = self.root / "state.db.cutover.json"
         self.backup_path = self.root / "state.json.pre-state-db.bak"
         self._initialize()
+        self._ensure_runtime_table()
+
+    def _ensure_runtime_table(self) -> None:
+        """Add the small transactional namespace used by coordinator recovery.
+
+        This is additive to schema v1: old task readers ignore the table, so the
+        task cutover marker and compatibility format do not change.
+        """
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute(
+                "CREATE TABLE IF NOT EXISTS runtime_state ("
+                "namespace TEXT PRIMARY KEY, payload_json TEXT NOT NULL, "
+                "version INTEGER NOT NULL DEFAULT 1)"
+            )
+            connection.commit()
+        except BaseException:
+            if connection.in_transaction:
+                connection.rollback()
+            raise
+        finally:
+            connection.close()
+
+    def get_runtime_state(self, namespace: str, default: Any = None) -> Any:
+        key = str(namespace).strip()
+        if not key:
+            raise TaskStoreError("runtime state namespace cannot be empty")
+        connection = self._connect()
+        try:
+            row = connection.execute(
+                "SELECT payload_json FROM runtime_state WHERE namespace=?", (key,)
+            ).fetchone()
+            if row is None:
+                return default
+            try:
+                return json.loads(row[0])
+            except (TypeError, json.JSONDecodeError) as exc:
+                raise TaskStoreError(f"runtime state {key!r} is corrupt: {exc}") from exc
+        except sqlite3.Error as exc:
+            raise TaskStoreError(f"runtime state read failed: {exc}") from exc
+        finally:
+            connection.close()
+
+    def set_runtime_state(self, namespace: str, value: Any) -> None:
+        key = str(namespace).strip()
+        if not key:
+            raise TaskStoreError("runtime state namespace cannot be empty")
+        payload = _canonical(value)
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute(
+                "INSERT INTO runtime_state(namespace, payload_json, version) VALUES (?, ?, 1) "
+                "ON CONFLICT(namespace) DO UPDATE SET payload_json=excluded.payload_json, "
+                "version=runtime_state.version+1", (key, payload),
+            )
+            connection.commit()
+        except BaseException:
+            if connection.in_transaction:
+                connection.rollback()
+            raise
+        finally:
+            connection.close()
+
+    def mutate_runtime_state(self, namespace: str,
+                             update: Callable[[Any], Any]) -> Any:
+        """Read, change and persist one runtime namespace in one WAL transaction."""
+        key = str(namespace).strip()
+        if not key or not callable(update):
+            raise TaskStoreError("runtime state mutation needs a namespace and callback")
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT payload_json FROM runtime_state WHERE namespace=?", (key,)
+            ).fetchone()
+            try:
+                current = json.loads(row[0]) if row else None
+            except (TypeError, json.JSONDecodeError) as exc:
+                raise TaskStoreError(f"runtime state {key!r} is corrupt: {exc}") from exc
+            updated = update(current)
+            payload = _canonical(updated)
+            connection.execute(
+                "INSERT INTO runtime_state(namespace, payload_json, version) VALUES (?, ?, 1) "
+                "ON CONFLICT(namespace) DO UPDATE SET payload_json=excluded.payload_json, "
+                "version=runtime_state.version+1", (key, payload),
+            )
+            connection.commit()
+            return updated
+        except BaseException:
+            if connection.in_transaction:
+                connection.rollback()
+            raise
+        finally:
+            connection.close()
 
     def _read_marker(self) -> dict[str, Any] | None:
         if not self.marker_path.exists():
@@ -386,7 +482,8 @@ class TaskStore:
         # Execution routing is part of the request identity. Without it, a retry
         # that reuses an add key with a different adapter requirement would
         # silently return the first task.
-        for field in ("cli_profile", "execution_requirements", "requirements"):
+        for field in ("cli_profile", "execution_requirements", "requirements",
+                      "max_attempts"):
             if field in task:
                 request[field] = task[field]
         item = dict(task)
@@ -447,6 +544,10 @@ class TaskStore:
                 raise TaskStoreError(f"no task #{task_id}. Known ids: {known}.")
             item = _validate_task(json.loads(row[0]))
             version, fence = int(row[1]), int(row[2])
+            if "execution_status" in item:
+                raise TaskStoreError(
+                    f"task #{task_id} is a leased execution job; use its worker API to complete or retry it"
+                )
             if expected_fencing_token is not None and expected_fencing_token != fence:
                 raise StaleTaskFence(
                     f"task #{task_id} fencing token is stale (expected {fence}, got {expected_fencing_token})"
@@ -749,6 +850,10 @@ class TaskStore:
                 old_payload, version, fence = previous
                 if _canonical(old_payload) == payload:
                     continue
+                if "execution_status" in old_payload:
+                    raise TaskStoreError(
+                        f"task #{task_id} is an execution job; use the worker API for transitions"
+                    )
                 new_fence = fence + 1
                 changed = connection.execute(
                     "UPDATE tasks SET payload_json=?, version=?, fencing_token=?"

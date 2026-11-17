@@ -157,6 +157,7 @@ class WorkerPool:
     def __init__(self, task_store: TaskStore, adapters: AdapterRegistry, *,
                  lease_seconds: float = 60.0, heartbeat_timeout: float = 20.0,
                  preempt_grace_seconds: float = 5.0,
+                 auto_heartbeat: bool = True,
                  clock: Callable[[], float] = time.time) -> None:
         for name, value in (("lease_seconds", lease_seconds),
                             ("heartbeat_timeout", heartbeat_timeout),
@@ -170,6 +171,7 @@ class WorkerPool:
         self.lease_seconds = float(lease_seconds)
         self.heartbeat_timeout = float(heartbeat_timeout)
         self.preempt_grace_seconds = float(preempt_grace_seconds)
+        self.auto_heartbeat = bool(auto_heartbeat)
         self.clock = clock
         self._workers: dict[str, _Worker] = {}
         self._lock = threading.RLock()
@@ -226,7 +228,8 @@ class WorkerPool:
             worker = _Worker(identity, profile, declared, timestamp, process=process)
             self._workers[identity] = worker
             view = self._worker_view(worker)
-        self.start_heartbeats(identity, interval=heartbeat_interval)
+        if self.auto_heartbeat:
+            self.start_heartbeats(identity, interval=heartbeat_interval)
         return view
 
     def worker(self, worker_id: str) -> dict[str, Any]:

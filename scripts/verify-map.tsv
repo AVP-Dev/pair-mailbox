@@ -22,6 +22,7 @@ mcp/pair_mailbox/test_project_workspace.py	project-workspace
 mcp/pair_mailbox/task_store.py	task-store
 mcp/pair_mailbox/worker_pool.py	worker-pool
 mcp/pair_mailbox/coordinator.py	coordinator
+mcp/pair_mailbox/execution_api.py	execution-api
 mcp/pair_mailbox/test_composer.py	composer
 mcp/pair_mailbox/test_process_tree.py	process-tree
 mcp/pair_mailbox/test_linux_sandbox.py	linux-sandbox
@@ -252,6 +253,7 @@ mcp/pair_mailbox/test_store_core.py	store-core
 mcp/pair_mailbox/test_task_store.py	task-store
 mcp/pair_mailbox/test_worker_pool.py	worker-pool
 mcp/pair_mailbox/test_coordinator.py	coordinator
+mcp/pair_mailbox/test_execution_api.py	execution-api
 mcp/pair_mailbox/test_task_banner.py	task-banner
 mcp/pair_mailbox/assets/board.js	board-render
 mcp/pair_mailbox/assets/board.css	board-render
