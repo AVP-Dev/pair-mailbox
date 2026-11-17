@@ -41,6 +41,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "mcp" / "pair_mailbox"))
 from picker import pair_row_state as classify_pair_row  # noqa: E402
 from picker import pair_row_visible, picker_open  # noqa: E402
+from launch_context import profile_for  # noqa: E402
+from process_tree import pair_mailbox_servers  # noqa: E402
 from wait_until import wait_for_condition  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -103,32 +105,8 @@ def pane_of(role: str) -> str:
 
 def server_pid(role: str) -> str:
     """Find only this project's server process for the exact role."""
-    wanted = STATE.resolve()
-    for entry in Path("/proc").iterdir():
-        if not entry.name.isdigit():
-            continue
-        try:
-            argv = [part.decode(errors="replace") for part in
-                    (entry / "cmdline").read_bytes().split(b"\0") if part]
-            if not argv or not any(Path(arg).name == "server.py" for arg in argv):
-                continue
-            if "--role" not in argv or argv[argv.index("--role") + 1] != role:
-                continue
-            if "--state" in argv:
-                raw_state = argv[argv.index("--state") + 1]
-            else:
-                raw_state = next((arg.split("=", 1)[1] for arg in argv
-                                  if arg.startswith("--state=")), "")
-            if not raw_state:
-                continue
-            state = Path(raw_state)
-            if not state.is_absolute():
-                state = Path(os.readlink(entry / "cwd")) / state
-            if state.resolve() == wanted:
-                return entry.name
-        except (OSError, RuntimeError, ValueError, IndexError):
-            continue
-    return ""
+    matches = pair_mailbox_servers(STATE, role)
+    return str(matches[0]["pid"]) if matches else ""
 
 
 def role_lock(role: str):
@@ -185,6 +163,18 @@ def reconnect(role: str, pane: str) -> str:
     means press space, then verify the process actually appeared (the handshake
     is transient; an earlier attempt looked connected and vanished).
     """
+    if profile_for(role) == "codex":
+        # Codex's /mcp is informational, not a toggle picker. Resume its saved
+        # CLI thread so the dead MCP subprocess is recreated without losing
+        # the in-memory conversation.
+        proc = subprocess.run(
+            [sys.executable, str(ROOT / "bin" / "pairrelaunch"), "--role", role,
+             "--state", str(STATE)],
+            capture_output=True, text=True, timeout=180, cwd=str(ROOT))
+        if proc.returncode == 0:
+            return "reconnected"
+        detail = (proc.stderr or proc.stdout or "no detail").strip()[-160:]
+        return f"failed (pairrelaunch exit {proc.returncode}: {detail})"
     send(pane, MENU, enter=True)
     if not wait_for_condition(lambda: picker_open(_screen(pane)),
                               timeout=PICKER_TIMEOUT, interval=0.25):
@@ -211,11 +201,15 @@ def reconnect(role: str, pane: str) -> str:
 
 
 def main() -> int:
+    global STATE
     ap = argparse.ArgumentParser(
         description="Keep every role's pair MCP up, single-flight.")
     ap.add_argument("--role", default="", help="one role (default: all with panes)")
+    ap.add_argument("--state", default="", help="project .pair directory (defaults to this checkout)")
     ap.add_argument("--check", action="store_true", help="report only")
     args = ap.parse_args()
+    if args.state:
+        STATE = Path(args.state).expanduser().resolve()
 
     roles = [args.role] if args.role else [r for r in state_roles() if pane_of(r)]
     if not roles:

@@ -19,6 +19,7 @@ Usage:
   bin/pairmcprestart --role opencode one role explicitly
   bin/pairmcprestart --pane %2223     one pane explicitly
   bin/pairmcprestart --check          report only, touch nothing
+  bin/pairmcprestart --state DIR      use a shared room state from a worktree
 """
 from __future__ import annotations
 
@@ -32,6 +33,7 @@ STATE = ROOT / ".pair"
 sys.path.insert(0, str(ROOT / "mcp" / "pair_mailbox"))
 from wait_until import wait_for_condition  # noqa: E402
 from picker import pair_row_state, pair_row_visible, picker_open  # noqa: E402
+from process_tree import pair_mailbox_servers  # noqa: E402
 KNOWN_ROLES = ("omp", "opencode", "agy", "claude", "pi", "codex")
 # opencode's picker keys, measured: /mcp opens it, arrows move, space toggles
 # the selected entry (reconnect when it is down), enter/esc closes.
@@ -111,12 +113,23 @@ def state_roles() -> list[str]:
     return [r for r in (data.get("roles") or {}) if r in KNOWN_ROLES]
 
 
+def server_matches(role: str) -> list[dict]:
+    """Return servers for this exact project and role; never pick an arbitrary daemon."""
+    return pair_mailbox_servers(STATE, role)
+
+
 def server_pid(role: str) -> str:
-    code, out = tmux("list-panes", "-a", "-F", "#{pane_id}")
-    _ = code
-    proc = subprocess.run(["pgrep", "-f", f"server.py --role {role}"],
-                          capture_output=True, text=True, timeout=10)
-    return proc.stdout.strip().splitlines()[0] if proc.stdout.strip() else ""
+    matches = server_matches(role)
+    return str(matches[0]["pid"]) if len(matches) == 1 else ""
+
+
+def replacement_server_pid(role: str, old_pid: str) -> str:
+    """Accept only one project-scoped daemon, and only after its PID changes."""
+    matches = server_matches(role)
+    if len(matches) != 1:
+        return ""
+    pid = str(matches[0]["pid"])
+    return pid if pid != old_pid else ""
 
 
 def send(pane: str, text: str, enter: bool = False) -> None:
@@ -132,7 +145,13 @@ def send(pane: str, text: str, enter: bool = False) -> None:
 
 def reconnect(role: str, pane: str, check: bool) -> int:
     label = f"{role} @ {pane}"
-    pid = server_pid(role)
+    matches = server_matches(role)
+    if len(matches) > 1:
+        pids = ", ".join(str(match["pid"]) for match in matches)
+        print(f"pairmcprestart: {label} — multiple servers for this project and role "
+              f"({pids}); refusing to toggle an ambiguous MCP entry", file=sys.stderr)
+        return 1
+    pid = str(matches[0]["pid"]) if matches else ""
     if check:
         print(f"[check] {label}: server {'alive pid ' + pid if pid else 'DOWN'}")
         return 0
@@ -173,9 +192,10 @@ def reconnect(role: str, pane: str, check: bool) -> int:
     # No Escape: quitting the picker aborts a pending handshake. Wait on the
     # process, the only honest signal that the reconnect landed.
     new_pid = ""
-    if wait_for_condition(lambda: bool(server_pid(role)), timeout=HANDSHAKE_TIMEOUT,
+    if wait_for_condition(lambda: bool(replacement_server_pid(role, pid)),
+                          timeout=HANDSHAKE_TIMEOUT,
                           interval=0.5):
-        new_pid = server_pid(role)
+        new_pid = replacement_server_pid(role, pid)
     if new_pid:
         print(f"pairmcprestart: {label} reconnected — server pid {new_pid} "
               f"(was {'DOWN' if not pid else pid})")
@@ -188,12 +208,16 @@ def reconnect(role: str, pane: str, check: bool) -> int:
 
 def main() -> int:
     import json
+    global STATE
     ap = argparse.ArgumentParser(
         description="Reconnect a role's pair MCP inside its own CLI pane — one command.")
     ap.add_argument("--role", default="", help="role to reconnect (default: the peer)")
     ap.add_argument("--pane", default="", help="pane id explicitly (e.g. %%2223)")
+    ap.add_argument("--state", default="", help="project .pair directory (defaults to this checkout)")
     ap.add_argument("--check", action="store_true", help="report only")
     args = ap.parse_args()
+    if args.state:
+        STATE = Path(args.state).expanduser().resolve()
 
     role = args.role
     if not role:

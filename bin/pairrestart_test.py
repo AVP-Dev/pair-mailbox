@@ -122,10 +122,6 @@ class TestDiagnose(unittest.TestCase):
 
     # --- round 104 S0: the inventory belongs to one state dir ---------------
 
-    _PS_LINE = ("  1234 Sat Oct 17 15:00:00 2026  900 /usr/bin/python3 "
-                "/home/alubuntu/x/mcp/pair_mailbox/server.py --role {role} "
-                "--state {state}")
-
     def test_foreign_state_server_is_not_our_inventory(self) -> None:
         """A server of ANOTHER project is not a row here, and never a kill target.
 
@@ -137,23 +133,19 @@ class TestDiagnose(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             mine = Path(tmp)
             foreign = mine.parent / "some-other-project"
-            lines = [self._PS_LINE.format(role="omp", state=foreign),
-                     self._PS_LINE.format(role="omp", state=mine)]
-            with mock.patch.object(PR.subprocess, "run",
-                                   return_value=mock.Mock(stdout="\n".join(lines))):
+            records = [{"pid": 1234, "role": "omp", "start": 900}]
+            with mock.patch.object(PR, "pair_mailbox_servers", return_value=records) as scan:
                 found = PR.live_servers(mine)
         self.assertEqual([s["pid"] for s in found], [1234],
                          "only our own state's server may be inventoried")
-        self.assertFalse(any("other-project" in str(s) for s in found))
+        scan.assert_called_once_with(mine)
 
     def test_state_equals_form_parses_too(self) -> None:
-        """`--state=DIR` is the same membership as `--state DIR`."""
+        """The shared argv inspector handles both --state spellings."""
         with tempfile.TemporaryDirectory() as tmp:
             mine = Path(tmp)
-            line = ("  99 Sat Oct 17 15:00:00 2026  900 /usr/bin/python3 "
-                    f"/x/mcp/pair_mailbox/server.py --role omp --state={mine}")
-            with mock.patch.object(PR.subprocess, "run",
-                                   return_value=mock.Mock(stdout=line)):
+            with mock.patch.object(PR, "pair_mailbox_servers",
+                                   return_value=[{"pid": 99, "role": "omp", "start": 1}]):
                 found = PR.live_servers(mine)
         self.assertEqual([s["pid"] for s in found], [99])
 
@@ -180,12 +172,23 @@ class TestDiagnose(unittest.TestCase):
         """A server launched without --state runs on its cwd: not ours to claim."""
         with tempfile.TemporaryDirectory() as tmp:
             mine = Path(tmp)
-            line = ("  55 Sat Oct 17 15:00:00 2026  900 /usr/bin/python3 "
-                    "/x/mcp/pair_mailbox/server.py --role omp")
-            with mock.patch.object(PR.subprocess, "run",
-                                   return_value=mock.Mock(stdout=line)):
+            with mock.patch.object(PR, "pair_mailbox_servers", return_value=[]):
                 found = PR.live_servers(mine)
         self.assertEqual(found, [])
+
+    def test_macos_libproc_inventory_finds_only_the_exact_project_pilot(self) -> None:
+        """macOS process argv comes from libproc, avoiding unsupported/denied ps."""
+        state = Path("/tmp/project/.pair")
+        processes = {
+            1234: {"argv": ["python3", "/repo/bin/pairpilot", "--state", str(state)]},
+            5678: {"argv": ["python3", "/other/bin/pairpilot", "--state", "/tmp/foreign/.pair"]},
+        }
+        with mock.patch.object(PR, "process_ids", return_value=[1234, 5678]), \
+                mock.patch.object(PR, "process_info", side_effect=processes.get), \
+                mock.patch.object(PR.subprocess, "run") as run:
+            found = PR.pilot_procs(state)
+        self.assertEqual([{"pid": 1234}], found)
+        run.assert_not_called()
 
 
 

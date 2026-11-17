@@ -147,6 +147,15 @@ class TestRound86Fixes(unittest.TestCase):
         bare = [m for m in re.finditer(r"list_newer_than_start\(\)", text)]
         self.assertEqual([], bare, "a bare call counts the doctor start, not the servers")
 
+    def test_mac_platform_warning_does_not_reference_function_local_import(self) -> None:
+        text = (ROOT / "bin" / "pairdoctor").read_text(encoding="utf-8")
+        self.assertNotIn("if not _fresh.proc_available()", text)
+        self.assertIn("freshness uses native process start times", text)
+
+    def test_project_mode_walks_up_to_shared_worktree_state(self) -> None:
+        text = (ROOT / "bin" / "pairdoctor").read_text(encoding="utf-8")
+        self.assertIn("_proj = walk_up_state(Path.cwd())", text)
+
     def test_freshness_section_calls_freshness_lines(self) -> None:
         """Round 87: the [6] section routes through freshness_lines(targets).
 

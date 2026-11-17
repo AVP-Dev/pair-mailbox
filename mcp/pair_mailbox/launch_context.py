@@ -210,6 +210,13 @@ def launch_shell(role: str, state: Path, command: str) -> str:
     return " ".join(shlex.quote(arg) for arg in launch_argv(role, state, shlex.split(command)))
 
 
+def initial_prompt_mode(profile: str, command: list[str], profiles: dict) -> str | None:
+    """A resumed Codex conversation already contains its startup instructions."""
+    if profile == "codex" and len(command) > 1 and command[1] == "resume":
+        return None
+    return (profiles.get(profile) or {}).get("initial_prompt")
+
+
 def role_socket_path(state: Path, role: str) -> str:
     """Stable IPC path inside a private state dir or a private short socket dir."""
     direct = state.resolve() / f".server-{role}.sock"
@@ -755,7 +762,7 @@ def run_cli(role: str, state: str, command: list[str]) -> int:
     # mediated by protocol methods rather than direct filesystem access.
     ensure_daemon(role, state_path)
     profiles = json.loads((ROOT / "cli-profiles.json").read_text(encoding="utf-8"))
-    prompt_arg = profiles[profile].get("initial_prompt")
+    prompt_arg = initial_prompt_mode(profile, command, profiles)
     if prompt_arg:
         state_data = json.loads((Path(state) / "state.json").read_text(encoding="utf-8"))
         standing = "writer" if state_data.get("writer") == role else "read-only critic"

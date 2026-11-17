@@ -8,6 +8,8 @@ import json, os, shutil, subprocess, sys, tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "mcp" / "pair_mailbox"))
+from state_resolve import walk_up_state  # noqa: E402
 PROFILES = json.loads((ROOT / "cli-profiles.json").read_text(encoding="utf-8"))
 
 ok_n, bad_n, warn_n = 0, 0, 0
@@ -81,6 +83,7 @@ def freshness_lines(targets, code_dir=None):
     """
     sys.path.insert(0, str(ROOT / "mcp" / "pair_mailbox"))
     import server_freshness as _fresh
+    from process_tree import process_start_time
     # Freshness counts from the MCP server start (pid from state.json),
     # not from the doctor start: the doctor just launched, its /proc/self is
     # newer than any .py, and comparing against itself is green by construction.
@@ -93,9 +96,9 @@ def freshness_lines(targets, code_dir=None):
         for _rinfo in (_sst.get("roles") or {}).values():
             if isinstance(_rinfo, dict) and _rinfo.get("pid"):
                 try:
-                    _p = Path(f"/proc/{int(_rinfo['pid'])}")
-                    if _p.is_dir():
-                        _pids.append(_p.stat().st_mtime)
+                    _started = process_start_time(int(_rinfo["pid"]))
+                    if _started is not None:
+                        _pids.append(_started)
                 except (OSError, ValueError):
                     continue
     _start = min(_pids) if _pids else None
@@ -240,7 +243,7 @@ for name, prof in PROFILES.items():
 print("\n[4] state")
 targets = [Path(os.environ["PAIR_STATE"]).resolve()] if "PAIR_STATE" in os.environ else []
 if "--project" in sys.argv:
-    _proj = (Path.cwd() / ".pair").resolve()
+    _proj = walk_up_state(Path.cwd()) or (Path.cwd() / ".pair").resolve()
     if _proj not in targets:
         targets.append(_proj)
 if not targets:
@@ -329,8 +332,8 @@ print("\n[6] freshness")
 try:
     for _level, _msg in freshness_lines(targets):
         (ok if _level == "ok" else warn)(_msg)
-    if not _fresh.proc_available():
-        warn("no /proc on this platform (macOS): pane discovery, descendants and freshness degrade — see card proc-macos-degradation")
+    if not Path("/proc").is_dir():
+        warn("no /proc on this platform: Linux-only process-tree checks are unavailable; freshness uses native process start times")
 except Exception as _exc:
     warn("freshness check skipped — " + str(_exc)[:100])
 

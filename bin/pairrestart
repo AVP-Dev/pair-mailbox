@@ -27,6 +27,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "mcp" / "pair_mailbox"))
+from process_tree import (pair_mailbox_servers, process_ids, process_info,
+                          process_start_time)  # noqa: E402
 
 
 def resolve_state(explicit: str | None) -> Path:
@@ -158,8 +161,8 @@ def fmt_ts(ts: float | None) -> str:
 def live_servers(state_dir: Path) -> list[dict]:
     """Every pair server of THIS state dir: pid, role, start time.
 
-    ps-sourced, no imports. The `--state` argument decides membership, exactly
-    like `pilot_procs` filters pilots below: without it a second project's
+    Native process-table discovery. The `--state` argument decides membership,
+    exactly like `pilot_procs` filters pilots below: without it a second project's
     server for the same role answers to this repo's name. That is proven live
     (round 104, peer seq 1536): a galatour `--role omp` server was inventoried
     as this repo's FRESH omp while the real one went stale, and a `--yes` run
@@ -168,65 +171,36 @@ def live_servers(state_dir: Path) -> list[dict]:
     `--state dir` and `--state=dir` both parse; a server with no `--state` runs
     on its cwd and is not ours to claim.
     """
-    out = subprocess.run(["ps", "-eo", "pid,lstart,etimes,args"],
-                         capture_output=True, text=True).stdout or ""
-    want = str(state_dir)
-    found = []
-    for line in out.splitlines():
-        if "server.py" not in line or "--role" not in line:
-            continue
-        parts = line.split()
-        if len(parts) < 7:
-            continue
-        try:
-            pid = int(parts[0])
-        except ValueError:
-            continue
-        try:
-            role = parts[parts.index("--role") + 1]
-        except (ValueError, IndexError):
-            continue
-        # Both spellings: `--state DIR` as two tokens, `--state=DIR` as one.
-        # ps output collapses nothing, so an =form hides in a single part and
-        # index-based reading of it picks the NEXT argument instead.
-        state = ""
-        for i, part in enumerate(parts):
-            if part == "--state" and i + 1 < len(parts):
-                state = parts[i + 1]
-                break
-            if part.startswith("--state="):
-                state = part[len("--state="):]
-                break
-        if state != want:
-            continue
-        start = " ".join(parts[1:6])
-        found.append({"pid": pid, "role": role, "start": start})
-    return found
+    return pair_mailbox_servers(state_dir)
 
 
 def pilot_procs(state_dir: Path) -> list[dict]:
-    out = subprocess.run(["ps", "-eo", "pid,lstart,args"],
-                         capture_output=True, text=True).stdout or ""
+    """Find this project's pilots from native argv data, not formatted ps output."""
     found = []
-    for line in out.splitlines():
-        if "pairpilot" not in line or str(state_dir) not in line:
-            continue
-        parts = line.split()
-        if len(parts) < 7:
+    wanted = state_dir.resolve()
+    for pid in process_ids():
+        info = process_info(pid)
+        argv = info.get("argv", []) if info else []
+        if not argv or not any(Path(arg).name == "pairpilot" for arg in argv):
             continue
         try:
-            pid = int(parts[0])
-        except ValueError:
+            raw_state = argv[argv.index("--state") + 1]
+        except (ValueError, IndexError):
+            raw_state = next((arg.split("=", 1)[1] for arg in argv
+                              if arg.startswith("--state=")), "")
+        if not raw_state:
             continue
-        found.append({"pid": pid, "start": " ".join(parts[1:6])})
+        try:
+            if Path(raw_state).resolve() != wanted:
+                continue
+        except (OSError, RuntimeError):
+            continue
+        found.append({"pid": pid})
     return found
 
 
 def proc_start_ts(pid: int) -> float | None:
-    try:
-        return Path(f"/proc/{pid}").stat().st_mtime
-    except (OSError, ValueError):
-        return None
+    return process_start_time(pid)
 
 
 def diagnose(state_dir: Path) -> list[dict]:
@@ -258,7 +232,12 @@ def diagnose(state_dir: Path) -> list[dict]:
                          "detail": "no live server — reconnect its MCP when done"})
             continue
         for srv in role_servers:
-            started = proc_start_ts(srv["pid"]) or time.time()
+            started = proc_start_ts(srv["pid"])
+            if started is None:
+                rows.append({"kind": "role", "name": role, "pid": srv["pid"],
+                             "verdict": "UNKNOWN",
+                             "detail": "process start is unavailable; left untouched"})
+                continue
             stale = code_server is not None and code_server > started
             rows.append({"kind": "role", "name": role, "pid": srv["pid"],
                          "started": fmt_ts(started), "code": fmt_ts(code_server),
@@ -270,34 +249,18 @@ def diagnose(state_dir: Path) -> list[dict]:
                      "verdict": "ABSENT", "detail": "relaunch via pairup"})
     else:
         for proc in pilots:
-            started = proc_start_ts(proc["pid"]) or time.time()
+            started = proc_start_ts(proc["pid"])
+            if started is None:
+                rows.append({"kind": "pilot", "name": "pilot", "pid": proc["pid"],
+                             "verdict": "UNKNOWN",
+                             "detail": "process start is unavailable; left untouched"})
+                continue
             stale = code_pilot is not None and code_pilot > started
             rows.append({"kind": "pilot", "name": "pilot", "pid": proc["pid"],
                          "started": fmt_ts(started), "code": fmt_ts(code_pilot),
                          "verdict": "STALE" if stale else "FRESH",
                          "detail": "kill, then relaunch" if stale else "leave alone"})
     return rows
-
-
-def print_plan(rows: list[dict]) -> int:
-    stale = [r for r in rows if r["verdict"] == "STALE" and r["pid"]]
-    print(f"pairrestart — {len(rows)} things checked")
-    print()
-    for row in rows:
-        pid = str(row["pid"]) if row["pid"] else "—"
-        extra = f"started {row.get('started')} code {row.get('code')}" if row.get("started") else ""
-        print(f"[{row['verdict']:<6}] {row['kind']:<5} {row['name']:<8} pid {pid:<7} {extra} → {row['detail']}")
-    print()
-    if not stale:
-        print("Nothing stale. Changes nothing.")
-        return 0
-    doomed_roles = [r["name"] for r in stale if r["kind"] == "role"]
-    if doomed_roles:
-        print("Note: killing a role's server drops that session's pair tools until it")
-        print("reconnects its MCP (/mcp, or restart the CLI).")
-        print(f"Killing {', '.join(doomed_roles)}'s server is in this plan — confirm it is yours to disturb.")
-    print(f"Will kill {len(stale)} process(es). Fresh servers are NOT in this plan.")
-    return len(stale)
 
 
 def ask(explicit_yes: bool) -> bool:

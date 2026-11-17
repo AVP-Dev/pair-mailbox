@@ -37,6 +37,7 @@
   },
   "codex": {
     "launch": "codex --no-daemon --approve-for-me",
+    "resume": "codex resume --last --no-daemon",
     "initial_prompt": "positional",
     "label": "Codex CLI",
     "mcp": {

@@ -37,6 +37,8 @@ bin/	bin-test-coverage
 scripts/bin-test-exemptions.json	docs-check
 bin/pairmcprestart	mcpprestart
 bin/pairmcprestart_test.py	mcpprestart
+bin/pairrelaunch	pairrelaunch
+bin/pairrelaunch_test.py	pairrelaunch
 mcp/pair_mailbox/pointers.py	pointer
 mcp/pair_mailbox/test_pointer.py	pointer
 mcp/pair_mailbox/test_waiting_contract.py	waiting-contract

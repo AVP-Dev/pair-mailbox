@@ -81,6 +81,7 @@ picker	positive	1	PYTHONPATH=mcp/pair_mailbox python3 -m unittest test_picker -q
 bin-test-coverage	positive	1	python3 scripts/bin_test_coverage_test.py && python3 scripts/bin_test_coverage.py
 pairup	positive	1	python3 bin/pairup_test.py
 pairrestart	positive	1	python3 bin/pairrestart_test.py && python3 mcp/pair_mailbox/test_restart_trace.py
+pairrelaunch	positive	1	python3 bin/pairrelaunch_test.py
 manifest	positive	1	python3 mcp/pair_mailbox/test_manifest.py
 wake	positive	1	python3 mcp/pair_mailbox/test_wake.py
 review	positive	1	python3 mcp/pair_mailbox/test_review.py

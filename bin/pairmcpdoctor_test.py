@@ -134,9 +134,19 @@ class DoctorLockCase(unittest.TestCase):
         sends = []
         self.doctor.send = lambda pane, text, enter=False: sends.append((text, enter))
         self.doctor.wait_for_condition = lambda predicate, **kwargs: False
-        outcome = self.doctor.reconnect("codex", "%1")
+        outcome = self.doctor.reconnect("opencode", "%1")
         self.assertIn("picker never appeared", outcome)
         self.assertEqual([("/mcp", True)], sends)
+
+    def test_codex_reconnect_resumes_cli_instead_of_using_opencode_picker(self) -> None:
+        self.doctor.profile_for = lambda role: "codex"
+        proc = subprocess.CompletedProcess([], 0, "reconnected", "")
+        with mock.patch.object(self.doctor.subprocess, "run", return_value=proc) as run:
+            self.assertEqual("reconnected", self.doctor.reconnect("codex", "%1"))
+        command = run.call_args.args[0]
+        self.assertEqual(str(self.project / "bin" / "pairrelaunch"), command[1])
+        self.assertEqual("--role", command[2])
+        self.assertEqual("--state", command[4])
 
     def test_reconnect_waits_are_bounded_and_not_fixed_sleeps(self) -> None:
         source = DOCTOR.read_text(encoding="utf-8")
@@ -167,7 +177,7 @@ class DoctorLockCase(unittest.TestCase):
             os.environ.clear()
             os.environ.update(env)
         self.assertEqual(1, len(calls))
-        self.assertEqual("list-panes", calls[0][0])
+        self.assertIn("list-panes", calls[0])
 
     def test_replacement_server_starts_while_doctor_lock_is_held(self) -> None:
         doctor_lock = self.doctor.role_lock("testrole")
