@@ -33,12 +33,13 @@ def process_info(pid: int) -> dict | None:
 
 def process_start_time(pid: int) -> float | None:
     """Process start as epoch seconds on Linux and macOS."""
-    try:
-        proc = Path(f"/proc/{pid}")
-        if proc.is_dir():
-            return proc.stat().st_mtime
-    except (OSError, ValueError):
-        pass
+    if platform.system() == "Linux":
+        try:
+            proc = Path(f"/proc/{pid}")
+            if proc.is_dir():
+                return proc.stat().st_mtime
+        except (OSError, ValueError):
+            pass
     if platform.system() == "Darwin":
         info = process_info(pid)
         try:
