@@ -23,17 +23,16 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 PAIRUP = ROOT / "bin" / "pairup"
+sys.path.insert(0, str(ROOT / "mcp/pair_mailbox"))
 
 
 def process_environment(pid: int) -> list[str]:
-    return subprocess.run(["ps", "eww", "-p", str(pid)], capture_output=True,
-                          text=True, check=True).stdout.split()
+    return subprocess.run(["ps", "eww", "-p", str(pid)], capture_output=True, text=True,
+                          check=True).stdout.split()
 
 def script_command(command: str) -> list[str]:
-    if sys.platform == "darwin":
-        return ["script", "-q", "/dev/null", "sh", "-c", command]
-    return ["script", "-e", "-q", "-c", command, "/dev/null"]
-
+    return (["script", "-q", "/dev/null", "sh", "-c", command]
+            if sys.platform == "darwin" else ["script", "-e", "-q", "-c", command, "/dev/null"])
 BOOTSTRAP = """\
 _root=%s
 PAIRUP_ROOT=%s
@@ -562,6 +561,7 @@ class PairupTmuxLaunchCase(unittest.TestCase):
     def cleanup(self) -> None:
         for socket in (self.socket, self.foreign):
             subprocess.run(["tmux", "-L", socket, "kill-server"], capture_output=True)
+        __import__("pair_test_base").stop_fixture_daemons(self.project / ".pair")
         for proc in self.procs:
             if proc.poll() is None:
                 proc.kill()

@@ -29,6 +29,33 @@ SERVER = Path(__file__).resolve().parent / "server.py"
 PAIRCHAT = REPO_ROOT / "bin" / "pairchat"
 
 
+def stop_fixture_daemons(state_dir: Path) -> None:
+    """Stop only daemons proven to hold locks inside this test fixture."""
+    from lock_reaper import holder_pid
+
+    state_dir = Path(state_dir)
+    roles = {path.name[len(".server-"):-len(".lock")]
+             for path in state_dir.glob(".server-*.lock")}
+    roles.update(path.name[len(".server-"):-len(".pid")]
+                 for path in state_dir.glob(".server-*.pid"))
+    for role in sorted(roles):
+        pid = holder_pid(state_dir, role)
+        if not pid:
+            continue
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            continue
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and holder_pid(state_dir, role) == pid:
+            time.sleep(0.05)
+        if holder_pid(state_dir, role) == pid:
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+
+
 class PairTestCase(unittest.TestCase):
     def allow_panes(self) -> None:
         """Count any pane ours, for the test run.

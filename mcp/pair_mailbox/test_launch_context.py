@@ -5,7 +5,6 @@ import fcntl
 import io
 import json
 import os
-import signal
 import socket
 import subprocess
 import sys
@@ -16,6 +15,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import launch_context as context
+from pair_test_base import stop_fixture_daemons
 
 ROOT = Path(__file__).resolve().parents[2]
 PKG = ROOT / "mcp/pair_mailbox"
@@ -158,15 +158,7 @@ class LaunchMembership(unittest.TestCase):
         cli.chmod(0o755)
         # Leave the existing operator's environment intact outside this child.
         if socket_backend:
-            def stop_owned_daemon():
-                roles = json.loads((self.state / "state.json").read_text()).get("roles", {})
-                pid = roles.get("codex", {}).get("pid")
-                if pid:
-                    try:
-                        os.kill(pid, signal.SIGTERM)
-                    except ProcessLookupError:
-                        pass
-            self.addCleanup(stop_owned_daemon)
+            self.addCleanup(stop_fixture_daemons, self.state)
         result = subprocess.run(context.launch_argv("codex", self.state, [str(cli)]),
                                 capture_output=True, text=True, timeout=20)
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -183,6 +175,26 @@ class LaunchMembership(unittest.TestCase):
 
     def test_enrolled_socket_parent_starts_daemon_but_nested_cli_does_not_join(self):
         self.actual_launcher(socket_backend=True)
+
+
+class FixtureDaemonCleanup(unittest.TestCase):
+    def test_cleanup_finds_detached_server_from_its_role_lock(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state = Path(tmp) / ".pair"
+            state.mkdir()
+            (state / "state.json").write_text(json.dumps({"writer": "codex", "roles": {}}))
+            daemon = None
+            try:
+                daemon = context.ensure_daemon("codex", state)
+                self.assertIsNotNone(daemon, "the fixture must start a new daemon")
+                from lock_reaper import holder_pid
+                self.assertTrue(holder_pid(state, "codex"), "fixture server must hold its role lock")
+                stop_fixture_daemons(state)
+                self.assertEqual(holder_pid(state, "codex"), 0, "fixture daemon must stop")
+            finally:
+                stop_fixture_daemons(state)
+                if daemon is not None:
+                    daemon.wait(timeout=5)
 
 
 class LaunchSecurityBoundary(unittest.TestCase):
@@ -204,7 +216,7 @@ class LaunchSecurityBoundary(unittest.TestCase):
         self.assertIn(["-c", "model=x"], [writer[i:i + 2] for i in range(len(writer) - 1)])
         self.assertIn(["-c", "sandbox_workspace_write.writable_roots=[]"],
                       [writer[i:i + 2] for i in range(len(writer) - 1)])
-        self.assertIn(["-c", "sandbox_workspace_write.network_access=false"],
+        self.assertIn(["-c", "sandbox_workspace_write.network_access=true"],
                       [writer[i:i + 2] for i in range(len(writer) - 1)])
 
         critic = context.safe_cli_command("codex", "codex-critic", False,

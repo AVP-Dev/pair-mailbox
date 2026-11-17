@@ -80,8 +80,18 @@ class SocketTransportCase(unittest.TestCase):
             {"round": 900, "mode": "fix", "writer": "omp", "roles": {},
              "phase": "implement", "seq": 0}), encoding="utf-8")
         self.sock_path = str(self.proj / ".pair" / ".server-testrole.sock")
+        self.procs: list[subprocess.Popen] = []
 
     def tearDown(self) -> None:
+        for proc in self.procs:
+            if proc.poll() is None:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.wait(timeout=5)
+            proc.communicate(timeout=5)
         self._tmp.cleanup()
 
     def _spawn(self, once: bool = False) -> subprocess.Popen:
@@ -91,6 +101,7 @@ class SocketTransportCase(unittest.TestCase):
         proc = subprocess.Popen(
             cmd, cwd=str(self.proj), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             text=True, env={**os.environ, "PAIR_SOCKET_ONCE": "1" if once else "0"})
+        self.procs.append(proc)
         # Wait for the socket to exist, and PROVE it is acceptable only for a
         # daemon (`once=False`): a probe connect on a ONE-SHOT server would
         # consume its single client and the real test would hang. For `once=True`
@@ -103,10 +114,9 @@ class SocketTransportCase(unittest.TestCase):
                 if once:
                     return proc
                 try:
-                    probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-                    probe.settimeout(0.3)
-                    probe.connect(self.sock_path)
-                    probe.close()
+                    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as probe:
+                        probe.settimeout(0.3)
+                        probe.connect(self.sock_path)
                     return proc
                 except OSError:
                     pass

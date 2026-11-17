@@ -336,9 +336,10 @@ def safe_cli_command(profile: str, role: str, is_writer: bool,
         args = cleaned
         if is_writer:
             # An untrusted CODEX_HOME/config.toml must not widen the auto-reviewer's
-            # writable roots or turn network on inside workspace-write.
+            # writable roots. Network stays enabled for requested docs/GitHub work;
+            # workspace-write and auto-review remain the governing boundaries.
             args += ["-c", "sandbox_workspace_write.writable_roots=[]",
-                     "-c", "sandbox_workspace_write.network_access=false",
+                     "-c", "sandbox_workspace_write.network_access=true",
                      "--approve-for-me"]
         else:
             args += ["--sandbox", "read-only", "--ask-for-approval", "never"]
@@ -636,7 +637,7 @@ def configured_role(base: str) -> str:
     return role
 
 
-def ensure_daemon(role: str, state: Path) -> None:
+def ensure_daemon(role: str, state: Path) -> subprocess.Popen | None:
     """Only an enrolled socket client may start its detached role daemon."""
     path = prepare_role_socket_path(state, role)
     def record_transport():
@@ -653,7 +654,7 @@ def ensure_daemon(role: str, state: Path) -> None:
             return False
     if ready():
         record_transport()
-        return
+        return None
     with (state / f"daemon-{role}.log").open("a") as log:
         process = subprocess.Popen([sys.executable, str(ROOT / "mcp/pair_mailbox/server.py"),
             "--role", role, "--state", str(state), "--socket", path],
@@ -662,12 +663,12 @@ def ensure_daemon(role: str, state: Path) -> None:
     while time.monotonic() < deadline:
         if ready():
             record_transport()
-            return
+            return process
         if process.poll() is not None:
             # Another enrolled connector may have won the same role lock.
             if ready():
                 record_transport()
-                return
+                return process
             raise ValueError(f"paired daemon failed; see {state / ('daemon-' + role + '.log')}")
         time.sleep(0.05)
     raise ValueError(f"paired daemon did not become ready: {path}")
