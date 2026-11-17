@@ -882,9 +882,9 @@ class PairSession:
 
             if head is None:
                 from review import git_head
-                head = git_head(self.store.project_root)
-            snap = git_snapshot(self.store.project_root, head=head)
-            status, _ = delivery_floor(self.store.project_root, head=head)
+                head = git_head(self.store.project_root_for(self.role))
+            snap = git_snapshot(self.store.project_root_for(self.role), head=head)
+            status, _ = delivery_floor(self.store.project_root_for(self.role), head=head)
             snap["delivery"] = status
             return snap
         except Exception:  # noqa: BLE001 - the snapshot must never drop the cache
@@ -935,7 +935,7 @@ class PairSession:
         pin_why = ""
         pin_unverified = False
         if pin:
-            verdict, pin_why = pin_verdict(tmux, pin, self.store.project_root)
+            verdict, pin_why = pin_verdict(tmux, pin, self.store.project_root_for(self.role))
             if verdict == PIN_OK:
                 pane = pin
             elif verdict == PIN_UNKNOWN:
@@ -973,7 +973,7 @@ class PairSession:
         proved_explicit = ""
         if explicit_pane and tmux and not pin:
             try:
-                ours, _why = _belongs(tmux, explicit_pane, self.store.project_root)
+                ours, _why = _belongs(tmux, explicit_pane, self.store.project_root_for(self.role))
             except Exception:
                 ours = False
             occupant_alive = False
@@ -999,7 +999,7 @@ class PairSession:
         proved_env = ""
         if not pane and env_pane and tmux and not pin:
             try:
-                ours, _why = _belongs(tmux, env_pane, self.store.project_root)
+                ours, _why = _belongs(tmux, env_pane, self.store.project_root_for(self.role))
             except Exception:
                 ours = False
             occupant_alive = False
@@ -1052,7 +1052,7 @@ class PairSession:
             from composer import pane_belongs_to_project
 
             ours, why_not_ours = pane_belongs_to_project(
-                tmux, pane, self.store.project_root)
+                tmux, pane, self.store.project_root_for(self.role))
             if not ours:
                 self.store.append_transcript(
                     "pane_env_rejected", self.role, pane=pane, why=why_not_ours,
@@ -1249,7 +1249,7 @@ class PairSession:
                     if not other_pane or other_info.get("pane_pin"):
                         continue
                     theirs, why_theirs = pane_belongs_to_project(
-                        tmux, other_pane, self.store.project_root)
+                        tmux, other_pane, self.store.project_root_for(self.role))
                     if not theirs:
                         other_info.pop("pane", None)
                         self.store.append_transcript(
@@ -1311,7 +1311,7 @@ class PairSession:
                 entry["pane_session_id"] = _cur.get("session_id") or ""
         if tmux:
             for event in _heal.recheck_peers(
-                    roles, self.role, self.store.project_root,
+                    roles, self.role, self.store.project_root_for(self.role),
                     pid_alive=is_pid_alive, pane_exists=pane_exists,
                     belongs_to_project=lambda pane, root: _belongs(tmux, pane, root),
                     same_pane=same_pane):
@@ -1403,7 +1403,7 @@ class PairSession:
         if needs_head:
             try:
                 from review import git_head
-                request_head = git_head(self.store.project_root)
+                request_head = git_head(self.store.project_root_for(self.role))
             except Exception:  # noqa: BLE001 - gitless environments stay unknown
                 request_head = ""
 
@@ -1584,7 +1584,7 @@ class PairSession:
         try:
             from review import delivery_floor
 
-            floor_status, floor_detail = delivery_floor(self.store.project_root, head=head)
+            floor_status, floor_detail = delivery_floor(self.store.project_root_for(self.role), head=head)
         except Exception:  # noqa: BLE001 - advisory never drops the answer
             floor_status, floor_detail = "unknown", "delivery check failed to run"
         ceiling = (
@@ -1661,7 +1661,7 @@ class PairSession:
             # close — the branch that would block is `behind`, because origin
             # carries commits THIS state does not, so the round would ship a
             # tree that is not what was reviewed.
-            truth, truth_why = origin_truth(self.store.project_root,
+            truth, truth_why = origin_truth(self.store.project_root_for(self.role),
                                             str(state.get("round_base") or ""), head=head)
             if truth == "behind":
                 blockers.append(f"the round is not against current origin: {truth_why}. ")
@@ -1699,7 +1699,7 @@ class PairSession:
                     try:
                         _ok, _problems = checker.check(
                             board, require_ancestor=False,
-                            root=self.store.project_root)
+                            root=self.store.project_root_for(self.role))
                         if not _ok:
                             blockers.append(
                                 "the board claims what the tree cannot show: "
@@ -1724,12 +1724,12 @@ class PairSession:
             if verdicts:
                 last = verdicts[-1]
                 old = last.get("rev") or {}
-                current = git_head(self.store.project_root) if head is None else head
+                current = git_head(self.store.project_root_for(self.role)) if head is None else head
                 if current:
                     stale, why = is_stale(old, current,
-                                          changed_between(self.store.project_root,
+                                          changed_between(self.store.project_root_for(self.role),
                                                           str(old.get("head") or ""), current),
-                                          dirty_files(self.store.project_root))
+                                          dirty_files(self.store.project_root_for(self.role)))
                     if stale:
                         blockers.append(
                             f"the last verdict {last.get('role')}/{last.get('kind')} "
@@ -1772,7 +1772,7 @@ class PairSession:
             try:
                 from review import delivery_floor
 
-                floor_status, floor_detail = delivery_floor(self.store.project_root, head=head)
+                floor_status, floor_detail = delivery_floor(self.store.project_root_for(self.role), head=head)
             except Exception:  # noqa: BLE001 - the floor never drops the close
                 floor_status, floor_detail = "unknown", "delivery check failed to run"
             if floor_status == "undelivered":
@@ -2035,7 +2035,7 @@ class PairSession:
         # held it, and several pair-mailbox projects run on this machine: ringing the
         # recorded number woke another agent.
         from composer import pane_is_foreign
-        foreign, why_foreign = pane_is_foreign(tmux, pane, self.store.project_root)
+        foreign, why_foreign = pane_is_foreign(tmux, pane, self.store.project_root_for(self.role))
         if foreign:
             # An unproven pane bans typed printing (send-keys) — that is injection into
             # another composer. Fallback is display-message (a popup with no printing) plus
@@ -2254,7 +2254,7 @@ class PairSession:
         from composer import _tmux, pane_is_foreign
         from pointers import mailbox_pointer
         try:
-            foreign, why_foreign = pane_is_foreign(_tmux(), pane, self.store.project_root)
+            foreign, why_foreign = pane_is_foreign(_tmux(), pane, self.store.project_root_for(self.role))
         except ComposerBusy as exc:
             foreign, why_foreign = True, f"tmux unreachable: {exc}"
         if foreign:
@@ -2407,7 +2407,7 @@ class PairSession:
                 sk = _keys.load_signing_key(self.store.root, self.role)
                 if sk is not None:
                     body["envelope"] = _keys.sign_envelope(
-                        sk, _keys.key_id_for(self.store.project_root, self.role),
+                        sk, _keys.key_id_for(self.store.project_root_for(self.role), self.role),
                         seq, self.role, to, body["ts"], body["text"])
             except Exception:  # noqa: BLE001
                 pass
@@ -2562,7 +2562,7 @@ class PairSession:
             return
         try:
             from review import _run_git
-            root = self.store.project_root
+            root = self.store.project_root_for(self.role)
             head = _run_git(root, "rev-parse", "--verify",
                             f"origin/{trunk.resolve_trunk(root)}")
         except Exception:  # noqa: BLE001 - a missing base never blocks an open
@@ -2662,7 +2662,7 @@ class PairSession:
                         from review import pr_ceiling
 
                         ceil_status, ceil_detail = pr_ceiling(
-                            self.store.project_root, autonomy_of(state))
+                            self.store.project_root_for(self.role), autonomy_of(state))
                     except Exception:  # noqa: BLE001 - the ceiling never drops close
                         ceil_status, ceil_detail = "unknown", "PR check failed to run"
                     if ceil_status == "missing":
@@ -2686,7 +2686,7 @@ class PairSession:
                 from receipt import GroundTruthBlocked, generate_receipt
                 from review import git_head
                 try:
-                    _head = git_head(self.store.project_root)
+                    _head = git_head(self.store.project_root_for(self.role))
                     generate_receipt(self.store.root, state, head_commit=_head)
                 except GroundTruthBlocked as exc:
                     raise ProtocolError(f"round cannot be closed: {exc}", "Remove combat mocks, commit and retry.")
@@ -3119,7 +3119,7 @@ class PairSession:
                 raise ProtocolError("paths stay inside the project: no absolute, no `..`.")
             proc = subprocess.run(
                 ["git", "diff", "--no-ext-diff", "HEAD", "--", *clean],
-                cwd=str(self.store.project_root), capture_output=True, text=True,
+                cwd=str(self.store.project_root_for(self.role)), capture_output=True, text=True,
                 timeout=30)
             if proc.returncode != 0:
                 raise ProtocolError(f"git diff failed: {(proc.stderr or '').strip()[:200]}")

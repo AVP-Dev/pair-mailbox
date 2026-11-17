@@ -12,6 +12,10 @@ def project_root_for(store: Store, role: str) -> Path:
     """Prefer the role's verified checkout over a long-lived daemon cwd."""
     base = (store.root.parent if store.root.name == ".pair" else store.root).resolve()
     common = _git_common_dir(base)
+    cache = getattr(store, "_role_workspace_cache", {})
+    cached = cache.get(role)
+    if cached is not None and cached.is_dir():
+        return cached
     try:
         roles = store.read().get("roles", {})
         entry = roles.get(role, {}) if isinstance(roles, dict) else {}
@@ -24,6 +28,8 @@ def project_root_for(store: Store, role: str) -> Path:
             return base
         top = _git_toplevel(candidate)
         if top is not None and common is not None and _git_common_dir(top) == common:
+            cache[role] = top
+            store._role_workspace_cache = cache
             return top
     return store.project_root
 
@@ -48,6 +54,9 @@ def record_role_workspace(store: Store, role: str, workspace: Path) -> Path | No
         entry["workspace"] = str(resolved)
 
     store.mutate(save)
+    cache = getattr(store, "_role_workspace_cache", {})
+    cache[role] = resolved
+    store._role_workspace_cache = cache
     return resolved
 
 

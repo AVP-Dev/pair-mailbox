@@ -74,6 +74,7 @@ class ProjectWorkspace(unittest.TestCase):
             subprocess.run(["git", "commit", "-qam", "worktree"], cwd=worktree, check=True)
             head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=worktree,
                                   check=True, capture_output=True, text=True).stdout.strip()
+            (worktree / "file.txt").write_text("dirty Work3 change\n", encoding="utf-8")
 
             store = Store(repo / ".pair", allow_create=True)
             from server import PairSession
@@ -82,6 +83,10 @@ class ProjectWorkspace(unittest.TestCase):
             session.tool_pair_evidence(
                 kind="test", value="12 passed, exit 0")
             self.assertEqual(head, store.read()["evidence"][-1]["head"])
+            fingerprint = session._git_fingerprint()
+            self.assertEqual(head, fingerprint["head"])
+            self.assertNotEqual("e3b0c44298fc1c14", fingerprint["dirty"])
+            self.assertEqual(["file.txt"], fingerprint["files"])
 
 
 if __name__ == "__main__":
