@@ -161,8 +161,8 @@ def fmt_ts(ts: float | None) -> str:
 def live_servers(state_dir: Path) -> list[dict]:
     """Every pair server of THIS state dir: pid, role, start time.
 
-    ps-sourced, no imports. The `--state` argument decides membership, exactly
-    like `pilot_procs` filters pilots below: without it a second project's
+    Native process-table discovery. The `--state` argument decides membership,
+    exactly like `pilot_procs` filters pilots below: without it a second project's
     server for the same role answers to this repo's name. That is proven live
     (round 104, peer seq 1536): a galatour `--role omp` server was inventoried
     as this repo's FRESH omp while the real one went stale, and a `--yes` run
@@ -175,6 +175,7 @@ def live_servers(state_dir: Path) -> list[dict]:
 
 
 def pilot_procs(state_dir: Path) -> list[dict]:
+    """Find this project's pilots from native argv data, not formatted ps output."""
     found = []
     wanted = state_dir.resolve()
     for pid in process_ids():
