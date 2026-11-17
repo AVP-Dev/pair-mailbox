@@ -87,21 +87,50 @@ class PairupLaunchCase(unittest.TestCase):
             "if args[:1]==['-L']: args=args[2:]\n" +
             "marker=Path(os.environ['PAIR_TEST_MARKER'])\n" +
             "if args[:1]==['has-session']: sys.exit(0 if marker.exists() else 1)\n" +
+            "if args[:1]==['display-message']:\n" +
+            " pane_file=Path(os.environ['PAIR_TEST_PANES'])\n" +
+            " rows=(pane_file.read_text().splitlines() if pane_file.exists() else [f'%1|{Path.cwd().name}:codex (writer)|0|codex', f'%2|{Path.cwd().name}:agy (critic)|0|agy'])\n" +
+            " pane=args[args.index('-t')+1]\n" +
+            " fmt=args[-1] if args else ''\n" +
+            " for row in rows:\n" +
+            "  parts=row.split('|',3)\n" +
+            "  if parts[0]==pane:\n" +
+            "   if fmt.startswith('#{pane_dead}'):\n" +
+            "    print(f'{parts[2]}\\t{Path.cwd()}\\t{Path.cwd().name}:0.{parts[0][1:]}\\t1\\t{parts[0]}')\n" +
+            "   else: print(parts[1])\n" +
+            "   break\n" +
+            " sys.exit(0)\n" +
+            "if args[:1]==['capture-pane']:\n" +
+            " text=Path(os.environ['PAIR_TEST_COMPOSER']).read_text() if Path(os.environ['PAIR_TEST_COMPOSER']).exists() else ''\n" +
+            " print('› '+(text if text else 'Ask Codex to do anything'))\n" +
+            " sys.exit(0)\n" +
+            "if args[:1]==['send-keys']:\n" +
+            " pane=args[args.index('-t')+1]\n" +
+            " values=args[args.index('-t')+2:]\n" +
+            " target=Path(os.environ['PAIR_TEST_COMPOSER'])\n" +
+            " if '-l' in values: target.write_text((target.read_text() if target.exists() else '')+''.join(values[values.index('-l')+1:]))\n" +
+            " elif 'Enter' in values: target.write_text('')\n" +
+            " sys.exit(0)\n" +
             "if args[:1]==['list-panes']:\n" +
             " pane_file=Path(os.environ['PAIR_TEST_PANES'])\n" +
-            " rows=(pane_file.read_text().splitlines() if pane_file.exists() else [f'%1|{Path.cwd().name}:codex (writer)|0', f'%2|{Path.cwd().name}:agy (critic)|0'])\n" +
+            " rows=(pane_file.read_text().splitlines() if pane_file.exists() else [f'%1|{Path.cwd().name}:codex (writer)|0|codex', f'%2|{Path.cwd().name}:agy (critic)|0|agy'])\n" +
             " fmt=args[args.index('-F')+1] if '-F' in args else '#{pane_id}|#{pane_title}|#{pane_dead}'\n" +
             " for row in rows:\n" +
-            "  pane_id,title,dead=(row.split('|',2)+['0'])[:3]\n" +
-            "  values={'#{pane_title}':title,'#{pane_id}':pane_id,'#{pane_id}|#{pane_title}':pane_id+'|'+title,'#{pane_id}|#{pane_title}|#{pane_dead}':row}\n" +
+            "  parts=row.split('|',3)\n" +
+            "  pane_id,title=parts[:2]\n" +
+            "  dead=parts[2] if len(parts)>2 else '0'\n" +
+            "  command=parts[3] if len(parts)>3 else ('codex' if '(writer)' in title else 'agy' if '(critic)' in title else '')\n" +
+            "  values={'#{pane_title}':title,'#{pane_id}':pane_id,'#{pane_dead}':dead,'#{pane_current_command}':command,'#{pane_id}|#{pane_current_command}':pane_id+'|'+command,'#{pane_id}|#{pane_dead}|#{pane_current_command}':pane_id+'|'+dead+'|'+command,'#{pane_id}|#{pane_title}':pane_id+'|'+title,'#{pane_id}|#{pane_title}|#{pane_dead}':pane_id+'|'+title+'|'+dead,'#{pane_id}|#{pane_title}|#{pane_dead}|#{pane_current_command}':pane_id+'|'+title+'|'+dead+'|'+command,'#{pane_title}|#{pane_current_command}':title+'|'+command,'#{pane_title}|#{pane_current_command}|#{pane_dead}':title+'|'+command+'|'+dead}\n" +
             "  print(values.get(fmt,row))\n" +
-            "if args[:1]==['new-session']: marker.touch()\n")
+            "if args[:1]==['new-session']:\n marker.touch()\n if '-P' in args: print('%1')\n" +
+            "if args[:1]==['split-window'] and '-P' in args: print('%2')\n")
         tmux.chmod(0o755)
         self.env = {k: v for k, v in os.environ.items()
                     if not k.startswith("PAIR_") and k not in ("TMUX", "TMUX_PANE")}
         self.env.update(HOME=str(self.home), PATH=str(self.bin) + os.pathsep + os.environ["PATH"],
                         PAIR_TEST_LOG=str(self.log), PAIR_TEST_MARKER=str(self.marker),
-                        PAIR_TEST_PANES=str(self.panes_file))
+                        PAIR_TEST_PANES=str(self.panes_file),
+                        PAIR_TEST_COMPOSER=str(base / "composer.txt"))
 
     def launch(self, *args):
         return subprocess.run(["bash", str(PAIRUP), "--in-place", *args], cwd=self.project,
@@ -169,10 +198,16 @@ class PairupLaunchCase(unittest.TestCase):
         self.assertEqual(state["writer"], "codex")
         self.assertEqual(state["tasks"][0]["text"], task)
         second = self.launch()
-        self.assertEqual(second.returncode, 0, second.stderr + second.stdout)
+        self.assertEqual(second.returncode, 0,
+                         second.stderr + second.stdout + self.log.read_text(encoding="utf-8"))
+        self.assertIn("selected work handed to live Writer pane", second.stdout)
         calls = self.calls()
         self.assertEqual(sum("new-session" in call for call in calls), 1)
         self.assertEqual(sum("split-window" in call for call in calls), 1)
+        delivered = " ".join(str(part) for call in calls for part in call)
+        self.assertIn("Resume the startup-selected task #1", delivered)
+        self.assertIn(str(self.project), delivered,
+                      "a live CLI must receive the selected launch workspace")
         self.assertFalse((self.project / "SHOULD_NOT_EXIST").exists())
         created = next(call for call in calls if "new-session" in call)
         self.assertEqual(created[0], "-L", "use the project's socket consistently")
@@ -667,6 +702,68 @@ class PairupTmuxLaunchCase(unittest.TestCase):
         self.assertEqual("0", critic_after[3])
         self.assertEqual(2, len(rows), after)
         self.detach(resumed)
+
+    def test_nonzero_tmux_base_index_can_reattach_and_respawn_a_role(self) -> None:
+        probe = self.tmux("new-session", "-d", "-s", "base-index-probe")
+        self.assertEqual(probe.returncode, 0, probe.stderr)
+        configured = self.tmux("set-option", "-g", "base-index", "1")
+        self.assertEqual(configured.returncode, 0, configured.stderr)
+
+        first = self.launch()
+        self.await_launch(first, "agy")
+        before = self.tmux("list-panes", "-t", self.socket + ":pair", "-F",
+                           "#{window_index}|#{pane_id}|#{pane_pid}|#{pane_title}|#{pane_dead}").stdout
+        rows = [line.split("|") for line in before.splitlines()]
+        self.assertEqual(2, len(rows), before)
+        self.assertEqual({"1"}, {row[0] for row in rows}, before)
+        self.assertTrue(any("(writer)" in row[3] for row in rows), before)
+        self.assertTrue(any("(critic)" in row[3] for row in rows), before)
+        self.detach(first)
+
+        window = self.tmux("set-window-option", "-t", self.socket + ":pair",
+                           "remain-on-exit", "on")
+        self.assertEqual(window.returncode, 0, window.stderr)
+        critic = next(row for row in rows if "(critic)" in row[3])
+        os.kill(int(critic[2]), signal.SIGTERM)
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            current = self.tmux("list-panes", "-t", self.socket + ":pair",
+                                "-F", "#{pane_id}|#{pane_pid}|#{pane_dead}").stdout
+            if any(line.split("|")[0] == critic[1] and line.endswith("|1")
+                   for line in current.splitlines()):
+                break
+            time.sleep(.1)
+        else:
+            self.fail("critic pane did not become dead at nonzero base index")
+
+        (self.base / "agy.started").unlink(missing_ok=True)
+        resumed = self.launch()
+        self.await_launch(resumed, "agy")
+        after = self.tmux("list-panes", "-t", self.socket + ":pair", "-F",
+                          "#{window_index}|#{pane_id}|#{pane_pid}|#{pane_title}|#{pane_dead}").stdout
+        rows_after = [line.split("|") for line in after.splitlines()]
+        self.assertEqual(2, len(rows_after), after)
+        self.assertEqual({"1"}, {row[0] for row in rows_after}, after)
+        restored = next(row for row in rows_after if "(critic)" in row[3])
+        self.assertEqual(critic[1], restored[1])
+        self.assertNotEqual(critic[2], restored[2])
+        self.assertEqual("0", restored[4])
+        self.detach(resumed)
+
+        writer = next(row for row in rows_after if "(writer)" in row[3])
+        self.tmux("kill-pane", "-t", writer[1])
+        (self.base / "codex.started").unlink(missing_ok=True)
+        restored_writer = self.launch()
+        self.await_launch(restored_writer, "agy")
+        final = self.tmux("list-panes", "-t", self.socket + ":pair", "-F",
+                          "#{pane_id}|#{pane_pid}|#{pane_title}|#{pane_dead}").stdout
+        final_rows = [line.split("|") for line in final.splitlines()]
+        self.assertEqual(2, len(final_rows), final)
+        writer_after = next(row for row in final_rows if "(writer)" in row[2])
+        self.assertNotEqual(writer[1], writer_after[0])
+        self.assertNotEqual(writer[2], writer_after[1])
+        self.assertEqual("0", writer_after[3])
+        self.detach(restored_writer)
 
     def test_autonomy_setting_persists_across_pairup_process_restarts(self) -> None:
         """Only an explicit mode option changes the standing project setting.

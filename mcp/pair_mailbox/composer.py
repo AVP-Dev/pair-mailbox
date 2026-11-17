@@ -1489,3 +1489,27 @@ def deliver(pane: str, text: str, wait_for_empty: float = 0.0, submit: bool = Tr
             result["why"] = ("Enter sent twice, the text still sits in the composer — "
                              "take the message from the mailbox")
     return result
+
+
+def deliver_startup_resume(pane: str, *, task_id: str = "", status: str = "open",
+                           task_text: str = "", workspace: str = "",
+                           wait_for_empty: float = 20.0) -> dict:
+    """Hand an explicit pairup resume selection to an already-running CLI."""
+    if task_id:
+        body = (f"Resume the startup-selected task #{task_id} [{status}]: {task_text}. "
+                "Read pair_state and pair_task(action='list'), preserve the existing progress, "
+                "and continue this task through verification and its final report.")
+    elif workspace:
+        body = (f"Resume the startup-selected uncommitted worktree at {workspace}. "
+                "Read pair_state and pair_task(action='list'), preserve existing progress, "
+                "and continue through verification and the final report.")
+    else:
+        raise ValueError("a selected task or worktree is required")
+    if workspace:
+        body += (f" The selected workspace is {workspace}; direct all file and Git operations "
+                 "to that workspace even if this CLI pane started elsewhere.")
+    result = deliver(pane, body, wait_for_empty=wait_for_empty, submit=True)
+    if not result.get("delivered") or result.get("submit_state") == "retained":
+        raise ComposerBusy("selected work handoff was not confirmed: "
+                           + str(result.get("why") or result))
+    return result

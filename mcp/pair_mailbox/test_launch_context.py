@@ -178,6 +178,25 @@ class LaunchMembership(unittest.TestCase):
 
 
 class FixtureDaemonCleanup(unittest.TestCase):
+    def test_writer_starts_its_daemon_before_transport_is_recorded(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state = Path(tmp) / ".pair"
+            state.mkdir()
+            (state / "state.json").write_text(json.dumps({
+                "writer": "codex", "roles": {}, "tasks": [], "autonomy": "auto"}))
+            stopped = RuntimeError("captured exec")
+            with patch.object(context, "process_info", return_value={"start": "birth"}), \
+                    patch.object(context, "launch_state", return_value={
+                        "writer": "codex", "roles": {}, "tasks": [], "autonomy": "auto"}), \
+                    patch.object(context, "git_metadata_write_roots", return_value=[]), \
+                    patch.object(context, "safe_cli_command", return_value=["codex"]), \
+                    patch.object(context, "ensure_daemon") as ensure, \
+                    patch.object(context, "role_sandbox_argv", side_effect=lambda *a, **k: a[2]), \
+                    patch.object(context.os, "execvpe", side_effect=stopped):
+                with self.assertRaisesRegex(RuntimeError, "captured exec"):
+                    context.run_cli("codex", str(state), ["codex"])
+            ensure.assert_called_once_with("codex", state.resolve())
+
     def test_cleanup_finds_detached_server_from_its_role_lock(self):
         with tempfile.TemporaryDirectory() as tmp:
             state = Path(tmp) / ".pair"
@@ -224,6 +243,64 @@ class LaunchSecurityBoundary(unittest.TestCase):
         self.assertIn("read-only", critic)
         self.assertIn("never", critic)
         self.assertNotIn("--approve-for-me", critic)
+
+    def test_codex_pair_mcp_is_bound_to_the_launch_engine_and_project_state(self):
+        command = context.safe_cli_command(
+            "codex", "codex", True, ["codex"], pair_state=self.state)
+        overrides = [command[index + 1] for index, value in enumerate(command[:-1])
+                     if value == "-c"]
+        self.assertIn('mcp_servers.pair.command="sh"', overrides)
+        args_override = next(value for value in overrides
+                             if value.startswith("mcp_servers.pair.args="))
+        self.assertEqual(json.loads(args_override.split("=", 1)[1]), [
+            str(context.ROOT / "mcp/pair_mailbox/serve.sh"),
+            "codex", "--state", str(self.state.resolve())])
+        self.assertIn("--approve-for-me", command)
+        self.assertIn("sandbox_workspace_write.network_access=true", overrides)
+
+    def test_codex_writer_gets_only_current_checkout_git_commit_paths(self):
+        subprocess.run(["git", "init", "-q", str(self.project)], check=True)
+        subprocess.run(["git", "-C", str(self.project), "config", "user.name", "Pair Test"], check=True)
+        subprocess.run(["git", "-C", str(self.project), "config", "user.email", "pair-test@example.invalid"], check=True)
+        (self.project / "README.md").write_text("fixture\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(self.project), "add", "README.md"], check=True)
+        subprocess.run(["git", "-C", str(self.project), "commit", "-qm", "fixture"], check=True)
+
+        roots = context.git_metadata_write_roots(self.project)
+        self.assertTrue(roots)
+        common_text = subprocess.run(
+            ["git", "-C", str(self.project), "rev-parse", "--git-common-dir"],
+            capture_output=True, text=True, check=True).stdout.strip()
+        common_path = Path(common_text)
+        common = (common_path if common_path.is_absolute() else self.project / common_path).resolve()
+        branch = subprocess.run(
+            ["git", "-C", str(self.project), "symbolic-ref", "--quiet", "--short", "HEAD"],
+            capture_output=True, text=True, check=True).stdout.strip()
+        self.assertIn(common / "index.lock", roots)
+        self.assertIn(common / "objects", roots)
+        self.assertNotIn(common, roots)
+        self.assertIn(common / "refs/heads" / (branch + ".lock"), roots)
+
+        linked = self.project.parent / "linked-worktree"
+        subprocess.run(["git", "-C", str(self.project), "worktree", "add", "-q",
+                        "-b", "test/linked", str(linked)], check=True)
+        linked_roots = context.git_metadata_write_roots(linked)
+        linked_git_dir = Path(subprocess.run(
+            ["git", "-C", str(linked), "rev-parse", "--absolute-git-dir"],
+            capture_output=True, text=True, check=True).stdout.strip()).resolve()
+        self.assertIn(linked_git_dir / "index.lock", linked_roots)
+        self.assertIn(common / "objects", linked_roots)
+        self.assertIn(common / "refs/heads/test/linked.lock", linked_roots)
+        self.assertNotIn(common, linked_roots)
+
+        command = context.safe_cli_command("codex", "codex", True, ["codex"],
+            pair_state=self.state, git_write_roots=linked_roots)
+        overrides = [command[index + 1] for index, value in enumerate(command[:-1])
+                     if value == "-c"]
+        roots_override = next(value for value in overrides
+                              if value.startswith("sandbox_workspace_write.writable_roots="))
+        self.assertEqual(json.loads(roots_override.split("=", 1)[1]),
+                         [str(path.resolve()) for path in linked_roots])
 
     def test_pi_trust_is_noninteractive_and_critic_file_tools_are_removed(self):
         writer = context.safe_cli_command(

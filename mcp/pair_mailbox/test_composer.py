@@ -45,6 +45,32 @@ class TestQuietRunsNeedNoHuman(unittest.TestCase):
                                  f"a deny neighbour never bypasses through a compound command: {prompt}")
 
 
+class TestStartupResumeDelivery(unittest.TestCase):
+    def test_selected_task_is_delivered_with_its_workspace(self) -> None:
+        with mock.patch.object(composer, "deliver", return_value={
+                "delivered": True, "submit_state": "submitted"}) as deliver:
+            composer.deliver_startup_resume(
+                "%7", task_id="12", status="open", task_text="finish recovery",
+                workspace="/project/.worktrees/recovery", wait_for_empty=20)
+        args, kwargs = deliver.call_args
+        self.assertEqual("%7", args[0])
+        self.assertEqual(20, kwargs["wait_for_empty"])
+        self.assertTrue(kwargs["submit"])
+        self.assertIn("task #12 [open]: finish recovery", args[1])
+        self.assertIn("/project/.worktrees/recovery", args[1])
+        self.assertIn("direct all file and Git operations", args[1])
+
+    def test_unconfirmed_resume_is_not_reported_as_delivered(self) -> None:
+        with mock.patch.object(composer, "deliver", return_value={
+                "delivered": False, "why": "composer was not visible"}):
+            with self.assertRaisesRegex(composer.ComposerBusy, "not confirmed"):
+                composer.deliver_startup_resume("%7", task_id="12", task_text="resume")
+
+    def test_resume_requires_a_selected_task_or_worktree(self) -> None:
+        with self.assertRaisesRegex(ValueError, "task or worktree"):
+            composer.deliver_startup_resume("%7")
+
+
 class TestProjectPermissionBlockMatchesProtocol(unittest.TestCase):
     """The project-block §13c shape: broad allow, then push decisions, then denies.
 
