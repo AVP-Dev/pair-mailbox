@@ -15,18 +15,19 @@ from __future__ import annotations
 
 import re
 
-from composer import BOX_GLYPH, capture, composer_line, erase, is_composer_empty
+from composer import BOX_GLYPH, _send_keys, capture, composer_line, is_composer_empty
 
 # The two shapes this system types into a neighbour's composer. Both carry the
 # SENDER's role name: that is what makes a leftover provably ours.
-RING_SHAPE = r"pair: [a-z]+ from {role}\. Read pair_read\.( \(.*\))?"
-MAILBOX_SHAPE = r"\[pair\] {role}: new message in the mailbox \(seq \d+\), read pair_read"
+RING_SHAPE = r"(?:p+)?pair: [a-z]+ from {role}\. Read pair_read\.( \(.*\))?"
+MAILBOX_SHAPE = r"(?:p+)?\[pair\] {role}: new message in the mailbox \(seq \d+\), read pair_read"
 # The supervisor types into a neighbour's composer too, and its leftovers must
 # be recognisable as ITS own — a peer only ever cleans up pointers carrying the
 # peer's own role name. A report wake points at the state, not at the mailbox:
 # there is no letter behind it, so a doorbell saying "read pair_read" would
 # send the peer looking for one that does not exist.
-PILOT_WAKE_SHAPE = r"pair: [a-z]+ from pairpilot\. See pair_state\.( \(.*\))?"
+PILOT_WAKE_SHAPE = r"(?:p+)?pair: [a-z]+ from pairpilot\. (?:See pair_state|Read pair_read)\.( \(.*\))?"
+PILOT_NOTICE_SHAPE = r"(?:p+)?pair: message from pairpilot\. Read pair_read\.(?: \(\d+ unread\))?"
 
 
 def ring_prompt(role: str, kind: str = "message", detail: str = "",
@@ -64,13 +65,19 @@ def own_pointer_length(line: str | None, role: str) -> int:
     if not line:
         return 0
     cleaned = re.sub(f"[{BOX_GLYPH}|]", "", line).strip()
-    candidates = [shape.format(role=re.escape(role)) + r"$"
+    candidates = [shape.format(role=re.escape(role))
                   for shape in (RING_SHAPE, MAILBOX_SHAPE)]
-    candidates.append(PILOT_WAKE_SHAPE + r"$")
-    for pattern in candidates:
-        match = re.search(pattern, cleaned)
-        if not match:
-            continue
+    candidates.append(PILOT_WAKE_SHAPE)
+    # Compatibility with pairpilot's compact notification, including the
+    # repeated-p residue produced by the former character-count cleanup.
+    candidates.append(PILOT_NOTICE_SHAPE)
+    single = "(?:" + "|".join(candidates) + ")"
+    # A previous wake can be retried while its exact pointer is still in the
+    # composer. Recognize a tail made only of our known pointers so repeated
+    # system markers do not wedge the pane forever. Any other prefix remains a
+    # hard refusal; we never erase text merely because it follows our marker.
+    match = re.search(rf"{single}(?:\s+{single})*$", cleaned)
+    if match:
         head = cleaned[: match.start()].strip()
         if head and not is_composer_empty(head):
             # Something else shares the composer: ours is not the only text
@@ -96,7 +103,7 @@ def clear_own_pointer(tmux: str | list[str], pane: str, role: str) -> int:
     if not length:
         return 0
     try:
-        erase(tmux, pane, length)
+        _send_keys(tmux, pane, "C-u")
     except Exception:  # noqa: BLE001 - the refusal path reports what happened
         return 0
     return length

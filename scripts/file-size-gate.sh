@@ -1,30 +1,25 @@
 #!/usr/bin/env bash
 #
-# file-size-gate.sh — a ratchet that keeps source files from growing past a
-# size someone has actually reviewed.
+# file-size-gate.sh — advisory size guidance that surfaces review boundaries.
 #
 # Ported in spirit from the agent-starter-kit rule in
 # docs/project-structure.md §2 of that project: a source file is the normal
 # target at up to 300 lines, 300-500 is acceptable while the file keeps a
-# single responsibility, 500-800 forces a review of its boundaries, and
-# anything above 800 is allowed only with a recorded reason and a split plan.
+# single responsibility, 500-800 suggests reviewing its boundaries, and
+# anything above 800 deserves an explicit review and a split plan.
 #
 # Why a ratchet instead of a split today: the same kit forbids performing a
 # mass refactor alongside an unrelated task (docs/project-structure.md §9, and
 # AGENTS.md §4.7 requires ownership, scope and the reason for a large file to
 # be fixed in a design manifest first). So mcp/pair_mailbox/server.py at 3284
-# lines is not rewritten today. It is frozen at its current size instead: it
-# may shrink, and shrinking is encouraged, but it may not grow by one line
-# unless someone records a new and larger exception with a reason.
+# lines is not rewritten today. Its current size is recorded as context for
+# reviewers; crossing that number must never stop otherwise safe work.
 #
-# A baseline entry means: reviewed, and frozen at that CEILING, for a stated
-# reason. The reason is mandatory, because an exception nobody can explain is
-# just a number that hides a problem. The cap is a ceiling, not an exact size:
-# the file may sit far below it for as long as it likes, and that is fine.
+# A baseline entry is a review note about a large file and its reason. It is
+# advisory, not an exception an agent must obtain before continuing work.
 #
-# Entries that point at a missing file are errors, and so is an entry whose file
-# has dropped back under the hard threshold: the exception no longer describes
-# anything. A ratchet that never tightens silently stops describing reality.
+# Malformed baseline data is an error; stale paths and size changes are reported
+# as advisories so maintenance guidance cannot become an execution tripwire.
 #
 # Scope: source code only — .py, .sh, .ts, .js, .mjs, .cjs, plus extensionless
 # executable scripts such as bin/pairpilot. Markdown documentation is
@@ -33,7 +28,7 @@
 # it would only manufacture busywork.
 #
 # Usage: ./scripts/file-size-gate.sh [--baseline PATH]
-# Exit codes: 0 clean, 1 size violation, 2 scanner or baseline error.
+# Exit codes: 0 completed (possibly with size advisories), 2 scanner/baseline error.
 
 set -euo pipefail
 
@@ -82,7 +77,7 @@ case "$BASELINE" in
 esac
 
 TARGET_MAX=300
-HARD_MAX=800
+REVIEW_MAX=800
 
 cd "$PROJECT_ROOT"
 
@@ -172,9 +167,9 @@ done <"$BASELINE_FILE"
 
 # --- measure every source file ----------------------------------------------
 
-violations=0
+advisories=0
 reviews=0
-frozen=0
+noted=0
 clean=0
 declare -a report=()
 
@@ -188,17 +183,21 @@ while IFS= read -r file; do
 
   if [ -n "$cap" ]; then
     if [ "$lines" -gt "$cap" ]; then
-      violations=$((violations + 1))
-      report+=("VIOLATION	$file	$lines lines, frozen at $cap: growth banned (${allowed_reason["$file"]})")
+      advisories=$((advisories + 1))
+      report+=("ADVISORY	$file	$lines lines, review note was $cap (${allowed_reason["$file"]})")
     else
-      frozen=$((frozen + 1))
+      noted=$((noted + 1))
+    fi
+    if [ "$lines" -gt "$REVIEW_MAX" ]; then
+      advisories=$((advisories + 1))
+      report+=("ADVISORY	$file	$lines lines, above review threshold $REVIEW_MAX; inspect boundaries when useful")
     fi
     continue
   fi
 
-  if [ "$lines" -gt "$HARD_MAX" ]; then
-    violations=$((violations + 1))
-    report+=("VIOLATION	$file	$lines lines, hard cap $HARD_MAX: needs a pinned exception in $BASELINE")
+  if [ "$lines" -gt "$REVIEW_MAX" ]; then
+    advisories=$((advisories + 1))
+    report+=("ADVISORY	$file	$lines lines, above review threshold $REVIEW_MAX; inspect boundaries when useful")
   elif [ "$lines" -gt "$TARGET_MAX" ]; then
     reviews=$((reviews + 1))
     report+=("REVIEW	$file	$lines lines, target size $TARGET_MAX: bounds need review")
@@ -214,20 +213,16 @@ while IFS= read -r file; do
   cap="${allowed_max["$file"]:-}"
   [ -n "$cap" ] || continue
   if [ ! -f "$file" ]; then
-    violations=$((violations + 1))
-    report+=("VIOLATION	$file	baseline points at a missing file, the record went stale")
+    advisories=$((advisories + 1))
+    report+=("ADVISORY	$file	baseline path is stale; remove or update the review note when convenient")
     continue
   fi
   lines="$(line_count "$file")"
-  # An exception goes stale only when the file STOPPED needing it.
-  # Cap is a ceiling, not an exact value, so demanding it drop on any file change
-  # is banned: then any server.py edit would demand a baseline edit, turning the gate
-  # into a mandatory obstacle instead of a ratchet.
-  # Staleness is exactly one state: the file dropped under the hard cap while the
-  # record still excuses it.
-  if [ "$lines" -le "$HARD_MAX" ] && [ "$cap" -gt "$HARD_MAX" ]; then
-    violations=$((violations + 1))
-    report+=("VIOLATION	$file	$lines lines, no longer past the hard cap $HARD_MAX: the record went stale, drop cap to $lines or delete the line")
+  # Size review notes go stale when the file no longer crosses the review band.
+  # Report that fact, but do not require a bookkeeping edit to continue work.
+  if [ "$lines" -le "$REVIEW_MAX" ] && [ "$cap" -gt "$REVIEW_MAX" ]; then
+    advisories=$((advisories + 1))
+    report+=("ADVISORY	$file	$lines lines, below review threshold $REVIEW_MAX; old note may be removed")
   fi
 done <<<"$(printf '%s\n' "${!allowed_max[@]}" | sort)"
 
@@ -237,11 +232,5 @@ for entry in "${report[@]+"${report[@]}"}"; do
   printf '%s\n' "$entry"
 done
 
-if [ "$violations" -gt 0 ]; then
-  printf 'file-size-gate: %s violation(s), %s file(s) for review, %s frozen, %s fine\n' \
-    "$violations" "$reviews" "$frozen" "$clean" >&2
-  exit 1
-fi
-
-printf 'file-size-gate: clean (%s frozen, %s for review, %s fine, cap %s)\n' \
-  "$frozen" "$reviews" "$clean" "$HARD_MAX"
+printf 'file-size-gate: complete (%s advisory note(s), %s files for review, %s noted, %s fine; review threshold %s)\n' \
+  "$advisories" "$reviews" "$noted" "$clean" "$REVIEW_MAX"

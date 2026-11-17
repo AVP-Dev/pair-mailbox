@@ -1738,8 +1738,8 @@ elif args[:1] == ["send-keys"]:
             fh.write(piece)
         with open({str(history)!r}, "a", encoding="utf-8") as fh:
             fh.write(piece)
-    elif "BSpace" in rest:
-        count = int(rest[rest.index("-N") + 1]) if "-N" in rest else 1
+    elif "C-u" in rest or "BSpace" in rest:
+        count = len(typed) if "C-u" in rest else (int(rest[rest.index("-N") + 1]) if "-N" in rest else 1)
         with open({str(current)!r}, "w", encoding="utf-8") as fh:
             fh.write(typed[:-count] if count else typed)
     elif "Enter" in rest:

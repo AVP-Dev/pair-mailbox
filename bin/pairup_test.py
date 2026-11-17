@@ -9,6 +9,9 @@ from __future__ import annotations
 import json
 import os
 import hashlib
+import signal
+import pty
+import select
 import time
 import shlex
 import shutil
@@ -20,17 +23,16 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 PAIRUP = ROOT / "bin" / "pairup"
+sys.path.insert(0, str(ROOT / "mcp/pair_mailbox"))
 
 
 def process_environment(pid: int) -> list[str]:
-    return subprocess.run(["ps", "eww", "-p", str(pid)], capture_output=True,
-                          text=True, check=True).stdout.split()
+    return subprocess.run(["ps", "eww", "-p", str(pid)], capture_output=True, text=True,
+                          check=True).stdout.split()
 
 def script_command(command: str) -> list[str]:
-    if sys.platform == "darwin":
-        return ["script", "-q", "/dev/null", "sh", "-c", command]
-    return ["script", "-e", "-q", "-c", command, "/dev/null"]
-
+    return (["script", "-q", "/dev/null", "sh", "-c", command]
+            if sys.platform == "darwin" else ["script", "-e", "-q", "-c", command, "/dev/null"])
 BOOTSTRAP = """\
 _root=%s
 PAIRUP_ROOT=%s
@@ -71,6 +73,7 @@ class PairupLaunchCase(unittest.TestCase):
         self.bin.mkdir()
         self.log = base / "tmux.jsonl"
         self.marker = base / "session-exists"
+        self.panes_file = base / "panes.txt"
         subprocess.run(["git", "init", "-q", str(self.project)], check=True)
         for name in ("codex", "agy", "pgrep"):
             path = self.bin / name
@@ -84,19 +87,108 @@ class PairupLaunchCase(unittest.TestCase):
             "if args[:1]==['-L']: args=args[2:]\n" +
             "marker=Path(os.environ['PAIR_TEST_MARKER'])\n" +
             "if args[:1]==['has-session']: sys.exit(0 if marker.exists() else 1)\n" +
-            "if args[:1]==['new-session']: marker.touch()\n")
+            "if args[:1]==['display-message']:\n" +
+            " pane_file=Path(os.environ['PAIR_TEST_PANES'])\n" +
+            " rows=(pane_file.read_text().splitlines() if pane_file.exists() else [f'%1|{Path.cwd().name}:codex (writer)|0|codex', f'%2|{Path.cwd().name}:agy (critic)|0|agy'])\n" +
+            " pane=args[args.index('-t')+1]\n" +
+            " fmt=args[-1] if args else ''\n" +
+            " for row in rows:\n" +
+            "  parts=row.split('|',3)\n" +
+            "  if parts[0]==pane:\n" +
+            "   if fmt.startswith('#{pane_dead}'):\n" +
+            "    print(f'{parts[2]}\\t{Path.cwd()}\\t{Path.cwd().name}:0.{parts[0][1:]}\\t1\\t{parts[0]}')\n" +
+            "   else: print(parts[1])\n" +
+            "   break\n" +
+            " sys.exit(0)\n" +
+            "if args[:1]==['capture-pane']:\n" +
+            " text=Path(os.environ['PAIR_TEST_COMPOSER']).read_text() if Path(os.environ['PAIR_TEST_COMPOSER']).exists() else ''\n" +
+            " print('› '+(text if text else 'Ask Codex to do anything'))\n" +
+            " sys.exit(0)\n" +
+            "if args[:1]==['send-keys']:\n" +
+            " pane=args[args.index('-t')+1]\n" +
+            " values=args[args.index('-t')+2:]\n" +
+            " target=Path(os.environ['PAIR_TEST_COMPOSER'])\n" +
+            " if '-l' in values: target.write_text((target.read_text() if target.exists() else '')+''.join(values[values.index('-l')+1:]))\n" +
+            " elif 'Enter' in values: target.write_text('')\n" +
+            " sys.exit(0)\n" +
+            "if args[:1]==['list-panes']:\n" +
+            " pane_file=Path(os.environ['PAIR_TEST_PANES'])\n" +
+            " rows=(pane_file.read_text().splitlines() if pane_file.exists() else [f'%1|{Path.cwd().name}:codex (writer)|0|codex', f'%2|{Path.cwd().name}:agy (critic)|0|agy'])\n" +
+            " fmt=args[args.index('-F')+1] if '-F' in args else '#{pane_id}|#{pane_title}|#{pane_dead}'\n" +
+            " for row in rows:\n" +
+            "  parts=row.split('|',3)\n" +
+            "  pane_id,title=parts[:2]\n" +
+            "  dead=parts[2] if len(parts)>2 else '0'\n" +
+            "  command=parts[3] if len(parts)>3 else ('codex' if '(writer)' in title else 'agy' if '(critic)' in title else '')\n" +
+            "  values={'#{pane_title}':title,'#{pane_id}':pane_id,'#{pane_dead}':dead,'#{pane_current_command}':command,'#{pane_id}|#{pane_current_command}':pane_id+'|'+command,'#{pane_id}|#{pane_dead}|#{pane_current_command}':pane_id+'|'+dead+'|'+command,'#{pane_id}|#{pane_title}':pane_id+'|'+title,'#{pane_id}|#{pane_title}|#{pane_dead}':pane_id+'|'+title+'|'+dead,'#{pane_id}|#{pane_title}|#{pane_dead}|#{pane_current_command}':pane_id+'|'+title+'|'+dead+'|'+command,'#{pane_title}|#{pane_current_command}':title+'|'+command,'#{pane_title}|#{pane_current_command}|#{pane_dead}':title+'|'+command+'|'+dead}\n" +
+            "  print(values.get(fmt,row))\n" +
+            "if args[:1]==['new-session']:\n marker.touch()\n if '-P' in args: print('%1')\n" +
+            "if args[:1]==['split-window'] and '-P' in args: print('%2')\n")
         tmux.chmod(0o755)
         self.env = {k: v for k, v in os.environ.items()
                     if not k.startswith("PAIR_") and k not in ("TMUX", "TMUX_PANE")}
         self.env.update(HOME=str(self.home), PATH=str(self.bin) + os.pathsep + os.environ["PATH"],
-                        PAIR_TEST_LOG=str(self.log), PAIR_TEST_MARKER=str(self.marker))
+                        PAIR_TEST_LOG=str(self.log), PAIR_TEST_MARKER=str(self.marker),
+                        PAIR_TEST_PANES=str(self.panes_file),
+                        PAIR_TEST_COMPOSER=str(base / "composer.txt"))
 
     def launch(self, *args):
         return subprocess.run(["bash", str(PAIRUP), "--in-place", *args], cwd=self.project,
                               env=self.env, capture_output=True, text=True, timeout=30)
 
+    def launch_terminal(self, input_text, *args):
+        command = ["bash", str(PAIRUP), "--in-place", *args]
+        pid, master = pty.fork()
+        if pid == 0:
+            os.chdir(self.project)
+            os.execve("/bin/bash", command, self.env)
+            os._exit(127)
+        output = bytearray()
+        sent = False
+        status = None
+        deadline = time.monotonic() + 30
+        try:
+            while time.monotonic() < deadline:
+                readable, _, _ = select.select([master], [], [], .1)
+                if readable:
+                    try:
+                        chunk = os.read(master, 4096)
+                    except OSError:
+                        chunk = b""
+                    output.extend(chunk)
+                    if not sent and b"Choose a number:" in output:
+                        os.write(master, input_text.encode())
+                        sent = True
+                waited, raw_status = os.waitpid(pid, os.WNOHANG)
+                if waited:
+                    status = raw_status
+                    break
+            if status is None:
+                os.kill(pid, signal.SIGKILL)
+                _, status = os.waitpid(pid, 0)
+        finally: os.close(master)
+        exit_code = os.waitstatus_to_exitcode(status) if hasattr(os, "waitstatus_to_exitcode") else (os.WEXITSTATUS(status) if os.WIFEXITED(status) else -os.WTERMSIG(status) if os.WIFSIGNALED(status) else 1)
+        return subprocess.CompletedProcess(command, exit_code,
+                                            output.decode(errors="replace"), "")
+
     def calls(self):
         return [json.loads(line) for line in self.log.read_text().splitlines()]
+
+    def prepare_closed_work3(self):
+        state_dir = self.project / ".pair"
+        state_dir.mkdir()
+        (state_dir / "state.json").write_text(json.dumps({
+            "task": "Work3 coordinator", "mode": "fix", "autonomy": "auto",
+            "writer": "codex", "policy": {"writer": "codex"}, "phase": "verify",
+            "round": 7, "roles": {}, "tasks": [], "engine_root": str(ROOT),
+        }), encoding="utf-8")
+        for args in (("task", "Work3 coordinator"), ("task", "--done", "1")):
+            result = subprocess.run([str(ROOT / "bin" / "pairctl"), "--state", str(state_dir), *args],
+                                    cwd=self.project, env=self.env,
+                                    capture_output=True, text=True, timeout=10)
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        (self.project / "work3.py").write_text("unfinished\n", encoding="utf-8")
+        return state_dir
 
     def test_fresh_launch_records_literal_task_and_second_launch_attaches(self):
         task = 'Inspect "auth"; $(touch SHOULD_NOT_EXIST) — проверка'
@@ -106,10 +198,16 @@ class PairupLaunchCase(unittest.TestCase):
         self.assertEqual(state["writer"], "codex")
         self.assertEqual(state["tasks"][0]["text"], task)
         second = self.launch()
-        self.assertEqual(second.returncode, 0, second.stderr + second.stdout)
+        self.assertEqual(second.returncode, 0,
+                         second.stderr + second.stdout + self.log.read_text(encoding="utf-8"))
+        self.assertIn("selected work handed to live Writer pane", second.stdout)
         calls = self.calls()
         self.assertEqual(sum("new-session" in call for call in calls), 1)
         self.assertEqual(sum("split-window" in call for call in calls), 1)
+        delivered = " ".join(str(part) for call in calls for part in call)
+        self.assertIn("Resume the startup-selected task #1", delivered)
+        self.assertIn(str(self.project), delivered,
+                      "a live CLI must receive the selected launch workspace")
         self.assertFalse((self.project / "SHOULD_NOT_EXIST").exists())
         created = next(call for call in calls if "new-session" in call)
         self.assertEqual(created[0], "-L", "use the project's socket consistently")
@@ -117,6 +215,48 @@ class PairupLaunchCase(unittest.TestCase):
         executed = subprocess.run(["sh", "-c", created[-1]], cwd=self.project,
                                   env=self.env, text=True, capture_output=True, timeout=10)
         self.assertEqual(executed.returncode, 0, executed.stderr)
+
+    def test_resume_selection_keeps_closed_task_and_starts_in_its_dirty_tree(self):
+        state_dir = self.prepare_closed_work3()
+
+        result = self.launch("--writer", "codex", "--swap", "agy", "--resume", "1")
+
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertIn("selected task #1 [done]", result.stdout)
+        state = json.loads((state_dir / "state.json").read_text(encoding="utf-8"))
+        self.assertEqual(1, len(state["tasks"]))
+        self.assertEqual("done", state["tasks"][0]["status"])
+        command = next(call[-1] for call in self.calls() if "new-session" in call)
+        self.assertIn("PAIR_RESUME_TASK_ID=1", command)
+
+    def test_terminal_launch_offers_closed_dirty_task_before_creating_session(self):
+        state_dir = self.prepare_closed_work3()
+        result = self.launch_terminal("1\n", "--writer", "codex")
+
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        output = result.stdout + result.stderr
+        self.assertIn("#1 [done] Work3 coordinator", output)
+        self.assertIn("work3.py", output)
+        self.assertIn("Choose a number:", output)
+        self.assertIn("selected task #1 [done]", output)
+        self.assertEqual(1, sum("new-session" in call for call in self.calls()))
+        self.assertEqual("done", json.loads(
+            (state_dir / "state.json").read_text(encoding="utf-8"))["tasks"][0]["status"])
+
+    def test_reattach_respawns_only_the_dead_role_pane(self):
+        self.marker.touch()
+        self.panes_file.write_text(
+            f"%1|{self.project.name}:codex (writer)|0\n"
+            f"%2|{self.project.name}:agy (critic)|1\n", encoding="utf-8")
+
+        result = self.launch("--writer", "codex")
+
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertIn("restarting dead role pane", result.stderr)
+        respawn = [call for call in self.calls() if "respawn-pane" in call]
+        self.assertEqual(1, len(respawn), respawn)
+        self.assertIn("%2", respawn[0])
+        self.assertNotIn("%1", respawn[0])
 
     def test_launch_inside_foreign_tmux_creates_its_own_session(self):
         self.env["TMUX"] = "/tmp/foreign-tmux,123,0"
@@ -444,6 +584,10 @@ class PairupTmuxLaunchCase(unittest.TestCase):
         self.foreign = "pair-test-foreign-" + digest
         self.procs = []
         self.addCleanup(self.cleanup)
+        probe = self.tmux("new-session", "-d", "-s", "pairup-sandbox-probe")
+        if probe.returncode != 0:
+            self.skipTest("tmux server socket is blocked in this sandbox: " + probe.stderr.strip())
+        self.tmux("kill-server")
 
     def tmux(self, *args: str, foreign: bool = False) -> subprocess.CompletedProcess:
         return subprocess.run(["tmux", "-L", self.foreign if foreign else self.socket, *args],
@@ -452,6 +596,7 @@ class PairupTmuxLaunchCase(unittest.TestCase):
     def cleanup(self) -> None:
         for socket in (self.socket, self.foreign):
             subprocess.run(["tmux", "-L", socket, "kill-server"], capture_output=True)
+        __import__("pair_test_base").stop_fixture_daemons(self.project / ".pair")
         for proc in self.procs:
             if proc.poll() is None:
                 proc.kill()
@@ -463,8 +608,7 @@ class PairupTmuxLaunchCase(unittest.TestCase):
             except ProcessLookupError:
                 pass
 
-    def launch(self, critic: str = "agy", foreign: bool = False,
-               autonomy: str | None = None, task: str | None = None) -> subprocess.Popen:
+    def launch(self, critic="agy", foreign=False, autonomy=None, task=None, resume=None) -> subprocess.Popen:
         env = dict(self.env)
         if foreign:
             probe = self.tmux("display-message", "-p", "-t", "foreign", "#{socket_path}", foreign=True)
@@ -475,6 +619,7 @@ class PairupTmuxLaunchCase(unittest.TestCase):
             args.append("--" + autonomy)
         if task is not None:
             args.extend(["--task", task])
+        if resume is not None: args.extend(["--resume", resume])
         command = shlex.join(args)
         proc = subprocess.Popen(script_command(command), cwd=self.project,
                                 env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
@@ -521,6 +666,105 @@ class PairupTmuxLaunchCase(unittest.TestCase):
         self.assertIn("project:claude (critic)", after)
         self.detach(third)
 
+    def test_reattach_respawns_only_the_dead_role_pane(self) -> None:
+        first = self.launch()
+        self.await_launch(first, "agy")
+        set_remain = self.tmux("set-window-option", "-t", self.socket + ":0",
+                               "remain-on-exit", "on")
+        self.assertEqual(set_remain.returncode, 0, set_remain.stderr)
+        before = self.tmux("list-panes", "-t", self.socket + ":0",
+                           "-F", "#{pane_id}|#{pane_pid}|#{pane_title}|#{pane_dead}").stdout
+        writer = next(row.split("|") for row in before.splitlines() if "(writer)" in row)
+        critic = next(row.split("|") for row in before.splitlines() if "(critic)" in row)
+
+        os.kill(int(critic[1]), signal.SIGTERM)
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            current = self.tmux("list-panes", "-t", self.socket + ":0",
+                                "-F", "#{pane_id}|#{pane_pid}|#{pane_title}|#{pane_dead}").stdout
+            if any(row.split("|")[0] == critic[0] and row.endswith("|1")
+                   for row in current.splitlines()):
+                break
+            time.sleep(.1)
+        else:
+            self.fail("critic pane did not become dead")
+
+        (self.base / "agy.started").unlink(missing_ok=True)
+        resumed = self.launch()
+        self.await_launch(resumed, "agy")
+        after = self.tmux("list-panes", "-t", self.socket + ":0",
+                          "-F", "#{pane_id}|#{pane_pid}|#{pane_title}|#{pane_dead}").stdout
+        rows = [row.split("|") for row in after.splitlines()]
+        writer_after = next(row for row in rows if row[0] == writer[0])
+        critic_after = next(row for row in rows if row[0] == critic[0])
+        self.assertEqual(writer[1], writer_after[1], "live writer process must not restart")
+        self.assertNotEqual(critic[1], critic_after[1], "only the dead critic process restarts")
+        self.assertEqual("0", critic_after[3])
+        self.assertEqual(2, len(rows), after)
+        self.detach(resumed)
+
+    def test_nonzero_tmux_base_index_can_reattach_and_respawn_a_role(self) -> None:
+        probe = self.tmux("new-session", "-d", "-s", "base-index-probe")
+        self.assertEqual(probe.returncode, 0, probe.stderr)
+        configured = self.tmux("set-option", "-g", "base-index", "1")
+        self.assertEqual(configured.returncode, 0, configured.stderr)
+
+        first = self.launch()
+        self.await_launch(first, "agy")
+        before = self.tmux("list-panes", "-t", self.socket + ":pair", "-F",
+                           "#{window_index}|#{pane_id}|#{pane_pid}|#{pane_title}|#{pane_dead}").stdout
+        rows = [line.split("|") for line in before.splitlines()]
+        self.assertEqual(2, len(rows), before)
+        self.assertEqual({"1"}, {row[0] for row in rows}, before)
+        self.assertTrue(any("(writer)" in row[3] for row in rows), before)
+        self.assertTrue(any("(critic)" in row[3] for row in rows), before)
+        self.detach(first)
+
+        window = self.tmux("set-window-option", "-t", self.socket + ":pair",
+                           "remain-on-exit", "on")
+        self.assertEqual(window.returncode, 0, window.stderr)
+        critic = next(row for row in rows if "(critic)" in row[3])
+        os.kill(int(critic[2]), signal.SIGTERM)
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            current = self.tmux("list-panes", "-t", self.socket + ":pair",
+                                "-F", "#{pane_id}|#{pane_pid}|#{pane_dead}").stdout
+            if any(line.split("|")[0] == critic[1] and line.endswith("|1")
+                   for line in current.splitlines()):
+                break
+            time.sleep(.1)
+        else:
+            self.fail("critic pane did not become dead at nonzero base index")
+
+        (self.base / "agy.started").unlink(missing_ok=True)
+        resumed = self.launch()
+        self.await_launch(resumed, "agy")
+        after = self.tmux("list-panes", "-t", self.socket + ":pair", "-F",
+                          "#{window_index}|#{pane_id}|#{pane_pid}|#{pane_title}|#{pane_dead}").stdout
+        rows_after = [line.split("|") for line in after.splitlines()]
+        self.assertEqual(2, len(rows_after), after)
+        self.assertEqual({"1"}, {row[0] for row in rows_after}, after)
+        restored = next(row for row in rows_after if "(critic)" in row[3])
+        self.assertEqual(critic[1], restored[1])
+        self.assertNotEqual(critic[2], restored[2])
+        self.assertEqual("0", restored[4])
+        self.detach(resumed)
+
+        writer = next(row for row in rows_after if "(writer)" in row[3])
+        self.tmux("kill-pane", "-t", writer[1])
+        (self.base / "codex.started").unlink(missing_ok=True)
+        restored_writer = self.launch()
+        self.await_launch(restored_writer, "agy")
+        final = self.tmux("list-panes", "-t", self.socket + ":pair", "-F",
+                          "#{pane_id}|#{pane_pid}|#{pane_title}|#{pane_dead}").stdout
+        final_rows = [line.split("|") for line in final.splitlines()]
+        self.assertEqual(2, len(final_rows), final)
+        writer_after = next(row for row in final_rows if "(writer)" in row[2])
+        self.assertNotEqual(writer[1], writer_after[0])
+        self.assertNotEqual(writer[2], writer_after[1])
+        self.assertEqual("0", writer_after[3])
+        self.detach(restored_writer)
+
     def test_autonomy_setting_persists_across_pairup_process_restarts(self) -> None:
         """Only an explicit mode option changes the standing project setting.
 
@@ -535,7 +779,7 @@ class PairupTmuxLaunchCase(unittest.TestCase):
         self.assertIn('"via": "task"', transcript)
         self.detach(first)
 
-        resumed = self.launch()
+        resumed = self.launch(resume="1")
         self.await_launch(resumed, "agy")
         self.assertEqual(json.loads((self.project / ".pair" / "state.json").read_text())
                          ["autonomy"], "semi",
@@ -549,7 +793,7 @@ class PairupTmuxLaunchCase(unittest.TestCase):
                          "a later task directive must not silently change the saved mode")
         self.detach(task_directive)
 
-        explicit = self.launch(autonomy="observe")
+        explicit = self.launch(autonomy="observe", resume="1")
         self.await_launch(explicit, "agy")
         self.assertEqual(json.loads((self.project / ".pair" / "state.json").read_text())
                          ["autonomy"], "observe")

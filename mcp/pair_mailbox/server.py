@@ -445,7 +445,8 @@ def tasks_of(state: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def open_tasks(state: dict[str, Any]) -> list[dict[str, Any]]:
-    return [item for item in tasks_of(state) if item.get("status") == OPEN_TASK]
+    return [item for item in tasks_of(state)
+            if item.get("status") == OPEN_TASK and "execution_status" not in item]
 
 
 def next_task_id(state: dict[str, Any]) -> int:
@@ -777,6 +778,9 @@ from store_core import (  # noqa: E402,F401 - re-export, the seam's public face
     _transcript_hash,
     _transcript_tail,
 )
+from task_store import StaleTaskFence, TaskStoreError  # noqa: E402 - task API errors
+from execution_api import ExecutionAPI  # noqa: E402 - durable execution bridge
+from coordinator import CoordinatorError  # noqa: E402 - runtime routing errors
 
 
 def tmux_command() -> list[str]:
@@ -859,6 +863,7 @@ class PairSession:
             raise SystemExit(f"invalid --role {role!r}: use letters, digits, dot, dash, underscore")
         self.role = role
         self.store = store
+        self.execution = ExecutionAPI(store.task_store, role)
         self._explicit_pane = (pane or "").strip()
         self._last_state_hash: str | None = None
 
@@ -881,9 +886,9 @@ class PairSession:
 
             if head is None:
                 from review import git_head
-                head = git_head(self.store.project_root)
-            snap = git_snapshot(self.store.project_root, head=head)
-            status, _ = delivery_floor(self.store.project_root, head=head)
+                head = git_head(self.store.project_root_for(self.role))
+            snap = git_snapshot(self.store.project_root_for(self.role), head=head)
+            status, _ = delivery_floor(self.store.project_root_for(self.role), head=head)
             snap["delivery"] = status
             return snap
         except Exception:  # noqa: BLE001 - the snapshot must never drop the cache
@@ -934,7 +939,7 @@ class PairSession:
         pin_why = ""
         pin_unverified = False
         if pin:
-            verdict, pin_why = pin_verdict(tmux, pin, self.store.project_root)
+            verdict, pin_why = pin_verdict(tmux, pin, self.store.project_root_for(self.role))
             if verdict == PIN_OK:
                 pane = pin
             elif verdict == PIN_UNKNOWN:
@@ -972,7 +977,7 @@ class PairSession:
         proved_explicit = ""
         if explicit_pane and tmux and not pin:
             try:
-                ours, _why = _belongs(tmux, explicit_pane, self.store.project_root)
+                ours, _why = _belongs(tmux, explicit_pane, self.store.project_root_for(self.role))
             except Exception:
                 ours = False
             occupant_alive = False
@@ -998,7 +1003,7 @@ class PairSession:
         proved_env = ""
         if not pane and env_pane and tmux and not pin:
             try:
-                ours, _why = _belongs(tmux, env_pane, self.store.project_root)
+                ours, _why = _belongs(tmux, env_pane, self.store.project_root_for(self.role))
             except Exception:
                 ours = False
             occupant_alive = False
@@ -1051,7 +1056,7 @@ class PairSession:
             from composer import pane_belongs_to_project
 
             ours, why_not_ours = pane_belongs_to_project(
-                tmux, pane, self.store.project_root)
+                tmux, pane, self.store.project_root_for(self.role))
             if not ours:
                 self.store.append_transcript(
                     "pane_env_rejected", self.role, pane=pane, why=why_not_ours,
@@ -1248,7 +1253,7 @@ class PairSession:
                     if not other_pane or other_info.get("pane_pin"):
                         continue
                     theirs, why_theirs = pane_belongs_to_project(
-                        tmux, other_pane, self.store.project_root)
+                        tmux, other_pane, self.store.project_root_for(self.role))
                     if not theirs:
                         other_info.pop("pane", None)
                         self.store.append_transcript(
@@ -1310,7 +1315,7 @@ class PairSession:
                 entry["pane_session_id"] = _cur.get("session_id") or ""
         if tmux:
             for event in _heal.recheck_peers(
-                    roles, self.role, self.store.project_root,
+                    roles, self.role, self.store.project_root_for(self.role),
                     pid_alive=is_pid_alive, pane_exists=pane_exists,
                     belongs_to_project=lambda pane, root: _belongs(tmux, pane, root),
                     same_pane=same_pane):
@@ -1375,8 +1380,11 @@ class PairSession:
 
     # ------------------------------------------------------------------ tools
 
-    def tool_pair_state(self) -> dict[str, Any]:
+    def tool_pair_state(self, workspace: str = "") -> dict[str, Any]:
         """Read the shared state, the roster, and this role's standing."""
+        if workspace and self.store.record_role_workspace(self.role, Path(workspace)) is None:
+            raise ProtocolError("workspace is not a checkout of this pair's project",
+                                "Pass this project's checkout or a linked worktree.")
         from panes import pane_identity_cache
         with pane_identity_cache():
             return self._tool_pair_state_cached()
@@ -1399,7 +1407,7 @@ class PairSession:
         if needs_head:
             try:
                 from review import git_head
-                request_head = git_head(self.store.project_root)
+                request_head = git_head(self.store.project_root_for(self.role))
             except Exception:  # noqa: BLE001 - gitless environments stay unknown
                 request_head = ""
 
@@ -1580,7 +1588,7 @@ class PairSession:
         try:
             from review import delivery_floor
 
-            floor_status, floor_detail = delivery_floor(self.store.project_root, head=head)
+            floor_status, floor_detail = delivery_floor(self.store.project_root_for(self.role), head=head)
         except Exception:  # noqa: BLE001 - advisory never drops the answer
             floor_status, floor_detail = "unknown", "delivery check failed to run"
         ceiling = (
@@ -1657,7 +1665,7 @@ class PairSession:
             # close — the branch that would block is `behind`, because origin
             # carries commits THIS state does not, so the round would ship a
             # tree that is not what was reviewed.
-            truth, truth_why = origin_truth(self.store.project_root,
+            truth, truth_why = origin_truth(self.store.project_root_for(self.role),
                                             str(state.get("round_base") or ""), head=head)
             if truth == "behind":
                 blockers.append(f"the round is not against current origin: {truth_why}. ")
@@ -1695,7 +1703,7 @@ class PairSession:
                     try:
                         _ok, _problems = checker.check(
                             board, require_ancestor=False,
-                            root=self.store.project_root)
+                            root=self.store.project_root_for(self.role))
                         if not _ok:
                             blockers.append(
                                 "the board claims what the tree cannot show: "
@@ -1720,12 +1728,12 @@ class PairSession:
             if verdicts:
                 last = verdicts[-1]
                 old = last.get("rev") or {}
-                current = git_head(self.store.project_root) if head is None else head
+                current = git_head(self.store.project_root_for(self.role)) if head is None else head
                 if current:
                     stale, why = is_stale(old, current,
-                                          changed_between(self.store.project_root,
+                                          changed_between(self.store.project_root_for(self.role),
                                                           str(old.get("head") or ""), current),
-                                          dirty_files(self.store.project_root))
+                                          dirty_files(self.store.project_root_for(self.role)))
                     if stale:
                         blockers.append(
                             f"the last verdict {last.get('role')}/{last.get('kind')} "
@@ -1768,7 +1776,7 @@ class PairSession:
             try:
                 from review import delivery_floor
 
-                floor_status, floor_detail = delivery_floor(self.store.project_root, head=head)
+                floor_status, floor_detail = delivery_floor(self.store.project_root_for(self.role), head=head)
             except Exception:  # noqa: BLE001 - the floor never drops the close
                 floor_status, floor_detail = "unknown", "delivery check failed to run"
             if floor_status == "undelivered":
@@ -2031,7 +2039,7 @@ class PairSession:
         # held it, and several pair-mailbox projects run on this machine: ringing the
         # recorded number woke another agent.
         from composer import pane_is_foreign
-        foreign, why_foreign = pane_is_foreign(tmux, pane, self.store.project_root)
+        foreign, why_foreign = pane_is_foreign(tmux, pane, self.store.project_root_for(self.role))
         if foreign:
             # An unproven pane bans typed printing (send-keys) — that is injection into
             # another composer. Fallback is display-message (a popup with no printing) plus
@@ -2250,7 +2258,7 @@ class PairSession:
         from composer import _tmux, pane_is_foreign
         from pointers import mailbox_pointer
         try:
-            foreign, why_foreign = pane_is_foreign(_tmux(), pane, self.store.project_root)
+            foreign, why_foreign = pane_is_foreign(_tmux(), pane, self.store.project_root_for(self.role))
         except ComposerBusy as exc:
             foreign, why_foreign = True, f"tmux unreachable: {exc}"
         if foreign:
@@ -2403,7 +2411,7 @@ class PairSession:
                 sk = _keys.load_signing_key(self.store.root, self.role)
                 if sk is not None:
                     body["envelope"] = _keys.sign_envelope(
-                        sk, _keys.key_id_for(self.store.project_root, self.role),
+                        sk, _keys.key_id_for(self.store.project_root_for(self.role), self.role),
                         seq, self.role, to, body["ts"], body["text"])
             except Exception:  # noqa: BLE001
                 pass
@@ -2558,7 +2566,7 @@ class PairSession:
             return
         try:
             from review import _run_git
-            root = self.store.project_root
+            root = self.store.project_root_for(self.role)
             head = _run_git(root, "rev-parse", "--verify",
                             f"origin/{trunk.resolve_trunk(root)}")
         except Exception:  # noqa: BLE001 - a missing base never blocks an open
@@ -2658,7 +2666,7 @@ class PairSession:
                         from review import pr_ceiling
 
                         ceil_status, ceil_detail = pr_ceiling(
-                            self.store.project_root, autonomy_of(state))
+                            self.store.project_root_for(self.role), autonomy_of(state))
                     except Exception:  # noqa: BLE001 - the ceiling never drops close
                         ceil_status, ceil_detail = "unknown", "PR check failed to run"
                     if ceil_status == "missing":
@@ -2682,7 +2690,7 @@ class PairSession:
                 from receipt import GroundTruthBlocked, generate_receipt
                 from review import git_head
                 try:
-                    _head = git_head(self.store.project_root)
+                    _head = git_head(self.store.project_root_for(self.role))
                     generate_receipt(self.store.root, state, head_commit=_head)
                 except GroundTruthBlocked as exc:
                     raise ProtocolError(f"round cannot be closed: {exc}", "Remove combat mocks, commit and retry.")
@@ -2730,30 +2738,31 @@ class PairSession:
 
     def tool_pair_task(self, action: str, id: int | None = None, text: str = "",
                         reason: str = "", scope: str = "open",
-                        limit: int | None = None, offset: int = 0) -> dict[str, Any]:
-        """The shared task list: one truth for two, not a copy each.
-
-        The list never replaces notes but closes one hole: a task added mid-round
-        silently vanished, because state held one task line and the new overwrote the
-        old. Proven: the round closed as "task B" with evidence gathered for task A.
-
-        Rights run asymmetric, and that is a decision, not a gap: the critic opens a
-        task — or it could never say "I found this too" without writing into another
-        note — but the writer closes it, because it implements it.
-
-        The default answer is the OPEN window, not the whole history. Measured on the
-        live room: 137 tasks, one of them open, and the full list cost 29 784 tokens
-        per call — the largest single token sink in the room, paid by every agent
-        that only wanted to know what is open right now. The history is still there,
-        behind scope="history", and the answer says how much it left out.
-        """
+                        limit: int | None = None, offset: int = 0,
+                        idempotency_key: str | None = None,
+                        fencing_token: int | None = None,
+                        cli_profile: str | None = None,
+                        execution_requirements: dict[str, Any] | None = None,
+                        requirements: dict[str, Any] | None = None,
+                        max_attempts: int = 3) -> dict[str, Any]:
+        """Shared task list: all roles add/list; only writer closes. Open tasks default."""
         action = str(action or "").strip()
         if action not in ("add", "done", "drop", "list"):
             raise ProtocolError(f"unknown task action {action!r}. Use add, done, drop or list.")
+        if idempotency_key is not None and (
+            not isinstance(idempotency_key, str) or not idempotency_key.strip()
+            or len(idempotency_key) > 256
+        ):
+            raise ProtocolError("`idempotency_key` must be 1–256 non-space characters.")
+        if fencing_token is not None and (
+            isinstance(fencing_token, bool) or not isinstance(fencing_token, int)
+            or fencing_token < 0
+        ):
+            raise ProtocolError("`fencing_token` must be a non-negative integer.")
         state = self.store.read()
 
         if action == "list":
-            items = tasks_of(state)
+            items = [item for item in tasks_of(state) if "execution_status" not in item]
             counts = {status: 0 for status in TASK_STATUSES}
             for item in items:
                 status = str(item.get("status") or "")
@@ -2791,21 +2800,38 @@ class PairSession:
             if len(body) > 2000:
                 raise ProtocolError("A task longer than 2000 characters is not a task.")
 
-            def add(st):
-                item = {
-                    "id": next_task_id(st), "text": body, "status": OPEN_TASK,
-                    "added_at": utcnow(), "added_by": self.role,
-                    "round": int(st.get("round", 0)), "reason": "",
-                    "closed_at": None, "closed_by": None,
-                }
-                st.setdefault("tasks", []).append(item)
-                return item
-
-            item = self.store.mutate(add)
+            task_body = {
+                "id": None, "text": body, "status": OPEN_TASK,
+                "added_at": utcnow(), "added_by": self.role,
+                "round": int(state.get("round", 0)), "reason": "",
+                "closed_at": None, "closed_by": None,
+            }
+            if cli_profile is not None:
+                task_body["cli_profile"] = cli_profile
+            if execution_requirements is not None:
+                task_body["execution_requirements"] = execution_requirements
+            if requirements is not None:
+                task_body["requirements"] = requirements
+            execution_task = any(key in task_body for key in
+                                 ("cli_profile", "execution_requirements", "requirements"))
+            if execution_task:
+                task_body["max_attempts"] = max_attempts
+                try:
+                    item, replayed = self.execution.submit(
+                        task_body, actor=self.role, idempotency_key=idempotency_key
+                    )
+                except CoordinatorError as exc:
+                    raise ProtocolError(str(exc)) from exc
+            else:
+                item, replayed = self.store.add_task(
+                    task_body, actor=self.role, idempotency_key=idempotency_key
+                )
             write_task_banner(self.store.root, self.store.read())
-            self.store.append_transcript("task_added", self.role, task_id=item["id"],
-                                         text=body[:200])
-            return {"task": item,
+            if not replayed:
+                self.store.append_transcript("task_added", self.role, task_id=item["id"],
+                                             text=body[:200])
+            return {"task": item, "kind": "execution" if execution_task else "governance",
+                    "idempotent_replay": replayed,
                     "why_it_matters": "An open task keeps the round from closing until it is "
                                       "done or dropped with a reason."}
 
@@ -2818,40 +2844,55 @@ class PairSession:
             )
         target = int(id or 0)
 
-        def close(st):
-            items = st.setdefault("tasks", [])
-            match = next((item for item in items if int(item.get("id", 0)) == target), None)
-            if not match:
-                known = ", ".join(str(item.get("id")) for item in items) or "none yet"
-                raise ProtocolError(f"no task #{target}. Known ids: {known}.")
-            if match.get("status") != OPEN_TASK:
-                raise ProtocolError(
-                    f"task #{target} is already {match.get('status')!r}.",
-                    "Nothing to change. If it came back up, add a new task that says so.",
-                )
-            if action == "drop" and not str(reason or "").strip():
-                raise ProtocolError(
-                    f"task #{target} cannot be dropped without a reason.",
-                    "Say in the reason why it is not needed, so the record shows the decision "
-                    "instead of a silent gap. If it is done, use action=\"done\".",
-                )
-            match["status"] = "done" if action == "done" else "dropped"
-            match["reason"] = str(reason or "").strip()
-            match["closed_at"] = utcnow()
-            match["closed_by"] = self.role
-            # Round 94 D2: bind by close-round, not add-round.
-            match["closed_round"] = int(st.get("round", 0))
-            return match
-
-        item = self.store.mutate(close)
+        try:
+            item, replayed = self.store.close_task(
+                target, "done" if action == "done" else "dropped", reason,
+                actor=self.role, expected_fencing_token=fencing_token,
+                idempotency_key=idempotency_key,
+            )
+        except StaleTaskFence as exc:
+            raise ProtocolError(
+                str(exc), "Read the current task fence, then retry with fencing_token."
+            ) from exc
+        except TaskStoreError as exc:
+            hint = ("Say why the task is not needed, or use action=\"done\"." if action == "drop"
+                    else "Check the task id and its current status.")
+            raise ProtocolError(str(exc), hint) from exc
         write_task_banner(self.store.root, self.store.read())
-        self.store.append_transcript("task_closed", self.role, task_id=item["id"],
-                                     status=item["status"], reason=item["reason"][:200])
+        if not replayed:
+            self.store.append_transcript("task_closed", self.role, task_id=item["id"],
+                                         status=item["status"], reason=item["reason"][:200])
         remaining = [i["id"] for i in open_tasks(self.store.read())]
-        return {"task": item, "still_open": remaining,
+        return {"task": item, "still_open": remaining, "idempotent_replay": replayed,
                 "how_to_use": "Closing is honest bookkeeping. If the work is not actually "
                               "finished, leave it open or drop it with a reason — the round "
                               "cannot close over an open task, and that is the point."}
+
+    def tool_pair_execution(self, action: str, worker_id: str = "",
+                            cli_profile: str = "", capabilities: Any = None,
+                            result: str = "", error: str = "",
+                            retry: bool | None = None) -> dict[str, Any]:
+        from coordinator import CoordinatorError
+        try:
+            return self.execution.worker_call(
+                action, worker_id=worker_id, cli_profile=cli_profile,
+                capabilities=capabilities, result=result, error=error, retry=retry,
+            )
+        except CoordinatorError as exc:
+            raise ProtocolError(str(exc)) from exc
+
+    def tool_pair_coordinator(self, action: str, peer_id: str = "",
+                              worker_id: str = "", members: Any = None,
+                              proposal_id: str = "", approve: bool | None = None
+                              ) -> dict[str, Any]:
+        from coordinator import CoordinatorError
+        try:
+            return self.execution.coordinator_call(
+                action, peer_id=peer_id, worker_id=worker_id, members=members,
+                proposal_id=proposal_id, approve=approve,
+            )
+        except CoordinatorError as exc:
+            raise ProtocolError(str(exc)) from exc
 
     def tool_pair_evidence(self, kind: str, value: str, ok: bool = True,
                            note: str = "", task: int | None = None) -> dict[str, Any]:
@@ -2881,7 +2922,8 @@ class PairSession:
         # merge-gate-does-not-require-ci-for-the-head). Outside a git repo there is no
         # head to name, and the record says so instead of inventing one.
         from review import git_head
-        measured_head = git_head(self.store.project_root)
+        project_root = self.store.project_root_for(self.role)
+        measured_head = git_head(project_root)
 
         def apply(state: dict[str, Any]) -> dict[str, Any]:
             # Which task the fact belongs to. Default — the single open one: usually one
@@ -2913,7 +2955,7 @@ class PairSession:
                 if sk is not None:
                     text = f"{record['round']}:{record['kind']}:{record['task'] or ''}:{record['value']}"
                     record["envelope"] = _keys.sign_envelope(
-                        sk, _keys.key_id_for(self.store.project_root, self.role),
+                    sk, _keys.key_id_for(project_root, self.role),
                         record["round"], self.role, "", record["at"], text)
             except Exception:  # noqa: BLE001
                 pass
@@ -3131,7 +3173,7 @@ class PairSession:
                 raise ProtocolError("paths stay inside the project: no absolute, no `..`.")
             proc = subprocess.run(
                 ["git", "diff", "--no-ext-diff", "HEAD", "--", *clean],
-                cwd=str(self.store.project_root), capture_output=True, text=True,
+                cwd=str(self.store.project_root_for(self.role)), capture_output=True, text=True,
                 timeout=30)
             if proc.returncode != 0:
                 raise ProtocolError(f"git diff failed: {(proc.stderr or '').strip()[:200]}")
@@ -3608,8 +3650,6 @@ class PairSession:
         # a sign of life, or an agent handed a `refusal` would read dead while just talking
         # to the server. An unknown tool misses this: a name typo is no sign of life, and
         # growing the roster over it is needless.
-        # needless.
-        # needless.
         if handler is not None:
             try:
                 self.store.mutate(lambda state: self._heartbeat(state, request_meta))
@@ -3697,7 +3737,7 @@ def tool_definitions() -> list[dict[str, Any]]:
                 "Read the shared collaboration state: the task, who holds write authority, the current "
                 "phase, the roster of participating roles, and how many messages you have unread."
             ),
-            "inputSchema": {"type": "object", "properties": {}, "required": []},
+            "inputSchema": {"type": "object", "properties": {"workspace": {"type": "string", "description": "Optional active checkout path; verified and saved for this role."}}, "required": []},
         },
         {
             "name": "pair_ping",
@@ -3892,8 +3932,9 @@ def tool_definitions() -> list[dict[str, Any]]:
                 "The shared task list. Add what you found, close what is finished. The round "
                 "cannot close while any task is open, so a task added mid-round cannot be "
                 "forgotten: either it gets done, or it gets dropped with a reason on the "
-                "record. The critic adds tasks it discovered; only the writer closes them, "
-                "because implementing them is the writer's job (PROTOCOL.md 4). "
+                "record. The critic adds tasks it discovered; only the writer closes governance "
+                "tasks. Execution jobs carry an explicit CLI route and are claimed/completed "
+                "through pair_execution; pair_task cannot bypass their lease or worker path. "
                 "action=\"list\" answers with the OPEN tasks and the counts (open/done/dropped) "
                 "— the whole history costs 29 784 tokens per call on a room with 137 tasks, "
                 "and it stays reachable behind scope=\"history\"."
@@ -3905,6 +3946,10 @@ def tool_definitions() -> list[dict[str, Any]]:
                     "id": {"type": "integer",
                            "description": "Which task, for done/drop. Omit for add and list."},
                     "text": {"type": "string", "description": "What to do. Required for add."},
+                    "cli_profile": {"type": "string", "description": "Optional CLI execution route. When supplied, this is a leased execution job."},
+                    "execution_requirements": {"type": "object", "description": "Optional worker capabilities and CLI routing requirements."},
+                    "requirements": {"type": "object", "description": "Compatibility alias for execution_requirements."},
+                    "max_attempts": {"type": "integer", "minimum": 1, "default": 3},
                     "reason": {"type": "string",
                                "description": "Required for drop, and it may not be empty."},
                     "scope": {
@@ -3922,6 +3967,55 @@ def tool_definitions() -> list[dict[str, Any]]:
                         "type": "integer", "minimum": 0, "default": 0,
                         "description": "For list: how many tasks to skip before the window starts.",
                     },
+                    "idempotency_key": {
+                        "type": "string",
+                        "description": (
+                            "Optional stable key for retry-safe add/done/drop calls. Reusing the "
+                            "same key with the same role returns the original task transition."
+                        ),
+                    },
+                    "fencing_token": {
+                        "type": "integer", "minimum": 0,
+                        "description": (
+                            "Optional expected fence for done/drop. A stale token is refused "
+                            "after any newer task transition."
+                        ),
+                    },
+                },
+                "required": ["action"],
+            },
+        },
+        {
+            "name": "pair_execution",
+            "description": (
+                "Manage the caller role's leased execution worker. Register with a configured CLI profile, "
+                "claim a routed job, send heartbeats while executing, then complete or fail it. Claims "
+                "are returned to the CLI; this server never shells out to run task text."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "action": {"type": "string", "enum": ["register", "claim", "heartbeat", "complete", "fail", "status"]},
+                    "worker_id": {"type": "string", "description": "Defaults to the authenticated role; other identities are refused."},
+                    "cli_profile": {"type": "string", "description": "Configured CLI profile used when registering."},
+                    "capabilities": {"type": "array", "items": {"type": "string"}},
+                    "result": {"type": "string"},
+                    "error": {"type": "string"},
+                    "retry": {"type": "boolean"},
+                },
+                "required": ["action"],
+            },
+        },
+        {
+            "name": "pair_coordinator",
+            "description": "Register this role's worker as a coordinator peer, inspect topology, propose/vote on topology, or dispatch the next leased job.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "action": {"type": "string", "enum": ["register_peer", "status", "propose", "vote", "dispatch"]},
+                    "peer_id": {"type": "string"}, "worker_id": {"type": "string"},
+                    "members": {"type": "array", "items": {"type": "string"}},
+                    "proposal_id": {"type": "string"}, "approve": {"type": "boolean"},
                 },
                 "required": ["action"],
             },
@@ -4129,7 +4223,7 @@ def tool_definitions() -> list[dict[str, Any]]:
 
 
 HANDLERS = {
-    "pair_state": lambda session, args: session.tool_pair_state(),
+    "pair_state": lambda session, args: session.tool_pair_state(**args),
     "pair_ping": lambda session, args: session.tool_pair_ping(),
     "pair_deliver": lambda session, args: session.tool_pair_deliver(**args),
     "pair_claim": lambda session, args: session.tool_pair_claim(**args),
@@ -4144,6 +4238,8 @@ HANDLERS = {
     "pair_patch_release": lambda session, args: session.tool_pair_patch_release(**args),
     "pair_patch_applied": lambda session, args: session.tool_pair_patch_applied(**args),
     "pair_task": lambda session, args: session.tool_pair_task(**args),
+    "pair_execution": lambda session, args: session.tool_pair_execution(**args),
+    "pair_coordinator": lambda session, args: session.tool_pair_coordinator(**args),
     "pair_evidence": lambda session, args: session.tool_pair_evidence(**args),
     "pair_note": lambda session, args: session.tool_pair_note(**args),
     "pair_note_index": lambda session, args: session.tool_pair_note_index(**args),
@@ -4376,8 +4472,8 @@ class MCPServer:
                 "instructions": (
                     f"You are role {self.session.role!r} in a two-agent collaboration. One role holds write "
                     "authority and edits project files; the other is read-only and proposes sealed patches. "
-                    "Authority is transferred only by the human through pairctl, never by a message. "
-                    "Call pair_state first to see where you stand. Read peer messages with pair_read; "
+                    "Authority is transferred only by the human through pairctl, never by a message. Call pair_state(workspace=<active checkout path>) first, then pair_task(action='list'). "
+                    "Read peer messages with pair_read; "
                     "ACK returned batches with their exact ack_token after processing. Retries replay; "
                     "messages remain unread until ACK, and pair_state shows the pending batch."
                 ),

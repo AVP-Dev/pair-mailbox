@@ -50,6 +50,30 @@ class TestTaskBanner(PairTestCase):
         self.peer.tool_pair_task("add", text="another hole: pane_alive")
         self.assertIn("pane_alive", self.banner())
 
+    def test_pair_task_retries_are_idempotent_and_fenced(self) -> None:
+        first = self.writer.tool_pair_task(
+            "add", text="retry-safe task", idempotency_key="add-retry-1")
+        repeated = self.writer.tool_pair_task(
+            "add", text="retry-safe task", idempotency_key="add-retry-1")
+        self.assertEqual(first["task"], repeated["task"])
+        self.assertFalse(first["idempotent_replay"])
+        self.assertTrue(repeated["idempotent_replay"])
+        self.assertEqual(1, len(self.store.read()["tasks"]))
+
+        closed = self.writer.tool_pair_task(
+            "done", first["task"]["id"], fencing_token=first["task"]["fencing_token"],
+            idempotency_key="close-retry-1")
+        close_retry = self.writer.tool_pair_task(
+            "done", first["task"]["id"], fencing_token=first["task"]["fencing_token"],
+            idempotency_key="close-retry-1")
+        self.assertEqual(closed["task"], close_retry["task"])
+        self.assertTrue(close_retry["idempotent_replay"])
+
+        self.assertRefused(
+            self.writer.tool_pair_task, "done", first["task"]["id"],
+            fencing_token=first["task"]["fencing_token"], idempotency_key="stale-close",
+            contains="fencing token is stale")
+
     def test_render_puts_no_task_without_open_ones(self) -> None:
         self.assertEqual("", render_task_banner({"tasks": []}))
         self.assertEqual("", render_task_banner({"tasks": [{"id": 1, "status": "done"}]}))

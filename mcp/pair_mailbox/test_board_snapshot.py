@@ -34,6 +34,14 @@ def _iso(delta_seconds: float = 0) -> str:
 
 
 class SnapshotFactsTest(PairTestCase):
+    def test_snapshot_does_not_change_live_sqlite_state(self):
+        before = {path.relative_to(self.root): path.read_bytes()
+                  for path in self.root.rglob("*") if path.is_file()}
+        build_snapshot(self.root)
+        after = {path.relative_to(self.root): path.read_bytes()
+                 for path in self.root.rglob("*") if path.is_file()}
+        self.assertEqual(after, before)
+
     def test_round_facts_come_from_state(self):
         self.store.mutate(lambda state: state.update(
             task="dashboard", phase="implement", mode="audit", autonomy="semi",

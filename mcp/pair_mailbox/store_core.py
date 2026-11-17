@@ -25,12 +25,14 @@ import json
 import os
 import sys
 import tempfile
+import threading
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 import liveness  # noqa: E402 - needs sys.path above
+from task_store import TaskStore
 
 SERVER_NAME = "pair-mailbox"
 
@@ -53,6 +55,54 @@ def utcnow() -> str:
 def log(message: str) -> None:
     """Diagnostics go to stderr. stdout carries the protocol and nothing else."""
     print(f"[{SERVER_NAME}] {message}", file=sys.stderr, flush=True)
+
+
+def _git_dir(repo_root: Path) -> Path | None:
+    """Resolve a repository's git directory, including linked worktrees."""
+    marker = repo_root / ".git"
+    try:
+        if marker.is_dir():
+            return marker.resolve()
+        if not marker.is_file():
+            return None
+        kind, separator, target = marker.read_text(encoding="utf-8").strip().partition(":")
+        if kind.strip() != "gitdir" or not separator or not target.strip():
+            return None
+        git_dir = Path(target.strip())
+        if not git_dir.is_absolute():
+            git_dir = repo_root / git_dir
+        return git_dir.resolve()
+    except (OSError, UnicodeError):
+        return None
+
+
+def _git_common_dir(repo_root: Path) -> Path | None:
+    """Return the common git directory shared by a main checkout and worktrees."""
+    git_dir = _git_dir(repo_root)
+    if git_dir is None:
+        return None
+    common_file = git_dir / "commondir"
+    try:
+        if not common_file.is_file():
+            return git_dir
+        target = Path(common_file.read_text(encoding="utf-8").strip())
+        if not target.is_absolute():
+            target = git_dir / target
+        return target.resolve()
+    except (OSError, UnicodeError):
+        return None
+
+
+def _git_toplevel(start: Path) -> Path | None:
+    """Find the closest repository root above a process working directory."""
+    try:
+        current = start.resolve()
+    except (OSError, RuntimeError):
+        return None
+    for candidate in (current, *current.parents):
+        if _git_dir(candidate) is not None:
+            return candidate
+    return None
 
 
 CHAIN_GENESIS = "chain-genesis-v1"
@@ -237,6 +287,9 @@ class Store:
                           self.patches_root, self.obligations_root,
                           self.notifications_root):
             directory.mkdir(parents=True, exist_ok=True)
+        # Migration shares the same project lock as legacy Store.mutate callers.
+        with self.lock():
+            self.task_store = TaskStore(self.root, self.state_path)
 
     @staticmethod
     def _notification_role_dir(role: str) -> str:
@@ -279,7 +332,28 @@ class Store:
         A separate property, not a silent `parent` at the use site: swapping the
         root in one caller and forgetting in another is exactly how the bug arrived.
         """
-        return self.root.parent if self.root.name == ".pair" else self.root
+        base = (self.root.parent if self.root.name == ".pair" else self.root).resolve()
+        base_common = _git_common_dir(base)
+        if base_common is not None:
+            try:
+                active = _git_toplevel(Path.cwd())
+            except OSError:
+                active = None
+            if active is not None and _git_common_dir(active) == base_common:
+                return active
+        return base
+
+    def project_root_for(self, role: str) -> Path:
+        from project_workspace import project_root_for
+        return project_root_for(self, role)
+
+    def record_role_workspace(self, role: str, workspace: Path) -> Path | None:
+        from project_workspace import record_role_workspace
+        return record_role_workspace(self, role, workspace)
+
+    def prepare_role_launch(self, role: str, workspace: Path) -> dict[str, Any]:
+        self.record_role_workspace(role, workspace)
+        return self.read()
 
     def default_state(self) -> dict[str, Any]:
         return {
@@ -304,32 +378,25 @@ class Store:
         }
 
     def _load(self) -> dict[str, Any]:
-        if not self.state_path.exists():
-            return self.default_state()
-        try:
-            data = json.loads(self.state_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as error:
-            log(f"state.json unreadable ({error}); starting from defaults")
+        data: dict[str, Any] = {}
+        if self.state_path.exists():
             try:
-                self.append_transcript("state_corrupt", "server", error=str(error))
-            except Exception:
-                pass
-            return self.default_state()
+                loaded = json.loads(self.state_path.read_text(encoding="utf-8"))
+                if isinstance(loaded, dict):
+                    data = loaded
+                else:
+                    raise json.JSONDecodeError("state is not an object", "", 0)
+            except (OSError, json.JSONDecodeError) as error:
+                log(f"state.json unreadable ({error}); using defaults for pair metadata")
+                try:
+                    self.append_transcript("state_corrupt", "server", error=str(error))
+                except Exception:
+                    pass
         state = self.default_state()
         state.update(data)
-        # Old states held one task line. Carry it into the list, so the task text never
-        # vanishes: past that it appends, never overwrites.
-        # Migrate only when no tasks key exists at all — the state truly predates the list.
-        # An explicit empty list means "already moved to the new language": raising the
-        # task from it again is banned.
-        legacy = str(state.get("task") or "").strip()
-        if legacy and "tasks" not in data:
-            state["tasks"] = [{
-                "id": 1, "text": legacy, "status": "open", "added_at": state.get("created_at"),
-                "added_by": "human", "round": int(state.get("round", 0)),
-                "reason": "", "closed_at": None, "closed_by": None,
-            }]
-        state.setdefault("tasks", [])
+        # state.json keeps a compatibility projection, never the task source of truth.
+        # A completed cutover with a bad or missing DB raises here; stale JSON is not read.
+        state["tasks"] = self.task_store.list_tasks()
         try:
             heartbeats = json.loads(self.heartbeat_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
@@ -347,6 +414,11 @@ class Store:
 
     def _save(self, state: dict[str, Any]) -> None:
         state["updated_at"] = utcnow()
+        # Preserve callers that still mutate tasks through Store.mutate or _save
+        # (pairctl, heal, and bootstrap compatibility paths). The DB commits first;
+        # its projection remains authoritative if writing state.json then fails.
+        self.task_store.sync_tasks(list(state.get("tasks") or []))
+        state["tasks"] = self.task_store.list_tasks()
         atomic_write_json(self.state_path, state)
         self.heartbeat_path.unlink(missing_ok=True)
 
@@ -393,32 +465,59 @@ class Store:
         return False
 
     class _Lock:
-        _holders: dict[Path, tuple[int, Any]] = {}
+        _holders: dict[Path, tuple[int, int, Any]] = {}
+        _thread_locks: dict[Path, Any] = {}
+        _guard = threading.Lock()
 
         def __init__(self, path: Path) -> None:
             self.path = path.resolve()
+            with Store._Lock._guard:
+                self._thread_lock = Store._Lock._thread_locks.setdefault(
+                    self.path, threading.RLock()
+                )
 
         def __enter__(self):
-            entry = Store._Lock._holders.get(self.path)
-            if entry is None or entry[0] == 0:
+            self._thread_lock.acquire()
+            handle = None
+            try:
+                owner = threading.get_ident()
+                with Store._Lock._guard:
+                    entry = Store._Lock._holders.get(self.path)
+                    if entry is not None:
+                        current_owner, depth, handle = entry
+                        if current_owner != owner:
+                            raise RuntimeError("store lock holder changed across threads")
+                        Store._Lock._holders[self.path] = (owner, depth + 1, handle)
+                        return self
+
                 handle = self.path.open("a+")
-                fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
-                Store._Lock._holders[self.path] = (1, handle)
-            else:
-                depth, handle = entry
-                Store._Lock._holders[self.path] = (depth + 1, handle)
-            return self
+                try:
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+                except BaseException:
+                    handle.close()
+                    raise
+                with Store._Lock._guard:
+                    Store._Lock._holders[self.path] = (owner, 1, handle)
+                return self
+            except BaseException:
+                self._thread_lock.release()
+                raise
 
         def __exit__(self, *exc):
-            entry = Store._Lock._holders.get(self.path)
-            assert entry is not None and entry[0] > 0
-            depth, handle = entry
-            if depth == 1:
+            owner = threading.get_ident()
+            with Store._Lock._guard:
+                entry = Store._Lock._holders.get(self.path)
+                assert entry is not None and entry[0] == owner and entry[1] > 0
+                _owner, depth, handle = entry
+                release_file = depth == 1
+                if release_file:
+                    del Store._Lock._holders[self.path]
+                else:
+                    Store._Lock._holders[self.path] = (owner, depth - 1, handle)
+            if release_file:
                 fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
                 handle.close()
-                del Store._Lock._holders[self.path]
-            else:
-                Store._Lock._holders[self.path] = (depth - 1, handle)
+            self._thread_lock.release()
             return False
 
     def role_lock_path(self, role: str) -> Path:
@@ -488,6 +587,30 @@ class Store:
             else:
                 self._save(state)
             return result
+
+    def add_task(self, task: dict[str, Any], actor: str,
+                 idempotency_key: str | None = None) -> tuple[dict[str, Any], bool]:
+        """Add one task and its idempotency event under the shared state lock."""
+        with self.lock():
+            state = self._load()
+            item, replayed = self.task_store.add_task(task, actor, idempotency_key)
+            state["tasks"] = self.task_store.list_tasks()
+            self._save(state)
+            return item, replayed
+
+    def close_task(self, task_id: int, status: str, reason: str, actor: str,
+                   expected_fencing_token: int | None = None,
+                   idempotency_key: str | None = None) -> tuple[dict[str, Any], bool]:
+        """Close one task with compare-and-swap fencing and an idempotency key."""
+        with self.lock():
+            state = self._load()
+            item, replayed = self.task_store.close_task(
+                task_id, status, reason, actor, expected_fencing_token,
+                idempotency_key, round_number=int(state.get("round", 0)),
+            )
+            state["tasks"] = self.task_store.list_tasks()
+            self._save(state)
+            return item, replayed
 
     def append_transcript(self, kind: str, role: str, **fields: Any) -> None:
         entry = {"ts": utcnow(), "kind": kind, "role": role}

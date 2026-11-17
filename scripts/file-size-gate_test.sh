@@ -84,27 +84,23 @@ printf 'path\tmax_lines\treason\nsrc/small.py\t100\treason\n' \
   >"$SANDBOX/scripts/file-size-baseline.tsv"
 printf 'x = 1\n' >"$SANDBOX/src/small.py"
 assert_status 0 "$SANDBOX/scripts/file-size-gate.sh"
-assert_contains "clean"
+assert_contains "complete"
 
-# --- 3. The file grew a line — the ratchet fires ---------------------------------
+# --- 3. Crossing a noted size produces advice, not a work stop --------------------
 SANDBOX="$(make_sandbox grown)"
 printf 'path\tmax_lines\treason\nsrc/small.py\t10\treason\n' \
   >"$SANDBOX/scripts/file-size-baseline.tsv"
 for i in $(seq 1 11); do printf 'line %s\n' "$i" >>"$SANDBOX/src/small.py"; done
-assert_status 1 "$SANDBOX/scripts/file-size-gate.sh"
-assert_contains "growth banned"
+assert_status 0 "$SANDBOX/scripts/file-size-gate.sh"
+assert_contains "ADVISORY"
 
-# --- 4. The file shrank — the record went stale, the ratchet demands lowering cap -
-# Exactly "stopped needing the exception": cap above the hard cap, while the file
-# dropped under it. The check used to compare cap against the current size directly,
-# and then ANY file edit demanded a baseline edit — the test caught it at once.
+# --- 4. A stale review note is advice, not a bookkeeping blocker ------------------
 SANDBOX="$(make_sandbox shrunk)"
 printf 'path\tmax_lines\treason\nsrc/small.py\t900\twas an exception\n' \
   >"$SANDBOX/scripts/file-size-baseline.tsv"
 printf 'x = 1\n' >"$SANDBOX/src/small.py"
-assert_status 1 "$SANDBOX/scripts/file-size-gate.sh"
-assert_contains "went stale"
-assert_contains "drop cap to 1"
+assert_status 0 "$SANDBOX/scripts/file-size-gate.sh"
+assert_contains "below review threshold"
 
 # --- 4a. Cap is a ceiling, not an exact value: the file may run far smaller --------
 SANDBOX="$(make_sandbox ceiling)"
@@ -113,24 +109,25 @@ printf 'path\tmax_lines\treason\nsrc/small.py\t700\tceiling\n' \
 printf 'x = 1\n' >"$SANDBOX/src/small.py"
 assert_status 0 "$SANDBOX/scripts/file-size-gate.sh"
 
-# --- 5. A new file past the hard cap with no exception ---------------------------
+# --- 5. A new large file reports review guidance without blocking ----------------
 SANDBOX="$(make_sandbox huge)"
 printf 'path\tmax_lines\treason\nsrc/small.py\t100\treason\n' \
   >"$SANDBOX/scripts/file-size-baseline.tsv"
 printf 'x = 1\n' >"$SANDBOX/src/small.py"
 for i in $(seq 1 801); do printf 'line %s\n' "$i" >>"$SANDBOX/src/huge.py"; done
-assert_status 1 "$SANDBOX/scripts/file-size-gate.sh"
-assert_contains "hard cap 800"
+assert_status 0 "$SANDBOX/scripts/file-size-gate.sh"
+assert_contains "above review threshold 800"
 
-# --- 6. A file past the cap but pinned by an exception passes --------------------
+# --- 6. A review note records a large file without making it exempt ---------------
 SANDBOX="$(make_sandbox baselined)"
 printf 'path\tmax_lines\treason\nsrc/small.py\t100\treason\nsrc/huge.py\t900\tpinned\n' \
   >"$SANDBOX/scripts/file-size-baseline.tsv"
 printf 'x = 1\n' >"$SANDBOX/src/small.py"
 for i in $(seq 1 801); do printf 'line %s\n' "$i" >>"$SANDBOX/src/huge.py"; done
 assert_status 0 "$SANDBOX/scripts/file-size-gate.sh"
+assert_contains "ADVISORY"
 
-# --- 7. A reasonless exception never counts as pinned ----------------------------
+# --- 7. Review notes still need a clear reason -----------------------------------
 SANDBOX="$(make_sandbox noreason)"
 printf 'path\tmax_lines\treason\nsrc/small.py\t100\t\n' \
   >"$SANDBOX/scripts/file-size-baseline.tsv"
@@ -154,13 +151,13 @@ printf 'x = 1\n' >"$SANDBOX/src/small.py"
 assert_status 2 "$SANDBOX/scripts/file-size-gate.sh"
 assert_contains "max_lines"
 
-# --- 10. A record on a missing file is a stale record ----------------------------
+# --- 10. A stale path in a review note does not block unrelated work --------------
 SANDBOX="$(make_sandbox ghost)"
 printf 'path\tmax_lines\treason\nsrc/small.py\t100\treason\nsrc/gone.py\t100\tstale\n' \
   >"$SANDBOX/scripts/file-size-baseline.tsv"
 printf 'x = 1\n' >"$SANDBOX/src/small.py"
-assert_status 1 "$SANDBOX/scripts/file-size-gate.sh"
-assert_contains "missing file"
+assert_status 0 "$SANDBOX/scripts/file-size-gate.sh"
+assert_contains "baseline path is stale"
 
 # --- 11. A duplicate path in baseline --------------------------------------------
 SANDBOX="$(make_sandbox dup)"
@@ -184,7 +181,8 @@ printf 'path\tmax_lines\treason\nsrc/small.py\t100\treason\n' \
 printf 'x = 1\n' >"$SANDBOX/src/small.py"
 for i in $(seq 1 900); do printf 'line %s\n' "$i" >>"$SANDBOX/README.md"; done
 for i in $(seq 1 900); do printf 'line %s\n' "$i" >>"$SANDBOX/src/big.sh"; done
-assert_status 1 "$SANDBOX/scripts/file-size-gate.sh"
+assert_status 0 "$SANDBOX/scripts/file-size-gate.sh"
+assert_contains "ADVISORY"
 assert_contains "src/big.sh"
 assert_not_contains "README.md"
 

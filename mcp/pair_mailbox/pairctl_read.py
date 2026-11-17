@@ -1,8 +1,8 @@
 """Reading and overview for the human: digest, mailbox, journal, notes, project list.
 
 Moved out of `server.py` as its own responsibility: everything here only READS
-and prints. No command of this module changes pair state — the only `state.json`
-write belongs to `pairctl` in `pairctl_authority.py`.
+and prints. A first Store read may migrate tasks; ongoing `state.json` writes
+belong to `pairctl` in `pairctl_authority.py`.
 
 The split is not stylistic. `server.py` held 725 lines of `pairctl` tangled with
 protocol, and commands that read landed in one file with commands that write.
@@ -302,7 +302,7 @@ def human_age(seconds: float | None) -> str:
 def project_row(root: Path, stuck_min: int = 30) -> dict:
     """One project's row for the human's overview. Never raises on a broken file."""
     try:
-        state = json.loads((root / "state.json").read_text(encoding="utf-8"))
+        state = Store(root).read()  # SQLite owns tasks after cutover.
     except Exception:
         state = {}
     roles = state.get("roles") or {}

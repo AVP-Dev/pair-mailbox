@@ -3,7 +3,10 @@
 # suites instead of the whole layer (5.5 min down to seconds).
 # Suite names use scripts/verification-profile.tsv.
 mcp/pair_mailbox/launch_context.py	launch-context
+mcp/pair_mailbox/resume_prompt.py	launch-context
 mcp/pair_mailbox/test_launch_context.py	launch-context
+mcp/pair_mailbox/startup_work.py	startup-work
+mcp/pair_mailbox/test_startup_work.py	startup-work
 mcp/pair_mailbox/pi_cli_policy.py	pi-cli-policy
 mcp/pair_mailbox/test_pi_cli_policy.py	pi-cli-policy
 mcp/pair_mailbox/instruction_block.py	instruction-block
@@ -14,6 +17,12 @@ mcp/pair_mailbox/composer.py	composer
 mcp/pair_mailbox/process_tree.py	process-tree
 mcp/pair_mailbox/linux_sandbox.py	linux-sandbox
 mcp/pair_mailbox/store_core.py	store-core
+mcp/pair_mailbox/project_workspace.py	project-workspace
+mcp/pair_mailbox/test_project_workspace.py	project-workspace
+mcp/pair_mailbox/task_store.py	task-store
+mcp/pair_mailbox/worker_pool.py	worker-pool
+mcp/pair_mailbox/coordinator.py	coordinator
+mcp/pair_mailbox/execution_api.py	execution-api
 mcp/pair_mailbox/test_composer.py	composer
 mcp/pair_mailbox/test_process_tree.py	process-tree
 mcp/pair_mailbox/test_linux_sandbox.py	linux-sandbox
@@ -241,6 +250,10 @@ mcp/pair_mailbox/task_subject.py	digest
 follow:mcp/pair_mailbox/task_subject.py	board-snapshot;pairctl-read;pairctl-authority;protocol
 mcp/pair_mailbox/test_branch_audit.py	branch-audit
 mcp/pair_mailbox/test_store_core.py	store-core
+mcp/pair_mailbox/test_task_store.py	task-store
+mcp/pair_mailbox/test_worker_pool.py	worker-pool
+mcp/pair_mailbox/test_coordinator.py	coordinator
+mcp/pair_mailbox/test_execution_api.py	execution-api
 mcp/pair_mailbox/test_task_banner.py	task-banner
 mcp/pair_mailbox/assets/board.js	board-render
 mcp/pair_mailbox/assets/board.css	board-render

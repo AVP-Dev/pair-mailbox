@@ -57,18 +57,23 @@ _resolve_reason="$(printf '%s' "$_resolved" | sed -n '2p')"
 
 usage() {
   sed -n '2,14p' "$0" | sed 's/^# //; s/^#//'
-  echo "usage: pairup [TASK] [--auto|--semi|--observe] [--install] [--writer <role>] [--swap <cli>] [--worktree <branch>] [--in-place] [--task TEXT] [--state DIR]"
+  echo "usage: pairup [TASK] [--auto|--semi|--observe] [--install] [--writer <role>] [--swap <cli>] [--worktree <branch>] [--in-place] [--task TEXT] [--resume ID|--new] [--state DIR]"
   echo "  --install    place shim in ~/.local/bin (once), exit"
   echo "  --writer <role> assign this project's writer and launch the pair"
   echo "  --swap <cli> recreate the critic pane with a new CLI, leave the writer alone"
   echo "  --worktree, -w <branch> run the pair in an isolated git worktree (the DEFAULT)"
   echo "  --in-place    run the pair in this checkout (opt out of the worktree)"
   echo "  --task TEXT  record a task before launch"
+  echo "  --resume ID  resume a listed task without changing its history"
+  echo "  --new        choose new work in the startup task prompt"
   echo "  --auto|--semi|--observe  set and save this project's autonomy mode"
   echo "  --autonomy MODE  legacy spelling for the autonomy mode"
   echo "  --state DIR  explicit state dir (default: walk-up from cwd)"
 }
 TASK=""
+RESUME_TASK=""
+RESUME_TASK_ID=""
+START_NEW=""
 SWAP=""
 WANT_WRITER=""
 AUTONOMY_OPT=""
@@ -92,6 +97,8 @@ while [ $# -gt 0 ]; do
       ;;
     --swap) SWAP="${2:-}"; shift 2 || { echo "error: --swap needs a CLI" >&2; exit 2; } ;;
     --task) TASK="${2:-}"; shift 2 || { echo "error: --task needs text" >&2; exit 2; } ;;
+    --resume) RESUME_TASK="${2:-}"; shift 2 || { echo "error: --resume needs a task ID" >&2; exit 2; } ;;
+    --new) START_NEW="1"; shift ;;
     --auto|--semi|--observe) AUTONOMY_OPT="${1#--}"; shift ;;
     --autonomy)
       AUTONOMY_OPT="${2:-}"
@@ -130,6 +137,13 @@ if [ -z "$IN_PLACE" ]; then
     echo "pairup: a worktree needs a git repository — use --in-place to run without one" >&2
     exit 1
   fi
+  _git_root="$(python3 -c '
+import sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[1] + "/mcp/pair_mailbox")
+import worktree
+print(worktree.project_root(Path(sys.argv[2])))
+' "$PAIRUP_ROOT" "$_git_root")"
   if [ -z "$WORKTREE_BRANCH" ]; then
     # The name is DERIVED from the project path, so the same project always
     # lands in the same worktree and two projects never share one branch.
@@ -249,6 +263,48 @@ PROJECT_DIR="$(dirname -- "$STATE_DIR")"
 LAUNCH_DIR="$(cd -- "$LAUNCH_DIR" && pwd -P)"
 export PAIR_STATE="$STATE_DIR"
 
+if [ -n "$RESUME_TASK" ] && { [ -n "$TASK" ] || [ -n "$START_NEW" ]; }; then
+  echo "pairup: --resume cannot be combined with --task or --new" >&2
+  exit 2
+fi
+_inventory_root="$PROJECT_DIR"
+if [ -n "${_git_root:-}" ]; then _inventory_root="$_git_root"; fi
+_choice_args=(--state "$STATE_DIR" --root "$_inventory_root")
+[ -n "$RESUME_TASK" ] && _choice_args+=(--resume "$RESUME_TASK")
+[ -n "$START_NEW" ] && _choice_args+=(--new)
+[ -n "$TASK" ] && _choice_args+=(--task "$TASK")
+[ -t 0 ] && _choice_args+=(--interactive)
+_choice_json="$(python3 "$PAIRUP_ROOT/mcp/pair_mailbox/startup_work.py" "${_choice_args[@]}")" || exit $?
+_choice_action="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1]).get("action", "none"))' "$_choice_json")"
+case "$_choice_action" in
+  new)
+    TASK="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1]).get("task", ""))' "$_choice_json")"
+    ;;
+  resume)
+    RESUME_TASK_ID="$(python3 -c 'import json,sys; v=json.loads(sys.argv[1]).get("task_id"); print("" if v is None else v)' "$_choice_json")"
+    _resume_task_text="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1]).get("text", ""))' "$_choice_json")"
+    _selected_workspace="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1]).get("workspace", ""))' "$_choice_json")"
+    _resume_target_workspace="${_selected_workspace:-$LAUNCH_DIR}"
+    _resume_status="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1]).get("status", "uncommitted changes"))' "$_choice_json")"
+    if [ -n "$RESUME_TASK_ID" ]; then
+      echo "pairup: selected task #$RESUME_TASK_ID [$_resume_status]"
+    else
+      echo "pairup: selected uncommitted worktree"
+    fi
+    if [ -n "$_selected_workspace" ]; then
+      if [ ! -d "$_selected_workspace" ]; then
+        echo "pairup: selected worktree disappeared: $_selected_workspace" >&2
+        exit 2
+      fi
+      cd "$_selected_workspace"
+      LAUNCH_DIR="$(pwd -P)"
+      printf 'pairup: resuming worktree %q\n' "$LAUNCH_DIR"
+    fi
+    ;;
+  none) ;;
+  *) echo "pairup: invalid startup selection '$_choice_action'" >&2; exit 2 ;;
+esac
+
 PAIRCTL="$PAIRUP_ROOT/bin/pairctl"
 PILOT="$PAIRUP_ROOT/bin/pairpilot"
 
@@ -259,6 +315,9 @@ autonomy_args=(--state "$STATE_DIR" launch-autonomy)
 [ -n "$AUTONOMY_OPT" ] && autonomy_args+=(--flag "$AUTONOMY_OPT")
 [ -n "$TASK" ] && autonomy_args+=(--task "$TASK")
 PAIR_STATE="$STATE_DIR" "$PAIRCTL" "${autonomy_args[@]}"
+if [ -n "$TASK" ]; then
+  PAIR_STATE="$STATE_DIR" "$PAIRCTL" --state "$STATE_DIR" task "$TASK"
+fi
 
 # --- 0. writer in one command: the flag beats everything, then the project
 # policy, then the global one. The human remembers two words, not the full pairctl path.
@@ -268,6 +327,7 @@ PAIR_STATE="$STATE_DIR" "$PAIRCTL" "${autonomy_args[@]}"
 # starts only once it knows whom to raise.
 status_json="$("$PAIRCTL" --state "$STATE_DIR" status 2>/dev/null || true)"
 writer="$(printf '%s' "$status_json" | python3 -c 'import json,sys; s=json.load(sys.stdin); print((s.get("policy") or {}).get("writer") or s.get("writer") or "")' 2>/dev/null || true)"
+project_writer="$writer"
 [ -n "$WANT_WRITER" ] && writer="$WANT_WRITER"
 critic="$(printf '%s' "$status_json" | python3 -c 'import json,sys; s=json.load(sys.stdin); print((s.get("policy") or {}).get("critic") or "")' 2>/dev/null || true)"
 if [ -z "$critic" ]; then
@@ -339,6 +399,18 @@ launch_for() {
 }
 writer_cmd="$(launch_for "$writer")"
 critic_cmd="$(launch_for "$critic")"
+_resume_env=()
+[ -n "$RESUME_TASK_ID" ] && _resume_env+=("PAIR_RESUME_TASK_ID=$RESUME_TASK_ID")
+[ -n "${_selected_workspace:-}" ] && _resume_env+=("PAIR_RESUME_WORKSPACE=$_selected_workspace")
+if [ "${#_resume_env[@]}" -gt 0 ]; then
+  _resume_prefix=""
+  for _assignment in "${_resume_env[@]}"; do
+    printf -v _quoted_assignment '%q' "$_assignment"
+    _resume_prefix+="$_quoted_assignment "
+  done
+  writer_cmd="$_resume_prefix$writer_cmd"
+  critic_cmd="$_resume_prefix$critic_cmd"
+fi
 proj_name="$(basename -- "$PROJECT_DIR")"
 title_for() { printf '%s:%s (%s)' "$proj_name" "$1" "$2"; }
 
@@ -407,14 +479,69 @@ fi
 # server instead of the shared default. PAIR_PANE_SOCKET is read by
 # composer._tmux() — one resolver for all call sites, condition (c).
 export PAIR_PANE_SOCKET="$PAIR_SOCKET"
+
+# Pane titles are user-visible and Codex rewrites them while it works (often
+# with a `|` separator). Fetch titles separately so terminal text cannot break
+# the stable ID/dead/current-command fields used to resolve a role.
+find_role_pane() {
+  local _wanted_title="$1" _cli="$2" _rows _pane_id _dead _current _title
+  _rows="$(t list-panes -t "$session:pair" -F '#{pane_id}|#{pane_dead}|#{pane_current_command}')" || return 1
+  while IFS='|' read -r _pane_id _dead _current; do
+    [ -n "$_pane_id" ] || continue
+    _title="$(t display-message -p -t "$_pane_id" '#{pane_title}' 2>/dev/null || true)"
+    if [ "$_title" = "$_wanted_title" ] || [ "$_current" = "$_cli" ]; then
+      printf '%s|%s|%s\n' "$_pane_id" "$_dead" "$_current"
+      return 0
+    fi
+  done <<EOF_PANES
+$_rows
+EOF_PANES
+  return 1
+}
+
+find_critic_pane() {
+  local _rows _pane_id _dead _current _title
+  _rows="$(t list-panes -t "$session:pair" -F '#{pane_id}|#{pane_dead}|#{pane_current_command}')" || return 1
+  while IFS='|' read -r _pane_id _dead _current; do
+    [ -n "$_pane_id" ] || continue
+    _title="$(t display-message -p -t "$_pane_id" '#{pane_title}' 2>/dev/null || true)"
+    case "$_title" in
+      "$proj_name:"*"(critic)")
+        printf '%s|%s|%s\n' "$_pane_id" "$_dead" "$_current"
+        return 0
+        ;;
+    esac
+    if [ "$_current" = "$critic" ]; then
+      printf '%s|%s|%s\n' "$_pane_id" "$_dead" "$_current"
+      return 0
+    fi
+  done <<EOF_PANES
+$_rows
+EOF_PANES
+  return 1
+}
+
 # Do not silently change authority under a live writer process. A different
 # writer requires an explicit session migration, not a critic replacement.
 if [ -n "$_EXISTING" ] && [ -n "$WANT_WRITER" ]; then
-  _writer_title="$(t list-panes -t "$session:0" -F '#{pane_title}' |
-    awk '/\(writer\)$/ {print; exit}')"
-  if [ "$_writer_title" != "$proj_name:$writer (writer)" ]; then
-    echo "pairup: existing session uses writer '$_writer_title'; requested '$writer'. Session and authority left unchanged." >&2
+  if [ -n "$project_writer" ] && [ "$project_writer" != "$WANT_WRITER" ]; then
+    echo "pairup: project policy names writer '$project_writer'; requested '$WANT_WRITER'. Session and authority left unchanged." >&2
     exit 1
+  fi
+  _role_panes="$(t list-panes -t "$session:pair" -F '#{pane_id}|#{pane_dead}|#{pane_current_command}')"
+  _writer_match="$(find_role_pane "$proj_name:$writer (writer)" "$writer" || true)"
+  if [ -z "$_writer_match" ]; then
+    _count="$(printf '%s\n' "$_role_panes" | awk 'NF {n++} END {print n+0}')"
+    _critic_match="$(find_role_pane "$proj_name:$critic (critic)" "$critic" || true)"
+    _critic_dead="${_critic_match#*|}"
+    _critic_dead="${_critic_dead%%|*}"
+    _recoverable=""
+    [ "$_count" = "1" ] && [ -n "$_critic_match" ] && [ "$_critic_dead" = "0" ] && _recoverable="yes"
+    if [ "$_recoverable" != "yes" ]; then
+      echo "pairup: cannot identify this session's '$writer' writer pane; session and authority left unchanged." >&2
+      exit 1
+    fi
+    echo "pairup: writer pane is missing; restoring '$writer' beside the identified critic pane" >&2
   fi
 fi
 if [ -n "$WANT_WRITER" ]; then
@@ -544,11 +671,6 @@ else
   fi
 fi
 
-# --- 2. task, if given.
-if [ -n "$TASK" ]; then
-  PAIR_STATE="$STATE_DIR" "$PAIRCTL" --state "$STATE_DIR" task "$TASK"
-fi
-
 # Explicit --swap selects the critic for a fresh session too. Session detection
 # below decides whether to create the pair or reuse its existing terminal.
 [ -n "$SWAP" ] && critic="$SWAP"
@@ -572,27 +694,116 @@ attach_pair() {
   fi
 }
 
+ensure_role_pane() {
+  local _wanted_title="$1" _command="$2" _cli="$3" _panes _match _pane _dead _count _other _other_dead _current_title
+  _panes="$(t list-panes -t "$session:pair" -F '#{pane_id}|#{pane_dead}|#{pane_current_command}')" || {
+    echo "pairup: cannot inspect panes for $session; leaving the session untouched" >&2
+    return 1
+  }
+  if [ -z "$_panes" ]; then
+    echo "pairup: session $session has no inspectable role panes; leaving it untouched" >&2
+    return 1
+  fi
+  _match="$(find_role_pane "$_wanted_title" "$_cli" || true)"
+  if [ -n "$_match" ]; then
+    _pane="${_match%%|*}"
+    _match_rest="${_match#*|}"
+    _dead="${_match_rest%%|*}"
+    _current_title="$(t display-message -p -t "$_pane" '#{pane_title}' 2>/dev/null || true)"
+    if [ "$_current_title" != "$_wanted_title" ]; then
+      t select-pane -T "$_wanted_title" -t "$_pane"
+    fi
+    if [ "$_dead" = "1" ]; then
+      echo "pairup: restarting dead role pane $_wanted_title ($_pane)" >&2
+      t respawn-pane -k -t "$_pane" -c "$LAUNCH_DIR" "$_command"
+      t select-pane -T "$_wanted_title" -t "$_pane"
+    fi
+    return 0
+  fi
+
+  _count="$(printf '%s\n' "$_panes" | awk 'NF {n++} END {print n+0}')"
+  if [ "$_wanted_title" = "$title_writer" ]; then
+    _other="$(find_role_pane "$title_critic" "$critic" || true)"
+  else
+    _other="$(find_role_pane "$title_writer" "$writer" || true)"
+  fi
+  _other_dead="${_other#*|}"
+  _other_dead="${_other_dead%%|*}"
+  [ "$_other_dead" = "0" ] || _other=""
+  _other="${_other%%|*}"
+  if [ "$_count" = "1" ] && [ -n "$_other" ]; then
+    _pane="$(t split-window -d -P -F '#{pane_id}' -t "$_other" -h -c "$LAUNCH_DIR" "$_command")"
+    if [ -z "$_pane" ]; then
+      echo "pairup: new role pane did not appear; leaving the session attached" >&2
+      return 1
+    fi
+    t select-pane -T "$_wanted_title" -t "$_pane"
+    t select-layout -t "$_pane" even-horizontal 2>/dev/null || true
+    echo "pairup: restored missing role pane $_wanted_title"
+    return 0
+  fi
+  echo "pairup: cannot identify a safe pane for $_wanted_title; leaving live panes untouched" >&2
+  return 1
+}
+
 if [ -n "$_EXISTING" ]; then
+  _writer_before="$(find_role_pane "$title_writer" "$writer" || true)"
+  _resume_pane="${_writer_before%%|*}"
+  _resume_rest="${_writer_before#*|}"
+  _resume_pane_dead="${_resume_rest%%|*}"
+  ensure_role_pane "$title_writer" "$writer_init" "$writer" || exit 1
+  if [ "$_resume_pane_dead" = "0" ] && \
+     { [ -n "$RESUME_TASK_ID" ] || [ -n "${_selected_workspace:-}" ]; }; then
+    # An already-live TUI will not receive PAIR_RESUME_TASK_ID from its process
+    # environment. Deliver the explicit startup choice through the verified
+    # composer path; never restart a live CLI or overwrite a busy composer.
+    python3 - "$PAIRUP_ROOT/mcp/pair_mailbox" "$_resume_pane" \
+         "$RESUME_TASK_ID" "${_resume_status:-uncommitted changes}" \
+         "${_resume_task_text:-}" "${_resume_target_workspace:-}" <<'PY_RESUME'
+import sys
+sys.path.insert(0, sys.argv[1])
+from composer import ComposerBusy, deliver_startup_resume
+
+pane, task_id, status, task_text, workspace = sys.argv[2:]
+try:
+    deliver_startup_resume(pane, task_id=task_id, status=status, task_text=task_text,
+                           workspace=workspace, wait_for_empty=0)
+except ComposerBusy as error:
+    print(f"pairup: selected work remains open; live Writer handoff was not confirmed: {error}",
+          file=sys.stderr)
+    raise SystemExit(0)
+print(f"pairup: selected work handed to live Writer pane {pane}")
+PY_RESUME
+  fi
   if [ -n "$SWAP" ]; then
-    _critic_pane="$(t list-panes -t "$session:0" -F '#{pane_id}|#{pane_title}' |
-      awk -F'|' -v prefix="$proj_name:" 'index($2,prefix)==1 && $2 ~ /\(critic\)$/ {print $1; exit}')"
+    _critic_pane="$(find_critic_pane || true)"
     if [ -z "$_critic_pane" ]; then
-      echo "pairup: cannot identify this session's critic pane; leaving it untouched" >&2
-      exit 1
+      ensure_role_pane "$title_critic" "$critic_init" "$critic" || exit 1
+    else
+      _critic_pane_id="${_critic_pane%%|*}"
+      _critic_rest="${_critic_pane#*|}"
+      _critic_dead="${_critic_rest%%|*}"
+      _critic_cli="${_critic_rest#*|}"
+      _current_title="$(t display-message -p -t "$_critic_pane_id" '#{pane_title}' 2>/dev/null || true)"
+      if [ "$_current_title" != "$title_critic" ] && [ "$_critic_cli" = "$critic" ]; then
+        t select-pane -T "$title_critic" -t "$_critic_pane_id"
+      fi
+      if { [ "$_current_title" != "$title_critic" ] && [ "$_critic_cli" != "$critic" ]; } || \
+         [ "$_critic_dead" = "1" ]; then
+        t respawn-pane -k -t "$_critic_pane_id" -c "$LAUNCH_DIR" "$critic_init"
+        t select-pane -T "$title_critic" -t "$_critic_pane_id"
+      fi
     fi
-    _current_title="$(t display-message -p -t "$_critic_pane" '#{pane_title}')"
-    if [ "$_current_title" != "$title_critic" ]; then
-      t respawn-pane -k -t "$_critic_pane" -c "$LAUNCH_DIR" "$critic_init"
-      t select-pane -T "$title_critic" -t "$_critic_pane"
-    fi
+  else
+    ensure_role_pane "$title_critic" "$critic_init" "$critic" || exit 1
   fi
   attach_pair
 else
-  t new-session -d -s "$session" -n "pair" -c "$LAUNCH_DIR" "$writer_init"
-  t split-window -t "$session" -h -c "$LAUNCH_DIR" "$critic_init"
+  _writer_pane="$(t new-session -d -P -F '#{pane_id}' -s "$session" -n "pair" -c "$LAUNCH_DIR" "$writer_init")"
+  _critic_pane="$(t split-window -d -P -F '#{pane_id}' -t "$_writer_pane" -h -c "$LAUNCH_DIR" "$critic_init")"
   t select-layout -t "$session" even-horizontal 2>/dev/null || true
-  t select-pane -T "$title_writer" -t "$session:0.0" 2>/dev/null || true
-  t select-pane -T "$title_critic" -t "$session:0.1" 2>/dev/null || true
+  t select-pane -T "$title_writer" -t "$_writer_pane" 2>/dev/null || true
+  t select-pane -T "$title_critic" -t "$_critic_pane" 2>/dev/null || true
   echo "pairup: session $session (writer $writer | critic $critic)"
   attach_pair
 fi

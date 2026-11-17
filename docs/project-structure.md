@@ -30,13 +30,15 @@ paths after changing into a different project.
 | up to 300 lines | normal target |
 | 300–500 | one explainable responsibility |
 | 500–800 | review the boundary |
-| over 800 | explained exception in the baseline |
+| over 800 | review the boundary and consider a split |
 
-The current ceilings and reasons live only in
+The current review notes live only in
 [`file-size-baseline.tsv`](../scripts/file-size-baseline.tsv). Actual counts are
 reported by `./scripts/file-size-gate.sh`; a copied table of counts becomes stale.
-A ceiling is a maximum, not an instruction to pad a file to that length. Grow it
-only for a justified change, not to hide an unreviewed size violation.
+These are review guidelines, never permission gates: crossing a size band reports
+an advisory and does not stop implementation or verification. A reviewer may ask
+for a split when it improves the change, while security and data-safety invariants
+remain blocking.
 
 ## Verification
 

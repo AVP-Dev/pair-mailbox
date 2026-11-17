@@ -20,6 +20,7 @@ import time
 from pathlib import Path
 
 from pi_cli_policy import safe_pi_command
+from project_workspace import initial_prompt, launch_state
 
 ROOT = Path(__file__).resolve().parents[2]
 PREFIX = "PAIR_LAUNCH_"
@@ -264,8 +265,45 @@ def _reject_codex_security_override(value: str) -> None:
         raise ValueError("Codex launch overrides may not replace sandbox/approval config")
 
 
+def git_metadata_write_roots(workspace: Path) -> list[Path]:
+    """Return narrow Git metadata paths needed for a local commit in this checkout."""
+    workspace = workspace.resolve()
+    try:
+        def git(*args: str) -> str:
+            result = subprocess.run(["git", "-C", str(workspace), *args],
+                                    capture_output=True, text=True, check=True)
+            return result.stdout.strip()
+
+        git_dir = Path(git("rev-parse", "--absolute-git-dir")).resolve()
+        common_text = git("rev-parse", "--git-common-dir")
+        common_dir = Path(common_text)
+        if not common_dir.is_absolute():
+            common_dir = (workspace / common_dir).resolve()
+        else:
+            common_dir = common_dir.resolve()
+        roots = {
+            git_dir / "index", git_dir / "index.lock",
+            git_dir / "HEAD", git_dir / "HEAD.lock",
+            git_dir / "COMMIT_EDITMSG",
+            git_dir / "logs" / "HEAD", git_dir / "logs" / "HEAD.lock",
+            common_dir / "objects",
+        }
+        ref = git("symbolic-ref", "--quiet", "--short", "HEAD")
+        if ref and not any(part in (".", "..") for part in Path(ref).parts):
+            branch_ref = common_dir / "refs" / "heads" / ref
+            roots.update((branch_ref, branch_ref.with_name(branch_ref.name + ".lock")))
+            branch_log = common_dir / "logs" / "refs" / "heads" / ref
+            roots.update((branch_log, branch_log.with_name(branch_log.name + ".lock")))
+        return sorted(roots, key=str)
+    except (OSError, subprocess.CalledProcessError, ValueError):
+        # A non-Git workspace still runs; it simply cannot get extra metadata
+        # write access. pairup itself refuses to create a session without Git.
+        return []
+
+
 def safe_cli_command(profile: str, role: str, is_writer: bool,
-                     command: list[str]) -> list[str]:
+                     command: list[str], pair_state: Path | None = None,
+                     git_write_roots: list[Path] | None = None) -> list[str]:
     """Enforce safe per-role CLI flags; OS sandbox and protocol enforce file authority."""
     if not command:
         raise ValueError("paired launch needs a CLI command")
@@ -333,11 +371,24 @@ def safe_cli_command(profile: str, role: str, is_writer: bool,
             cleaned.append(arg)
             index += 1
         args = cleaned
+        if pair_state is not None:
+            # Codex loads its global MCP entry before it sees PAIR_STATE. That
+            # entry may point at a different checkout of this engine, whose
+            # origin guard correctly refuses this project's state. Bind the
+            # session to the engine and room that launched it instead of
+            # inheriting a stale global server path. --state is explicit so
+            # serve.sh cannot silently walk back into another project's .pair.
+            server = str(ROOT / "mcp" / "pair_mailbox" / "serve.sh")
+            server_args = [server, role, "--state", str(pair_state.resolve())]
+            args += ["-c", "mcp_servers.pair.command=\"sh\"",
+                     "-c", "mcp_servers.pair.args=" + json.dumps(server_args)]
         if is_writer:
             # An untrusted CODEX_HOME/config.toml must not widen the auto-reviewer's
-            # writable roots or turn network on inside workspace-write.
-            args += ["-c", "sandbox_workspace_write.writable_roots=[]",
-                     "-c", "sandbox_workspace_write.network_access=false",
+            # writable roots. Network stays enabled for requested docs/GitHub work;
+            # workspace-write and auto-review remain the governing boundaries.
+            roots = [str(path.resolve()) for path in (git_write_roots or [])]
+            args += ["-c", "sandbox_workspace_write.writable_roots=" + json.dumps(roots),
+                     "-c", "sandbox_workspace_write.network_access=true",
                      "--approve-for-me"]
         else:
             args += ["--sandbox", "read-only", "--ask-for-approval", "never"]
@@ -635,7 +686,7 @@ def configured_role(base: str) -> str:
     return role
 
 
-def ensure_daemon(role: str, state: Path) -> None:
+def ensure_daemon(role: str, state: Path) -> subprocess.Popen | None:
     """Only an enrolled socket client may start its detached role daemon."""
     path = prepare_role_socket_path(state, role)
     def record_transport():
@@ -652,7 +703,7 @@ def ensure_daemon(role: str, state: Path) -> None:
             return False
     if ready():
         record_transport()
-        return
+        return None
     with (state / f"daemon-{role}.log").open("a") as log:
         process = subprocess.Popen([sys.executable, str(ROOT / "mcp/pair_mailbox/server.py"),
             "--role", role, "--state", str(state), "--socket", path],
@@ -661,12 +712,12 @@ def ensure_daemon(role: str, state: Path) -> None:
     while time.monotonic() < deadline:
         if ready():
             record_transport()
-            return
+            return process
         if process.poll() is not None:
             # Another enrolled connector may have won the same role lock.
             if ready():
                 record_transport()
-                return
+                return process
             raise ValueError(f"paired daemon failed; see {state / ('daemon-' + role + '.log')}")
         time.sleep(0.05)
     raise ValueError(f"paired daemon did not become ready: {path}")
@@ -682,9 +733,11 @@ def run_cli(role: str, state: str, command: list[str]) -> int:
     if not command:
         raise ValueError("paired launch needs a CLI command")
     state_path = Path(state).resolve()
-    state_data = json.loads((state_path / "state.json").read_text(encoding="utf-8"))
+    state_data = launch_state(state_path, role, Path.cwd())
     is_writer = state_data.get("writer") == role
-    command = safe_cli_command(profile, role, is_writer, command)
+    git_roots = git_metadata_write_roots(Path.cwd()) if profile == "codex" and is_writer else []
+    command = safe_cli_command(profile, role, is_writer, command, pair_state=state_path,
+                               git_write_roots=git_roots)
     env = dict(os.environ)
     for key in list(env):
         if key.startswith(PREFIX) or key in ("PAIR_TRUST_ENV", "PAIR_STATE_DIR", "PAIR_SOCKET_PATH"):
@@ -694,32 +747,32 @@ def run_cli(role: str, state: str, command: list[str]) -> int:
                 "PAIR_STATE": str(state_path), "PAIR_ROLE": role,
                 "PAIR_LAUNCH_PROFILE": profile,
                 "PAIR_SOCKET_PATH": role_socket_path(state_path, role)})
-    if not is_writer or state_data.get("transport") == "socket":
-        # The role daemon stays outside the critic's sandbox. MCP writes are
-        # therefore mediated by protocol methods, not direct filesystem access.
-        ensure_daemon(role, state_path)
+    # Start this role's socket daemon before either CLI launches. The first
+    # Writer may run before `transport` is recorded as socket; waiting for the
+    # Critic to set it creates an asymmetric startup race where the Writer's
+    # MCP client selects socket transport but has no daemon to connect to.
+    # The daemon stays outside the critic's sandbox, so MCP writes remain
+    # mediated by protocol methods rather than direct filesystem access.
+    ensure_daemon(role, state_path)
     profiles = json.loads((ROOT / "cli-profiles.json").read_text(encoding="utf-8"))
     prompt_arg = profiles[profile].get("initial_prompt")
     if prompt_arg:
         state_data = json.loads((Path(state) / "state.json").read_text(encoding="utf-8"))
         standing = "writer" if state_data.get("writer") == role else "read-only critic"
         autonomy = state_data.get("autonomy", "auto")
-        autonomy_guidance = {
-            "auto": ("No intermediate human approvals are expected. Keep working through review, fixes, "
-                     "tests, acceptance, and the final report. When policy denies an operation, use a "
-                     "permitted route; if none exists, record the blocker and evidence without weakening "
-                     "the sandbox or falsely closing the task."),
-            "semi": ("Complete routine work autonomously and stop only at the configured human checkpoint. "
-                     "Keep the security boundary unchanged."),
-            "observe": ("The supervisor observes and reports without taking automatic decisions. "
-                        "Keep the security boundary unchanged."),
-        }.get(autonomy, "Keep working within the configured security boundary.")
-        prompt = (f"You were explicitly launched as {role}, initially the {standing}. "
-                  "If MCP fails, retain that write boundary and repair the connection. Read pair_state, "
-                  "then pair_task(action='list'), respect your assigned write boundary, "
-                  f"and work on the open task. Project autonomy is {autonomy}: {autonomy_guidance} "
-                  "Communicate directly through pair_*; do not ask the user to relay messages. "
-                  "If no task is open, report ready and wait.")
+        resume_task = None
+        resume_task_id = os.environ.get("PAIR_RESUME_TASK_ID", "").strip()
+        if resume_task_id:
+            from store_core import Store
+            selected_state = Store(state_path).read()
+            resume_task = next((item for item in selected_state.get("tasks", [])
+                                if str(item.get("id")) == resume_task_id), None)
+            if resume_task is None:
+                raise ValueError(f"selected resume task #{resume_task_id} disappeared before launch")
+        resume_workspace = os.environ.get("PAIR_RESUME_WORKSPACE", "").strip()
+        prompt = initial_prompt(role, standing, autonomy, resume_task, resume_workspace)
+        env.pop("PAIR_RESUME_TASK_ID", None)
+        env.pop("PAIR_RESUME_WORKSPACE", None)
         command += ["--" if prompt_arg == "positional" else prompt_arg, prompt]
     command = role_sandbox_argv(role, state_path, command, workspace=Path.cwd())
     if not is_writer:
