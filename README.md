@@ -201,4 +201,10 @@ portable to macOS even though CLI launch works there.
 Submit contributions as pull requests targeting `master`. See
 [CONTRIBUTING.md](CONTRIBUTING.md) for the branch, review and verification workflow.
 
-[Aliaksei Patskevich (AVPDev)](https://avpdev.com/) · [MIT license](LICENSE)
+[MIT license](LICENSE)
+
+---
+
+<div align="center">
+<sub>AVPdev · Software Development &amp; Automation · <a href="https://avpdev.com/">avpdev.com</a></sub>
+</div>
