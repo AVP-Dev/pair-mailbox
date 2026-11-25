@@ -203,4 +203,10 @@ python -m pip install pynacl
 Отправляйте изменения через PR в `master`. Порядок работы с веткой, проверки
 и ревью описан в [CONTRIBUTING.md](CONTRIBUTING.md).
 
-[Aliaksei Patskevich (AVPDev)](https://avpdev.com/) · [Лицензия MIT](LICENSE)
+[Лицензия MIT](LICENSE)
+
+---
+
+<div align="center">
+<sub>AVPdev · Software Development &amp; Automation · <a href="https://avpdev.com/">avpdev.com</a></sub>
+</div>
